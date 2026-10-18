@@ -1,7 +1,8 @@
 # The daemon and the taskr hub
 
 `taskr daemon` is a small background process, one per user on each machine.
-The Herdr plugin starts it; you do not run it by hand. It does two jobs:
+The Herdr plugin starts it on demand; a hub runs it under systemd (`--stay`).
+It does two jobs:
 
 1. **Event bridge.** It listens to Herdr and wakes `taskr wait` when an
    agent's state changes, notifies you of blocking owner asks, and writes a few
@@ -12,15 +13,15 @@ The Herdr plugin starts it; you do not run it by hand. It does two jobs:
 
 ## Local tmp cleanup
 
-Every daemon (ledger host and client) sweeps its local `$TASKR_TMP_BASE`,
-default `/tmp/taskr-<uid>`, at startup and every three minutes, including when
-Herdr is unavailable. Only canonical positive-integer campaign/lane names
-are candidates. The base must be dedicated to taskr and already have a valid
-`.taskr-tmp` marker created explicitly by `tmp ID --mkdir`; a daemon never
-initializes an old or mistaken base. Ledger reads confirm each task's campaign, close timestamp
-and the root's `tmp.cleanup` policy ([Lane tmp dirs](cli.md#lane-tmp-dirs)).
-A single background sweep keeps slow filesystem/hub reads off the resident
-daemon's heartbeat loop; sweeps never overlap. Clients use fresh hub RPC reads; hub failures leave those directories alone.
+Every daemon (ledger host and client) sweeps its local `$TASKR_TMP_BASE`, default
+`/tmp/taskr-<uid>`, at startup and every three minutes, including when Herdr is
+unavailable. Only canonical positive-integer campaign/lane names are candidates. The
+base must be dedicated to taskr and already have a valid `.taskr-tmp` marker created
+explicitly by `tmp ID --mkdir`; a daemon never initializes an old or mistaken base.
+Ledger reads confirm each task's campaign, close timestamp and the root's `tmp.cleanup`
+policy ([Lane tmp dirs](cli.md#lane-tmp-dirs)). A single background sweep keeps slow
+filesystem/hub reads off the resident daemon's heartbeat loop; sweeps never overlap.
+Clients use fresh hub RPC reads; hub failures leave those directories alone.
 
 The same worker measures remaining local campaign dirs and updates only this
 host's `tmp.bytes.<host>` root ref through the existing `set` path, only when
@@ -35,14 +36,14 @@ Size diagnostics are capped to 240 characters and share one three-minute
 rate-limit key with suppressed counts. The CLI and TUI totals are last-reported
 logical bytes across known hosts; they do not promise how much cleanup frees.
 
-The default `on-close` policy removes a lane ten minutes after its close,
-and the entire campaign once the root and all canonical lane entries are
-confirmed closed for ten minutes. `root-close` waits for that whole-campaign
-check; `keep` disables automatic removal. Open, unknown, mismatched or
-unconfirmed entries and failed lookups preserve the campaign. Eligible closed
-lanes can still go individually under `on-close`. An authorized whole-campaign
-cleanup includes extra entries inside it. Invalid/missing close timestamps never authorize
-removal. The grace lets a lane's process finish exiting.
+The default `on-close` policy removes a lane ten minutes after its close, and the entire
+campaign once the root and all canonical lane entries are confirmed closed for ten
+minutes. `root-close` waits for that whole-campaign check; `keep` disables automatic
+removal. Open, unknown, mismatched or unconfirmed entries and failed lookups preserve
+the campaign. Eligible closed lanes can still go individually under `on-close`. An
+authorized whole-campaign cleanup includes extra entries inside it. Invalid/missing
+close timestamps never authorize removal. The grace lets a lane's process finish
+exiting.
 
 Removal rechecks base ownership, writable bits and the marker each time, uses no-follow
 directory descriptor traversal and never crosses devices. It unlinks interior
@@ -69,18 +70,16 @@ owner instructions, and do not grant authority to park or close. Delivery
 does not wait for activity or require a receipt: one nudge per pass and
 anchor, with at least 60 minutes between a root's nudges.
 
-The latest R1 nudge gets one owner notification after 60 minutes if its
-anchor is still unacknowledged, even when newer results keep arriving. An
-unchanged R2 anchor gets one notification after 60 minutes unless the lead
-has replied with a root note or `next`. Remote leads get the notification at
-the rule threshold, with no prompt, only when their host heartbeat is fresh
-(younger than 30 seconds), with at least 60 minutes between a remote root's
-escalation claims across both rules. R1 notification ages count from the
-oldest unprocessed result.
-The same switch also enables one notification for a non-blocking owner ask
-open at least four hours on an asker that is not closed, including asks on
-client hosts. Blocking owner asks always notify immediately. Check-ins never answer asks or change task
-status.
+The latest R1 nudge gets one owner notification after 60 minutes if its anchor is still
+unacknowledged, even when newer results keep arriving. An unchanged R2 anchor gets one
+notification after 60 minutes unless the lead has replied with a root note or `next`.
+Remote leads get the notification at the rule threshold, with no prompt, only when their
+host heartbeat is fresh (younger than 30 seconds), with at least 60 minutes between a
+remote root's escalation claims across both rules. R1 notification ages count from the
+oldest unprocessed result. The same switch also enables one notification for a
+non-blocking owner ask open at least four hours on an asker that is not closed,
+including asks on client hosts. Blocking owner asks always notify immediately. Check-ins
+never answer asks or change task status.
 
 ## PR events
 
@@ -203,7 +202,8 @@ with a line that says how to retry. `taskr spool ls` shows the queue.
 
 Queued reports also stay queued when the hub replies `database is locked`.
 The next send pass retries the same request key. Other database errors are
-refused. `_hook` records remain best-effort: a busy hook can be dropped.
+refused. `_hook` (the internal hook entry point) records remain best-effort: a busy hook
+can be dropped.
 
 ## Status and restart
 
@@ -227,11 +227,7 @@ base survives restart. Worker identity is cleared. The most useful status fields
 | `dashboard_usage` | Hourly request counts of the server. |
 | `stay`, `supervised` | Whether it runs with `--stay`, and under systemd. |
 
-`role: peer` and `hub.url` belong to an older setup in which each machine kept
-its own ledger and pushed a copy to the hub's web page. The page is gone and
-nothing is pushed. If a host still has a `hub.url`, make it a client with
-`server.url` instead; [references/recovery.md](../references/recovery.md)
-covers moving an existing ledger.
+A peer reads the hub address from its config; `hub.url` is unused.
 
 ## Files
 

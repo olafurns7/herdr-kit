@@ -26,9 +26,8 @@ needs `TASKR_INSTALL_DIR` in its environment too.
 
 ## taskr-tui: command not found
 
-`taskr-tui` ships from v0.21.0 on. `taskr version` older than that, often
-v0.18.0, means the install used `releases/latest`, which skips prereleases.
-Reinstall with the tag pinned: [install.md, step 2](install.md#2-install).
+`taskr-tui` installs beside `taskr` unless `TASKR_NO_TUI=1` was set; rerun the
+installer without it. See [install.md, step 2](install.md#2-install).
 
 ## The daemon is not running
 
@@ -75,7 +74,7 @@ script or a pipe, use `taskr glance` for the same data.
 yourself to see the error.
 
 - `taskr` not found: fix `PATH`, or point `TASKR_BIN` at the binary.
-- "Cannot reach the hub": on a client host, see the next section.
+- "Cannot reach the taskr hub": on a client host, see the next section.
 - "No listed campaigns" or "No open campaigns" is not an error: the ledger has nothing open. Try
   `taskr-tui --demo` to see what a busy one looks like.
 
@@ -140,12 +139,15 @@ too: write `tailnet:PORT` to `~/.local/state/taskr/dashboard.addr`, run
 
 ## A host still uses hub.url
 
-`role: peer` in the status. That setup pushed a copy of the host's ledger to a
-web page on the hub, which no longer exists; nothing is pushed now. Remove
-`hub.url`, or make the host a client:
-[install.md, step 7](install.md#7-multiple-machines).
+`hub.url` is unused; do not write it.
 
 ## Searching says the index is damaged
 
-Stop the hub's daemon, drop the table `search_fts` in the ledger file, and
-start the daemon again; it rebuilds the index.
+Stop the taskr hub's daemon first. For the default ledger path, run:
+
+```sh
+sqlite3 ~/.local/state/taskr/taskr.db 'DROP TABLE search_fts;'
+```
+
+Use the actual ledger path if `TASKR_DB` changes it. taskr rebuilds the index
+on next open; then start the daemon again.

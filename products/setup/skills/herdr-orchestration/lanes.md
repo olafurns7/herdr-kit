@@ -1,16 +1,16 @@
 # Lane selection
 
-Load before choosing or resuming a lane. Model assignments are configuration,
-not a policy embedded in this skill.
+Load before choosing or resuming a lane. Lane tables hold model assignments; the
+model rules below apply to every table.
 
 `herdr-launch`, `herdr-lead` and `herdr-hub` resolve the optional private table at
-`~/.config/herdr-fleet/lanes.json`, or otherwise the installed public table at
-`~/.local/share/herdr-setup/lanes.json`. A private table replaces all defaults.
-Each lane has `kind` (`claude`, `codex`, or `pi`), `model`, `effort`, and an array
-of allowed `prefixes` (`impl`, `mech`, `rs`, `rev`, `arch`, `glm`, `orch`, or `gather`).
-The helpers validate the table and construct argv without evaluating its text.
-Unknown lanes fail before any control-plane call.
-Run `herdr-launch --lanes` to list the resolved lanes, allowed prefixes, and table path without launching.
+`~/.config/herdr-fleet/lanes.json`, else the checkout's `products/setup/lanes.json` when run from
+source, else `~/.local/share/herdr-setup/lanes.json`. A private table replaces all defaults.
+Each lane has `kind` (`claude`, `codex`, or `pi`), `model`, `effort` (`low` to `ultra`), optional `provider`
+(default `opencode` for pi, else the kind), and allowed `prefixes` (`impl`, `mech`, `rs`, `rev`, `arch`, `glm`, `orch`, `gather`).
+The helpers validate the table and build argv without evaluating text. Unknown lanes fail
+before any control-plane call. `herdr-launch --lanes` lists resolved lanes, prefixes
+and the table path without launching.
 
 Use `gather-` with a `role=researcher` brief for read-only gathering, such as
 scraping, docs, or release notes. The public table has Haiku 5.5, GLM 5.3 Flash,
@@ -27,10 +27,11 @@ can exempt gather-only Haiku and Luna lanes, but not a lane with both `gather`
 and `rs` prefixes. Invalid exception keys, shapes, and patterns fail closed.
 Keep operator-specific rules in the private table; the public `deny` is empty.
 
-Opus 5.5 xhigh allows `orch-` in every campaign. An xhigh sub-orchestrator needs
+The public `opus-xhigh` lane allows `orch-`; an xhigh sub-orchestrator still needs
 a recorded reason (`taskr decide`) or an owner request.
 
-Choose a lane allowed by the operator's private policy and the brief. Record the
+Choose the smallest lane allowed by the operator's private policy and the brief
+that can complete the work and its checks. Record the
 actual model, effort, provider, account label when applicable, and native session
 in the checkpoint. A resume preserves the recorded account/session and uses the
 current authorized lane settings. Stop if those cannot be established.

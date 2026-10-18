@@ -79,12 +79,12 @@ On admission stderr prints exactly `slotr: admitted RUN`.
 Every automatic stop prints `slotr: stopped RUN: REASON` on stderr and
 returns exit code 75. Use the reason when deciding when to rerun the command.
 
-Status text shows `weight` and `weight_source` (managed, legacy, default).
-JSON retains `level == weight`, adds policy path/generation/error, pool caps,
-quiet expiry, age, `priority_blocker`, `fair_turn`, `fair_deferred` and actual scheduler order.
+Status text shows `weight` and `weight_source` (managed, legacy, default). JSON retains
+`level == weight`, adds policy path/generation/error, pool caps, quiet expiry, age,
+`priority_blocker`, `fair_turn`, `fair_deferred` and actual scheduler order.
 `priority.state` and `age_seconds` still describe the legacy file. Status resolves
-current policy in memory without writing. Policy errors report cached weights
-and block admission with `priority_policy_error`.
+current policy in memory without writing. Policy errors report cached weights and block
+admission with `priority_policy_error`.
 
 ## Example: a development stack
 
@@ -140,16 +140,17 @@ path when needed. Keep task and pane identity for hooks and task priority.
   workload's own exit 75 needs separate classification. Manual cancellation
   is recorded with reason `manual` and must not trigger an automatic retry.
 - Keep queued work queued. Never stop another campaign's run to enforce
-  priority. Ask the hub, which changes weights with `slotr priority set`.
+  priority. Ask the host operator to change weights with `slotr priority set`.
 - Retry only under the owner's cleanup/recovery instructions, with a finite
   attempt budget. Inspect pressure or lease reasons and partial build/install
   outputs before retrying; slotr does not automatically replay commands.
 
-## Exit codes
-
 For selectively refusing bare legacy flock calls, see the opt-in
-[cooperative flock guard](flock.md). Its checker uses a fixed absolute config; the optional native C launcher
-delegates unrelated native calls unchanged; it is not a host security policy.
+[cooperative flock guard](flock.md). Its checker uses a fixed absolute config; the
+optional native C launcher delegates unrelated native calls unchanged; it is not a host
+security policy.
+
+## Exit codes
 
 - Normal workload exit codes are relayed.
 - A signal returns 128 + the signal number.

@@ -28,13 +28,13 @@ command -v sha256sum || command -v shasum || echo "missing: sha256sum/shasum"
 ```
 
 Expect `Linux` or `Darwin`, `x86_64`/`amd64` or `arm64`/`aarch64`, a path for
-each tool and no `missing:` line. Go and Rust are not needed.
+each tool and no `missing:` line. Rust is not needed.
 
 Optional, depending on how you will use taskr:
 
 | Tool | Needed for | Check |
 | --- | --- | --- |
-| `gh`, signed in | Only the terminal view's GitHub panels (My PRs, Shipped, Build queue, Issues) and the hub's [PR events](docs/daemon.md#pr-events) | `gh auth status` |
+| `gh`, signed in | Only the terminal view's GitHub panels (My PRs, Shipped, Build queue, Issues) and the taskr hub's [PR events](docs/daemon.md#pr-events) | `gh auth status` |
 | Claude Code, Codex or pi | The agents that will use taskr | `claude --version`, `codex --version`, `pi --version` |
 | Tailscale | Only a [second machine](#4-host-setup) | `tailscale status` |
 
@@ -47,8 +47,8 @@ taskr daemon, as in [step 7](#7-verify-end-to-end).
 
 Pin a published `taskr/vX.Y.Z` release from the
 [releases page](https://github.com/olafurns7/herdr-kit/releases). Set
-`TASKR_VERSION=vX.Y.Z` in the download command below (the installer itself
-also accepts `taskr/vX.Y.Z` or `X.Y.Z`).
+`TASKR_VERSION=taskr/v0.25.1` in the download command below.
+See [install.md](docs/install.md#2-install) for accepted version forms.
 Without a pin, the installer enumerates paginated releases, excludes drafts,
 prereleases and other products, then selects the highest stable taskr version
 with all requested assets. Unpinned selection needs authenticated `gh` or
@@ -61,9 +61,9 @@ Do not pipe it into `sh`: a partial download could run before the failure
 shows.
 
 ```sh
-export TASKR_VERSION=v0.25.1   # or a newer vX.Y.Z from the step above
+export TASKR_VERSION=taskr/v0.25.1   # or a newer taskr/vX.Y.Z from the step above
 curl -fsSL -o taskr-install.sh \
-  "https://github.com/olafurns7/herdr-kit/releases/download/taskr/$TASKR_VERSION/install.sh" &&
+  "https://github.com/olafurns7/herdr-kit/releases/download/$TASKR_VERSION/install.sh" &&
   test -s taskr-install.sh &&
   TASKR_LINK_SKILLS=1 sh taskr-install.sh &&
   rm taskr-install.sh
@@ -77,22 +77,22 @@ taskr-linux-amd64: OK
 taskr-tui-linux-amd64: OK
 skill.tar.gz: OK
 plugin.tar.gz: OK
+INSTALL ~/.agents/skills/taskr/SKILL.md        (one line per file)
+INSTALL ~/.claude/skills/taskr -> ../../.agents/skills/taskr
 installed ~/.local/bin/taskr-tui
 installed ~/.local/bin/taskr (j1 {"version":"v0.25.1","ok":true})
-skill: ~/.agents/skills/taskr/SKILL.md
-skill: linked: ~/.claude/skills/taskr
-skill: linked: ~/.codex/skills/taskr
-plugin: ~/.local/share/taskr/plugin
-MANUAL: inside Herdr, run: herdr plugin link "~/.local/share/taskr/plugin"
-install.sh: add ~/.local/bin to PATH
+INSTALL ~/.local/share/taskr/plugin/…          (one line per file)
+plugin staged: ~/.local/share/taskr/plugin (activate with herdr plugin link)
+MANUAL: find the herdr-radar settings directory: …
+install.sh: add ~/.local/bin to PATH            (only if missing)
 ```
 
 Every `: OK` line is a verified SHA-256 checksum; a failed one stops the
-installer before anything is installed. The `skill: linked:` lines appear only
-for agent config directories that already exist (`~/.claude`, `~/.codex`,
-`~/.config/opencode`). Inside Herdr the `MANUAL:` line becomes
-`plugin: linked olafurns7.taskr ...` or `already linked`. The last line
-appears only when the install directory is not on `PATH` yet.
+installer before anything is installed. Skill links appear only for existing
+agent config directories (`~/.claude`, `~/.codex`, `~/.config/opencode`).
+A rerun prints `SKIP` for unchanged files. The installer never links the
+plugin; step 3 does. The last line appears only when the install directory
+is not on `PATH` yet.
 
 What lands where:
 
@@ -125,7 +125,8 @@ environment.
 
 `taskr daemon` is one small process per user. It wakes `taskr wait` when
 Herdr reports agent changes, sends owner-ask notifications through Herdr, and
-serves the ledger to other machines on `127.0.0.1:7788`. Commands on the same
+serves the dashboard on `127.0.0.1:7788` and the ledger to peers over the tailnet.
+The dashboard address serves the RPC endpoint, not a web page. Commands on the same
 machine open the ledger directly; they do not need the daemon or the port.
 Details: [daemon.md](docs/daemon.md).
 
@@ -280,7 +281,8 @@ mkdir -p ~/.claude/skills && ln -s ~/.agents/skills/taskr ~/.claude/skills/taskr
 ### Hooks (optional)
 
 Hooks let taskr record prompt receipts and notice a lane that stopped while it
-still owed a report. Nothing installs them for you. The entries for Claude
+still owed a report. `install.sh --fleet` installs them; a standalone install does not.
+The entries for Claude
 Code, Codex, OpenCode and pi are in
 [install.md, step 6](docs/install.md#6-agent-hooks); merge them into your
 existing settings, never replace the file.
@@ -305,12 +307,10 @@ claude --mcp-config taskr-mcp.json --dangerously-load-development-channels serve
 ```
 
 A project `.mcp.json` with the same content works too. Use `"args": ["mcp"]`
-for the tools without pushes. The caveats from
-[push.md](docs/push.md#claude-code-research-preview): Claude Code 2.1.296 did
-not register a server given only with `--mcp-config` as a channel (2.1.300
-does), the flag shows a confirmation dialog at every start, it is ignored with
-`-p` and the SDK, it needs claude.ai or Console API-key sign-in, and Team or
-Enterprise organizations must set `channelsEnabled`. A session that is not
+for the tools without pushes. The caveats from [push.md](docs/push.md#claude-code-research-preview):
+the flag shows a confirmation dialog at every start, is ignored with `-p`
+and the SDK, needs claude.ai or Console API-key sign-in, and Team or Enterprise
+organizations must set `channelsEnabled`. A session that is not
 registered as a channel drops pushes silently, so accept a new Claude version
 only after one push was received and acked.
 
@@ -327,25 +327,23 @@ throwaway lane, sends it the MCP handshake and lists its nine tools.
 
 ### Start a worker
 
-After setting up taskr and Herdr, a source checkout includes a generic worker
-launcher. It needs `jq`, `taskr`, `herdr` and the chosen agent on PATH, plus an
-existing unused pane at its shell prompt and a brief file:
+Fleet users launch a worker with the installed `herdr-launch`:
 
 ```sh
-sh adapters/herdr/taskr-herdr-launch \
-  --name worker-api --role implementer --parent 42 \
-  --model chosen-model --effort medium --report "$PWD/worker-report.md" \
-  claude WORKER_PANE "$PWD/worker-brief.md" -- \
-  --model chosen-model --effort medium
+herdr-launch LANE impl-api "$PWD/worker-brief.md" "$PWD/worker-report.md" ROOT
 ```
 
-Replace the example IDs, model and paths. Expect `task=ID launch=ID pane=PANE`:
-the worker inherits `TASKR_TASK` and `TASKR_LAUNCH`, and receives the brief through
-taskr. It still runs `got`, reports progress and finishes with `ready`/`done` or
-`fail` as instructed by its brief. The launcher chooses no model or account
-policy, installs nothing and creates no tabs. `--push` opts a Claude worker into
-a private push config and confirms its development-channel dialog. For full
-arguments, failure recovery and pi/Codex push setup, see
+Replace LANE with an allowed lane from `herdr-launch --lanes` and ROOT with
+your parent task ID. The brief and report paths must be absolute. The launcher
+creates a worker tab; add PANE after ROOT to use an existing idle shell pane.
+Expect `task=ID launch=ID tab=TAB pane=PANE`; the worker receives the brief through
+taskr and still runs `got`, `ready` and `done` or `fail` explicitly.
+
+Without the fleet install, the no-policy fallback is
+`sh products/taskr/adapters/herdr/taskr-herdr-launch --help` from a checkout.
+It needs `jq`, `taskr`, `herdr`, the chosen agent, and an existing idle pane;
+its model/effort metadata must match the native flags you supply. It installs
+nothing and creates no tabs. For fleet push setup and checks, see
 [Start a Herdr worker](docs/push.md#start-a-herdr-worker).
 
 ## 6. Terminal view settings
@@ -361,9 +359,6 @@ the defaults. The GitHub settings:
 | `"health_repo"` | One `"owner/name"`. The Health panel shows the hub's latest `HEALTH repo=... env=...` note for it, read from the ledger, not from GitHub. Needs `"health_root"` too. | The Health panel is hidden. |
 | `"health_root"` | A positive integer: the hub root task whose `HEALTH` notes the Health panel reads. Needs `"health_repo"` too. | The Health panel is hidden and runs no `taskr log`. |
 
-These need a `taskr-tui` newer than v0.22.0 (`"health_root"`: newer than v0.22.1). v0.22.0 reads only
-`"panels"` and `"repos"`, falls back to a built-in repository when `"repos"`
-is missing, and drops the other two keys when a panel toggle saves the file.
 An example:
 
 ```json
@@ -472,16 +467,15 @@ Start with `taskr version`, `taskr daemon --status` and
 | Symptom | Cause and fix |
 | --- | --- |
 | `taskr: command not found` | `~/.local/bin` is not on `PATH`: [step 2](#put-the-binaries-on-path). The installer's last line says so. |
-| `taskr version` shows v0.18.0 or another release before v0.21.0; no `taskr-tui` | You installed an older release. Reinstall with `TASKR_VERSION=v0.25.1` or newer ([step 2](#pick-a-version)). |
 | `install.sh: could not stage taskr` | The install directory is not writable. Use the default `~/.local/bin` or a `TASKR_INSTALL_DIR` you own; do not run the installer with sudo. |
 | `checksum verification failed` or `could not download release asset` | A partial or blocked download, or a tag without that asset. Check the tag on the releases page and run again; nothing was installed. |
-| `skill: conflict: ...` | An existing skill link or directory the installer will not overwrite. Inspect it and replace it yourself only if it is an old taskr. |
+| `MERGE <path>` … left in place | Inspect the preserved file or skill link. If a `.herdr-setup` sidecar was staged, merge it, then rerun; link conflicts do not create a sidecar. |
 | `"running":false` | No daemon. Inside Herdr: `taskr daemon --restart`, and check the plugin is linked (`herdr plugin list --json`). Outside Herdr: `taskr daemon --stay` ([step 3](#3-the-daemon)). |
 | `taskr daemon` returns at once; the log says `exit: socket removed` | No Herdr socket. Use `taskr daemon --stay`, or run Herdr. |
 | `taskr daemon --restart` exits 6: `the new daemon ... exited at start` | Outside Herdr with no daemon running, `--restart` starts a plain daemon, which exits. Start `taskr daemon --stay`; once one runs, `--restart` keeps its `--stay`. |
 | `"stale":true` | The daemon is older than the binary, usually after an upgrade: `taskr daemon --restart`. |
 | `"herdr_missing":true` | The daemon cannot find `herdr` on its `PATH`, common under systemd or launchd: put Herdr's directory in the unit's `PATH`. Harmless without Herdr. |
-| `"dashboard":"down"`; log says `listen 127.0.0.1:7788 failed: Address in use` | Another process has port 7788. Commands on this machine still work. For a hub, write `127.0.0.1:PORT` or `tailnet:PORT` to `~/.local/state/taskr/dashboard.addr` and restart ([troubleshooting.md](docs/troubleshooting.md#port-7788-is-taken)). |
+| `"dashboard":"down"`; log says `dashboard: listen 127.0.0.1:7788 failed: Address already in use …` | Another process has port 7788. Commands on this machine still work. For a hub, write `127.0.0.1:PORT` or `tailnet:PORT` to `~/.local/state/taskr/dashboard.addr` and restart ([troubleshooting.md](docs/troubleshooting.md#port-7788-is-taken)). |
 | A command exits 5, `server unreachable` | A client cannot reach the hub. Check `server.url`, `tailscale status`, and the hub's `taskr daemon --status` ([troubleshooting.md](docs/troubleshooting.md#the-hub-is-unreachable-from-a-client)). |
 | Exit 2, `server.url refused: ... is not a MagicDNS name under ...` | `server.url` must name a host of your own tailnet. Copy the hub's `tailnet_url` exactly. |
 | A write printed `qd1 <key>` | Queued on a client while the hub was unreachable; exit 0. Do not run it again: `taskr spool ls`. |

@@ -29,7 +29,7 @@ Hook records also queue locally and are sent by the client daemon (stale ones ar
 A running client daemon sends `$HOME/.local/state/taskr/spool/` in order after a pass that reaches the server; without a daemon records stay queued until manual send. `taskr spool ls` lists queued/refused/bad files; `taskr spool send` tries now on a client host only; `taskr spool rm SEQ|FILE` removes one after inspection.
 
 - A stuck head (server 401/403/408/429) holds the whole queue in order. Fix the host's token or wait for the server to be free; it remains queued. A document upload's 401/403/408/429 also holds the head; 5xx keeps it queued.
-- A queued head with no stuck reason while the hub is reachable is waiting for a busy hub ledger; `daemon.log` says `spool head waiting: hub database is locked`; it is sent again on the next pass. A head held for more than a few minutes may be a busy reply stored by a hub older than v0.17.1; it is refused after 10 minutes. Upgrade the hub, or `spool rm` the head and run the command again.
+- A queued head with no stuck reason while the taskr hub is reachable is waiting for a busy hub ledger; `daemon.log` says `spool head waiting: hub database is locked`; it is sent again on the next pass. A head held for more than 10 minutes is refused; `spool rm` it and run the command again.
 - A refused record marked `outcome unknown` had no final answer for 10 minutes. Look for it with `taskr log`; run the command again only if it is missing.
 - Other refused records will not be sent again; the server's error says why. Resolve that error before issuing corrected work.
 - A bad file could not be read. Inspect it, then remove it with `spool rm`.
@@ -73,7 +73,6 @@ The owner restarts daemons; a worker never does. `taskr daemon --status` reports
 - `daemon: none` or `stale` with `running: true, stay: true` is normal while Herdr is down. A stay daemon logs a missing `herdr` executable at startup and shows `herdr_missing: true` in `--status`; it serves the ledger but sends no owner notifications, writes no tokens and observes no panes until it is restarted with a PATH that holds `herdr`. Ensure its PATH also holds `tailscale` before restarting it.
 - A stale local identity file can make `--restart` exit 6 while an older daemon holds the lock. The error names the file, normally `~/.local/state/taskr/daemon.json`. Check the holder's pid with `taskr daemon --status`, remove only that stale identity file (`rm ~/.local/state/taskr/daemon.json`), then run `taskr daemon --restart` again; the ledger's identity checks still apply.
 - Client mode (server.url): `--status` shows `mode: client`, `server`, `last_call_at`, `last_error`, `pid`, `running_version`, `stale`.
-- Upgrade from v0.10, once per client host: the old client daemon has no identity record, so `--restart` exits 6 and `--status` shows `running_version: unknown`. Stop it by its `pid` from `--status` (`kill PID`); the Herdr plugin starts the new one.
 - The Herdr plugin restarts a killed daemon within seconds. To move a host to client mode, write `server.url` before you stop its local daemon (see [multiple machines](recovery.md#multiple-machines)).
 - No Herdr server running: `wait` skips observations; `daemon --once` exits 5. Log: ~/.local/state/taskr/daemon.log, capped at 1 MB.
 
@@ -106,8 +105,8 @@ report hooks disabled. Use this command template in the harness's own format:
 Use a quoted absolute path if the harness PATH lacks taskr. Claude uses SessionStart,
 UserPromptSubmit, Stop and StopFailure (`async:true`); Codex uses SessionStart,
 UserPromptSubmit and Stop (`timeout:2`). Verify `taskr hook --help` and the merged
-configuration. OpenCode and pi require their release checkout's hook adapters,
-which use `$HOME/.local/bin/taskr`; adjust that path for a custom install directory;
+configuration. OpenCode and pi use the adapters that `install.sh --fleet` places (opencode/plugins/taskr-hook.js,
+pi/agent/extensions/taskr-hook.ts), which use `$HOME/.local/bin/taskr`; adjust that path for a custom install directory;
 inspect existing adapters instead of overwriting them, then start a new harness
 session. Hook receipts require `HERDR_ENV=1` and a registered launch before startup.
 Workers still run got and ready/done/fail explicitly; receipts are not completion.

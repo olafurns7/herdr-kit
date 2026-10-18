@@ -1,6 +1,10 @@
 # taskr mcp
 
-`taskr mcp` is a local stdio [MCP](https://modelcontextprotocol.io) server, revision 2025-06-18 only: newline-delimited JSON-RPC 2.0 on stdin and stdout (stdout carries only protocol lines; diagnostics go to stderr). It does nothing until an agent is configured to start it; this repository configures none.
+`taskr mcp` is a local stdio [MCP](https://modelcontextprotocol.io) server, revision
+2025-06-18 only: newline-delimited JSON-RPC 2.0 on stdin and stdout (stdout carries only
+protocol lines; diagnostics go to stderr). It does nothing until an agent is configured
+to start it; `herdr-launch --push`
+and `herdr-hub` configure it. See [push](push.md).
 
 Identity is fixed at start and never taken from a call:
 

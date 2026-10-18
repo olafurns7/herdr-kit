@@ -340,7 +340,7 @@ mod tests {
         assert!(c.save(&path.join("child")).is_err());
         assert!(Config::load(&dir).1.is_some());
         fs::remove_dir_all(dir).unwrap();
-        for repo in ["a/b", "trip-to-japan/trip"] {
+        for repo in ["a/b", "example/repo"] {
             assert!(repo_valid(repo));
         }
         for repo in ["a/b/c", "../x", "a/..", "a/b\n", "-a/b"] {

@@ -1,21 +1,21 @@
 # taskr-tui: the owner's terminal view
 
 `taskr-tui` shows the ledger in a terminal pane: what needs you first, then
-every campaign. It reads through the `taskr` command, so it works on the hub
+every campaign. It reads through the `taskr` command, so it works on the taskr hub
 and on client hosts alike.
 
 ## Get it
 
 `install.sh` installs `taskr-tui` beside `taskr` (see the [install guide](install.md)).
-Or build it from a clone of this repository:
+Or build it from a clone of this repository, from the repository root:
 
 ```sh
-cargo install --path crates/taskr-tui
+cargo install --locked --path products/taskr/crates/taskr-tui
 ```
 
 `rust-toolchain.toml` pins the Rust version; `rustup` installs it on first
-use. `cargo build --release -p taskr-tui` leaves the binary in
-`../../target/release/taskr-tui` if you prefer not to install it.
+use. `cargo build --release --locked -p taskr-tui` leaves the binary in
+`target/release/taskr-tui` if you prefer not to install it.
 
 ## Start it
 
@@ -29,7 +29,7 @@ taskr-tui --demo     # invented data: no ledger is read, no key sends anything
 | `--theme dark\|light\|terminal` | Pick the theme. Default: taken from the terminal's background. `TASKR_THEME` does the same. |
 | `--ascii` | Draw with ASCII characters only. |
 | `--demo` | Show invented data and write nothing. |
-| `NO_COLOR` | Turn colour off. |
+| `NO_COLOR` | Turn color off. |
 | `TASKR_BIN` | The `taskr` binary to read from. Default: `taskr` on `PATH`. |
 
 It needs a terminal. In a script, `taskr glance` prints the same snapshot as
@@ -93,7 +93,8 @@ Switching reads nothing; the ledger snapshot keeps refreshing on every screen.
 The Dashboard spans the full width and has eleven switchable panels, each a
 card under its own rule:
 
-- **Needs you:** open owner asks. Red in the header means an open owner ask. `BLOCKING` marks an ask whose work has stopped for your answer.
+- **Needs you:** open owner asks. Red in the header means an open owner ask. `BLOCKING`
+  marks an ask whose work has stopped for your answer.
   `HUB` marks a question the hub relayed from its own dialog
   (`taskr ask --dialog`). `◆` marks a structured ask (`taskr ask --question`),
   whose options carry descriptions and a recommendation; `◇` marks an ask
@@ -136,14 +137,16 @@ card under its own rule:
   labelled exactly `blocked` or `needs-info`, counted once. An issue with
   several assignees counts in each group, so groups overlap; the headline
   counts unique issues. Groups with blocked issues use the amber attention
-  colour, never red. Rows are informational: no key acts on them.
+  color, never red. Rows are informational: no key acts on them.
 - **Health (H):** the latest `HEALTH` note on the configured hub root
-  (`health_root`) for the configured `health_repo` `production`: the reported SHA, deploy state, Sentry state or issue IDs, the
+  (`health_root`) for the configured `health_repo`; notes are scoped to the
+  `production` environment: the reported SHA, deploy state, Sentry state or
+  issue IDs, the
   checked time with its age, the source note ID and the rollback note ID. It is
   a hub report as of its checked time, not live production state: it never
   calls the environment healthy, does not compare the SHA with `main`, and
   does not resolve or act on the rollback note. A failed deploy or new Sentry
-  issues use the amber attention colour, never red; pending and unknown stay
+  issues use the amber attention color, never red; pending and unknown stay
   neutral. One informational row; no key acts on it.
 - **Campaigns:** every open campaign with its lead's state, one dot per
   lane, four hours of activity as a small graph, and its latest milestone
@@ -183,7 +186,7 @@ later snapshots keep the cursor on its row.
 
 Press `1` (asks), `2` (checks), `3` (campaigns), `4` (My PRs), `5` (Shipped), `6` (Build queue),
 `7` (Decisions), `8` (Fleet), `9` (Decision log), `0` (Issues) or uppercase `H`
-(Health) on the Dashboard to show or hide a panel; lowercase `h` stays back. The
+(Health) on the Dashboard to show or hide a panel; lowercase `h` stays hidden. The
 switches shape the Dashboard only. The
 switch row uses `+` for shown and `-` for hidden. The first three start
 enabled; repository panels and 7-9 start hidden. Narrow, hidden optional panels
@@ -208,9 +211,6 @@ or `~/.config/taskr/tui.json` when XDG_CONFIG_HOME is unset:
 }
 ```
 
-Existing four-, six-, nine- and ten-boolean configs keep their choices and
-repo list; the panels they predate take their defaults (Shipped and Build
-queue enabled, 7-9, Issues and Health hidden). Saves use eleven booleans.
 Fresh defaults have an empty `repos` list and unset `issues_repo`,
 `health_repo` and `health_root`; My PRs, Shipped and Build start hidden, as do
 Issues and Health. A file with a non-empty `repos` list and no `panels` key
@@ -222,9 +222,9 @@ or root is inferred. `repos` scopes My PRs,
 Shipped and Build, `issues_repo` scopes Issues, and `health_repo` selects the
 repository in HEALTH notes. The optional repository settings accept one
 `owner/name` string each or `null`; `health_root` accepts a positive integer
-task ID (the hub root whose notes Health reads) or `null`. Older configs leave
-them unset. These scopes are independent.
-Other panel-array lengths or non-boolean entries are invalid and retain the bad-config preservation guard.
+task ID (the hub root whose notes Health reads) or `null`. These scopes are independent.
+Panel arrays accept 4, 6, 9, 10 or 11 booleans; saves use 11. Other lengths
+or non-boolean entries are invalid and retain the bad-config preservation guard.
 An empty list or up to eight distinct `owner/repo` names are accepted for `repos`;
 all three settings use the same repository-name validation. Toggle saves preserve
 all scopes and replace this allowlisted config atomically with mode 0600. Bad or
@@ -323,7 +323,7 @@ Build queue makes one `gh run list --repo OWNER/REPO --limit 100 --json
 databaseId,status,conclusion,createdAt,updatedAt,workflowName,headBranch,url`
 call per repo every 60 seconds while visible. Active states are `in_progress`,
 `queued`, `waiting`, `pending`, and `requested`; completed runs are excluded.
-It always labels the latest100-run sample, including underfull results and
+It always labels the latest 100-run sample, including underfull results and
 zero active observations. Older active runs may be missing: zero observed
 never means the repository is idle. No per-status or per-PR queries are made.
 These informational rows cannot answer, park, focus agent panes or mutate
@@ -408,7 +408,7 @@ frame is marked stale and keeps the last data.
 
 `c` on the Dashboard, Asks or Fleet lists every campaign, closed ones included.
 
-## Slotr
+## slotr
 
 `s` on a top-level screen or a campaign shows slotr, the hub's memory-aware run
 queue, as `taskr slotr` reads it; `s` again closes it. The top lines are the
@@ -418,14 +418,14 @@ last stop. Then one block per pool: slots in use and whether one more run of
 the pool's default cost would be admitted now; each holder with its
 campaign, purpose, time held, lease left, memory in use of its cost, and its
 task, pane and run; and the queue in order, with why each run waits and for
-how long. `▲` marks a priority run. Amber marks a holder slotr is stopping,
-warning or about to yield, and a wait on memory, pressure, load or recovery.
+how long. `▲` marks a priority run. Amber marks a run being stopped (`stopping`)
+or past its lease warning (`warned`), and a wait on memory, pressure, load or recovery.
 
 The view reads slotr every three seconds while it is open, and not at all
 while it is closed. `Enter` and `y` work the row's pane, and `l` opens the
 row's campaign. When slotr cannot be read, a line says why and the last good
 pools stay, dimmed. Runs that wait on the old heavy flock show only as
-`legacy_lock` with the holder's pid, until slotr manages the heavy lock.
+`legacy_lock` with the holder's pid.
 
 ## Keys
 
@@ -447,7 +447,7 @@ pools stay, dimmed. Runs that wait on the old heavy flock show only as
 | `h`, `esc` | Back, close; from Detail, back to its row |
 | `/` | Filter rows by name; search in a document |
 | `c` | All campaigns, closed too (Dashboard, Asks, Fleet) |
-| `s` | Slotr: who holds a slot and who waits; `s` again closes |
+| `s` | slotr: who holds a slot and who waits; `s` again closes |
 | `a` | Answer the selected ask |
 | `p` | Park or unpark a campaign (asks first) |
 | `o` | Read the report or document; on a Decisions, Fleet or log row, open its campaign |
@@ -468,12 +468,13 @@ campaign pane under it.
 Most keys only read. Three do more:
 
 - **`Enter`** focuses the agent's pane. It works when `taskr-tui` runs in a
-  Herdr pane and the agent's pane is on the same machine (the row shows `⏎`); for a pane on another machine (`↗`) use
+  Herdr pane and the agent's pane is on the same machine (the row shows `⏎`); for a pane
+  on another machine (`↗`) use
   `y` to copy the command and run it there. Focusing moves every client
   attached to that Herdr server.
 - **`a`** on an ask opens the answer dialog. Anywhere else (another row, no
   row, Fleet, Detail of another item, help, a document, all campaigns, slotr)
-  it opens the asks picker: every open owner ask in a centred dialog over the
+  it opens the asks picker: every open owner ask in a centered dialog over the
   dimmed screen, the header still live. `j` `k` or a click choose, `Enter` or a
   double-click answers the chosen one, `esc` returns to the exact screen, row,
   filter and scroll it was opened from, and `A` closes it and shows that ask

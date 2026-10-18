@@ -27,7 +27,7 @@ Never drive a production or someone else's instance under an assumed test identi
 If the symptom is not seen twice, the baseline is missing and the result is inconclusive.
 A passing test or a plausible cause does not substitute for the broken baseline.
 Label environment translations and explain which part of the defect they exercise.
-If the missing platform or hardware is part of the defect, keep that proof unrun.
+If the missing platform or hardware is part of the defect, report that proof as unrun.
 
 ## Exercise the patch
 

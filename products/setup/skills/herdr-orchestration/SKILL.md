@@ -7,9 +7,9 @@ description: "Delegate work inside Herdr (HERDR_ENV=1): the agent hierarchy, whi
 
 This skill is the team policy for delegating work inside Herdr: **when** to delegate, **where** agents live, and **which** model runs each lane. The upstream `herdr` skill owns CLI syntax. The **owner** is the developer who runs the session. The installed `herdr` is the command authority: use only commands it accepts, never a web-only or remembered one. The upstream skill comes from `herdr --skill`; regenerate it after each Herdr upgrade.
 
-herdr-kit (github.com/olafurns7/herdr-kit) is the canonical home. Its installer puts this skill at `~/.agents/skills/herdr-orchestration` and links it into Claude Code, Codex, and OpenCode; repositories carry no copy. The hub, orchestrators, and sub-orchestrators load it with the upstream `herdr`, `herdr-fleet`, and `taskr` skills. Workers and reviewers do not load it: the global instructions, the taskr skill, and their brief carry the role rules they need. A repository's AGENTS.md fills its slots: worktree setup plugin, skills to load in briefs, issue tracker, review skill, publish workflow. A personal host skill may add account selection, notification wiring, a heavy-command lock, and machine specifics; its private table and overlay define operator-specific lanes and rules.
+herdr-kit (github.com/olafurns7/herdr-kit) is the canonical home. Its installer puts this skill at `~/.agents/skills/herdr-orchestration` and links it into Claude Code, Codex, and OpenCode; repositories carry no copy. The taskr hub, orchestrators, and sub-orchestrators load it with the upstream `herdr`, `herdr-fleet`, and `taskr` skills. Workers and reviewers do not load it: the global instructions, the taskr skill, and their brief carry the role rules they need. A repository's AGENTS.md fills its slots: worktree setup plugin, skills to load in briefs, issue tracker, review skill, publish workflow. A personal host skill may add account selection, notification wiring, a heavy-command lock, and machine specifics; its private table and overlay define operator-specific lanes and rules.
 
-Live hosts may carry a newer private `lanes.json`, fleet local.md, and model-selection history from the operator's overlay. Use source text for review and live text for what a host does today.
+A host may carry a private `lanes.json` and fleet `local.md`. Review against source text; use the installed text for what a host does today.
 
 Two upstream defaults are overridden. Inside Herdr (`HERDR_ENV=1`), working in Herdr is the request: delegate without waiting for the word. Each helper gets its own tab in the task workspace, not a sibling pane of the caller; in a task workspace that was just created, the first helper takes its root tab.
 
@@ -42,10 +42,6 @@ assigned part and cannot publish or start another sub-orchestrator. Workers
 implement their brief; reviewers inspect independently. Model choices and
 restrictions come from `lanes.md` and the fleet's private overlay.
 
-Use `gather-` for read-only gathering with a `role=researcher` brief. Haiku 5.5
-and Codex Luna run only in this prefix. An Opus 5.5 xhigh sub-orchestrator needs
-a recorded reason (`taskr decide`) or an owner request.
-
 Never start in-process subagents. Each helper uses an owned tab in the task
 workspace. Never implement outside the brief's owned paths or infer publication
 authority from a role. A worker acknowledges the taskr delivery, reports progress
@@ -58,12 +54,12 @@ through taskr, and writes the named report. Missing decisions use `taskr ask
 test "${HERDR_ENV:-}" = 1
 herdr status                    # client and server versions match
 herdr agent list                # who is live; reuse or tear down before adding
-taskr version                   # the task ledger CLI, pinned by herdr-setup
+taskr version                   # the task ledger CLI, pinned by the herdr-kit installer
 taskr daemon --status           # daemon fresh or stale; tailnet_url is the hub URL for clients
 free -m | awk 'NR==2{print "available_mb="$7}'   # Linux: column 7, never 4
 ```
 
-Check available memory before adding a heavy agent; keep at most three heavy agents live while dev servers run, and stop dev servers between eval runs. If `taskr` is missing or not the pinned version, tell the owner: herdr-setup's installer installs and upgrades it (binary `~/.local/bin/taskr`, skill `~/.agents/skills/taskr/SKILL.md`); until then use the plain Herdr loop in `workflow.md`. `stale: true` from `daemon --status` means an older daemon still runs; the owner runs `taskr daemon --restart`. The daemon is an optimization: `taskr wait` works without it.
+Check available memory before adding a heavy agent; keep at most three heavy agents live while dev servers run, and stop dev servers between eval runs. If `taskr` is missing or not the pinned version, tell the owner: herdr-kit's installer (`products/taskr/install.sh`) installs and upgrades it (binary `~/.local/bin/taskr`, skill `~/.agents/skills/taskr/SKILL.md`); until then use the plain Herdr loop in `workflow.md`. `stale: true` from `daemon --status` means an older daemon still runs; the owner runs `taskr daemon --restart`. The daemon is an optimization: `taskr wait` works without it.
 
 Load `~/.agents/skills/taskr/SKILL.md` and its `references/orchestrator.md` for the ledger loop, plan, and handover; `references/recovery.md` when a command fails, an alarm arrives, or a lane must be resumed; and `references/format.md` before decoding output. A reviewer lane needs only the core and `references/review.md`. taskr owns command semantics; Herdr owns transport. Use the ledger for every campaign; record its goal at registration (`workflow.md`). One consumer per inbox: stop a predecessor's wait before adoption (`recovery.md`).
 
@@ -95,14 +91,14 @@ herdr tab rename "$helper_tab_id" <agent-name>
 
 The agent name keeps its role prefix and the task slug (`impl-cart-price`), matches `[a-z][a-z0-9_-]{0,31}`, and is unique among live agents; `herdr-launch` checks the prefix and the pattern.
 
-**2. Write the brief** (below) with that workspace, tab, and pane, in the campaign folder on the host that runs taskr.
+**2. Write the brief** (below) with that workspace, tab, and pane, in the campaign folder on the host that runs `taskr new`.
 
-**3. Launch:** `herdr-launch LANE NAME BRIEF REPORT PARENT PANE`. It refuses a lane that does not launch as NAME's prefix, checks that PANE (in any workspace) is at its shell prompt, registers the task and launch, exports `FLEET_ROLE=worker`, `TASKR_TASK`, and `TASKR_LAUNCH` (plus Codator forwarding functions when Codator is installed and `CLAUDE_CODE_SANDBOXED=1`, the folder-trust bypass, for Claude), verifies the export before `herdr agent start` with the lane's flags: full permissions, no sandbox, folder and hook trust (`launch.md` "Unattended flags and trust"), then sends the brief with `taskr prompt --file`. It prints `task= launch= tab= pane=`.
+**3. Launch:** `herdr-launch [--push] LANE NAME BRIEF REPORT PARENT [PANE]` (without PANE it creates the tab itself in the caller's workspace or `--workspace W`). It refuses a lane that does not launch as NAME's prefix, checks that a given PANE (in any workspace) is at its shell prompt, registers the task and launch, exports `FLEET_ROLE=worker`, `TASKR_TASK`, and `TASKR_LAUNCH` (for Claude also `CLAUDE_CODE_SANDBOXED=1`, the folder-trust bypass; with Codator installed, its forwarding functions), verifies the export before `herdr agent start` with the lane's flags: full permissions, no sandbox, folder and hook trust (`launch.md` "Unattended flags and trust"), then sends the brief with `taskr prompt --file`. It prints `task= launch= tab= pane=`.
 
 On a failure it prints the failed step and the ids obtained so far. Inspect those (`taskr status`, the pane) before any manual step in `launch.md`; never repeat a completed registration, start, or prompt.
 
 ```sh
-herdr-launch LANE impl-SLUG BRIEF REPORT PARENT PANE
+herdr-launch LANE impl-SLUG BRIEF REPORT PARENT [PANE]
 ```
 
 The lane's allowed prefixes and settings come from the resolved table. Optional
@@ -113,7 +109,7 @@ tools and account policy belong to the host overlay.
 Every brief starts with the header and ends with the report contract:
 
 ```text
-HERDR-BRIEF role=<orchestrator|sub-orchestrator|implementer|mechanical-worker|researcher|code-reviewer|architect|code-validator>
+HERDR-BRIEF role=<orchestrator|sub-orchestrator|implementer|mechanical-worker|researcher|code-reviewer|reviewer|architect|code-validator>
 orchestrator=<your agent name or pane id>   report=<absolute path>.md
 Task topology: workspace=<task-workspace-id> tab=<owned-helper-tab-id> pane=<owned-pane-id> cwd=<task-worktree-path>
 
@@ -137,7 +133,7 @@ path, then reply with the path and three lines.
 
 A brief that hands a slotr runtime to a worker (`herdr-fleet`) says the worker stops its run with `slotr stop <run>` before `taskr done`, unless the brief hands the runtime to the lead.
 
-Never run `slotr stop` on another campaign's run to enforce priority. Keep your request queued and ask the hub through taskr with the campaign, pool and observed wait reason. The hub sets campaign weights with `slotr priority set`. Slotr applies caps, quiet holds and the fairness floor at admission. Weight changes never revoke an admission. Stop only an owned run under its cleanup or cancellation authority, with `--reason`.
+Never run `slotr stop` on another campaign's run to enforce priority. Keep your request queued and ask the hub through taskr with the campaign, pool and observed wait reason. The hub sets campaign weights with `slotr priority set`. slotr applies caps, quiet holds and the fairness floor at admission. Weight changes never revoke an admission. Stop only an owned run under its cleanup or cancellation authority, with `--reason`.
 
 The brief and launch record carry the task topology and the task-qualified agent name; a writing brief lists the helper's disjoint ownership, so that a recovery can confirm the task workspace. An orchestrator, sub-orchestrator, or code-reviewer brief adds the rules in `workflow.md`; write a code-reviewer brief only after reading its journal rules there.
 
@@ -148,7 +144,7 @@ When the host skill defines a heavy-command lock, at most one heavy command runs
 Collect with one long wait (default 540000 ms timeout, Codex orchestrators included); pass `--ack` only for a newly handled pending event, and after a timeout or an error that reports `acked_event_id`, do not repeat that ack:
 
 ```bash
-taskr wait --as <me> --for ready,ask,answer,owner_answer,done,fail,prompt_outcome,herdr [--ack <handled>]
+taskr wait --as <me> --for ready,ask,answer,owner_answer,done,fail,prompt_outcome,herdr,message [--ack <handled>]
 ```
 
 Never loop short waits, shell `sleep` for a lane, or put this wait in an `&` background job: it dies with the tool call. On a timeout, `w1` with `"owed":0` means no lane owes a result. After `ready`, read the report and the diff, not the pane, and record each decision, sha, and next step as it lands (`workflow.md`). Without a ledger, stalls, gates, and blocked agents: `workflow.md`. After accepting a result: `teardown.md`. Process lane results as they land; never leave a `ready` or `done` unread. When idle with nothing to do, leave a root note that says why, or park after your final note (`owner.md`).
@@ -159,6 +155,6 @@ Never loop short waits, shell `sleep` for a lane, or put this wait in an `&` bac
 - Implementer report read and the worktree diff inspected by the orchestrator.
 - Independent review under the brief and operator policy, then the repository's review skill on the final diff.
 - Run the repository's local publish gate once, under the host's heavy-command lock if it has one, then publish with its PR workflow from the task worktree. Publication stays with the orchestrator.
-- Merge only when verified, evaled where a runtime lane applies, CI green, and every review comment resolved.
+- Merge only when verified, evaled where a runtime lane applies, CI green where the repository has CI, and every review comment resolved.
 
 Only the hub and the campaign leads write to the owner (`owner.md`).

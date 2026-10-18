@@ -16,7 +16,7 @@ and [references/](../references/).
 | Campaign | A root orchestrator and all its lanes. |
 | Ask | A question. An owner ask (`--owner`) is for you; `--blocking` means the work has stopped for the answer. |
 | Launch | One start of an agent for a lane. A relaunch gets a new one, so an old agent's writes are refused. |
-| Hub | The host that keeps the ledger. See [daemon.md](daemon.md). |
+| taskr hub | The host that keeps the ledger. See [daemon.md](daemon.md). |
 
 ## How a campaign flows
 
@@ -68,7 +68,10 @@ taskr done "summary"                   # or: taskr fail "why"
 
 ## What an orchestrator runs
 
-`got` receipts do not wake `wait` or push consumers: the cursor passes them and delivers the next real event, or keeps waiting if only receipts are pending. Receipt rows remain in the ledger and `log` (and raw `inbox` until passed); overdue-receipt alarms still wake, and `prompt --confirm` still reads the receipt directly.
+`got` receipts do not wake `wait` or push consumers: the cursor passes them and delivers
+the next real event, or keeps waiting if only receipts are pending. Receipt rows remain
+in the ledger and `log` (and raw `inbox` until passed); overdue-receipt alarms still
+wake, and `prompt --confirm` still reads the receipt directly.
 
 ```sh
 taskr new impl-api --role implementer --parent ROOT   # register a lane
@@ -100,7 +103,7 @@ It also keeps the campaign's plan in the ledger:
 | `consumer show [--as ROOT]` | The caller task's lease: `cs1 FENCE live ...` or `cs1 FENCE free` (`--json`: the row and `live`). A fresh read. A lease is live while it has a holder, `expires_at` is still ahead (at `expires_at` it has expired) and its launch or generation is still current on an open task: a relaunch, an adopt or a close frees it. |
 | `wait ... --fence N`, `ack EVENT --as ID --fence N` (a root adds `--session GEN`; `delivery new ... --fence N` likewise) | Consume as the lease holder. A worker uses `TASKR_TASK`/`TASKR_LAUNCH` (its `--as` must name that task); a root passes `--as ROOT --session GEN`. Each offer and ack checks the fence, binding and host in its own transaction: after a takeover, expiry, release, relaunch, adopt or close a fenced wait stops at its next poll with exit 6, and a fenced call never falls back to a plain one. While a lease is live a plain `wait`, `ack` or `delivery new` exits 6 naming the holder, fence and expiry. Lease changes never move the inbox cursor: a pending event offered to one consumer is offered again to the next (the existing coalescing and `--for/--from` filtering still apply), so it may be delivered twice; there is no exactly-once promise. A rejected call changes nothing in that transaction; a `wait --ack E` that already acked E keeps that ack (`acked_event_id` in the error). Hand over by stopping the old consumer first, then `release` (or `take --force`): revoking a lease cannot take back an event already returned. `take`, `renew`, `release` and fenced `ack` are stored writes, never queued: a same-key replay returns the historical result and acquires, renews or acks nothing, so after an `outcome unknown` check `consumer show` and retry the identical line, never a new key. |
 | `mcp` (a worker), `mcp --as ROOT --session GEN` (a root) | A local stdio MCP server (revision 2025-06-18) for push adapters, bound at start to the worker's `TASKR_TASK`/`TASKR_LAUNCH` or the root's pinned generation; no tool takes a task, launch, session or recipient. Each tool runs this binary as one `--json` command line, so routing, the spool, request keys and exit codes are the CLI's own; the server itself never opens the ledger or calls the hub, and is refused over RPC. Tools, resources and result outcomes: [mcp.md](mcp.md). |
-| `mcp --channel` (either identity) | The same server, also pushing inbox events as `notifications/claude/channel` for a Claude channel or the pi shim: it takes the inbox lease (`consumer take --holder mcp-channel-PID`) and records each push as a delivery attempt; the model receipts and acks. Opt-in, configured nowhere by this repository: [push.md](push.md). |
+| `mcp --channel` (either identity) | The same server, also pushing inbox events as `notifications/claude/channel` for a Claude channel or the pi shim: it takes the inbox lease (`consumer take --holder mcp-channel-PID`) and records each push as a delivery attempt; the model receipts and acks. Opt-in, configured by `herdr-launch --push` and `herdr-hub`; see [push](push.md). |
 | `push codex [--codex-bin PATH]` (a worker), `push codex --as ROOT --session GEN --codex-thread UUID --codex-home PATH [--codex-bin PATH]` (a root) | A local sidecar beside one Codex session that runs the `mcp --channel` delivery loop with a different push: each event becomes one bounded `codex queue --thread T --message M` (argv only, `CODEX_HOME` set to the bound home, 60 s deadline, exit 0 with its output closed recorded as submitted, never as received; output still held outside its process group after the kill leaves the lease to expire, exit 6). It holds the inbox lease as `codex-queue-PID` and records attempts with `--adapter codex-queue`. A worker's thread and home come only from its current launch, registered by `taskr start` inside the Codex session; a root names them as typed flags. A changed binding or a lost lease stops it (exit 6); stdin EOF releases the lease (exit 0). Local only, refused over RPC; its ledger steps route like any command. Opt-in: [push.md](push.md#codex). |
 | `handover --as ROOT`, `adopt ROOT` | Write a Markdown handover; let a new agent take the campaign over. |
 | `note "OWNER: ..." --owner --as ROOT` | Leave a note for you. |
@@ -125,11 +128,11 @@ These are safe to run yourself; they change nothing.
 | `taskr slotr` | slotr's pools, holders and queue as the hub sees them, as JSON with the campaign root of each row's task; `{"available":false,"error":...}` when slotr cannot be read. It adds `available`, `host` and `now`, and exits 0 either way. Takes no arguments. |
 | `taskr daemon --status` | The daemon on this host. See [daemon.md](daemon.md). |
 
-To answer an owner ask without the TUI: `taskr answer ASK_ID "your answer"`.
-A second answer exits 6. For a new answer from a second channel, add
-`--supersede` (refused with TASKR_TASK set, exit 6). Other authority rules apply. The newest answer wins in
-asks, campaign and glance; both answers stay in the log. The new answer's
-data names `supersedes_answer_id`, and the asker's inbox gets the new answer.
+To answer an owner ask without the TUI: `taskr answer ASK_ID "your answer"`. A second
+answer exits 6. For a new answer from a second channel, add `--supersede` (refused with
+TASKR_TASK set, exit 6). Other authority rules apply. The newest answer wins in asks,
+campaign and glance; both answers stay in the log. The new answer's data names
+`supersedes_answer_id`, and the asker's inbox gets the new answer.
 
 The ledger is the single record of owner questions. Before an owner dialog,
 record `taskr ask --owner --dialog --question JSON --as ROOT`; record its
@@ -162,6 +165,7 @@ Add `--json` (or set `TASKR_FORMAT=json`) for plain JSON.
 | Exit | Meaning |
 | --- | --- |
 | 0 | Success, or a `wait` that timed out. |
+| 1 | The operation failed (`tmp`, `clean-tmp`). |
 | 2 | Wrong usage. |
 | 3 | Interrupted. |
 | 4 | Database error. |
@@ -194,7 +198,8 @@ directory. `tmp ID --mkdir` also explicitly initializes its `.taskr-tmp` marker
 (owned by the caller, regular file, mode 0600, content `taskr tmp base v1\n`).
 Creation is exclusive and relative to a validated directory descriptor; an
 existing marker is checked without following links or overwriting it. Cleanup
-refuses a missing, symlinked or invalid marker. Existing T1 bases are initialized
+refuses a missing, symlinked or invalid marker. Existing tmp bases created before the
+marker was introduced are initialized
 only by an explicit `tmp ID --mkdir`; neither a daemon nor `--clean-tmp` marks them.
 Before creating a marker or campaign/lane directories, `--mkdir` refuses any
 existing base entry other than a valid marker or a safe canonical positive-integer
@@ -205,15 +210,8 @@ establish dedication. Unknown membership, failed hub reads, links, unsafe
 directories and a preflight exceeding 4096 entries or 60 seconds refuse without
 changing existing files, modes or marker bytes. Empty bases remain usable.
 
-Automatic launcher initialization requires a release containing this guard.
-The first guarded release is v0.18.0: launchers must accept only plain
-`vMAJOR.MINOR.PATCH` versions at v0.18.0 or later, and reject `git describe`
-or `-dirty` forms, `dev`, unknown and every earlier release (including all
-v0.17.x) before `--mkdir`. The owner-held v0.18.0 release must be built
-from a master commit containing the merged initializer guard; no reuse of staged
-artifacts or old tags. A dev test artifact is not a release. `--json version`
-reports the build's `TASKR_VERSION` (or `dev` when unset), not the Cargo package
-version.
+`taskr --json version` reports the build's `TASKR_VERSION` (`dev` when unset),
+not the Cargo package version.
 
 The directory work is always on the host that runs the command. On a client
 host, taskr asks the hub for the task's root and cleanup state (a read, not stored) and makes
@@ -234,15 +232,14 @@ and `root_closed_at`; `closed` confirms task status. Timestamps are null for
 open tasks/roots or legacy rows missing a close time. Sweeps require a valid
 close time; explicit cleanup requires confirmed closed status.
 
-Every host's daemon sweeps its own base every three minutes, after a
-10-minute grace from the ledger's close timestamp. It ignores unknown ids,
-open tasks, noncanonical integer directory names (including leading zeros)
-and failed ledger reads. Before removing a whole campaign, it freshly checks
-every canonical integer lane entry. Any open, unknown, mismatched, unconfirmed,
-recent or malformed entry, or failed lookup, preserves the campaign. Eligible
-known closed lanes may still be removed individually under `on-close`. Once the
-whole campaign is authorized, extra files inside it also go. Client daemons read the hub; there is no
-local-ledger fallback.
+Every host's daemon sweeps its own base every three minutes, after a 10-minute grace
+from the ledger's close timestamp. It ignores unknown ids, open tasks, noncanonical
+integer directory names (including leading zeros) and failed ledger reads. Before
+removing a whole campaign, it freshly checks every canonical integer lane entry. Any
+open, unknown, mismatched, unconfirmed, recent or malformed entry, or failed lookup,
+preserves the campaign. Eligible known closed lanes may still be removed individually
+under `on-close`. Once the whole campaign is authorized, extra files inside it also go.
+Client daemons read the hub; there is no local-ledger fallback.
 
 Each daemon also measures its local campaign dirs on that three-minute worker.
 `glance --brief`, `status` and the TUI show `tmp 1.2G`: the sum of known hosts'
@@ -267,16 +264,15 @@ the primary status; narrow TUI rows omit size when it would clip primary fields,
 while the detail pane retains it. Campaign log pages and their counts omit size
 telemetry; raw `taskr log` still includes it.
 
-`taskr close ID --clean-tmp` skips the grace and policy after confirmed
-closure. Explicit root cleanup removes all campaign tmp, including open-lane
-dirs; it does not close those lanes. Clients forward only the close; cleanup runs locally after a fresh
-hub identity/status read. An offline/queued close deletes nothing and warns
-that immediate cleanup was skipped. The ordinary policy sweep waits for
-confirmed closure and grace; `keep` and `root-close` may retain the lane.
-When connectivity returns, rerun `close ID --clean-tmp`; an already-closed
-task can still be cleaned. No filesystem path or cleanup intent is spooled.
-A cleanup failure exits 1 and says the close succeeded; it does not undo the
-ledger close.
+`taskr close ID --clean-tmp` skips the grace and policy after confirmed closure.
+Explicit root cleanup removes all campaign tmp, including open-lane dirs; it does not
+close those lanes. Clients forward only the close; cleanup runs locally after a fresh
+hub identity/status read. An offline/queued close deletes nothing and warns that
+immediate cleanup was skipped. The ordinary policy sweep waits for confirmed closure and
+grace; `keep` and `root-close` may retain the lane. When connectivity returns, rerun
+`close ID --clean-tmp`; an already-closed task can still be cleaned. No filesystem path
+or cleanup intent is spooled. A cleanup failure exits 1 and says the close succeeded; it
+does not undo the ledger close.
 
 Both cleanup paths recheck the normalized base: a real directory owned by
 the caller, never group/world-writable, with a valid `.taskr-tmp` marker. Removal uses directory descriptors,
@@ -293,4 +289,7 @@ are refused rather than exhausting the stack.
 | `TASKR_TASK`, `TASKR_LAUNCH` | Which lane a worker is. Set by its parent; never replace them. |
 | `TASKR_DB` | Use this ledger file, locally, even on a client host. Useful for experiments. |
 | `TASKR_FORMAT=json` | JSON output. |
+| `TASKR_CHECKIN=1` | Enable optional taskr hub check-in nudges; off by default. |
+| `HERDR_SOCKET_PATH` | Herdr socket path; default `$HOME/.config/herdr/herdr.sock`. |
+| `TASKR_BIN` | taskr-tui's taskr CLI path; default `taskr` on `PATH`. |
 | `TASKR_TMP_BASE` | A dedicated taskr directory for lane tmp (default `/tmp/taskr-<uid>`), never HOME or a shared tmp/project directory. Absolute path; initialize its marker explicitly with `tmp ID --mkdir`. See [Lane tmp dirs](#lane-tmp-dirs). |

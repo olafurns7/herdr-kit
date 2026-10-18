@@ -1,8 +1,8 @@
-# Herdr kit
+# herdr-kit
 
 herdr-kit runs on [Herdr](https://herdr.dev/docs/install/), the terminal multiplexer
 for coding agents; Herdr 0.9.0 or newer is required for fleet orchestration and
-the taskr plugin. Taskr's standalone ledger CLI, including `taskr wait`, also
+the taskr plugin. taskr's standalone ledger CLI, including `taskr wait`, also
 works without Herdr or the taskr daemon.
 
 New here? Follow the [whole-kit quickstart](QUICKSTART.md) to launch your first delegated agent.
@@ -12,11 +12,12 @@ Monorepo containing [taskr](products/taskr) (task ledger and TUI),
 (fleet installation assets). Each product keeps its own version and release tag:
 `taskr/vX.Y.Z` or `slotr/vX.Y.Z`.
 
-Install taskr CLI/TUI and its canonical skill from an exact product release:
+Install taskr CLI/TUI and its canonical skill from an exact product release.
+From a herdr-kit checkout:
 
 ```sh
-TASKR_VERSION=taskr/vX.Y.Z sh products/taskr/install.sh
-TASKR_VERSION=taskr/vX.Y.Z sh products/taskr/install.sh --fleet
+TASKR_VERSION=taskr/v0.25.1 sh products/taskr/install.sh
+TASKR_VERSION=taskr/v0.25.1 sh products/taskr/install.sh --fleet
 ```
 
 `--fleet` adds public orchestration/fleet skills, configured launch helpers,
@@ -63,8 +64,9 @@ npx turbo run build test lint
 sh tools/gate.sh
 ```
 
-Turbo 2.5.8 is pinned as a contributor-only task runner; Rust task caching is
-disabled. The gate uses a scratch HOME and runs the workspace checks with and
+`sh tools/gate.sh` runs all of these; the individual commands are for focused
+checks. Turbo 2.5.8 is pinned as a contributor-only task runner; Rust task caching
+is disabled. The gate uses a scratch HOME and runs the workspace checks with and
 without taskr's contract feature, release/installer tests, setup tests and privacy
 checks. On a shared host, run it through the configured slotr heavy pool:
 
@@ -76,4 +78,5 @@ slotr run --pool heavy --kind build --campaign YOUR_CAMPAIGN \
 ## License
 
 MIT; see [LICENSE](LICENSE). taskr and slotr also carry their own copy, and
-third_party/ keeps each upstream license.
+third_party/ keeps each upstream license. Release binaries of slotr ship
+[THIRD-PARTY-NOTICES](products/slotr/THIRD-PARTY-NOTICES).

@@ -45,15 +45,15 @@ unless another queued campaign is below its cap. Cap reductions drain naturally.
 
 Fresh queued demand below a higher campaign's cap protects its own pool and
 other memory-gated pools sharing the host budget, even when slots or memory
-are short. When its queue empties, `priority.quiet_seconds` retains a 30-second
-handoff tail. Running holders never refresh that tail; a policy entry alone
+are short. When its queue empties, `priority.quiet_seconds` retains a handoff tail
+(default 30 s). Running holders never refresh that tail; a policy entry alone
 creates no hold. A ticket needs a held lock and a heartbeat within five seconds
 plus three polls. Cancellation or staleness starts the quiet transition;
 resuming preserves original sequence and age. Lowering weight recalculates holds.
 Port or legacy-lock blockers cannot create a hold in unrelated pools or start
 a quiet tail. Unrelated non-memory pools remain independent.
 
-At `priority.fair_wait_seconds` (300 seconds), the oldest fresh eligible ticket
+At `priority.fair_wait_seconds` (default 300 s), the oldest fresh eligible ticket
 earns the next safe admission before weight or quiet preference. Slot shortage
 reserves only its pool's next vacancy; memory shortage reserves the shared
 memory domain. Competing starts wait while that capacity accumulates. Ports or
@@ -150,7 +150,7 @@ systemd-run receives only valid environment variable names via
 - Events append to `${XDG_STATE_HOME:-~/.local/state}/slotr/events.jsonl`.
 - Managed weights live in `${XDG_STATE_HOME:-~/.local/state}/slotr/priority.json`.
   Scheduling clocks and manual stop intent use `scheduling.json` and `stops.json`
-  beside runtime state, under the existing lock. Runtime schema remains 1.
+  beside runtime state, under the existing lock. Runtime schema is 1.
 - `slotr stop RUN --reason TEXT` audits a requested intent before systemd stop
   submission, including caller uid/pid, optional task, campaign and reason.
   Failed audit append refuses the signal. Outcomes are submitted/failed;
@@ -160,8 +160,7 @@ systemd-run receives only valid environment variable names via
   leave an orphan requested event, so no exactly-once claim is made.
 - Neither persists workload argv or environment contents.
 - State timing uses CLOCK_BOOTTIME (including suspend); displayed and logged
-  timestamps remain UTC RFC 3339. Older wall-time state timestamps are
-  accepted and converted on read.
+  timestamps use UTC RFC 3339.
 - `status` observes without creating, changing, or deleting files and
   without signalling any process.
 - Failed admission ticks retain their tickets and report errors. Emergency
