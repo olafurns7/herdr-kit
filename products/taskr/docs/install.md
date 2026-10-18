@@ -100,7 +100,8 @@ successful status exit alone does not prove the daemon is running.
 If status does not show `running: true`, run `taskr daemon --restart`, then re-check
 with `taskr daemon --status`. It starts the daemon detached with only HOME, PATH,
 HERDR_SOCKET_PATH and TASKR_TMP_BASE; a fresh plugin link otherwise waits until the next
-agent detection or Herdr start. For upgrades, re-run step 2, then `taskr daemon --restart` and re-check status. This restarts taskr, never Herdr.
+agent detection or Herdr start. For upgrades, re-run step 2, then
+`taskr daemon --restart` and re-check status. This restarts taskr, never Herdr.
 
 ### Start the ledger host at boot (Linux)
 
@@ -153,8 +154,10 @@ skill too: repeat step 2's download, then run
 and remove the script afterward. Ask first: fleet installation also writes hooks
 and global agent settings. When Herdr is available, the fleet installer stages
 its CLI skill and links it into existing Claude, Codex and OpenCode config
-directories. It preserves edited files and conflicting links; inspect any
-`MERGE` sidecars before proceeding.
+directories. It preserves edited files and conflicting links. For an edited
+file, it prints `MERGE` and stages a `.herdr-setup` sidecar to merge; a
+conflicting skill link is left in place with no sidecar. See
+[common failures](../AGENTS_SETUP.md#8-common-failures).
 
 Load the installed herdr skill before creating lanes.
 
@@ -242,7 +245,11 @@ reaches the server, or use `taskr spool send` on that host. Without a daemon the
 queued until manual send; a full or unwritable spool exits 5 with `retry with:` (rerun
 that line). `qd1 <request key>` means queued, exit 0: do not retry. Check `taskr spool ls` after an outage.
 
-Apply changes with `taskr daemon --restart`; verify `taskr daemon --status` shows the selected mode and listeners (`role: hub` with a `tailnet_url` on the hub; `mode: client` with the `server` on a client) and a fresh connection. On write exit 5, rerun the exact printed `retry with:` command, preserving its request key.
+Apply changes with `taskr daemon --restart`; verify `taskr daemon --status`
+shows the selected mode and listeners (`role: hub` with a `tailnet_url` on
+the hub; `mode: client` with the `server` on a client) and a fresh connection.
+On write exit 5, rerun the exact printed `retry with:` command, preserving
+its request key.
 
 ## 8. The terminal view (optional)
 
