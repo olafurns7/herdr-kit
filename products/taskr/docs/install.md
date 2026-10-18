@@ -154,9 +154,10 @@ skill too: repeat step 2's download, then run
 and remove the script afterward. Ask first: fleet installation also writes hooks
 and global agent settings. When Herdr is available, the fleet installer stages
 its CLI skill and links it into existing Claude, Codex and OpenCode config
-directories. It preserves edited files and conflicting links. For a conflicting
-skill link, it prints `MERGE` and leaves the conflict in place without staging a
-sidecar; see [common failures](../AGENTS_SETUP.md#8-common-failures).
+directories. It preserves edited files and conflicting links. For an edited
+file, it prints `MERGE` and stages a `.herdr-setup` sidecar to merge; a
+conflicting skill link is left in place with no sidecar. See
+[common failures](../AGENTS_SETUP.md#8-common-failures).
 
 Load the installed herdr skill before creating lanes.
 
