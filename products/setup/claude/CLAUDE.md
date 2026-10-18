@@ -9,15 +9,17 @@ inspect or control Herdr.
 
 If it passes, load skills by role:
 
-- Workers (a `HERDR-BRIEF` whose role is not reviewer, sub-orchestrator or
-  orchestrator) follow the worker contract appended to the prompt. Load
+- Workers (a `HERDR-BRIEF` whose role is not code-reviewer, reviewer,
+  code-validator, sub-orchestrator or orchestrator) follow the worker contract
+  appended to the prompt. Load
   `~/.agents/skills/taskr/SKILL.md` or a taskr reference only when the brief
   names it or a taskr command fails, and load the repository skills named
   in the brief. Do not load `herdr`, `herdr-orchestration`, or `herdr-fleet`.
   Without a ledger (no `TASKR_TASK`), write the report to the brief's path
   and reply with that path and three lines; for a missing decision, stop
   and reply `NEEDS_ORCHESTRATOR_DECISION` with evidence.
-- Reviewers (`role=reviewer`) load `~/.agents/skills/taskr/SKILL.md`,
+- Reviewers (`role=code-reviewer`, `reviewer` or `code-validator`) load
+  `~/.agents/skills/taskr/SKILL.md`,
   `~/.agents/skills/taskr/references/review.md`, and the repository review
   skill named in the brief. Do not load `herdr`, `herdr-orchestration`, or `herdr-fleet`.
 - Orchestrators, sub-orchestrators, and any session without a `HERDR-BRIEF`
@@ -33,8 +35,8 @@ If it passes, load skills by role:
 4. `~/.agents/skills/taskr/SKILL.md` — the task ledger commands. Use taskr
    for every Herdr campaign: registration, briefs, waits, asks, reports, the
    plan, and handover. A repository's AGENTS.md fills only its repository
-   slots (worktree plugin, skills to load in briefs, review skill, publish
-   workflow).
+   slots (worktree plugin, skills to load in briefs, issue tracker, review
+   skill, publish workflow).
 
 ## Standing delegation policy (HERDR_ENV=1)
 
@@ -64,12 +66,12 @@ else: model lanes, launch commands, accounts, layout, briefs, and teardown.
   actions, closing others' workspaces, or publishing; those follow the task's
   own authorization.
 
-Never start, restart, or let a `herdr` CLI call auto-spawn `herdr server` from inside an
-agent session. The daemon inherits the agent's Claude Code environment (`CLAUDECODE`,
-`CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_PID`, ...), and every later pane shell then starts
-`claude` as a child session with transcripts and prompt history disabled. If the user
-wants a server restart, give them the commands to run from a terminal outside any agent
-session instead.
+Never start, restart, or let a `herdr` CLI call auto-spawn `herdr server`
+from inside an agent session. The daemon inherits the agent's Claude Code
+environment (`CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_PID`, ...),
+and every later pane shell then starts `claude` as a child session with
+transcripts and prompt history disabled. If the user wants a server restart,
+give them the commands to run from a terminal outside any agent session instead.
 
 ## Owner questions (HERDR_ENV=1)
 

@@ -6,6 +6,7 @@ Install from a release or build from source.
 
 - Linux x86_64.
 - `curl`, `tar`, and `sha256sum`.
+- `jq` (only for unpinned installs without `gh`).
 - To use `run`, `stop`, and the internal `_supervise` command: systemd 255.4
   or newer (the verified minimum for name-only `--setenv`) and a reachable
   systemd user bus. Start workloads from a terminal in your user session.
@@ -15,7 +16,10 @@ Install from a release or build from source.
 ## Install a release
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/herdr-kit/main/products/slotr/install.sh | sh
+curl -fsSL -o slotr-install.sh \
+  https://github.com/olafurns7/herdr-kit/releases/download/slotr/v0.3.1/install.sh &&
+  printf '%s  %s\n' dd11030f1a59b4bf828b0b5c388ce4793a02e6b6cc7a3383c1f0ba1f8636e919 slotr-install.sh | sha256sum -c - &&
+  SLOTR_VERSION=slotr/v0.3.1 sh slotr-install.sh
 ```
 
 The script:
@@ -31,13 +35,22 @@ The script:
   and renames it into place. Prints the version and install location.
 - Removes temporary files on exit and reports failures as `slotr install: REASON`.
 
-Add `--config` with `sh -s -- --config`, or run `sh install.sh --config`
-after downloading the script. It creates `~/.config/slotr/config.toml`
+After downloading and verifying the script, run
+`SLOTR_VERSION=slotr/v0.3.1 sh slotr-install.sh --config`. It creates `~/.config/slotr/config.toml`
 from the release's `config.example.toml` only when absent, then checks that
 file. It never overwrites an existing config.
 
 When `~/.local/bin` is outside `PATH`, the script prints the command to add it.
-Rerun the install command to update.
+To update, run the verified `slotr-install.sh` with a newer `SLOTR_VERSION`,
+or without it for the latest stable release (see [Versions](#versions)).
+
+## Versions
+
+Monorepo releases use `slotr/vX.Y.Z`; archive names retain plain `X.Y.Z`.
+Set `SLOTR_VERSION=X.Y.Z` (also accepts `vX.Y.Z` or `slotr/vX.Y.Z`) for an
+exact release. Without a pin, authenticated `gh` or `curl` plus `jq` enumerate all release pages and
+select the highest stable slotr version with its archive/checksum assets
+(and config when requested). Binary users need no Node, Turbo or Cargo.
 
 ## Manual install
 
@@ -87,20 +100,21 @@ if a command fails.
 
 `SLOTR_INSTALL_BASE_URL` overrides the release download directory. Mirrors
 must serve the exact archive name, its `.sha256`, and `config.example.toml`
-for `--config`. The version still comes from the script. The script trusts that
+for `--config`. A mirror cannot be queried for the latest release, so set
+`SLOTR_VERSION`; without it the script installs 0.2.0. The script trusts that
 location completely. The checksum comes from the same place, so it catches
 a damaged download, not a changed one. Leave the variable unset unless you
 mean to use a mirror. Local tests use
 `file://` URLs, which curl supports:
 
 ```sh
-SLOTR_INSTALL_BASE_URL=file:///tmp/slotr-release sh install.sh --config
+SLOTR_VERSION=0.3.1 SLOTR_INSTALL_BASE_URL=file:///tmp/slotr-release sh install.sh --config
 ```
 
 ## Build from source
 
 Building needs Rust 1.99 or newer (edition 2024) and the
-`x86_64-unknown-linux-musl` target:
+`x86_64-unknown-linux-musl` target. From `products/slotr`:
 
 ```sh
 cargo build -p slotr --release --locked --target x86_64-unknown-linux-musl
@@ -111,9 +125,3 @@ install -m755 ../../target/x86_64-unknown-linux-musl/release/slotr ~/.local/bin/
 
 A fresh install needs no config file; built-in defaults apply. See
 [configuration.md](configuration.md) to add one.
-
-Monorepo releases use `slotr/vX.Y.Z`; archive names retain plain `X.Y.Z`.
-Set `SLOTR_VERSION=X.Y.Z` (also accepts `vX.Y.Z` or `slotr/vX.Y.Z`) for an
-exact release. Without a pin, authenticated `gh` or `curl` plus `jq` enumerate all release pages and
-select the highest stable slotr version with its archive/checksum assets
-(and config when requested). Binary users need no Node, Turbo or Cargo.

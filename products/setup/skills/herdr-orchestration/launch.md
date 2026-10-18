@@ -1,6 +1,6 @@
 # Launch: task layout and manual launch
 
-Load when: before opening the hub workspace; before creating a campaign or task worktree or workspace; before starting a campaign lead; before reusing or rearranging an existing tab or pane; for a manual launch, or recovery after `herdr-launch` is missing or failed (first inspect what the script completed, below). The core's Launch section covers an ordinary launch in a new helper tab or a fresh root pane. Part of herdr-orchestration; `SKILL.md` is the core, and its Launch section is the normal path.
+Load when: before opening the taskr hub workspace; before creating a campaign or task worktree or workspace; before starting a campaign lead; before reusing or rearranging an existing tab or pane; for a manual launch, or recovery after `herdr-launch` is missing or failed (first inspect what the script completed, below). The core's Launch section covers an ordinary launch in a new helper tab or a fresh root pane. Part of herdr-orchestration; `SKILL.md` is the core, and its Launch section is the normal path.
 
 ## Workspaces and tabs
 
@@ -8,7 +8,7 @@ Use one workspace per independent task, project, or worktree, never one per work
 
 ## Keep the owner's focus
 
-Keep the owner's view where it is. Pass `--no-focus` to every `worktree create`, `workspace create`, `tab create`, and `pane split`. Never run `agent focus`, `pane focus`, or `tab focus` on a helper: in Herdr 0.9.1 they move the attached clients, and `worktree create` focuses its new workspace unless you pass `--no-focus`.
+Keep the owner's view where it is. Pass `--no-focus` to every `worktree create`, `workspace create`, `tab create`, and `pane split`. Never run `agent focus`, `pane focus`, or `tab focus` on a helper: they move the attached clients, and `worktree create` focuses its new workspace unless you pass `--no-focus`.
 
 ## Resolve live ownership
 
@@ -46,7 +46,7 @@ herdr-hub --new <name> --lane opus-high -- <Claude args>
 herdr-hub check <root>
 ```
 
-`herdr-hub` waits for the old lease, adopts once, and execs sibling `cdl`
+`herdr-hub` (needs Codator and `--codator`) waits for the old lease, adopts once, and execs sibling `cdl`
 with the lane and generation MCP config. It preserves refs and only suggests
 `taskr set <root> hub=on` when needed. Answer the development-channel dialog
 by hand; the hub skips adopt and uses taskr MCP tools with pushed fences.
@@ -75,7 +75,7 @@ herdr-lead start <root> <pane> --worktree <campaign worktree> --predecessor-pane
 herdr-lead check <root>
 ```
 
-Do not use `herdr-launch` for a lead: it registers a child. `herdr-lead` accepts only `opus-high` in phase 1, checks the target shell and predecessor lease, clears worker identity, adopts the root once, and keeps the worktree cwd. It writes immutable `0600` configs and handovers under `$HOME/.local/state/herdr-orch/lead-push/<root>/`, passes the config with `--mcp-config`, and answers the development-channel dialog. It never writes `.mcp.json`. This transport was trialled on Claude Code 2.1.300; its acceptance check must still pass on every start.
+Do not use `herdr-launch` for a lead: it registers a child. `herdr-lead` accepts any Claude lane that allows `orch-` (default `opus-high`), checks the target shell and predecessor lease, clears worker identity, adopts the root once, and keeps the worktree cwd. It writes immutable `0600` configs and handovers under `$HOME/.local/state/herdr-orch/lead-push/<root>/`, passes the config with `--mcp-config`, and answers the development-channel dialog. It never writes `.mcp.json`. Its acceptance check must still pass on every start.
 
 After the lead is closed, delete its `$HOME/.local/state/herdr-orch/lead-push/<root>/taskr-mcp-<gen>.json` by literal path.
 
@@ -83,7 +83,7 @@ The lead brief says **"herdr-lead adopted you; skip adopt"** and carries the roo
 
 Move leads one at a time, starting low-traffic; stop rollout on any failed live check. On failure at or after adoption the helper prints `ROOT= GEN= pane= mcp_config= agent= lease= check_task=`. Inspect that state and the ledger before recovery; never blindly rerun, re-adopt, or start a second agent. Recovery and account-pinned resume are in `recovery.md` "Your own session".
 
-For a plain lead, use an authorized `orch-` lane and send the brief with `herdr agent prompt`. It registers its own root if needed (`workflow.md` "Brief variants"), and its first ledger act on the root is `taskr adopt <root> --pane <pane>`. The hub checks that `taskr campaign <root>` does not read `unregistered` before reporting startup. A root without a pane cannot be watched or focused from the owner's view. Every lead brief says owner decisions and actions are owner asks; owner notes only summarise them (`owner.md`). A repository's worktree setup plugin may skip `orch/*` branches. The lead needs no dependencies and runs gates in task worktrees.
+For a plain lead, use an authorized `orch-` lane and send the brief with `herdr agent prompt`. It registers its own root if needed (`workflow.md` "Brief variants"), and its first ledger act on the root is `taskr adopt <root> --pane <pane>`. The hub checks that `taskr campaign <root>` does not read `unregistered` before reporting startup. A root without a pane cannot be watched or focused from the owner's view. Every lead brief says owner decisions and actions are owner asks; owner notes only summarize them (`owner.md`). A repository's worktree setup plugin may skip `orch/*` branches. The lead needs no dependencies and runs gates in task worktrees.
 
 ## New task worktree
 
@@ -137,16 +137,16 @@ Label the campaign workspace `orch: <campaign>`, the task workspace `task: <camp
 
 ## Manual launch steps
 
-Write the brief file first, on the host that runs `taskr new`: it refuses a `--brief` path that does not exist (exit 2). Register the helper in the ledger after you parse its tab and pane ids and before `agent start`: `taskr new <agent-name> --parent <me> --role <role>` with its workspace, tab, pane, cwd, brief, and report prints the task id, and `taskr launch <task>` with the lane's provider, model, and effort from the matrix below prints the launch id. Export both ids with the same `pane run` that exports `FLEET_ROLE` or does the host skill's pane setup: `export TASKR_TASK=<task> TASKR_LAUNCH=<launch>`. The `taskr` skill has the full commands.
+Write the brief file first, on the host that runs `taskr new`: it refuses a `--brief` path that does not exist (exit 2). Register the helper in the ledger after you parse its tab and pane ids and before `agent start`: `taskr new <agent-name> --parent <me> --role <role>` with its workspace, tab, pane, cwd, brief, and report prints the task id, and `taskr launch <task>` with the lane's provider, model, and effort from the resolved lane table (`herdr-launch --lanes`) prints the launch id. Export both ids with the same `pane run` that exports `FLEET_ROLE` or does the host skill's pane setup: `export TASKR_TASK=<task> TASKR_LAUNCH=<launch>`. The `taskr` skill has the full commands.
 
 `agent start` uses the pane that you give it and creates no layout. The pane must be at its interactive shell prompt. Always launch with `herdr agent start --kind codex|claude|opencode|pi` so that Herdr keeps detection and lifecycle tracking (no lane uses `opencode`; `lanes.md`); never start an agent with a raw pane command. `agent start` runs the CLI by name in the pane's shell and has no executable override, so a shell function with that name in the pane applies; a personal host skill may define one. The `--` in `herdr agent start ... -- <native args>` belongs to Herdr. Then send the brief with `taskr prompt <task> --file <brief>`.
 
 ## --push: the taskr push adapter
 
-`herdr-launch --push ...` (also with PANE) starts the lane with its taskr push adapter, so that taskr events reach an idle worker without a `taskr wait` (taskr [push documentation](https://github.com/olafurns7/herdr-kit/blob/main/products/taskr/docs/push.md#orchestrator-messages)). Enable the flag only when the brief authorizes a push lane. Inputs are checked before step 1 (exit 2):
+`herdr-launch --push ...` (also with PANE) starts the lane with its taskr push adapter, so that taskr events reach an idle worker without a `taskr wait` (taskr [push documentation](https://github.com/olafurns7/herdr-kit/blob/main/products/taskr/docs/push.md#start-a-herdr-worker)). Enable the flag only when the brief authorizes a push lane. Inputs are checked before step 1 (exit 2):
 
 - pi: `HERDR_PUSH_PI_EXTENSION` names taskr's `adapters/pi/taskr-push.ts`; step 6 adds `--extension <file>`.
-- claude: no variable. Step 6 writes `$HOME/.local/state/herdr-orch/lane-push/taskr-mcp-<task>.json` at mode `0600` through a temporary file and no-clobber rename, refusing any existing path. The server args remain `mcp --channel`, using the pane's worker TASKR_TASK/TASKR_LAUNCH. The launcher never reads, creates or checks a cwd `.mcp.json`. The final line ends `mcp_config=<path>`; keep that private file while its lane runs. Step 6 adds `--mcp-config <path>` and `--dangerously-load-development-channels server:taskr` (external config channel registration was trialled on Claude Code 2.1.300). The latter shows a dialog at every start, so `agent start` fails with agent_not_ready: the script reads the pane, presses Enter on "Loading development channels" (the first option, "I am using this for local development"), and waits up to 90 s for the agent to be idle. No dialog, or no idle, stops at step 6.
+- claude: no variable. Step 6 writes `$HOME/.local/state/herdr-orch/lane-push/taskr-mcp-<task>.json` at mode `0600` through a temporary file and no-clobber rename, refusing any existing path. The server args remain `mcp --channel`, using the pane's worker TASKR_TASK/TASKR_LAUNCH. The launcher never reads, creates or checks a cwd `.mcp.json`. The final line ends `mcp_config=<path>`; keep that private file while its lane runs. Step 6 adds `--mcp-config <path>` and `--dangerously-load-development-channels server:taskr`. The latter shows a dialog at every start, so `agent start` fails with agent_not_ready: the script reads the pane, presses Enter on "Loading development channels" (the first option, "I am using this for local development"), and waits up to 90 s for the agent to be idle. No dialog, or no idle, stops at step 6.
 - codex: `HERDR_PUSH_CODEX_BIN` is the absolute path of the real Codex CLI (not the Codator wrapper; no quote characters), and the brief must contain `taskr start`: the sidecar needs the thread and home that only `taskr start` in the session records. Step 8 opens a `<name>-push` tab that waits up to 30 min for that registration, then runs `taskr push codex --codex-bin <bin>`; the final line ends `push_tab= push_pane=`. At teardown close the push tab too.
 
 A push worker's inbox lease belongs to the adapter, so a plain `taskr wait` or `taskr ack` from the worker exits 6. Its brief tells it to end its turn after an ask instead of waiting.
@@ -163,7 +163,7 @@ The launch helpers run coding agents with full permissions, no sandbox, and hook
 
 Codex trusts a hook by its file path and command hash. A worktree uses its main checkout's `.codex/hooks.json`, so a Codex profile that has not trusted the repository's current hooks shows "Hooks need review" at every launch. A worker that continues without trusting runs with the repository's hooks off, including any worktree guard. The bypass flag runs the enabled hooks for that launch only, and it gives no access that a full-access worker does not already have.
 
-Every Claude worker launch's `--settings` also sets `"agentPushNotifEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}` so that it cannot push to the owner's phone and starts without the PostHog plugin's skill list. Per-model launch rules (allowed prefixes and efforts) are in `lanes.md` "Launch rules by model".
+Every Claude worker launch's `--settings` also sets `"agentPushNotifEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}` so that it cannot push to the owner's phone and starts without the PostHog plugin's skill list. Allowed prefixes and efforts per lane come from the resolved lane table (`lanes.md`, `herdr-launch --lanes`).
 
 ## Launch matrix
 

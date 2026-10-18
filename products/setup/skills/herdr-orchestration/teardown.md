@@ -44,7 +44,7 @@ herdr tab close "$helper_tab_id"
 taskr close <task> --outcome <outcome>             # ledger only, after the teardown
 ```
 
-`accepted` means taken as delivered, `reworked` taken after a fix round, `rejected` not taken, and `abandoned` stopped before a result. Always give an outcome when a lane produced or was meant to produce work; gate and consult lanes close without one.
+`accepted` means taken as delivered, `reworked` taken after a fix round, `rejected` not taken, and `abandoned` stopped before a result. Always give an outcome when a lane produced or was meant to produce work; gate lanes and lanes not meant to produce work close without one.
 
 Closing the last tab of a workspace closes the workspace. Do not trigger a cascading closure by accident. When the finished helper holds the last tab, leave it at the shell prompt; the next helper in that workspace may reuse it under `launch.md`, and the tab closes with the task workspace.
 

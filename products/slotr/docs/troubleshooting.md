@@ -54,8 +54,6 @@ real pressure or configured lease/idle cleanup. Inspect `events.jsonl` and
 follow the owner's bounded recovery instructions. It is not a failed-check
 receipt. Without that line, 75 may be the workload's own result. Manual stop
 events have reason `manual`; do not automatically retry a cancellation.
-Scheduling no longer emits `priority_yield` or `campaign_yield`. Those reasons
-indicate an older supervisor still running; let it finish under the rollout plan.
 
 **`waiting: legacy_lock` in a heavy pool.** An old caller holds the pool's
 legacy lock with plain `flock`, outside slotr. The waiter is admitted when
@@ -66,7 +64,7 @@ that command ends. The pid is shown when known. Move that caller to
 `run` and `stop` need a reachable systemd user bus. Sandboxed agent shells
 and some remote shells have none. Start the command from a terminal in your
 user session, or a Herdr pane. On a platform other than Linux, `run` and
-`stop` print `run and stop require Linux and a systemd user bus`.
+`stop` print `run, stop and touch require Linux and a systemd user bus`.
 
 **`unknown pool: NAME`.** The pool is not in the effective config. A
 configured `pools` table replaces the built-in `default` pool, so
@@ -105,13 +103,13 @@ independent port/legacy-lock blocker, it reserves no unrelated capacity.
 shortage reserves its pool and memory shortage the shared memory domain.
 `fair_deferred` shows an external blocker without reserving other pools.
 `stale_ticket` needs a resumed heartbeat; its original age and sequence remain.
-Never stop another campaign's work to resolve these waits: ask the hub to
-adjust weights or investigate the resource blocker. Neither 30-second grace
-nor 300-second fairness promises a start deadline.
+Never stop another campaign's work to resolve these waits: ask the host operator to
+adjust weights or investigate the resource blocker. Neither the built-in defaults (see
+[configuration](configuration.md)) nor configured quiet and fairness intervals promise a start deadline.
 
 **`priority_policy_error`.** Managed policy is malformed, unreadable or not a
 regular file. `priority list --json` and `status --json` expose the error and
-resolved path. Repair that store under the hub's authority; do not delete it
+resolved path. Repair that store under the host operator's authority; do not delete it
 or fall back to zero to bypass policy. Existing workloads remain protected
 by the watchdog using cached weights.
 
@@ -120,7 +118,7 @@ fails. Repair the event path and retry the owned cancellation. A submitted
 intent means systemd accepted the request; only a later observation proves
 completion. Pending crash recovery can retry submission using the same stop ID.
 
-## Config
+## flock
 
 **`flock guard refused`.** A queue-only target prints its pool/path and a
 `slotr run` recipe. Submit the original workload with its real campaign and
@@ -133,6 +131,8 @@ then lets native flock decide creation/error behavior. Launcher checker
 exec/fork/wait/restore errors, signal death, and stops also prevent native
 execution; fix the checker or launcher before retrying.
 See [flock.md](flock.md) for the pinned grammar and stable-namespace requirement.
+
+## Config
 
 `slotr config check` prints `slotr: config OK` or the first error. Errors
 name the bad key, for example:

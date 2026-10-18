@@ -3,10 +3,16 @@
 Push adapters deliver a task's inbox events into an idle or busy agent session instead of waiting for the agent to run `taskr wait`. There are three:
 
 - `taskr mcp --channel` for a Claude Code channel;
-- the same server behind pi's `adapters/pi/taskr-push.ts` extension;
-- `taskr push codex`, a sidecar process that queues each event into one Codex thread with `codex queue`.
+- the same server behind pi's `products/taskr/adapters/pi/taskr-push.ts` extension;
+- `taskr push codex`, a sidecar process that queues each event into one Codex thread
+  with `codex queue`.
 
-Installation configures none of them. The optional [worker launcher](#start-a-herdr-worker) can create a private Claude MCP config and pass its channel flag when explicitly given `--push`; it edits no existing settings. This page says how an owner would opt in, what a push promises, and what is still unproved. Enabling any adapter for real sessions needs an owner decision first.
+A standalone install configures none; fleet users enable push delivery with
+`herdr-launch --push`. The
+optional [worker launcher](#start-a-herdr-worker) can create a private Claude MCP config
+and pass its channel flag when explicitly given `--push`; it edits no existing settings.
+This page says how an owner would opt in, what a push promises, and what is still
+unproved. Enabling any adapter for real sessions needs an owner decision first.
 
 How the loop holds the inbox, what a push carries and how it reconciles uncertain writes: [mcp.md](mcp.md#channel). The Codex sidecar runs the same loop.
 
@@ -18,69 +24,64 @@ Local adapters share 32 hint streams; beyond that they fall back to the 30 s pol
 
 ## Start a Herdr worker
 
-From a source checkout, `adapters/herdr/taskr-herdr-launch` registers a worker,
-exports its task and launch IDs into an existing pane, starts the chosen agent,
-then sends its brief through `taskr prompt`. It needs `taskr`, `herdr`, `jq` and
-the chosen agent on PATH, with Herdr already running on the same host. The
-installer does not install this script. Select an unused pane at its shell prompt;
-the launcher clears pending shell input with Ctrl-C. It creates no tabs or
-workspaces and never starts or restarts the Herdr server itself.
+Fleet users get `herdr-launch` from `install.sh --fleet` (see the
+[setup guide](../AGENTS_SETUP.md#start-a-worker)). It resolves the configured lane,
+registers the worker, starts it in its own tab and sends the brief through taskr:
 
 ```sh
-sh adapters/herdr/taskr-herdr-launch \
-  --name worker-api --role implementer --parent 42 \
-  --model chosen-model --effort medium --report "$PWD/worker-report.md" \
-  claude WORKER_PANE "$PWD/worker-brief.md" -- \
-  --model chosen-model --effort medium
+herdr-launch --push LANE impl-api "$PWD/worker-brief.md" "$PWD/worker-report.md" ROOT
 ```
 
-Replace the parent ID, pane ID, model and paths. The interface is:
+Use an allowed lane from `herdr-launch --lanes` and replace ROOT with the parent
+task ID. `--workspace W` selects a task workspace, `--cwd DIR` selects its
+working directory, and an optional final PANE uses an existing idle shell pane.
+Use the required [brief format](../../setup/skills/herdr-orchestration/SKILL.md#brief-and-wait);
+only the report path must be absolute, and the brief file must exist.
+The brief must authorize push delivery. The launcher needs `taskr`, `herdr`,
+`jq` and the lane's agent CLI on PATH, with Herdr already running. It never
+starts or restarts the Herdr server.
 
-```text
-taskr-herdr-launch [--push] --name NAME --role ROLE --parent ID --model MODEL --effort E --report PATH [--provider P] KIND PANE BRIEF -- [AGENT_ARGS...]
-```
+Push prerequisites depend on the lane:
 
-KIND is `claude`, `codex`, `pi` or `opencode`; the provider metadata defaults to
-KIND. ROLE is `implementer`, `reviewer`, `researcher`, `sub-orchestrator` or
-`gate`. The report path must be absolute and the brief must exist locally.
-Everything after `--` is passed literally to `herdr agent start` as the agent's
-native arguments; omit the executable name. The model and effort flags before
-KIND record metadata: supply matching native arguments after `--`. No model,
-account, permission, trust, name-prefix or fleet policy is selected for you.
-Any needed trust or permission prompts must be handled by the caller's native
-agent configuration; the launcher only confirms the push dialog below.
+- Claude: the launcher creates a private mode-0600 MCP config, supplies the
+  development-channel flag and confirms its startup dialog. Keep the config
+  until the worker exits, then remove it by its printed literal path.
+- pi: set `HERDR_PUSH_PI_EXTENSION` to the absolute path of
+  `products/taskr/adapters/pi/taskr-push.ts`; the launcher adds `--extension`.
+- Codex: set `HERDR_PUSH_CODEX_BIN` to the real CLI's absolute path and include
+  `taskr start` in the brief. The launcher creates a sidecar tab after startup;
+  close it with the worker tab. Registration must record the thread and home
+  before the sidecar can deliver events.
 
-For Claude, add `--push` before KIND to opt in to a private MCP config and the
-development-channel flag. The config is mode 0600 inside a fresh mode 0700
-`$HOME/.taskr-herdr-push.XXXXXX` directory; it never edits project `.mcp.json`.
-If agent startup fails and the visible pane contains `Loading development
-channels`, the launcher sends Enter and waits for the agent to become idle
-before delivering the brief. Other startup failures stop the launch.
-
-Success prints `task=ID launch=ID pane=PANE`, plus `config=PATH` with `--push`.
-Failures name the step and print any IDs and config already created. They stop
-without retry or rollback: a registered task, running agent or config may
-remain. Inspect those IDs before trying again; do not blindly launch a duplicate.
-Keep the private config until Claude exits, then remove that file and its empty
-directory. A successful launch proves neither push receipt nor worker completion.
-
-`--push` is rejected for other kinds before registration. For pi, pass the
-[extension](#pi) as a native argument. For Codex, run `taskr start` in the
-worker and start the [sidecar](#codex) separately with the printed task and
-launch IDs. The launcher creates no sidecar and adds no hooks. These are explicit
-opt-ins; an ordinary launch changes no agent configuration.
-
-`sh adapters/herdr/check.sh` checks the sequence, arguments, exports, permissions
-and refusals with fake commands only; it starts no real Herdr or agent.
+Success prints `task=ID launch=ID tab=TAB pane=PANE`, plus the push config or
+sidecar IDs. Failure prints its step and IDs already obtained. Inspect those
+before any retry; never duplicate a registration, start or delivered prompt.
+A successful launch proves neither push receipt nor worker completion.
+See [first-time setup](../AGENTS_SETUP.md#start-a-worker) for the taskr-only path.
 
 ## What it promises
 
-- At least once, not exactly once. An event can reach the model more than once: up to 3 pushes per adapter process without a receipt, a restart starts a new budget, and a push already written or queued can arrive after a handoff. The event id identifies the work; the model checks the inbox before handling and does not repeat handled work.
-- Historical attempt volume does not enlarge the shared Claude/Codex push state response; `delivery ls` still lists the full audit history.
-- A push is not an ack, and not a receipt. The adapter records `delivery new` and `delivery submitted`; only the model records `delivery received` and acks after handling. Submitted means the notification line was written and flushed, or `codex queue` exited 0, nothing more. A Claude session that is not registered as a channel drops a notification silently. `taskr delivery ls --open` lists attempts with no receipt, including attempts whose event was later acked through another attempt or a later ack; check `taskr inbox` to see whether the event is still pending.
-- A stall longer than the lease stops it. If the loop cannot renew within 60 s (a hub outage, a stuck command), it pushes nothing on the stale lease, the refused renew stops it for good, and the adapter must be restarted to resume pushes.
-- One event at a time. The fenced wait offers the oldest pending event first, so a later event is not pushed while an earlier one is unacked. If the model never acks, pushes of that event stop after 3, and the inbox waits for an ack, a handoff or a restart.
-- The lease fences consumption. While an adapter holds it, a plain `taskr wait` or `ack` on the inbox is refused (exit 6) and names the holder.
+- At least once, not exactly once. An event can reach the model more than once: up to 3
+  pushes per adapter process without a receipt, a restart starts a new budget, and a
+  push already written or queued can arrive after a handoff. The event id identifies the
+  work; the model checks the inbox before handling and does not repeat handled work.
+- Historical attempt volume does not enlarge the shared Claude/Codex push state
+  response; `delivery ls` still lists the full audit history.
+- A push is not an ack, and not a receipt. The adapter records `delivery new` and
+  `delivery submitted`; only the model records `delivery received` and acks after
+  handling. Submitted means the notification line was written and flushed, or `codex
+  queue` exited 0, nothing more. A Claude session that is not registered as a channel
+  drops a notification silently. `taskr delivery ls --open` lists attempts with no
+  receipt, including attempts whose event was later acked through another attempt or a
+  later ack; check `taskr inbox` to see whether the event is still pending.
+- A stall longer than the lease stops it. If the loop cannot renew within 60 s (a taskr
+  hub outage, a stuck command), it pushes nothing on the stale lease, the refused renew
+  stops it for good, and the adapter must be restarted to resume pushes.
+- One event at a time. The fenced wait offers the oldest pending event first, so a later
+  event is not pushed while an earlier one is unacked. If the model never acks, pushes
+  of that event stop after 3, and the inbox waits for an ack, a handoff or a restart.
+- The lease fences consumption. While an adapter holds it, a plain `taskr wait` or `ack`
+  on the inbox is refused (exit 6) and names the holder.
 
 Owner asks from other campaigns: the hub root runs `taskr set ROOT hub=on` once (root only; a second open root with `hub=on` is refused with exit 6; `hub=` clears it). Every later owner ask raised outside the hub's own tree then also lands in the hub's inbox as `owner_ask` (code `oq`; data `ask`, `root`, `blocking`, and `question` when it has one), and its answer or withdraw as `owner_closed` (`oc`; data `ask`, `answer`, `withdrawn`), so a pushed hub sees them without polling `asks --open`. With no hub, or more than one, nothing is copied. Example: `wait --as 1 --for owner_ask,owner_closed`.
 
@@ -125,16 +126,29 @@ Register the server in the project's `.mcp.json` and start Claude with the devel
 claude --dangerously-load-development-channels server:taskr
 ```
 
-Use the project `.mcp.json` or a private `--mcp-config <file>`. In Claude Code 2.1.296 a server given only with `--mcp-config` was not registered as a channel by `server:<name>`; in 2.1.300 it is (Linux, 2026-10-15). A live lease does not prove that Claude listens, so accept a new Claude version only after one push is received and acked. A worker session inherits `TASKR_TASK` and `TASKR_LAUNCH`; a root adds `"--as", "ROOT", "--session", "GEN"` to `args`, where GEN is the event id `taskr adopt` printed (0 before any adopt). Channels are a research preview: the flag shows a confirmation dialog, is ignored with `-p` and the SDK, needs claude.ai or Console API-key authentication (not Bedrock, Vertex or Foundry), and Team or Enterprise organizations must set `channelsEnabled`. Events that arrive while Claude is busy may surface in the same turn after a tool completes, or queue for the next turn. The model still records receipt and acks after handling; an attempt with no receipt is re-pushed after 120 s, within the attempt budget. After an `/mcp` Reconnect to a new generation, the old server process stays under Claude until Claude exits: its loop has stopped and its generation is refused, but it lingers, so a stop and resume is cleaner than a reconnect.
+Use the project `.mcp.json` or a private `--mcp-config <file>`. A live lease does not
+prove that Claude listens, so accept a new Claude version only after one push is
+received and acked. A worker session inherits `TASKR_TASK` and `TASKR_LAUNCH`; a root
+adds `"--as", "ROOT", "--session", "GEN"` to `args`, where GEN is the event id `taskr
+adopt` printed (0 before any adopt). Channels are a research preview: the flag shows a
+confirmation dialog, is ignored with `-p` and the SDK, needs claude.ai or Console
+API-key authentication (not Bedrock, Vertex or Foundry), and Team or Enterprise
+organizations must set `channelsEnabled`. Events that arrive while Claude is busy may
+surface in the same turn after a tool completes, or queue for the next turn. The model
+still records receipt and acks after handling; an attempt with no receipt is re-pushed
+after 120 s, within the attempt budget. After an `/mcp` Reconnect to a new generation,
+the old server process stays under Claude until Claude exits: its loop has stopped and
+its generation is refused, but it lingers, so a stop and resume is cleaner than a
+reconnect.
 
-The model sees `<channel source="taskr" event="E" attempt="A" fence="N" kind="K" task="S">TEXT</channel>`. TEXT names the server's `taskr_received`, `taskr_inbox`, `taskr_task` and `taskr_ack` tools first. Its CLI lines are a labelled fallback, only for when the tools are unavailable, and they need the task's taskr environment.
+The model sees `<channel source="taskr" event="E" attempt="A" fence="N" kind="K" task="S">TEXT</channel>`. TEXT names the server's `taskr_received`, `taskr_inbox`, `taskr_task` and `taskr_ack` tools first. Its CLI lines are a labeled fallback, only for when the tools are unavailable, and they need the task's taskr environment.
 
 ## pi
 
 Load the extension on the command line:
 
 ```sh
-pi --extension /path/to/herdr-taskr/adapters/pi/taskr-push.ts
+pi --extension /path/to/herdr-kit/products/taskr/adapters/pi/taskr-push.ts
 ```
 
 Options: `--taskr-bin PATH` (default `taskr` on `PATH`), and for a root `--taskr-root ID --taskr-session GEN` (both, as integers). A worker needs nothing: the extension starts `taskr mcp --channel` with pi's own environment. Each push becomes `pi.sendUserMessage(content, {deliverAs: "followUp"})`, which starts a turn when idle and queues after the current one when busy.
@@ -154,7 +168,9 @@ On shutdown the extension:
 
 A child that exits on its own is logged and not restarted.
 
-`node adapters/pi/check.mjs [TASKR]` checks the extension with a mocked pi API, a real `taskr mcp --channel` on a scratch ledger and a fake child. It proves the translation and the cleanup, not pi's loader, its queue or a provider turn.
+`node products/taskr/adapters/pi/check.mjs [TASKR]` checks the extension with a mocked
+pi API, a real `taskr mcp --channel` on a scratch ledger and a fake child. It proves the
+translation and the cleanup, not pi's loader, its queue or a provider turn.
 
 ## Codex
 
@@ -230,7 +246,8 @@ Nothing already pushed can be recalled: a notification in flight, or a message `
 
 ## Canary
 
-`tools/push-canary.sh` is a scratch-only POSIX sh harness for real-client trials on Linux or a Mac:
+`products/taskr/tools/push-canary.sh` is a scratch-only POSIX sh harness for real-client
+trials on Linux or a Mac:
 
 - `init DIR` creates the new directory DIR with a ledger: root 1 and a launched sender lane 2. It prints the environment prefix for the client.
 - `fire DIR N` puts event N in root 1's inbox, as the sender.
@@ -248,37 +265,43 @@ The marker protects against mistakes, not against another process of the same us
 
 ## Evidence and what is still owed
 
-Deterministic scratch fixtures live in `crates/taskr/tests/channel.rs` and `crates/taskr/tests/push.rs`. They run with the `contract` feature, whose test-only scheduler divides every interval, the queue deadline included. Release builds have fixed intervals (60 s lease, 20 s renew, 30 s poll and retake, 120 s spacing, 3 pushes, 60 s queue deadline) and no knob.
+Deterministic scratch fixtures live in `products/taskr/crates/taskr/tests/channel.rs`
+and `products/taskr/crates/taskr/tests/push.rs`. They run with the `contract`
+feature, whose test-only scheduler divides every interval, including the queue
+deadline. Release builds have fixed intervals (60 s lease, 20 s renew, 30 s poll
+and retake, 120 s spacing, 3 pushes, 60 s queue deadline) and no knob.
 
-| Stack gate | Deterministic fixture | Real-client evidence |
-| --- | --- | --- |
-| idle and busy delivery, model receipt and ack: Claude, pi | `an_idle_event_is_pushed_once_then_received_acked_and_the_next_follows`, `the_worker_binding_comes_from_the_launch_and_codex_sees_only_it` | Linux, 2026-10-11: Claude Code 2.1.296 (claude-opus-5-5) woke idle and delivered busy events after the turn; pi 1.0.4 (glm-5.3-flash) woke idle, redelivered at +120 s, re-pushed after a restart and delivered busy events as follow-ups. Both received and acked; attempt, then submitted, then received; no ack on submit. |
-| idle wake: Codex | `the_worker_binding_comes_from_the_launch_and_codex_sees_only_it`, `a_root_binding_is_the_operators_and_an_adopt_stops_it` | Linux, 2026-10-11: codex-cli 0.162.1 (gpt-6-astra medium) on a canary ledger: an idle thread woke 24 s after the fire (30 s poll), and after the PATH fix (Prerequisites, item 5) the turn received and acked. 2026-10-10: `codex queue` through an account-selecting wrapper started a turn (idle wake only). |
-| malformed or wrong Codex binding | `a_missing_wrong_or_malformed_binding_fails_before_the_take` | Linux, 2026-10-11: `taskr start` registered provider codex, kind thread_id, the thread UUID and the home (source env:CODEX_THREAD_ID), and every push targeted only that thread. Wrong bindings are fixture-only. |
-| binding drift | `a_changed_binding_or_launch_stops_for_good_and_releases`, `an_unreadable_binding_suspends_and_a_change_mid_submission_kills_it` | n/a |
-| queued-turn identity: the queued model's CLI uses the intended task, launch and ledger | none: a fake cannot prove it | Linux, 2026-10-11: the queued turn ran inside the target session's process, and its tool host carried the session's TASKR_TASK, TASKR_LAUNCH and TASKR_DB. The session's `taskr` must be the sidecar's release (Prerequisites, item 5). |
-| busy Codex thread, sidecar restart, Codex session absent or restarted | restart: `failed_submissions_are_bounded_and_a_receipt_suppresses_them_across_restarts` | Linux, 2026-10-11: busy: queued mid-turn (exit 0) and run after the turn ended. Sidecar restart: EOF released the lease at once, and the restart retook it at a new fence without re-pushing an acked event. Absent: with Codex exited, `codex queue` still exited 0 and kept the message, which ran when the same thread was resumed; nothing ran headless. |
-| queue timeout, non-zero exit, spawn failure, cap | `failed_submissions_are_bounded_and_a_receipt_suppresses_them_across_restarts`, `a_spawn_failure_and_a_timeout_stay_unsubmitted_and_count` | an unknown submission that cannot be induced safely in the real client stays unproved |
-| cancellation, slow, flooding or never-ending queue output, held pipes, output held outside the group | `eof_or_a_takeover_during_a_submission_kills_it_and_bounds_its_pipes`, `sustained_output_past_the_deadline_or_at_eof_is_killed_and_unconfirmed`, `a_drain_that_never_runs_dry_returns_within_its_budget` (unit), `an_output_held_outside_the_group_strands_the_lease_and_stops` | n/a |
-| a slow final binding read before a spawn | `a_delayed_final_binding_read_never_spawns_after_eof_or_expiry` | n/a |
-| dropped notification, broken stdout | `a_broken_stdout_leaves_the_attempt_unsubmitted_and_ends_delivery` | n/a |
-| ignored notification (the T1 failure mode), retry exhaustion | `redelivery_is_bounded_and_receipts_suppress_it_across_restarts` | n/a |
-| reset and reconnect | `hints_wake_a_check_and_a_reset_reconnects_without_a_duplicate` (the hub's ten-minute stream expiry ends the stream the same way) | n/a |
-| duplicate and late receipts, RPC uncertainty | `lost_replies_reconcile_with_their_own_keys_and_a_receipt_may_precede_submitted`, `concurrent_same_binding_servers_never_share_the_lease`, `a_takeover_between_attempt_and_write_allows_one_late_push_then_stops`, `a_failed_show_after_a_replayed_take_keeps_its_key_and_never_retakes`, `an_uncertain_local_new_never_claims_an_older_attempt`, `a_receipt_may_precede_submitted_and_recovery_claims_only_queue_attempts`, `push_itself_never_goes_over_rpc_and_its_steps_route` | n/a |
-| lease lifecycle, takeover, relaunch, adopt, explicit wait handoff | `the_lease_is_taken_renewed_and_released_with_its_fence_kept`, `a_refused_take_is_retried_and_never_forced`, `a_stale_binding_take_is_final`, `a_takeover_stops_pushes_and_the_tools_keep_serving`, `an_adopt_stops_a_root_channel_whose_envelope_uses_the_pinned_session`, `a_relaunch_stops_the_old_channel_and_an_old_receipt_does_not_suppress_the_new_one`, `a_killed_server_expires_and_a_plain_wait_consumes_the_same_event`, `a_refused_take_is_retried_never_forced_and_a_killed_sidecar_expires` | Claude's exit frees the lease by expiry, pi's by EOF (Linux trial above) |
-| channel timeout and cancel, stalls | `a_stalled_child_keeps_the_tools_serving_and_stale_authority_never_pushes`, `eof_during_a_channel_child_pushes_nothing_then_releases`, `eof_during_a_tool_stops_new_pushes_and_the_tool_still_finishes`, `stdin_read_ahead_is_bounded_while_a_tool_is_held`, `eof_behind_a_full_queue_never_pushes_and_releases`, `a_backlog_pause_keeps_an_unresolved_new_and_its_key`; the client-host cases run with a stalled hint stream | n/a |
-| envelope and hostile summaries | `hostile_summaries_stay_one_escaped_untrusted_line`, `hostile_summaries_stay_one_escaped_string_in_the_cli_message` | n/a |
-| canary scratch safety | `the_canary_selftest_passes_and_refuses_unowned_state` | n/a |
+The deterministic gates map to these fixtures:
 
-macOS, 2026-10-11 (macOS 27.0.1 arm64, the release tree with the macOS test-harness fix): build, clippy and both test suites pass, and so do the canary selftest, the failure gate (EOF release, kill -9 then lease expiry then a plain `wait`, the poll without a hub, child reaping) and the client-host authority fixtures. After 17 to 19 idle minutes, a pushed event woke Claude, pi and Codex, and each received and acked it. Codex busy delivery was not run on macOS.
+| Gate | Fixture |
+| --- | --- |
+| idle and busy delivery, model receipt and ack: Claude, pi | `an_idle_event_is_pushed_once_then_received_acked_and_the_next_follows`, `the_worker_binding_comes_from_the_launch_and_codex_sees_only_it` |
+| idle wake: Codex | `the_worker_binding_comes_from_the_launch_and_codex_sees_only_it`, `a_root_binding_is_the_operators_and_an_adopt_stops_it` |
+| malformed or wrong Codex binding | `a_missing_wrong_or_malformed_binding_fails_before_the_take` |
+| binding drift | `a_changed_binding_or_launch_stops_for_good_and_releases`, `an_unreadable_binding_suspends_and_a_change_mid_submission_kills_it` |
+| queued-turn identity: the queued model's CLI uses the intended task, launch and ledger | none: a fake cannot prove it |
+| busy Codex thread, sidecar restart, Codex session absent or restarted | restart: `failed_submissions_are_bounded_and_a_receipt_suppresses_them_across_restarts` |
+| queue timeout, non-zero exit, spawn failure, cap | `failed_submissions_are_bounded_and_a_receipt_suppresses_them_across_restarts`, `a_spawn_failure_and_a_timeout_stay_unsubmitted_and_count` |
+| cancellation, slow, flooding or never-ending queue output, held pipes, output held outside the group | `eof_or_a_takeover_during_a_submission_kills_it_and_bounds_its_pipes`, `sustained_output_past_the_deadline_or_at_eof_is_killed_and_unconfirmed`, `a_drain_that_never_runs_dry_returns_within_its_budget` (unit), `an_output_held_outside_the_group_strands_the_lease_and_stops` |
+| a slow final binding read before a spawn | `a_delayed_final_binding_read_never_spawns_after_eof_or_expiry` |
+| dropped notification, broken stdout | `a_broken_stdout_leaves_the_attempt_unsubmitted_and_ends_delivery` |
+| ignored notification, retry exhaustion | `redelivery_is_bounded_and_receipts_suppress_it_across_restarts` |
+| reset and reconnect | `hints_wake_a_check_and_a_reset_reconnects_without_a_duplicate` (the hub's ten-minute stream expiry ends the stream the same way) |
+| duplicate and late receipts, RPC uncertainty | `lost_replies_reconcile_with_their_own_keys_and_a_receipt_may_precede_submitted`, `concurrent_same_binding_servers_never_share_the_lease`, `a_takeover_between_attempt_and_write_allows_one_late_push_then_stops`, `a_failed_show_after_a_replayed_take_keeps_its_key_and_never_retakes`, `an_uncertain_local_new_never_claims_an_older_attempt`, `a_receipt_may_precede_submitted_and_recovery_claims_only_queue_attempts`, `push_itself_never_goes_over_rpc_and_its_steps_route` |
+| lease lifecycle, takeover, relaunch, adopt, explicit wait handoff | `the_lease_is_taken_renewed_and_released_with_its_fence_kept`, `a_refused_take_is_retried_and_never_forced`, `a_stale_binding_take_is_final`, `a_takeover_stops_pushes_and_the_tools_keep_serving`, `an_adopt_stops_a_root_channel_whose_envelope_uses_the_pinned_session`, `a_relaunch_stops_the_old_channel_and_an_old_receipt_does_not_suppress_the_new_one`, `a_killed_server_expires_and_a_plain_wait_consumes_the_same_event`, `a_refused_take_is_retried_never_forced_and_a_killed_sidecar_expires` |
+| channel timeout and cancel, stalls | `a_stalled_child_keeps_the_tools_serving_and_stale_authority_never_pushes`, `eof_during_a_channel_child_pushes_nothing_then_releases`, `eof_during_a_tool_stops_new_pushes_and_the_tool_still_finishes`, `stdin_read_ahead_is_bounded_while_a_tool_is_held`, `eof_behind_a_full_queue_never_pushes_and_releases`, `a_backlog_pause_keeps_an_unresolved_new_and_its_key`; the client-host cases run with a stalled hint stream |
+| envelope and hostile summaries | `hostile_summaries_stay_one_escaped_untrusted_line`, `hostile_summaries_stay_one_escaped_string_in_the_cli_message` |
+| canary scratch safety | `the_canary_selftest_passes_and_refuses_unowned_state` |
 
-Rollout, v0.18.0 (a prerelease), 2026-10-11: one canary lane per client on the Linux host, in the order Codex, pi, Claude.
+Recorded client checks used these versions. They do not prove a newer client;
+accept each new version only after a real push is received and acked.
 
-- Codex: a real implementer lane with the sidecar received two lead answers pushed into its idle thread, the second after ten idle minutes. Each was submitted within a second, received about 10 s later and acked at fence 1, with no redelivery. Stdin EOF released the lease.
-- pi: a real lane started with the extension woke from ten idle minutes when the lead's answer arrived as a followUp message. It received the answer 3.5 s after the push and acked about 3 s later, through the CLI in its own shell. A stray plain `ack` was refused with exit 6, and pi's exit released the lease at once.
-- Claude: a real lane started with the development-channel flag and a project `.mcp.json` woke from ten idle minutes. It received the answer 4.4 s after the push and acked through the server's tools. The development-channel dialog appears at every start and needs an answer before the session is ready. Claude's exit left the lease to its 60 s expiry.
+| Client | Version | Recorded checks | Still unproved |
+| --- | --- | --- | --- |
+| Claude Code | 2.1.296; external `--mcp-config` channel registration checked on 2.1.300 | Idle and busy delivery, model receipt and ack; idle delivery on macOS. | Queueing behind a turn of two minutes or more. |
+| pi | 1.0.4 | Idle and busy follow-ups, receipt and ack, bounded redelivery, restart, EOF release; idle delivery on macOS. | Queueing behind a turn of two minutes or more. |
+| codex-cli | 0.162.1 | Idle and busy delivery, queued-turn identity, receipt and ack, sidecar restart, absent/resumed session; idle delivery on macOS. | Busy delivery, sidecar restart and absent/resumed-session delivery on macOS. |
 
-Still owed:
-
-- macOS busy delivery for Codex, Codex sidecar restart and absent or resumed-session delivery on macOS, and queueing behind a turn of two minutes or more for Claude and pi;
-- an owner decision before any wider enablement.
+Unknown queue submissions, wrong real-client bindings, ignored notifications,
+retry exhaustion and adversarial cancellation/output cases remain fixture-only.
+A fake queue cannot prove the queued model's identity or a provider turn.

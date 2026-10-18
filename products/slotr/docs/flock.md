@@ -10,7 +10,7 @@ slotr run --pool heavy --campaign my-feature --purpose "build check" -- cargo te
 
 It neither runs the refused payload nor acquires a lock, creates a target,
 or queues a replacement ticket. The caller must submit the actual command.
-Slotr's own shared/exclusive compatibility locking stays unchanged.
+slotr's own shared/exclusive compatibility locking stays unchanged.
 
 ## Fixed policy and opt-in launcher
 
@@ -49,7 +49,8 @@ required absolute file using the normal schema, ignoring HOME/XDG discovery,
 slotr commands retain their usual environment/config behavior.
 
 Compile the matching reviewed [native source](../scripts/flock-shim.c) with
-an existing C compiler to a staging path, using literal absolute defines:
+an existing C compiler to a staging path, using literal absolute defines.
+From `products/slotr`:
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror -O2 \
@@ -62,8 +63,8 @@ Replace both literal paths with the intended deployment paths. There are no
 runtime executable/policy environment overrides, interpreter, shell wrapper,
 or argv0/symlink dispatch. The launcher requires both defines and refuses
 relative paths. Staging compilation does not install it. The installer and
-release package continue to contain only slotr; the hub owns any later
-launcher installation and PATH/config changes under the idle migration gate.
+release package continue to contain only slotr. Changing which launcher or
+PATH a host uses is a separate, explicitly approved step (see below).
 
 ## Native compatibility
 
@@ -100,9 +101,9 @@ For inherited ignored SIGCHLD or SA_NOCLDWAIT, the parent snapshots the
 complete action, temporarily defaults it for a waitable child, and restores
 it before native exec; any restoration failure refuses. EINTR waits retry.
 The extra checker can add a pending SIGCHLD while that signal is blocked.
-Installed util-linux 2.39.3 clears SIGCHLD pending/action before its payload,
-so actual native payload outputs match in the covered tests. This does not
-claim extra-child timing or signal-generation transparency. The launcher
+Requires util-linux `flock` (tested with 2.39.3), which clears SIGCHLD
+pending/action before its payload, so native payload outputs match in the covered tests.
+This does not claim extra-child timing or signal-generation transparency. The launcher
 never drains unrelated pending signals or changes the mask to hide them.
 No shell or PATH lookup wraps native flock; only native's own `-c` form
 selects a shell. Raw non-UTF8 argv/environment and inherited open-file

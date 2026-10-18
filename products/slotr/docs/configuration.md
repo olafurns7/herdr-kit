@@ -112,15 +112,15 @@ campaign team-b-* 2
 task 123 3
 ```
 
-Levels are unsigned 32-bit integers. A run gets the highest matching level
-from the static list and file. No match means level 0. Task IDs match exactly.
-Blank lines and `#` comments are ignored. Malformed or truncated lines are
-skipped; other lines still apply. A missing or unreadable file adds no levels.
-A file over 64 KiB, or anything that is not a regular file, counts as missing.
-Keep the priority file on a local filesystem: nonblocking open does not bound slow regular-file I/O or a hung network mount.
-There is no legacy file age limit. Admission refreshes every ticket and holder
-from one policy generation and legacy snapshot. Status resolves current weights
-in memory; the watchdog retains last-known weights on policy errors.
+Levels are unsigned 32-bit integers. A run gets the highest matching level from the
+static list and file. No match means level 0. Task IDs match exactly. Blank lines and
+`#` comments are ignored. Malformed or truncated lines are skipped; other lines still
+apply. A missing or unreadable file adds no levels. A file over 64 KiB, or anything that
+is not a regular file, counts as missing. Keep the priority file on a local filesystem:
+nonblocking open does not bound slow regular-file I/O or a hung network mount. There is
+no legacy file age limit. Admission refreshes every ticket and holder from one policy
+generation and legacy snapshot. Status resolves current weights in memory; the watchdog
+retains last-known weights on policy errors.
 
 Writers must write a temp file beside the priority file, then rename it over
 the destination. This atomic rename prevents readers seeing a partial update.
@@ -249,5 +249,5 @@ configure its argv as the single hook, for example
 `["/path/to/notify-both", "{pane}", "slotr: stopped {run}: {reason}"]`, which
 invokes `herdr agent prompt "$1" "$2"` followed by `taskr note "$2"`.
 Neither integration is compiled in.
-The on-stop example includes a requeue template; replace PURPOSE and COMMAND with your original request, which slotr deliberately does not
-persist.
+The devbox `on_stop` hook includes a requeue template; replace PURPOSE and
+COMMAND with your original request, which slotr deliberately does not persist.

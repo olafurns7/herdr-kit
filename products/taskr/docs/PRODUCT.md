@@ -7,12 +7,12 @@ terminal view. There is no web interface.
 
 ## Stack
 
-- `taskr`: Rust in `crates/taskr`, with CLI, hub and daemon behaviour checked
-  against stored golden fixtures in `tools/contract/`. State is one SQLite ledger.
-- `taskr-tui`: Rust and ratatui, in `crates/taskr-tui`. It reads through the
+- `taskr`: Rust in `products/taskr/crates/taskr`, with CLI, the taskr hub and daemon behavior checked
+  against stored golden fixtures in `products/taskr/tools/contract/`. State is one SQLite ledger.
+- `taskr-tui`: Rust and ratatui, in `products/taskr/crates/taskr-tui`. It reads through the
   `taskr` command (`taskr --json glance`, `taskr campaign`, `taskr doc get`)
   and writes ledger state only through `taskr answer` and `taskr set`. Its
-  optional visible Open PRs panel reads repository-wide results directly through
+  optional visible My PRs panel reads the signed-in user's open pull requests through
   local `gh`; panel/repository choices are saved in per-user `tui.json`.
 
 ## Users
@@ -52,12 +52,12 @@ handover/adopt, ref, hub, client host.
 ## Principles
 
 1. What needs the owner comes first and is unmistakable. Red means an open
-   owner ask in the header. The named Open PRs panel also uses red for failing
+   owner ask in the header. The named My PRs panel also uses red for failing
    observed CI; this does not change the owner verdict. Hidden asks remain counted.
 2. Milestones over noise: each campaign shows its latest checkpoint; the raw
    event log is one key away.
 3. Compact and readable at a glance: aligned rows, explicit status marks with
-   words, restrained colour, a 46-column layout for a split pane.
+   words, restrained color, a 46-column layout for a split pane.
 4. Truthful: every signal comes from the ledger, Herdr's observed state,
    or explicitly named GitHub reads with their own freshness.
    Missing or old data is shown as stale, never guessed.
@@ -66,7 +66,7 @@ handover/adopt, ref, hub, client host.
 
 ## Evidence on hand
 
-Every screen is drawn from the synthetic fixture `crates/taskr-tui/fixture.json`
-and compared with the golden frames in `crates/taskr-tui/tests/golden/`;
+Every screen is drawn from the synthetic fixture `products/taskr/crates/taskr-tui/fixture.json`
+and compared with the golden frames in `products/taskr/crates/taskr-tui/tests/golden/`;
 `frames/` holds the same frames as text, ANSI and PNG. Do not depend on a live
 host or campaign.

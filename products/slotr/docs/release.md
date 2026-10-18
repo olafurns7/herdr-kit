@@ -5,6 +5,7 @@ This file explains how to test slotr locally and how to publish a release.
 ## Validate locally
 
 The integration tests use a fake systemd driven by Python 3.11+ stdlib.
+Run from `products/slotr`.
 
 ```sh
 sh -n install.sh
@@ -20,8 +21,10 @@ cargo build -p slotr --release --locked --target x86_64-unknown-linux-musl
 file ../../target/x86_64-unknown-linux-musl/release/slotr
 ```
 
-A shared host may wrap the cargo commands in its own lock
-(`flock /path/to/heavy.lock cargo test --locked`).
+On a shared host, wrap cargo commands in its heavy pool, for example
+`slotr run --pool heavy --kind build --campaign YOUR_CAMPAIGN --purpose 'slotr release' -- cargo test --locked`.
+When slotr is not installed, use the host's lock, for example
+`flock /path/to/heavy.lock cargo test --locked`.
 
 Only `SLOTR_TEST=1` enables the test seams: `SLOTR_PROC_ROOT`,
 `SLOTR_CGROUP_ROOT`, `SLOTR_SYSTEMD_RUN`, `SLOTR_SYSTEMCTL`, and
@@ -33,7 +36,6 @@ for state timing). Production ignores all of them.
 Releases are built locally on a clean Linux x86_64 checkout:
 
 ```sh
-cd products/slotr
 sh scripts/release.sh slotr/vX.Y.Z
 sh scripts/release.sh slotr/vX.Y.Z --publish
 ```
@@ -41,11 +43,11 @@ sh scripts/release.sh slotr/vX.Y.Z --publish
 - VERSION must match the version in `Cargo.toml`. The release tag is
   `slotr/vX.Y.Z`; asset names retain plain `X.Y.Z`. A mismatch exits 2 before building.
 - The script refuses dirty trees, an existing local `slotr/vX.Y.Z` tag, and
-  other hosts, with exit 2.
+  hosts other than Linux x86_64, with exit 2.
 - Before building, `sh scripts/notices.sh --check` must confirm that the
   checked-in notices match the locked target dependencies. Run
   `sh scripts/notices.sh` to refresh them from cached crate and toolchain
-  licence files after a dependency update.
+  license files after a dependency update.
 - The build remaps cargo home, rustup home, and checkout paths. After packing,
   the script refuses builder paths or the login name in the binary strings
   or archive listing.
@@ -57,34 +59,14 @@ sh scripts/release.sh slotr/vX.Y.Z --publish
 - `--publish` explicitly creates a GitHub release in `olafurns7/herdr-kit`
   with `gh`, targeting the exact local HEAD that was built. If the release
   already exists, it only attaches the assets to it and does not check or change its target.
+- After `--publish`, update the slotr tag and the hard-coded `sha256sum install.sh`
+  value in [README.md](../README.md) and [docs/install.md](install.md) using the
+  published installer asset. Update the slotr tag in the repository
+  [QUICKSTART.md](../../../QUICKSTART.md) too.
 - There are no GitHub Actions workflows.
 
-herdr-setup's installer installs a pinned release; see
+The taskr installer's `--slotr` flag runs `install.sh` from the checkout,
+which installs the latest release unless `SLOTR_VERSION` is set; see
 [agent-setup.md](agent-setup.md).
 
 Run release commands from `products/slotr`; Cargo output is under the repository root `target/`.
-
-## Upgrading to 0.3.1 (S1)
-
-This slice adds managed campaign weights, a default 30-second quiet handoff,
-a 300-second fairness floor, positive-weight hard caps, and audited manual
-stops. Priority/campaign yield stops are removed. Memory accounting remains
-based on declared cost minus observed anonymous memory; measured sizing and
-automatic replay are not part of this release.
-
-Runtime schema stays 1. New scheduling clocks and stop intent are sidecars
-under the same lock, so older writers cannot discard them when rewriting
-state.json. Managed policy is separate persistent state. No schema migration
-or forced drain is required for S1, but **0.3.0 supervisors still running can
-still yield-stop until they finish**. Let admitted work finish naturally;
-never stop another campaign to install this change. Verify old processes have
-finished before claiming the scheduling-stop guarantee for the whole host.
-Do not activate managed overrides while relying on 0.3.0 admission: it cannot
-read them or enforce new holds/fairness. Roll out new request producers together.
-
-For rollback, withdraw only owned queued requests and let 0.3.1 supervisors
-finish. Remove new priority keys from config presented to 0.3.0 (its loader
-rejects unknown keys). Keep policy, events and sidecars for inspection;
-0.3.0 ignores them, so its legacy priority/yield behavior returns. Do not reset
-runtime state to simulate a drain. Source/fake-manager tests are not real
-systemd runtime proof; the release lead owns any authorized real-unit smoke.

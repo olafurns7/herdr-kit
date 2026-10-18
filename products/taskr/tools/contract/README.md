@@ -6,6 +6,8 @@ commands receive scratch HOME/DB and fake Herdr/tailscale services.
 
 ## Build and check
 
+Run from `products/taskr`:
+
 ```sh
 cargo build --locked -p taskr --features contract
 mkdir -p .scratch
@@ -100,7 +102,7 @@ unique; classes remain a, b, b-conv, c, or rust. Mapping is checked by the ordin
 Cargo `mapping_check_passes` integration test. Strict mode remains a port-completion
 check and is not assumed to pass while historical todo rows remain.
 
-## Static musl builds on this host
+## Static musl builds (optional)
 
 User-space tools are isolated in `$HOME/.cache/taskr-tools`. Installation:
 
@@ -108,7 +110,6 @@ User-space tools are isolated in `$HOME/.cache/taskr-tools`. Installation:
 python3 -m pip install --target $HOME/.cache/taskr-tools/python ziglang
 mkdir -p $HOME/.cache/taskr-tools/bin $HOME/.cache/taskr-rustup
 ln -s $HOME/.cache/taskr-tools/python/ziglang/zig $HOME/.cache/taskr-tools/bin/zig
-# Writable mirror, because the installed rustup home is outside this lane's write scope.
 cp -a --reflink=auto $HOME/.rustup/. $HOME/.cache/taskr-rustup/
 export RUSTUP_HOME="$HOME/.cache/taskr-rustup"
 rustup target add --toolchain stable aarch64-unknown-linux-musl
@@ -121,6 +122,8 @@ cargo zigbuild --release -p taskr --features contract --target aarch64-unknown-l
 file ../../target/x86_64-unknown-linux-musl/release/taskr ../../target/aarch64-unknown-linux-musl/release/taskr
 ```
 
-The static builds above are parity artifacts. Omit `--features contract` for production artifacts; never ship a contract build.
+The static builds above are parity artifacts. Omit `--features contract` for production
+artifacts; never ship a contract build.
 
-Versions and observed static-link results belong in the worker report; successful native tests do not prove aarch64 runtime behavior. No system packages or shell startup files are changed.
+Successful native tests do not prove aarch64 runtime behavior. No system
+packages or shell startup files are changed.

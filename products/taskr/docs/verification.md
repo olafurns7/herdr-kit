@@ -5,9 +5,10 @@ description: Repeat the isolated Linux taskr CLI pilot and identify surfaces it 
 
 # taskr verification map
 
-Status: **changed — Linux CLI pilot exercised twice; other surfaces unrun**.
-Source revision: `c76bbb0760df7b3d834025f2e53ea95e5dfe7520`.
-The subsequent documentation commit changes no runtime source.
+Status: **Linux CLI pilot recorded twice before the public import;
+other surfaces unrun.** The recorded revision predates this repository's
+history; rerun the recipe at your commit and record its revision and binary
+hash.
 
 Follow the [verification skill](../../setup/skills/herdr-verification/SKILL.md)
 and [feature-map contract](../../setup/skills/herdr-verification/references/feature-map.md).
@@ -37,7 +38,7 @@ They never inherit the real worker's IDs.
 
 Prerequisites: Linux, the pinned Rust toolchain already installed, cached Cargo
 dependencies, Python 3, Bash, jq, and GNU cp. Reflinks are optional:
-`--reflink=auto` falls back to a full copy (about 828 MB of Cargo cache here).
+`--reflink=auto` falls back to a full copy.
 Missing tools or an offline build failure block this recipe; do not substitute an installed
 taskr or download a toolchain. Run the blocks serially in the same Bash shell
 from the repository root.
@@ -57,10 +58,8 @@ bin="$build/target/debug/taskr"
 sha256sum "$bin"
 ```
 
-The recorded binary SHA-256 is
-`fd86cbb93efe0e60702166d6170a4dbf40e7594c6c74570e984ecc5a4f65b0e8`
-for the initial build. Debug builds in different scratch paths may have different
-hashes. Retain the hash printed by your own build.
+Debug builds in different scratch paths may have different hashes. Retain the
+hash printed by your own build.
 
 ## CLI journey
 
@@ -249,9 +248,9 @@ prerequisite and the evidence needed to extend the map.
 | TUI: [main](../crates/taskr-tui/src/main.rs) | [golden.rs](../crates/taskr-tui/tests/golden.rs), `frames_match_their_golden_files` | **Unrun:** no PTY/UI driver in this slice. Requires a disposable terminal session; exercise navigation and answer submission against scratch ledger and retain frames plus ledger read-back. Golden frames alone do not prove live input. |
 | Daemon lifecycle/events: [daemon](../crates/taskr/src/daemon/mod.rs) | [daemon_cell.py](../crates/taskr/tests/daemon_cell.py), lifecycle cell; [daemon_restart_cell.py](../crates/taskr/tests/daemon_restart_cell.py) | **Unrun:** importing the fixture does not run either cell or start taskr daemon. Requires an owned scratch daemon; prove usable readiness, event observation, process identity, and teardown without touching the live daemon. |
 | Push transports and malformed bindings: [push](../crates/taskr/src/mcp/push.rs) | [push.rs](../crates/taskr/tests/push.rs), `a_missing_wrong_or_malformed_binding_fails_before_the_take`; [channel.rs](../crates/taskr/tests/channel.rs), `an_idle_event_is_pushed_once_then_received_acked_and_the_next_follows` | **Unrun:** no push consumer/native adapter. Requires isolated adapter and launch identity; prove delivery, fenced receive/ack, malformed-binding refusal, and restart behavior. Synthetic tests leave native adapter integration unproved. |
-| Hub/client RPC, spool, and unknown outcomes: [RPC](../crates/taskr/src/net/rpc.rs) | [hub_cell.py](../crates/taskr/tests/hub_cell.py); [mcp.rs](../crates/taskr/tests/mcp.rs), `client_mode_keeps_queued_unknown_and_replay_apart`; [channel.rs](../crates/taskr/tests/channel.rs), `lost_replies_reconcile_with_their_own_keys_and_a_receipt_may_precede_submitted` | **Unrun:** explicit TASKR_DB bypassed client routing. Requires an isolated hub/client and existing cut-reply fixture; retain committed/queued/unknown distinctions, same-key reconciliation, and cleanup. Real tailnet/auth needs separate authorized proof. |
+| The taskr hub/client RPC, spool, and unknown outcomes: [RPC](../crates/taskr/src/net/rpc.rs) | [hub_cell.py](../crates/taskr/tests/hub_cell.py); [mcp.rs](../crates/taskr/tests/mcp.rs), `client_mode_keeps_queued_unknown_and_replay_apart`; [channel.rs](../crates/taskr/tests/channel.rs), `lost_replies_reconcile_with_their_own_keys_and_a_receipt_may_precede_submitted` | **Unrun:** explicit TASKR_DB bypassed client routing. Requires an isolated hub/client and existing cut-reply fixture; retain committed/queued/unknown distinctions, same-key reconciliation, and cleanup. Real tailnet/auth needs separate authorized proof. |
 | MCP tools: [server](../crates/taskr/src/mcp.rs) | [mcp.rs](../crates/taskr/tests/mcp.rs), `framing_and_lifecycle_answer_every_request_and_keep_serving`, `startup_identity_is_fixed_and_bad_combinations_exit_2` | **Unrun:** no MCP client session. Requires an owned stdio session; prove initialization, tool framing, identity refusal and shutdown, then real client integration separately. |
-| macOS: [platform code](../crates/taskr/src/daemon/macos.rs) | [macos_daemon_cell.py](../crates/taskr/tests/macos_daemon_cell.py), native restart/identity/HUP recipe | **Unrun:** Linux only. Requires macOS and compatible binary fixtures; the historical cell still requires both `--go` and `--rust`, so artifact availability is a further gap. Retain native process/signal and cleanup evidence; Linux cannot clear it. |
+| macOS: [platform code](../crates/taskr/src/daemon/macos.rs) | [macos_daemon_cell.py](../crates/taskr/tests/macos_daemon_cell.py), native restart/identity/HUP recipe | **Unrun:** Linux only. Requires macOS and compatible binary fixtures; the cell still requires a `--go` binary, which no longer exists; it cannot run until that argument is dropped. Retain native process/signal and cleanup evidence; Linux cannot clear it. |
 | Other CLI commands: search, handover/adopt, decisions, refs, subscriptions, consumer leases, tmp, migrations and failure/recovery paths | [contract corpus](../testdata/contract/cases.json), [mapping ledger](../testdata/contract/mapping.tsv), [consumer.rs](../crates/taskr/tests/consumer.rs), [tmp.rs](../crates/taskr/tests/tmp.rs) | **Unrun:** outside the single journey. Select existing mapped cases per user purpose, check current executable targets (historical `todo` rows prove nothing), and retain fresh action/result/reset evidence. |
 | Setup/install/release and slotr | Separate [setup](../../setup/README.md) and [slotr](../../slotr/README.md) products | **Unrun:** this map grants no installation, release, or sibling-product proof. Each needs its own authorized product journey and existing tests. |
 

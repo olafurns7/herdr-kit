@@ -761,7 +761,10 @@ exec /bin/cp "$@"
                     gaps.add((str(path.relative_to(home)), target))
         return gaps, checked
 
-    known_gaps = set()
+    known_gaps = {
+        ('.agents/skills/herdr-orchestration/SKILL.md', 'local.md'),
+        ('.agents/skills/herdr-orchestration/model-selection.md', '~/.agents/skills/herdr-fleet/local.md'),
+    }
     gaps, checked = pointer_gaps(h)
     # Current unique local targets: orchestration 34, taskr 24; allow a small margin.
     assert checked['herdr-orchestration'] >= 30 and checked['taskr'] >= 22, ('pointer coverage too low', checked)
@@ -777,6 +780,8 @@ exec /bin/cp "$@"
     recovery.write_text(original.replace('(recovery.md#agent-hooks)', '(recovery.md#agent-hookz)') +
                         '\n[local hooks](#agent-hooks)\n[broken local hooks](#agent-hookz)\n')
     assert pointer_gaps(h)[0] == {
+        ('.agents/skills/herdr-orchestration/SKILL.md', 'local.md'),
+        ('.agents/skills/herdr-orchestration/model-selection.md', '~/.agents/skills/herdr-fleet/local.md'),
         ('.agents/skills/taskr/references/recovery.md', 'recovery.md#agent-hookz'),
         ('.agents/skills/taskr/references/recovery.md', '#agent-hookz'),
     }, 'broken file or same-file anchors must fail; valid same-file anchors must pass'

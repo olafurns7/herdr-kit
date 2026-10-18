@@ -3,8 +3,10 @@
 This path uses Linux or macOS, Herdr, Claude Code and a local taskr ledger.
 Run the commands in order from a normal terminal shell. Each step includes a
 check; stop if it fails. An agent helping with setup should ask before changing
-shell profiles, hooks or agent settings. The person at the terminal starts
-Herdr: never start or restart its server from inside an agent session.
+shell profiles, hooks or agent settings. Skill links are the allowed exception;
+existing conflicting links are preserved. Hooks and settings still need the ask.
+The person at the terminal starts Herdr: never start or restart its server
+from inside an agent session.
 
 ## 1. Check prerequisites and get the kit
 
@@ -36,7 +38,7 @@ herdr --version
 ```
 
 Expect `installed herdr to .../.local/bin/herdr` and a version from the check.
-Taskr's plugin needs Herdr 0.9.0 or newer. Keep the PATH export in each new
+taskr's plugin needs Herdr 0.9.0 or newer. Keep the PATH export in each new
 shell, or add it to your shell profile yourself.
 
 ## 3. Install and sign in to Claude Code
@@ -59,12 +61,16 @@ Optional for several accounts: [install Codator](README.md#optional-codator).
 
 ## 4. Install taskr and the fleet files
 
+An agent must ask before running the fleet installer: it also writes hooks
+and global agent instructions.
+
 Choose the latest release on the
 [Releases page](https://github.com/olafurns7/herdr-kit/releases) with a
-`taskr/vX.Y.Z` tag. Replace the placeholder below with that exact tag:
+`taskr/vX.Y.Z` tag. The example pins `taskr/v0.25.1`; use a newer published tag
+if needed:
 
 ```sh
-export TASKR_VERSION=taskr/vX.Y.Z
+export TASKR_VERSION=taskr/v0.25.1
 sh products/taskr/install.sh --fleet
 taskr version
 command -v taskr-tui herdr-launch
@@ -78,8 +84,8 @@ The checks should show the chosen taskr version, both command paths and silent
 successful file tests. `MERGE` means an existing edited file was preserved;
 inspect the printed `.herdr-setup` sidecar before proceeding. For an existing
 `~/.claude/settings.json`, merge `skipDangerousModePermissionPrompt: true` and
-the sidecar's `hooks` entries (`PreToolUse`, `SessionStart`, `Stop`,
-`UserPromptSubmit` and `StopFailure`), preserving your existing settings and hooks.
+the sidecar's `hooks` entries (`PreToolUse`, `PostToolUse`, `SessionStart`,
+`Stop`, `UserPromptSubmit` and `StopFailure`), preserving your existing settings and hooks.
 
 `--fleet` installs public skills, launch helpers and minimal taskr hooks.
 It stages integration files; activation is manual. Follow the installer's
@@ -89,12 +95,13 @@ and [setup assets](products/setup/README.md).
 
 ## 5. Optional: install slotr on Linux x86_64
 
-Skip this step on macOS or if you only want the first worker. Slotr requires
+Skip this step on macOS or if you only want the first worker. slotr requires
 a working systemd user manager; see [its requirements](products/slotr/docs/install.md).
-Pick a published `slotr/vX.Y.Z` tag separately from taskr:
+Pick a published slotr tag separately from taskr. The example pins
+`slotr/v0.3.1`; use a newer published tag if needed:
 
 ```sh
-SLOTR_VERSION=slotr/vX.Y.Z sh products/slotr/install.sh --config
+SLOTR_VERSION=slotr/v0.3.1 sh products/slotr/install.sh --config
 slotr --version
 slotr config check
 ```

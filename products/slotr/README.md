@@ -12,26 +12,25 @@ of memory but does not remove it.
 ## Quick install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/herdr-kit/main/products/slotr/install.sh | sh
+curl -fsSL -o slotr-install.sh \
+  https://github.com/olafurns7/herdr-kit/releases/download/slotr/v0.3.1/install.sh &&
+  printf '%s  %s\n' dd11030f1a59b4bf828b0b5c388ce4793a02e6b6cc7a3383c1f0ba1f8636e919 slotr-install.sh | sha256sum -c - &&
+  SLOTR_VERSION=slotr/v0.3.1 sh slotr-install.sh
 ```
 
-Downloads the release for Linux x86_64, verifies its checksum, and installs to `~/.local/bin`.
-
-Prefer to check first?
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/herdr-kit/main/products/slotr/install.sh -o install.sh
-cat install.sh
-sh install.sh
-```
+Downloads the Linux x86_64 release, verifies the installer and archive checksums, and installs
+to `~/.local/bin`. For the latest stable release or a different pin with
+`SLOTR_VERSION`, see [install](docs/install.md#versions).
 
 ## Quick agent setup
 
+After downloading and verifying the installer above:
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/herdr-kit/main/products/slotr/install.sh | sh -s -- --config
+SLOTR_VERSION=slotr/v0.3.1 sh slotr-install.sh --config
 ```
 
-Also creates the config from the example when none exists, then checks it.
+This also creates the config from the example when none exists, then checks it.
 
 ## Documentation
 
@@ -44,10 +43,6 @@ Also creates the config from the example when none exists, then checks it.
 - [Troubleshooting](docs/troubleshooting.md)
 - [Validate and release](docs/release.md)
 
-Licence: [MIT](LICENSE). [Third-party notices](THIRD-PARTY-NOTICES) ship in the release archive.
+License: [MIT](LICENSE). [Third-party notices](THIRD-PARTY-NOTICES) ship in the release archive.
 
-Monorepo releases use `slotr/vX.Y.Z`; archive names retain plain `X.Y.Z`.
-Set `SLOTR_VERSION=X.Y.Z` (also accepts `vX.Y.Z` or `slotr/vX.Y.Z`) for an
-exact release. Without a pin, authenticated `gh` or `curl` plus `jq` enumerate all release pages and
-select the highest stable slotr version with its archive/checksum assets
-(and config when requested). Binary users need no Node, Turbo or Cargo.
+See [install](docs/install.md#versions) for version selection.

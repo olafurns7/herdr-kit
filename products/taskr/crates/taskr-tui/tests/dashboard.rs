@@ -76,7 +76,7 @@ fn failed_pr_read_does_not_stale_ledger_or_invent_zero_totals() {
     );
     assert!(text.contains("stale") && text.contains("✗ #42"), "{text}");
     // No login: unavailable, never a guessed owner or an empty list.
-    app.mine = prs::Mine::new(&["trip-to-japan/trip".into()]);
+    app.mine = prs::Mine::new(&["example/repo".into()]);
     app.mine.error = Some("GitHub authentication required");
     let (text, _) = render(&app, 46, 30);
     assert!(
@@ -453,7 +453,7 @@ fn selected_line(text: &str) -> &str {
 /// snapshots keep the cursor's identity, a stop's included, through a reorder.
 #[test]
 fn the_first_ledger_snapshot_opens_on_the_first_ask_and_later_ones_keep_the_row() {
-    let repos = vec!["trip-to-japan/trip".to_string()];
+    let repos = vec!["example/repo".to_string()];
     for (prs_first, w, h) in [
         (false, 120, 40),
         (true, 120, 40),

@@ -1,17 +1,14 @@
 # Model selection
 
-The public lane table is `products/setup/lanes.json`. Both launch tools use it.
-An optional `~/.config/herdr-fleet/lanes.json` replaces the whole public table.
-See `lanes.md` beside the installed orchestration skill for its fields.
+`herdr-launch`, `herdr-lead` and `herdr-hub` read the lane table from
+`~/.config/herdr-fleet/lanes.json` if present, else the checkout's
+`products/setup/lanes.json` when run from source, else the installed
+`~/.local/share/herdr-setup/lanes.json`.
 
-Hosts may keep a longer private history in their overlay.
-
-Choose the smallest authorized lane that can complete the brief and its checks.
-Use `gather-` for read-only gathering: scraping, docs, and release notes. It
-allows Haiku 5.5, GLM 5.3 Flash, and Codex Luna. Haiku 5.5 and Codex Luna stay
-barred from analysis, review, implementation, and orchestration.
-An Opus 5.5 xhigh `orch-` sub-orchestrator needs a recorded reason (`taskr decide`)
-or an owner request.
-Record reasons for escalation. Keep operator-specific bans, account mappings,
-quota policy, and model preferences in the private table and fleet local.md.
+Read `lanes.md` beside this file once installed
+([source](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/skills/herdr-orchestration/lanes.md))
+for the fields and public model rules before choosing a lane. Record reasons
+for escalation. Keep operator-specific bans, account mappings, quota policy
+and model preferences in the private table and the herdr-fleet skill's private
+`~/.agents/skills/herdr-fleet/local.md` (never committed).
 Review must remain independent of implementation.

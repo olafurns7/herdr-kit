@@ -3,7 +3,7 @@
 Open on demand for a decision that is costly to undo: a new module, data model,
 schema, or protocol. This is not a mode. Default to shaping the code before
 implementing it; work directly unless the owner or orchestrator flags an arena.
-The owner's variant skill covers UI variants; this reference covers code and
+UI variant exploration is out of scope; this reference covers code and
 architecture. It grants no publication or merge authority.
 
 ## Shape before code

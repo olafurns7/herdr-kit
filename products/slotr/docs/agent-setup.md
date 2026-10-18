@@ -4,11 +4,10 @@ This file explains how slotr is installed on a Herdr fleet host and how agents u
 
 ## Quick agent setup
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/olafurns7/herdr-kit/main/products/slotr/install.sh | sh -s -- --config
-```
+Follow the [release install steps](install.md#install-a-release), then run the
+verified installer with `--config`.
 
-The script downloads its pinned Linux x86_64 release, verifies the checksum
+The script downloads the latest Linux x86_64 release (or `SLOTR_VERSION`), verifies the checksum
 and archive layout, and installs it atomically to `~/.local/bin/slotr`.
 It creates `~/.config/slotr/config.toml` from the release's example only
 when no config exists, keeps an existing config, then checks that file.
@@ -20,9 +19,10 @@ If `XDG_CONFIG_HOME` or `SLOTR_CONFIG` is set, slotr normally reads another
 config path; this installer still creates and checks the file above.
 See [configuration.md](configuration.md).
 
-## herdr-setup
+## Through the taskr installer
 
-herdr-setup installs the pinned release with its own checks.
+From a herdr-kit checkout, `sh products/taskr/install.sh --slotr` runs this
+installer; a standalone taskr install prints a `MANUAL` line instead.
 
 ## Using slotr in a fleet
 
@@ -49,19 +49,18 @@ slotr run --pool runtime --campaign <campaign> --purpose "<what for>" \
   `slotr run --pool heavy --kind tsc --campaign <campaign> --purpose "<what for>" -- <command>`.
   See [usage.md](usage.md#heavy-one-shot-commands).
 - Never stop another campaign's run to enforce priority. Keep your request
-  queued and ask the hub through taskr with campaign, pool and wait reason.
-  The hub changes weights with `slotr priority set CAMPAIGN WEIGHT`.
+  queued and ask the host that runs the taskr hub (if any) through taskr with campaign,
+  pool and wait reason.
+  That host changes weights with `slotr priority set CAMPAIGN WEIGHT`.
 - Weight changes, caps, quiet handoffs and fairness apply before admission.
   Existing runs finish unless real pressure or configured lifecycle rules stop
-  them. Cancel only an owned run under its cleanup authority, with `--reason`.
+  them. Stop only an owned run under its cleanup authority, with
+  `slotr stop RUN --reason TEXT`.
 - Exit 75 without a slotr stop line is the workload's own result. Inspect
   events before a bounded retry; manual cancellation is not an automatic retry.
 
-`examples/devbox.toml` shows a `runtime` pool with hooks that send task notes
-through `taskr`; see [configuration.md](configuration.md#hooks).
+[examples/devbox.toml](../examples/devbox.toml) shows a `runtime` pool with hooks
+that send the agent a Herdr prompt (`herdr agent prompt`); a commented taskr note
+variant is included; see [configuration.md](configuration.md#hooks).
 
-Monorepo releases use `slotr/vX.Y.Z`; archive names retain plain `X.Y.Z`.
-Set `SLOTR_VERSION=X.Y.Z` (also accepts `vX.Y.Z` or `slotr/vX.Y.Z`) for an
-exact release. Without a pin, authenticated `gh` or `curl` plus `jq` enumerate all release pages and
-select the highest stable slotr version with its archive/checksum assets
-(and config when requested). Binary users need no Node, Turbo or Cargo.
+See [install](install.md#versions) for version selection.

@@ -1,6 +1,6 @@
 # Incident intake
 
-Use only for one intake task explicitly started by the owner or an authorized hub.
+Use only for one intake task explicitly started by the owner or an authorized taskr hub.
 This is on-demand, not a mode: no schedule, watcher, timer, or follow-up polling.
 Triage and reproduce only; source systems stay read-only.
 
@@ -16,7 +16,7 @@ Sentry org/project slugs, Slack channel names, optional feature-map/driver paths
 optional bounded wider Sentry query, and optional batch/window defaults.
 The agent reads YAML; add no parser/validator or keys to tui.json: TUI saves
 rewrite an allowlist. Missing config, scope, or matching intake entry is a gap.
-herdr-kit ships only `products/setup/intake.example.yaml` (installed with `--fleet`) at `~/.local/share/herdr-setup/intake.example.yaml`, beside public lanes.
+`--fleet` installs the placeholder `~/.local/share/herdr-setup/intake.example.yaml` beside the public lane table.
 The user owns intake.yaml; never create or overwrite it during intake/install.
 
 Use `taskr --json log <health_root> --limit 100`, with health_root from tui.json.
@@ -102,7 +102,7 @@ coverage_and_gaps: [GAP_PLACEHOLDER]
 next_decision: NONE_OR_DECISION_PLACEHOLDER
 ```
 
-Redact tokens, emails, phone numbers, customer names, and booking data in every
+Redact tokens, emails, phone numbers, customer names, and other personal or business data in every
 record, capture, link, and digest. Never paste raw event payloads. Keep a safe
 source id if a permalink contains private data; do not copy sensitive attachments.
 Write records to the report; deliver one digest on the intake task with `taskr note`:
