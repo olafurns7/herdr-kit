@@ -134,7 +134,7 @@ card under its own rule:
 - **Issues (0):** GitHub issues of the configured `issues_repo`, one row per
   current assignee plus Unassigned (an explicitly empty assignee list): open,
   blocked and closed in the rolling last 24 hours. Blocked means an open issue
-  labelled exactly `blocked` or `needs-info`, counted once. An issue with
+  labeled exactly `blocked` or `needs-info`, counted once. An issue with
   several assignees counts in each group, so groups overlap; the headline
   counts unique issues. Groups with blocked issues use the amber attention
   color, never red. Rows are informational: no key acts on them.
@@ -337,7 +337,7 @@ Issues makes one pair of sequential `gh issue list --repo OWNER/NAME
 once per five minutes while visible, failure retries included (5, 10, then 15
 minutes, or a longer known provider deadline). `r` never hurries it. Both
 calls share one ten-second deadline and the same output bound. Either
-failing keeps the whole last good pair, labelled stale; a first failure says
+failing keeps the whole last good pair, labeled stale; a first failure says
 unavailable, never zero. Missing or malformed counts, assignees, labels,
 states or timestamps make the pair unavailable, as does any issue with 100 or
 more assignees or labels, whose completeness is unknown. Each read is a
@@ -363,7 +363,7 @@ positive rollback note ID. A malformed latest note, one for another
 repository or environment, a future checked time, or no such note in the
 last 100 hub events shows unknown and replaces any earlier report; an older
 note never stands in for it. A failed or malformed read keeps the last
-result, labelled stale; a first failure says unavailable. Every message is
+result, labeled stale; a first failure says unavailable. Every message is
 generic. A newer note with an older checked time still wins, and shows its
 age; there is no expiry, because the hub writes after deploy checks, not on
 a schedule. Never enabled, hidden or in demo it reads nothing (demo shows an

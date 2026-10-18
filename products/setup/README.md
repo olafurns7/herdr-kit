@@ -42,8 +42,7 @@ Codator's own optional `cdx`/`cdl` shortcuts (`CODATOR_SHORTCUTS=1`) bypass ever
 sandbox and approval prompt. Both sources use the same names and default paths,
 `~/.local/bin/cdx` and `~/.local/bin/cdl`; the Codator installer replaces an
 existing file only when it already calls Codator, so pick one source for these
-commands (see [Codator's
-shortcuts](https://github.com/olafurns7/codator#optional-shortcuts-cdx-and-cdl)).
+commands (see [Codator's shortcuts](https://github.com/olafurns7/codator#optional-shortcuts-cdx-and-cdl)).
 `--notifications` merges the public
 Moshi (a mobile push-notification app) hook fragments through the usual
 KEEP/UPDATE/MERGE rules, preserving other
@@ -58,9 +57,10 @@ The public source allowlist is in `products/taskr/install.sh`. It excludes
 private overlays, backups, live state, and unselected settings. Standalone
 installation resolves setup source from the same selected taskr tag.
 
-`herdr-hub` starts the taskr hub's lead agent and its MCP channel, so one
-machine serves the ledger to the others. See
-[taskr daemon](../taskr/docs/daemon.md#the-hub).
+`herdr-hub ROOT` (or `--new NAME`) adopts the taskr hub's root in its pane and
+restarts its Claude lead with the taskr push channel through the sibling `cdl`
+wrapper (needs `--codator` and Codator). Usage, checks and recovery:
+[launch.md](skills/herdr-orchestration/launch.md).
 
 ## Existing files
 

@@ -1,7 +1,8 @@
 # The daemon and the taskr hub
 
 `taskr daemon` is a small background process, one per user on each machine.
-The Herdr plugin starts it on demand; a hub runs it under systemd (`--stay`).
+The Herdr plugin starts it on demand; a taskr hub can also run it under
+systemd (`--stay`).
 It does two jobs:
 
 1. **Event bridge.** It listens to Herdr and wakes `taskr wait` when an
@@ -227,7 +228,9 @@ base survives restart. Worker identity is cleared. The most useful status fields
 | `dashboard_usage` | Hourly request counts of the server. |
 | `stay`, `supervised` | Whether it runs with `--stay`, and under systemd. |
 
-A peer reads the hub address from its config; `hub.url` is unused.
+`role: peer` means a leftover nonempty `hub.url` from an older setup; status
+reads it, but no ledger traffic uses it. Remove `~/.local/state/taskr/hub.url`,
+or make the host a client ([install.md, step 7](install.md#7-multiple-machines)).
 
 ## Files
 

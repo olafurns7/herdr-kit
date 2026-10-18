@@ -41,7 +41,8 @@ from the release's `config.example.toml` only when absent, then checks that
 file. It never overwrites an existing config.
 
 When `~/.local/bin` is outside `PATH`, the script prints the command to add it.
-Rerun the install command to update.
+To update, run the verified `slotr-install.sh` with a newer `SLOTR_VERSION`,
+or without it for the latest stable release (see [Versions](#versions)).
 
 ## Versions
 
@@ -50,7 +51,6 @@ Set `SLOTR_VERSION=X.Y.Z` (also accepts `vX.Y.Z` or `slotr/vX.Y.Z`) for an
 exact release. Without a pin, authenticated `gh` or `curl` plus `jq` enumerate all release pages and
 select the highest stable slotr version with its archive/checksum assets
 (and config when requested). Binary users need no Node, Turbo or Cargo.
-
 
 ## Manual install
 

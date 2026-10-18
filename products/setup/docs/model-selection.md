@@ -5,8 +5,8 @@
 `products/setup/lanes.json` when run from source, else the installed
 `~/.local/share/herdr-setup/lanes.json`.
 
-Read
-[lanes.md](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/skills/herdr-orchestration/lanes.md)
+Read `lanes.md` beside this file once installed
+([source](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/skills/herdr-orchestration/lanes.md))
 for the fields and public model rules before choosing a lane. Record reasons
 for escalation. Keep operator-specific bans, account mappings, quota policy
 and model preferences in the private table and the herdr-fleet skill's private

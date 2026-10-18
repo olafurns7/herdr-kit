@@ -100,8 +100,7 @@ successful status exit alone does not prove the daemon is running.
 If status does not show `running: true`, run `taskr daemon --restart`, then re-check
 with `taskr daemon --status`. It starts the daemon detached with only HOME, PATH,
 HERDR_SOCKET_PATH and TASKR_TMP_BASE; a fresh plugin link otherwise waits until the next
-agent detection or Herdr start. For upgrades, re-run step 2, then `taskr daemon
---restart` and re-check status. This restarts taskr, never Herdr.
+agent detection or Herdr start. For upgrades, re-run step 2, then `taskr daemon --restart` and re-check status. This restarts taskr, never Herdr.
 
 ### Start the ledger host at boot (Linux)
 
@@ -149,14 +148,13 @@ done
 Expect the installed skill and each applicable link to resolve to it. If configs do not exist, report no links; if a conflict exists, report it and leave it unchanged. pi reads `$HOME/.agents/skills` itself and needs no link. Tell the orchestrator agent to load the installed taskr skill before coordinating workers.
 
 For orchestrators using a taskr-only install, optionally install Herdr's CLI
-skill too (`--fleet` does this when Herdr is available). Preserve an existing
-customized skill before refreshing it:
-
-```sh
-mkdir -p "$HOME/.agents/skills/herdr"
-herdr --skill > "$HOME/.agents/skills/herdr/SKILL.md"
-test -s "$HOME/.agents/skills/herdr/SKILL.md"
-```
+skill too: repeat step 2's download, then run
+`TASKR_LINK_SKILLS=1 sh taskr-install.sh --fleet` in place of the plain install
+and remove the script afterward. Ask first: fleet installation also writes hooks
+and global agent settings. When Herdr is available, the fleet installer stages
+its CLI skill and links it into existing Claude, Codex and OpenCode config
+directories. It preserves edited files and conflicting links; inspect any
+`MERGE` sidecars before proceeding.
 
 Load the installed herdr skill before creating lanes.
 
@@ -174,20 +172,24 @@ UserPromptSubmit, Stop. Template for lifecycle events:
 ```sh
 [ -n "${TASKR_LAUNCH:-}" ] && taskr hook claude UserPromptSubmit >/dev/null 2>&1; true
 ```
-For Claude Code lifecycle events, an entry is
-`{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"[ -n
-\"${TASKR_LAUNCH:-}\" ] && taskr hook claude UserPromptSubmit >/dev/null 2>&1;
-true","async":true}]}]}}`; add the other lifecycle events with matching arguments. The
-owner-dialog pair
+For Claude Code lifecycle events, an entry is:
+
+```json
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"[ -n \"${TASKR_LAUNCH:-}\" ] && taskr hook claude UserPromptSubmit >/dev/null 2>&1; true","async":true}]}]}}
+```
+
+Add the other lifecycle events with matching arguments. The owner-dialog pair
 is synchronous, gated on `HERDR_ENV=1`; use the
 [shipped entries](../../setup/claude/settings.json).
-For Codex, an entry is
-`{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"[ -n
-\"${TASKR_LAUNCH:-}\" ] && taskr hook codex UserPromptSubmit >/dev/null 2>&1;
-true","timeout":2}]}]}}`; add SessionStart and Stop with matching arguments. Codex runs
-these synchronously with a two-second timeout; Claude uses `async:true`. Use a quoted
-absolute binary path in place of `taskr` if the harness PATH does not contain your
-install directory.
+For Codex, an entry is:
+
+```json
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"[ -n \"${TASKR_LAUNCH:-}\" ] && taskr hook codex UserPromptSubmit >/dev/null 2>&1; true","timeout":2}]}]}}
+```
+
+Add SessionStart and Stop with matching arguments. Codex runs these synchronously
+with a two-second timeout; Claude uses `async:true`. Use a quoted absolute binary
+path in place of `taskr` if the harness PATH does not contain your install directory.
 
 OpenCode and pi hook adapters ship in this repository; `install.sh --fleet` copies
 these when the client's config directory exists. From the root of a trusted checkout of
@@ -238,8 +240,7 @@ Client records queue in `$HOME/.local/state/taskr/spool/` when the server is unr
 or earlier records wait there; a running client daemon sends them after a pass that
 reaches the server, or use `taskr spool send` on that host. Without a daemon they stay
 queued until manual send; a full or unwritable spool exits 5 with `retry with:` (rerun
-that line). `qd1 <request key>` means queued, exit 0: do not retry. Check `taskr spool
-ls` after an outage.
+that line). `qd1 <request key>` means queued, exit 0: do not retry. Check `taskr spool ls` after an outage.
 
 Apply changes with `taskr daemon --restart`; verify `taskr daemon --status` shows the selected mode and listeners (`role: hub` with a `tailnet_url` on the hub; `mode: client` with the `server` on a client) and a fresh connection. On write exit 5, rerun the exact printed `retry with:` command, preserving its request key.
 

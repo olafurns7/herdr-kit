@@ -19,7 +19,7 @@ Pane prompts:
 
 Collect: `wait --as ID --for ready,ask,answer,owner_answer,done,fail,prompt_outcome,herdr,message [--from NAME|ID]... [--ack HANDLED] [--timeout MS] [--scan-quota]`.
 - Default timeout 540000 ms. Keep it. Never loop short waits, never `sleep`, never background a wait with `&`.
-- Codex orchestrators too: Codex runs a 540000 ms `taskr wait` to the end, yielding about every 30 s while the call stays alive; events arrive in about 1 s. A `&` job dies with its tool call.
+- Codex orchestrators too: Codex runs a 540000 ms `taskr wait` to the end, yielding about every 30 s while the call stays alive; events arrive in about 1 s (observed on Codex 0.159). A `&` job dies with its tool call.
 - Pass `--ack EVENT` only after handling a newly returned pending event; the first wait has none. After a timeout, wait again without repeating the successful `--ack`. If a combined wait fails, keep `acked_event_id` and never repeat that successful acknowledgment. Standalone `ack EVENT --as ID` is idempotent.
 - Kinds are long names, comma-separated or repeated; several `--from` are OR; kind and source are AND. Prefer ids to names.
 - Nonmatches are acked, kept in the log, and counted in `sk1 N`. A filtered wait can skip an ask or fail you exclude: choose filters deliberately.

@@ -105,8 +105,7 @@ shortage reserves its pool and memory shortage the shared memory domain.
 `stale_ticket` needs a resumed heartbeat; its original age and sequence remain.
 Never stop another campaign's work to resolve these waits: ask the host operator to
 adjust weights or investigate the resource blocker. Neither the built-in defaults (see
-[configuration](configuration.md))
-nor configured quiet and fairness intervals promise a start deadline.
+[configuration](configuration.md)) nor configured quiet and fairness intervals promise a start deadline.
 
 **`priority_policy_error`.** Managed policy is malformed, unreadable or not a
 regular file. `priority list --json` and `status --json` expose the error and

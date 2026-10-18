@@ -74,7 +74,7 @@ script or a pipe, use `taskr glance` for the same data.
 yourself to see the error.
 
 - `taskr` not found: fix `PATH`, or point `TASKR_BIN` at the binary.
-- "Cannot reach the taskr hub": on a client host, see the next section.
+- "Cannot reach the hub": on a client host, see the next section.
 - "No listed campaigns" or "No open campaigns" is not an error: the ledger has nothing open. Try
   `taskr-tui --demo` to see what a busy one looks like.
 
@@ -139,7 +139,9 @@ too: write `tailnet:PORT` to `~/.local/state/taskr/dashboard.addr`, run
 
 ## A host still uses hub.url
 
-`hub.url` is unused; do not write it.
+`role: peer` means a leftover nonempty `hub.url` from an older setup; status
+reads it, but no ledger traffic uses it. Remove `~/.local/state/taskr/hub.url`,
+or make the host a client ([install.md, step 7](install.md#7-multiple-machines)).
 
 ## Searching says the index is damaged
 

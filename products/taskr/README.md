@@ -61,7 +61,7 @@ curl -fsSL -o taskr-install.sh \
 rm taskr-install.sh
 ```
 
-This installs `taskr`, `taskr-tui`, the agent skill and stages the Herdr plugin.
+This installs `taskr`, `taskr-tui` and the agent skill, and stages the Herdr plugin.
 Set `TASKR_NO_TUI=1` to skip the terminal view. The [install guide](docs/install.md)
 has every step, including more than one machine.
 
@@ -93,9 +93,9 @@ the screens.
 | [docs/cli.md](docs/cli.md) | The `taskr` commands agents run, and how a campaign flows |
 | [docs/verification.md](docs/verification.md) | Proved isolated Linux CLI journey and explicitly unrun surfaces |
 | [docs/daemon.md](docs/daemon.md) | The daemon, the taskr hub, client hosts and how they find each other |
-| [MCP server](docs/mcp.md) | Tools for agents |
-| [Push channel](docs/push.md) | Event delivery to idle agents |
-| [Product notes](docs/PRODUCT.md) | Goals and scope |
+| [docs/mcp.md](docs/mcp.md) | Tools for agents |
+| [docs/push.md](docs/push.md) | Event delivery to idle agents |
+| [docs/PRODUCT.md](docs/PRODUCT.md) | Goals and scope |
 | [docs/release.md](docs/release.md) | Building and publishing a release |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Common problems and what to check |
 

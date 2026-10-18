@@ -23,7 +23,7 @@ slotr --version
   systemd user service. Each service
   contains its own supervisor; there is no daemon or remote service.
 - `status` shows holders and the queue. `--json` prints JSON. It observes
-  without creating, changing, or deleting files and without signalling any
+  without creating, changing, or deleting files and without signaling any
   process.
 - `stop RUN [--reason TEXT]` audits the registered target and caller before
   asking systemd to stop the complete unit. Failed audit append refuses the

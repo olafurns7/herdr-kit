@@ -7,7 +7,8 @@ Push adapters deliver a task's inbox events into an idle or busy agent session i
 - `taskr push codex`, a sidecar process that queues each event into one Codex thread
   with `codex queue`.
 
-A standalone install configures none; fleet users get it from `herdr-launch --push`. The
+A standalone install configures none; fleet users enable push delivery with
+`herdr-launch --push`. The
 optional [worker launcher](#start-a-herdr-worker) can create a private Claude MCP config
 and pass its channel flag when explicitly given `--push`; it edits no existing settings.
 This page says how an owner would opt in, what a push promises, and what is still
@@ -23,7 +24,8 @@ Local adapters share 32 hint streams; beyond that they fall back to the 30 s pol
 
 ## Start a Herdr worker
 
-Fleet users launch with `herdr-launch`, which resolves the configured lane,
+Fleet users get `herdr-launch` from `install.sh --fleet` (see the
+[setup guide](../AGENTS_SETUP.md#start-a-worker)). It resolves the configured lane,
 registers the worker, starts it in its own tab and sends the brief through taskr:
 
 ```sh
@@ -33,6 +35,8 @@ herdr-launch --push LANE impl-api "$PWD/worker-brief.md" "$PWD/worker-report.md"
 Use an allowed lane from `herdr-launch --lanes` and replace ROOT with the parent
 task ID. `--workspace W` selects a task workspace, `--cwd DIR` selects its
 working directory, and an optional final PANE uses an existing idle shell pane.
+Use the required [brief format](../../setup/skills/herdr-orchestration/SKILL.md#brief-and-wait);
+only the report path must be absolute, and the brief file must exist.
 The brief must authorize push delivery. The launcher needs `taskr`, `herdr`,
 `jq` and the lane's agent CLI on PATH, with Herdr already running. It never
 starts or restarts the Herdr server.
@@ -137,7 +141,7 @@ the old server process stays under Claude until Claude exits: its loop has stopp
 its generation is refused, but it lingers, so a stop and resume is cleaner than a
 reconnect.
 
-The model sees `<channel source="taskr" event="E" attempt="A" fence="N" kind="K" task="S">TEXT</channel>`. TEXT names the server's `taskr_received`, `taskr_inbox`, `taskr_task` and `taskr_ack` tools first. Its CLI lines are a labelled fallback, only for when the tools are unavailable, and they need the task's taskr environment.
+The model sees `<channel source="taskr" event="E" attempt="A" fence="N" kind="K" task="S">TEXT</channel>`. TEXT names the server's `taskr_received`, `taskr_inbox`, `taskr_task` and `taskr_ack` tools first. Its CLI lines are a labeled fallback, only for when the tools are unavailable, and they need the task's taskr environment.
 
 ## pi
 
@@ -266,6 +270,28 @@ and `products/taskr/crates/taskr/tests/push.rs`. They run with the `contract`
 feature, whose test-only scheduler divides every interval, including the queue
 deadline. Release builds have fixed intervals (60 s lease, 20 s renew, 30 s poll
 and retake, 120 s spacing, 3 pushes, 60 s queue deadline) and no knob.
+
+The deterministic gates map to these fixtures:
+
+| Gate | Fixture |
+| --- | --- |
+| idle and busy delivery, model receipt and ack: Claude, pi | `an_idle_event_is_pushed_once_then_received_acked_and_the_next_follows`, `the_worker_binding_comes_from_the_launch_and_codex_sees_only_it` |
+| idle wake: Codex | `the_worker_binding_comes_from_the_launch_and_codex_sees_only_it`, `a_root_binding_is_the_operators_and_an_adopt_stops_it` |
+| malformed or wrong Codex binding | `a_missing_wrong_or_malformed_binding_fails_before_the_take` |
+| binding drift | `a_changed_binding_or_launch_stops_for_good_and_releases`, `an_unreadable_binding_suspends_and_a_change_mid_submission_kills_it` |
+| queued-turn identity: the queued model's CLI uses the intended task, launch and ledger | none: a fake cannot prove it |
+| busy Codex thread, sidecar restart, Codex session absent or restarted | restart: `failed_submissions_are_bounded_and_a_receipt_suppresses_them_across_restarts` |
+| queue timeout, non-zero exit, spawn failure, cap | `failed_submissions_are_bounded_and_a_receipt_suppresses_them_across_restarts`, `a_spawn_failure_and_a_timeout_stay_unsubmitted_and_count` |
+| cancellation, slow, flooding or never-ending queue output, held pipes, output held outside the group | `eof_or_a_takeover_during_a_submission_kills_it_and_bounds_its_pipes`, `sustained_output_past_the_deadline_or_at_eof_is_killed_and_unconfirmed`, `a_drain_that_never_runs_dry_returns_within_its_budget` (unit), `an_output_held_outside_the_group_strands_the_lease_and_stops` |
+| a slow final binding read before a spawn | `a_delayed_final_binding_read_never_spawns_after_eof_or_expiry` |
+| dropped notification, broken stdout | `a_broken_stdout_leaves_the_attempt_unsubmitted_and_ends_delivery` |
+| ignored notification, retry exhaustion | `redelivery_is_bounded_and_receipts_suppress_it_across_restarts` |
+| reset and reconnect | `hints_wake_a_check_and_a_reset_reconnects_without_a_duplicate` (the hub's ten-minute stream expiry ends the stream the same way) |
+| duplicate and late receipts, RPC uncertainty | `lost_replies_reconcile_with_their_own_keys_and_a_receipt_may_precede_submitted`, `concurrent_same_binding_servers_never_share_the_lease`, `a_takeover_between_attempt_and_write_allows_one_late_push_then_stops`, `a_failed_show_after_a_replayed_take_keeps_its_key_and_never_retakes`, `an_uncertain_local_new_never_claims_an_older_attempt`, `a_receipt_may_precede_submitted_and_recovery_claims_only_queue_attempts`, `push_itself_never_goes_over_rpc_and_its_steps_route` |
+| lease lifecycle, takeover, relaunch, adopt, explicit wait handoff | `the_lease_is_taken_renewed_and_released_with_its_fence_kept`, `a_refused_take_is_retried_and_never_forced`, `a_stale_binding_take_is_final`, `a_takeover_stops_pushes_and_the_tools_keep_serving`, `an_adopt_stops_a_root_channel_whose_envelope_uses_the_pinned_session`, `a_relaunch_stops_the_old_channel_and_an_old_receipt_does_not_suppress_the_new_one`, `a_killed_server_expires_and_a_plain_wait_consumes_the_same_event`, `a_refused_take_is_retried_never_forced_and_a_killed_sidecar_expires` |
+| channel timeout and cancel, stalls | `a_stalled_child_keeps_the_tools_serving_and_stale_authority_never_pushes`, `eof_during_a_channel_child_pushes_nothing_then_releases`, `eof_during_a_tool_stops_new_pushes_and_the_tool_still_finishes`, `stdin_read_ahead_is_bounded_while_a_tool_is_held`, `eof_behind_a_full_queue_never_pushes_and_releases`, `a_backlog_pause_keeps_an_unresolved_new_and_its_key`; the client-host cases run with a stalled hint stream |
+| envelope and hostile summaries | `hostile_summaries_stay_one_escaped_untrusted_line`, `hostile_summaries_stay_one_escaped_string_in_the_cli_message` |
+| canary scratch safety | `the_canary_selftest_passes_and_refuses_unowned_state` |
 
 Recorded client checks used these versions. They do not prove a newer client;
 accept each new version only after a real push is received and acked.

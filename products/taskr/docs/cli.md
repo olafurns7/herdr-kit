@@ -198,9 +198,9 @@ directory. `tmp ID --mkdir` also explicitly initializes its `.taskr-tmp` marker
 (owned by the caller, regular file, mode 0600, content `taskr tmp base v1\n`).
 Creation is exclusive and relative to a validated directory descriptor; an
 existing marker is checked without following links or overwriting it. Cleanup
-refuses a missing, symlinked or invalid marker. Existing tmp bases created before the
-marker was introduced are initialized
-only by an explicit `tmp ID --mkdir`; neither a daemon nor `--clean-tmp` marks them.
+refuses a missing, symlinked or invalid marker. A base without a marker is
+initialized only by an explicit `tmp ID --mkdir`; neither a daemon nor
+`--clean-tmp` marks it.
 Before creating a marker or campaign/lane directories, `--mkdir` refuses any
 existing base entry other than a valid marker or a safe canonical positive-integer
 campaign directory whose root and lane membership the ledger confirms. Campaign

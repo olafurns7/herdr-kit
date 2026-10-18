@@ -99,7 +99,7 @@ After a pressure stop, memory-gated admission waits for the recovery interval
 recovery.
 
 Pressure handling uses cached last-known weights and does not load managed
-policy before selecting or signalling its victim. A malformed policy closes
+policy before selecting or signaling its victim. A malformed policy closes
 new admission while existing workloads retain emergency protection. Events
 include caller uid/pid and actor `watchdog` or `lease`. Automatic stops send
 TERM first, then append the audit event in the hook thread while the supervisor
@@ -162,7 +162,7 @@ systemd-run receives only valid environment variable names via
 - State timing uses CLOCK_BOOTTIME (including suspend); displayed and logged
   timestamps use UTC RFC 3339.
 - `status` observes without creating, changing, or deleting files and
-  without signalling any process.
+  without signaling any process.
 - Failed admission ticks retain their tickets and report errors. Emergency
   pressure protection continues when policy loading or audit logging fails.
 

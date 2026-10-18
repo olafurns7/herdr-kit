@@ -41,7 +41,7 @@ or other build version is refused. The script runs on Linux and:
    scratch HOME and ledger under
    `.scratch/release/`, without task identity or any inherited `TASKR_CONTRACT_*`
    filter.
-3. **Linux half.** `tools/release-rust.sh` with `TASKR_VERSION=taskr/vX.Y.Z`: static
+3. **Linux half.** `tools/release-rust.sh` with the release version: static
    `taskr` and `taskr-tui` musl binaries for x86_64 and aarch64 through
    `cargo zigbuild`, a refusal of any test-only hook, and a version smoke of
    the native `taskr` binary. Cargo, Rustup and workspace paths are remapped
@@ -72,6 +72,12 @@ or other build version is refused. The script runs on Linux and:
 7. **Publish**, without `--dry-run`: tag, push the tag, and
    `gh release create` as a stable release.
 
+- After publication, update the `taskr/v0.25.1` example pins to the published tag
+  in the repository [README.md](../../../README.md) and
+  [QUICKSTART.md](../../../QUICKSTART.md), the taskr [README.md](../README.md),
+  [AGENTS_SETUP.md](../AGENTS_SETUP.md), [docs/install.md](install.md), and
+  [products/setup/README.md](../../setup/README.md).
+
 The thirteen assets are the eight platform binaries, `SKILL.md`, `install.sh`,
 `skill.tar.gz`, `plugin.tar.gz` and `SHA256SUMS`. The installer installs both
 binaries beside each other; `TASKR_NO_TUI=1` skips the TUI. All downloaded binaries must
@@ -79,7 +85,7 @@ pass checksum verification before
 either installed binary is replaced; each replacement uses a temporary file
 in the install directory and a rename.
 
-### Prereleases (optional)
+### Stable releases and promotion
 
 New releases are stable immediately. `install.sh` without `TASKR_VERSION`
 enumerates all release pages and selects the highest complete stable taskr

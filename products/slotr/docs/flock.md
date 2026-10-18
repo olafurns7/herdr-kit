@@ -101,10 +101,9 @@ For inherited ignored SIGCHLD or SA_NOCLDWAIT, the parent snapshots the
 complete action, temporarily defaults it for a waitable child, and restores
 it before native exec; any restoration failure refuses. EINTR waits retry.
 The extra checker can add a pending SIGCHLD while that signal is blocked.
-Requires util-linux `flock` (tested with 2.39). It clears SIGCHLD pending/action
-before its payload,
-The covered tests compare native payload outputs. This does not
-claim extra-child timing or signal-generation transparency. The launcher
+Requires util-linux `flock` (tested with 2.39.3), which clears SIGCHLD
+pending/action before its payload, so native payload outputs match in the covered tests.
+This does not claim extra-child timing or signal-generation transparency. The launcher
 never drains unrelated pending signals or changes the mask to hide them.
 No shell or PATH lookup wraps native flock; only native's own `-c` form
 selects a shell. Raw non-UTF8 argv/environment and inherited open-file

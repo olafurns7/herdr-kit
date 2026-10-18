@@ -22,7 +22,7 @@ file ../../target/x86_64-unknown-linux-musl/release/slotr
 ```
 
 On a shared host, wrap cargo commands in its heavy pool, for example
-`slotr run --pool heavy --kind build --purpose 'slotr release' -- cargo test --locked`.
+`slotr run --pool heavy --kind build --campaign YOUR_CAMPAIGN --purpose 'slotr release' -- cargo test --locked`.
 When slotr is not installed, use the host's lock, for example
 `flock /path/to/heavy.lock cargo test --locked`.
 
@@ -59,6 +59,10 @@ sh scripts/release.sh slotr/vX.Y.Z --publish
 - `--publish` explicitly creates a GitHub release in `olafurns7/herdr-kit`
   with `gh`, targeting the exact local HEAD that was built. If the release
   already exists, it only attaches the assets to it and does not check or change its target.
+- After `--publish`, update the slotr tag and the hard-coded `sha256sum install.sh`
+  value in [README.md](../README.md) and [docs/install.md](install.md) using the
+  published installer asset. Update the slotr tag in the repository
+  [QUICKSTART.md](../../../QUICKSTART.md) too.
 - There are no GitHub Actions workflows.
 
 The taskr installer's `--slotr` flag runs `install.sh` from the checkout,

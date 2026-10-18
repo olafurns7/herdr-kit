@@ -125,9 +125,11 @@ environment.
 
 `taskr daemon` is one small process per user. It wakes `taskr wait` when
 Herdr reports agent changes, sends owner-ask notifications through Herdr, and
-serves the dashboard on `127.0.0.1:7788` and the ledger to peers over the tailnet.
-The dashboard address serves the RPC endpoint, not a web page. Commands on the same
-machine open the ledger directly; they do not need the daemon or the port.
+on a ledger host serves the ledger's RPC endpoint on `127.0.0.1:7788` (status
+calls it `dashboard`; no web page is served). A taskr hub also serves it to
+client hosts over the tailnet; a client daemon forwards to the hub instead.
+Commands on the ledger host open the ledger directly; they do not need the
+daemon or the port.
 Details: [daemon.md](docs/daemon.md).
 
 The ledger is the SQLite file `~/.local/state/taskr/taskr.db`, created on
@@ -327,20 +329,33 @@ throwaway lane, sends it the MCP handshake and lists its nine tools.
 
 ### Start a worker
 
-Fleet users launch a worker with the installed `herdr-launch`:
+Fleet users launch a worker with `herdr-launch`, installed by
+`install.sh --fleet` (see [fleet setup](../setup/README.md)). Ask before that
+install changes hooks or global settings. Use the required
+[brief format](../setup/skills/herdr-orchestration/SKILL.md#brief-and-wait).
 
 ```sh
 herdr-launch LANE impl-api "$PWD/worker-brief.md" "$PWD/worker-report.md" ROOT
 ```
 
 Replace LANE with an allowed lane from `herdr-launch --lanes` and ROOT with
-your parent task ID. The brief and report paths must be absolute. The launcher
+your parent task ID. The report path must be absolute; the brief file must exist. The launcher
 creates a worker tab; add PANE after ROOT to use an existing idle shell pane.
 Expect `task=ID launch=ID tab=TAB pane=PANE`; the worker receives the brief through
 taskr and still runs `got`, `ready` and `done` or `fail` explicitly.
 
-Without the fleet install, the no-policy fallback is
-`sh products/taskr/adapters/herdr/taskr-herdr-launch --help` from a checkout.
+Without the fleet install, use the no-policy fallback from a checkout. Replace
+42 with the parent task ID, WORKER_PANE with an existing idle shell pane, and
+chosen-model with your selected model:
+
+```sh
+sh products/taskr/adapters/herdr/taskr-herdr-launch \
+  --name worker-api --role implementer --parent 42 \
+  --model chosen-model --effort medium --report "$PWD/worker-report.md" \
+  claude WORKER_PANE "$PWD/worker-brief.md" -- \
+  --model chosen-model --effort medium
+```
+
 It needs `jq`, `taskr`, `herdr`, the chosen agent, and an existing idle pane;
 its model/effort metadata must match the native flags you supply. It installs
 nothing and creates no tabs. For fleet push setup and checks, see

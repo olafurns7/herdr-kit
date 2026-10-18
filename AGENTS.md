@@ -38,8 +38,8 @@ Host-specific lanes and account choices belong in private overlays.
 
 ## Product layout
 
-- [products/taskr](products/taskr): Rust task ledger, the taskr hub daemon, TUI, agent
-  adapters, Herdr plugin, installer and product docs.
+- [products/taskr](products/taskr): Rust task ledger and hub daemon, TUI,
+  agent adapters, Herdr plugin, installer and product docs.
 - [products/slotr](products/slotr): resource admission queue for heavy commands.
 - [products/setup](products/setup): public fleet skills, launch helpers,
   integration assets and installer fixtures. taskr owns installation;

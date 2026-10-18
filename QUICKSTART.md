@@ -5,8 +5,8 @@ Run the commands in order from a normal terminal shell. Each step includes a
 check; stop if it fails. An agent helping with setup should ask before changing
 shell profiles, hooks or agent settings. Skill links are the allowed exception;
 existing conflicting links are preserved. Hooks and settings still need the ask.
-The person at the terminal starts
-Herdr: never start or restart its server from inside an agent session.
+The person at the terminal starts Herdr: never start or restart its server
+from inside an agent session.
 
 ## 1. Check prerequisites and get the kit
 
@@ -61,6 +61,9 @@ Optional for several accounts: [install Codator](README.md#optional-codator).
 
 ## 4. Install taskr and the fleet files
 
+An agent must ask before running the fleet installer: it also writes hooks
+and global agent instructions.
+
 Choose the latest release on the
 [Releases page](https://github.com/olafurns7/herdr-kit/releases) with a
 `taskr/vX.Y.Z` tag. The example pins `taskr/v0.25.1`; use a newer published tag
@@ -94,10 +97,11 @@ and [setup assets](products/setup/README.md).
 
 Skip this step on macOS or if you only want the first worker. slotr requires
 a working systemd user manager; see [its requirements](products/slotr/docs/install.md).
-Pick a published `slotr/vX.Y.Z` tag separately from taskr:
+Pick a published slotr tag separately from taskr. The example pins
+`slotr/v0.3.1`; use a newer published tag if needed:
 
 ```sh
-SLOTR_VERSION=slotr/vX.Y.Z sh products/slotr/install.sh --config
+SLOTR_VERSION=slotr/v0.3.1 sh products/slotr/install.sh --config
 slotr --version
 slotr config check
 ```
