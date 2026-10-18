@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" codex-hook",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" codex-hook",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" codex-hook",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" codex-hook",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

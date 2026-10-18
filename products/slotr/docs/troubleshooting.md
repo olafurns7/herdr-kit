@@ -1,0 +1,157 @@
+# Troubleshooting
+
+This file lists the errors slotr and its install steps produce, and what to do about each.
+
+slotr prints its own errors on stderr as `slotr: MESSAGE` and exits 2.
+
+## Install
+
+Install failures print one line on stderr and exit 1. Unknown arguments
+print `usage: sh install.sh [--config]` and exit 2.
+
+**Unsupported host.** `slotr install: Linux x86_64 only` means the release
+cannot run on this platform.
+
+**Missing tools.** `slotr install: missing curl`, `slotr install: missing tar`,
+or `slotr install: missing sha256sum` names the tool to install.
+
+**Download failure.** `slotr install: the release download failed` means an
+archive or checksum could not be downloaded. Check the release URL and network.
+`slotr install: the config download failed` means the example config asset
+could not be downloaded.
+
+**Checksum mismatch.** `slotr install: the checksum did not verify` means
+the hash, line count, or asset name did not match. Download the assets again.
+
+**Unsafe archive.** `slotr install: the archive layout is invalid` means
+members are missing, duplicated, unexpected, or not regular files.
+`slotr install: the archive holds no slotr binary` means extraction failed
+or the extracted file was missing or a symlink. Do not install that archive.
+
+**Write failure.** `slotr install: cannot write ~/.local/bin/slotr`,
+`slotr install: cannot create config directory`, or
+`slotr install: cannot write config` means the destination is not writable.
+Check permissions and free space. `slotr install: cannot create temporary directory`
+means the temporary download directory could not be made.
+`slotr install: HOME is not set` means the shell has no home directory set.
+
+**Binary or config check failed.** `slotr install: slotr --version failed`
+means the installed binary could not report its version.
+`slotr install: slotr config check failed` means the config check failed;
+run `slotr config check ~/.config/slotr/config.toml` to see the reason.
+The binary has already been installed when these checks run.
+
+**Interrupted.** `slotr install: interrupted` means a signal stopped the
+installer. Run it again when ready.
+
+**`slotr: command not found`.** `~/.local/bin` is not on your `PATH`. Run
+`~/.local/bin/slotr`, or add `~/.local/bin` to `PATH`.
+
+## Running
+
+**Exit 75.** With `slotr: stopped RUN: REASON`, slotr stopped the command for
+real pressure or configured lease/idle cleanup. Inspect `events.jsonl` and
+follow the owner's bounded recovery instructions. It is not a failed-check
+receipt. Without that line, 75 may be the workload's own result. Manual stop
+events have reason `manual`; do not automatically retry a cancellation.
+Scheduling no longer emits `priority_yield` or `campaign_yield`. Those reasons
+indicate an older supervisor still running; let it finish under the rollout plan.
+
+**`waiting: legacy_lock` in a heavy pool.** An old caller holds the pool's
+legacy lock with plain `flock`, outside slotr. The waiter is admitted when
+that command ends. The pid is shown when known. Move that caller to
+`slotr run`; see [how-it-works.md](how-it-works.md#a-heavy-pool).
+
+**`no systemd user bus here; run it in a terminal with a systemd user session`.**
+`run` and `stop` need a reachable systemd user bus. Sandboxed agent shells
+and some remote shells have none. Start the command from a terminal in your
+user session, or a Herdr pane. On a platform other than Linux, `run` and
+`stop` print `run and stop require Linux and a systemd user bus`.
+
+**`unknown pool: NAME`.** The pool is not in the effective config. A
+configured `pools` table replaces the built-in `default` pool, so
+`--pool default` fails once you define your own pools. Check with
+`slotr config show`.
+
+**`unknown kind: NAME`.** `--kind` names a kind the pool does not define
+under `kinds`. The error lists that pool's valid kinds, or `none`.
+
+**`campaign must not be empty` or `purpose must not be empty`.** Pass
+nonempty `--campaign` and `--purpose` text.
+
+**`cost exceeds MemTotal minus admission.reserve_mib`.** The request can
+never fit on this machine, so it is rejected before queueing. This check
+applies to memory-gated pools when MemTotal can be read. Lower `--cost`,
+choose another `--kind`, or lower `admission.reserve_mib`.
+
+**`expected duration, e.g. 4h, 300s or 0`.** A `--lease` or `max_lease`
+value is not a valid duration.
+
+**`unknown run: RUN`** from `slotr stop`. Only registered runs can be
+stopped. `slotr status` lists them.
+
+**A run waits for a long time.** While it waits, `slotr run` prints
+`slotr: waiting: REASON` each time the reason changes, and `slotr status`
+shows each waiter's reason. The reasons are `fifo` (another ticket is ahead),
+`no_slot`, `campaign_cap`, `memory_budget`, `psi`, `load`, `ports_busy`,
+`legacy_lock` (with the holder's pid when known), and `recovery` (waiting
+after a stop). `slotr status` alone also shows `ready`: the waiter is first
+and the admission checks pass right now. See [how-it-works.md](how-it-works.md).
+
+`priority_wait` protects a higher-weight campaign below cap, including slot
+or memory shortage and its queue-empty quiet tail. At cap, or with only an
+independent port/legacy-lock blocker, it reserves no unrelated capacity.
+`fair_turn` reserves the next safe turn for an aged eligible ticket; slot
+shortage reserves its pool and memory shortage the shared memory domain.
+`fair_deferred` shows an external blocker without reserving other pools.
+`stale_ticket` needs a resumed heartbeat; its original age and sequence remain.
+Never stop another campaign's work to resolve these waits: ask the hub to
+adjust weights or investigate the resource blocker. Neither 30-second grace
+nor 300-second fairness promises a start deadline.
+
+**`priority_policy_error`.** Managed policy is malformed, unreadable or not a
+regular file. `priority list --json` and `status --json` expose the error and
+resolved path. Repair that store under the hub's authority; do not delete it
+or fall back to zero to bypass policy. Existing workloads remain protected
+by the watchdog using cached weights.
+
+**Manual stop audit failure.** No signal is sent if the requested-event append
+fails. Repair the event path and retry the owned cancellation. A submitted
+intent means systemd accepted the request; only a later observation proves
+completion. Pending crash recovery can retry submission using the same stop ID.
+
+## Config
+
+**`flock guard refused`.** A queue-only target prints its pool/path and a
+`slotr run` recipe. Submit the original workload with its real campaign and
+purpose. Missing/invalid policy, no protected entries, missing/nonregular
+protected files, unknown/ambiguous options, and unresolved target identities
+also exit 2 before native execution. Check the launcher's compile-time absolute binary
+and config paths; changing HOME or `SLOTR_CONFIG` cannot change guard policy.
+For unrelated missing targets, the checker silently allows; the launcher
+then lets native flock decide creation/error behavior. Launcher checker
+exec/fork/wait/restore errors, signal death, and stops also prevent native
+execution; fix the checker or launcher before retrying.
+See [flock.md](flock.md) for the pinned grammar and stable-namespace requirement.
+
+`slotr config check` prints `slotr: config OK` or the first error. Errors
+name the bad key, for example:
+
+- `config KEY: unknown key`, for example `config pools.NAME.slotz: unknown key`
+- `config pools.NAME.slots: must be positive`
+- `config pools.NAME.max_lease` followed by the duration error
+- `config pools.NAME.ports: invalid block range` (base must be at least
+  1024, stride and probe positive, probe at most stride, and
+  base + stride * slots at most 65536)
+- `config pools.NAME.legacy_lock: invalid path or mode`
+- `config watchdog.on_pressure: expected stop, warn or off`, and the same for
+  `lease.on_expiry`
+- `config pools: at least one pool required`
+- `config path must not be empty` for an empty explicit config path
+- `config KEY: invalid environment value` for a bad `SLOTR_...__...`
+  override
+
+`config check FILE` fails when FILE does not exist, with
+`config FILE: No such file or directory`. Without FILE, a missing default
+config is fine and the defaults apply; a missing or empty `SLOTR_CONFIG`
+exits 2.

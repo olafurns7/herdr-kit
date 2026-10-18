@@ -1,0 +1,153 @@
+{
+  "deny": {},
+  "opus-medium": {
+    "kind": "claude",
+    "model": "claude-opus-5-5",
+    "effort": "medium",
+    "prefixes": [
+      "impl",
+      "rs",
+      "rev"
+    ]
+  },
+  "opus-high": {
+    "kind": "claude",
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "prefixes": [
+      "impl",
+      "rs",
+      "orch"
+    ]
+  },
+  "opus-xhigh": {
+    "kind": "claude",
+    "model": "claude-opus-5-5",
+    "effort": "xhigh",
+    "prefixes": [
+      "rev",
+      "arch",
+      "orch"
+    ]
+  },
+  "opus-max": {
+    "kind": "claude",
+    "model": "claude-opus-5-5",
+    "effort": "max",
+    "prefixes": [
+      "rev"
+    ]
+  },
+  "glm": {
+    "kind": "pi",
+    "model": "glm-5.3-flash",
+    "effort": "high",
+    "prefixes": [
+      "glm"
+    ]
+  },
+  "haiku-gather": {
+    "kind": "claude",
+    "model": "claude-haiku-5-5",
+    "effort": "medium",
+    "prefixes": [
+      "gather"
+    ]
+  },
+  "glm-gather": {
+    "kind": "pi",
+    "model": "glm-5.3-flash",
+    "effort": "high",
+    "prefixes": [
+      "gather"
+    ]
+  },
+  "luna-gather": {
+    "kind": "codex",
+    "model": "gpt-6-luna",
+    "effort": "medium",
+    "prefixes": [
+      "gather"
+    ]
+  },
+  "astra-medium": {
+    "kind": "codex",
+    "model": "gpt-6-astra",
+    "effort": "medium",
+    "prefixes": [
+      "arch",
+      "rs",
+      "orch"
+    ]
+  },
+  "astra-high": {
+    "kind": "codex",
+    "model": "gpt-6-astra",
+    "effort": "high",
+    "prefixes": [
+      "rev",
+      "arch",
+      "rs",
+      "orch"
+    ]
+  },
+  "sol-medium": {
+    "kind": "codex",
+    "model": "gpt-6.1-sol",
+    "effort": "medium",
+    "prefixes": [
+      "rev",
+      "rs",
+      "orch"
+    ]
+  },
+  "sol-high": {
+    "kind": "codex",
+    "model": "gpt-6.1-sol",
+    "effort": "high",
+    "prefixes": [
+      "impl",
+      "orch"
+    ]
+  },
+  "fable-high": {
+    "kind": "claude",
+    "model": "claude-fable-5-1",
+    "effort": "high",
+    "prefixes": [
+      "rev"
+    ]
+  },
+  "fable-xhigh": {
+    "kind": "claude",
+    "model": "claude-fable-5-1",
+    "effort": "xhigh",
+    "prefixes": [
+      "arch"
+    ]
+  },
+  "sonnet-high": {
+    "kind": "claude",
+    "model": "claude-sonnet-5-5",
+    "effort": "high",
+    "prefixes": [
+      "impl"
+    ]
+  },
+  "sonnet-medium": {
+    "kind": "claude",
+    "model": "claude-sonnet-5-5",
+    "effort": "medium",
+    "prefixes": [
+      "rs"
+    ]
+  },
+  "terra-medium": {
+    "kind": "codex",
+    "model": "gpt-5.6-terra",
+    "effort": "medium",
+    "prefixes": [
+      "impl"
+    ]
+  }
+}

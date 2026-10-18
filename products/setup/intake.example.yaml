@@ -1,0 +1,18 @@
+# Placeholder example only. The user owns ~/.config/herdr-fleet/intake.yaml.
+# No tokens or auth. GitHub scope and health_root/health_repo stay in taskr tui.json.
+projects:
+  OWNER_PLACEHOLDER/REPO_PLACEHOLDER:
+    local_path: /path/to/project
+    sentry:
+      org: SENTRY_ORG_PLACEHOLDER
+      projects: [SENTRY_PROJECT_PLACEHOLDER]
+    slack_channels: [CHANNEL_NAME_PLACEHOLDER]
+    # Optional existing project instructions; omit paths that do not exist.
+    feature_map: /path/to/project/feature-map.md
+    reproduction_driver: /path/to/project/reproduction-driver
+    # Optional wider read, bounded by the explicitly started intake task.
+    sentry_query: BOUNDED_QUERY_PLACEHOLDER
+# Optional defaults; task authorization sets the actual limits.
+defaults:
+  batch_size: BATCH_SIZE_PLACEHOLDER
+  window: TIME_WINDOW_PLACEHOLDER

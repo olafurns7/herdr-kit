@@ -1,0 +1,71 @@
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" codex-hook",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" codex-hook",
+            "type": "command"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook codex SessionStart >/dev/null 2>&1; true",
+            "timeout": 2,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" codex-hook",
+            "type": "command"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook codex Stop >/dev/null 2>&1; true",
+            "timeout": 2,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" codex-hook",
+            "type": "command"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook codex UserPromptSubmit >/dev/null 2>&1; true",
+            "timeout": 2,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

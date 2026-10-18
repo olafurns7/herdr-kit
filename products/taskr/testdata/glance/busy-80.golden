@@ -1,0 +1,18 @@
+taskr · 17:30 · 2s                                                    2 need you
+────────────────────────────────────────────────────────────────────────────────
+» checkout-redesign  12m  BLOCKING  → wDemoA:p1  lane failed
+  Merge #104 now or wait for M3?
+» billing-fix  1h
+  approve prod deploy of #103
+────────────────────────────────────────────────────────────────────────────────
+! settings-form  lead blocked 4m
+  lint gate exit 1
+⌛ lead-docs  idle · 3 results 31h
+  reports ready to review
+✗ docs-site  lead gone 5m
+  lead pane wDemoB:p1 is not in its host's agent list
+────────────────────────────────────────────────────────────────────────────────
+● docs-site          3/5    2m   S4 merged
+● checkout-redesign  2/2    14m  M1 review ok
+○ billing-fix        0/1    28m
+· 13 quiet

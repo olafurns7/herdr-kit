@@ -1,0 +1,1283 @@
+//! Local write command routing and Go-compatible output.
+use serde_json::{Value, json};
+use taskr_core::{
+    ExitCode, compact_json, db,
+    goflag::FlagSet,
+    store::{self, Error, Result, documents, orch, worker},
+};
+
+mod dialog;
+mod handover;
+#[path = "../herdr.rs"]
+pub(crate) mod herdr;
+mod hook;
+pub(crate) use dialog::hook as dialog_hook;
+mod inbox;
+pub(crate) use inbox::observe::{daemon_observe, host_snapshot};
+mod prompt;
+mod question;
+pub(crate) use prompt::{Attempt, Delivery, begin, finish, route as prompt_route};
+
+pub fn flags(cmd: &str, json: bool) -> FlagSet {
+    let mut f = FlagSet::new(cmd, json);
+    match cmd {
+        "message status" => {
+            f.int("as", 0, "the sender root's own task id");
+        }
+        "next" => {
+            f.bool("clear", false, "clear the lane's next step");
+        }
+        "after" => {
+            f.int("as", 0, "the root orchestrator's own task id")
+                .string(
+                    "on",
+                    "",
+                    "kinds, comma-separated: for a task done, ready, closed, fail (default done,closed); for pr: any pr sub (default merged)",
+                )
+                .bool("keep", false, "fire on every match until the waiter closes (default: once)")
+                .bool("list", false, "list the --as root's subscriptions")
+                .int("cancel", 0, "cancel this subscription id");
+        }
+        "delivery new" | "delivery submitted" | "delivery received" | "delivery ls"
+        | "delivery state" | "delivery exhausted" => {
+            f.int(
+                "as",
+                0,
+                "a root orchestrator's own task id (a worker uses TASKR_TASK and TASKR_LAUNCH)",
+            );
+            if cmd == "delivery ls" {
+                f.bool("open", false, "only attempts not yet received");
+            } else {
+                f.int(
+                    "session",
+                    0,
+                    "with --as: the root's generation, the event id `taskr adopt` printed (0 before any adopt)",
+                );
+            }
+            if cmd == "delivery state" {
+                f.string("adapter", "", "the delivering adapter").int(
+                    "after",
+                    0,
+                    "attempt watermark before an uncertain insert",
+                );
+            }
+            if cmd == "delivery new" || cmd == "delivery exhausted" {
+                f.string(
+                    "adapter",
+                    "",
+                    "the delivering adapter, [a-z0-9][a-z0-9._-]{0,31}",
+                )
+                .int(
+                    "fence",
+                    0,
+                    "the live consumer lease's fence; required while a lease is live",
+                );
+            }
+        }
+        "consumer take" | "consumer renew" | "consumer release" | "consumer show" => {
+            f.int(
+                "as",
+                0,
+                "a root orchestrator's own task id (a worker uses TASKR_TASK and TASKR_LAUNCH)",
+            );
+            if cmd != "consumer show" {
+                f.int(
+                    "session",
+                    0,
+                    "with --as: the root's generation, the event id `taskr adopt` printed (0 before any adopt)",
+                );
+            }
+            match cmd {
+                "consumer take" => {
+                    f.string(
+                        "holder",
+                        "",
+                        "a label for the consumer, [a-z0-9][a-z0-9._-]{0,31}",
+                    )
+                    .int("ttl", 0, "lease milliseconds, 1000 to 3600000")
+                    .bool(
+                        "force",
+                        false,
+                        "take over a live lease or a marked wait",
+                    );
+                }
+                "consumer renew" => {
+                    f.int("fence", 0, "the fence take returned").int(
+                        "ttl",
+                        0,
+                        "lease milliseconds from now, 1000 to 3600000",
+                    );
+                }
+                "consumer release" => {
+                    f.int("fence", 0, "the fence take returned");
+                }
+                _ => {}
+            }
+        }
+        "decide" => {
+            f.int("as", 0, "the root orchestrator's own task id").int(
+                "revoke",
+                0,
+                "retire this decision (or answered owner ask) event",
+            );
+        }
+        "adopt" => {
+            f.string(
+                "workspace",
+                "",
+                "Herdr workspace id (default: HERDR_WORKSPACE_ID)",
+            )
+            .string("tab", "", "Herdr tab id (default: HERDR_TAB_ID)")
+            .string("pane", "", "Herdr pane id (default: HERDR_PANE_ID)");
+        }
+        "doc rm" => {
+            f.bool("purge",false,"delete all versions and unshared blobs; the write-ahead log and earlier backups can still hold the text");
+        }
+        "doc backfill" => {
+            f.int("tree", 0, "only this task and descendants").bool(
+                "dry-run",
+                false,
+                "count without writing",
+            );
+        }
+        "new" => {
+            f.int("parent", 0, "parent task id")
+                .string(
+                    "role",
+                    "",
+                    "orchestrator | sub-orchestrator | implementer | reviewer | researcher | gate",
+                )
+                .string("workspace", "", "Herdr workspace id")
+                .string("tab", "", "Herdr tab id")
+                .string("pane", "", "Herdr pane id")
+                .string("cwd", "", "task working directory (default: current)")
+                .string("brief", "", "brief path")
+                .string("report", "", "report path")
+                .bool(
+                    "planned",
+                    false,
+                    "a planned lane: no launch until `taskr launch`",
+                )
+                .string("machine", "", "the task's host (default: the caller's)");
+        }
+        "launch" => {
+            f.string("provider", "", "claude | codex | ...")
+                .string("model", "", "model id")
+                .string("effort", "", "effort level")
+                .string(
+                    "workspace",
+                    "",
+                    "move the task to this Herdr workspace (default: keep)",
+                )
+                .string("tab", "", "move the task to this Herdr tab (default: keep)")
+                .string(
+                    "pane",
+                    "",
+                    "move the task to this pane (default: the task's pane)",
+                )
+                .string("agent", "", "Herdr agent name (default: the task name)")
+                .string(
+                    "herdr-scope",
+                    "",
+                    "Herdr server socket and session the pane id belongs to",
+                )
+                .string("machine", "", "the launch's host (default: the task's)");
+        }
+        "note" => {
+            f.string("key", "", "idempotency key")
+                .bool("owner", false, "for the owner; root orchestrators only")
+                .int("as", 0, "a root orchestrator's own task id");
+        }
+        "ready" => {
+            f.string("report", "", "report path")
+                .string("key", "", "idempotency key")
+                .strings("kv", "KEY=VALUE, repeatable");
+        }
+        "ask" => {
+            f.bool(
+                "blocking",
+                false,
+                "the worker cannot continue without an answer",
+            )
+            .bool(
+                "owner",
+                false,
+                "a question for the owner; routed to the root",
+            )
+            .string(
+                "question",
+                "",
+                "one AskUserQuestion-shaped `JSON` object (with --owner); TEXT becomes optional context",
+            )
+            .bool("dialog", false, "an owner ask relayed from the hub's question dialog")
+            .string("key", "", "idempotency key")
+            .int("as", 0, "a root orchestrator's own task id");
+        }
+        "done" | "fail" => {
+            f.string("key", "", "idempotency key");
+        }
+        "close" => {
+            f.bool(
+                "clean-tmp",
+                false,
+                "remove this host's lane tmp dir after close (a root: the campaign)",
+            );
+            f.string("outcome","","accepted (work taken as delivered) | reworked (taken after a fix round) | rejected (not taken) | abandoned (stopped before a result)");
+        }
+        "answer" => {
+            f.int("as", 0, "the task that received the ask")
+                .bool("prompt", false, "also prompt the asker with the answer")
+                .bool("supersede", false, "replace the current answer; keep both in the log")
+                .bool(
+                    "withdraw",
+                    false,
+                    "withdraw a stale ask (not an owner answer); --as the asker's root or a hub root",
+                )
+                .bool(
+                    "confirm",
+                    false,
+                    "with --prompt: wait for the asker's taskr got receipt",
+                )
+                .int(
+                    "confirm-timeout",
+                    60000,
+                    "milliseconds to wait for the receipt",
+                );
+        }
+        "ack" => {
+            f.int("as", 0, "task id whose inbox event to ack")
+                .int(
+                    "fence",
+                    0,
+                    "ack as the holder of this live consumer lease fence",
+                )
+                .int(
+                    "session",
+                    0,
+                    "with --as ROOT --fence: the root's generation (adopt event id, 0 before any adopt)",
+                );
+        }
+        "wait" => {
+            f.int(
+                "as",
+                0,
+                "task id whose inbox to read (an orchestrator, or a worker waiting on its own ask)",
+            )
+            .int("timeout", 540000, "milliseconds")
+            .bool(
+                "scan-quota",
+                false,
+                "also scan children's visible panes for quota lines",
+            )
+            .int("ack", 0, "ack this pending handled event, then wait")
+            .strings(
+                "for",
+                "only return these event kinds (comma-separated; repeatable)",
+            )
+            .strings(
+                "from",
+                "only return events from this task name or id (repeatable)",
+            )
+            .int(
+                "fence",
+                0,
+                "consume as the holder of this live consumer lease fence",
+            )
+            .int(
+                "session",
+                0,
+                "with --as ROOT --fence: the root's generation (adopt event id, 0 before any adopt)",
+            );
+        }
+        "doc set" => {
+            f.string("file", "", "document file, read on any host")
+                .string("name", "", "plan name, [a-z0-9][a-z0-9._-]{0,63}");
+        }
+        "prompt" => {
+            f.int("as",0,"the sender root for orchestrator messages").bool("push",false,"require a push-live root target").bool("pane",false,"force pane delivery").string("file","","prompt file; the agent is told to read it").string("text","","literal prompt text").bool("confirm",false,"after observed activity, wait for the worker's taskr got receipt").int("confirm-timeout",60000,"milliseconds to wait for the receipt").int("receipt-timeout",300000,"without --confirm: milliseconds until a missing receipt alarms the parent; 0 disarms");
+        }
+        "handover" => {
+            f.int("as", 0, "the root orchestrator's own task id")
+                .string("note", "", "a note for the successor")
+                .string("out", "", "also write the Markdown to this file");
+        }
+        _ => {}
+    }
+    f
+}
+fn usage_line(cmd: &str) -> String {
+    crate::cli::usage_line(match cmd.split_once(' ') {
+        Some((head @ ("delivery" | "consumer"), _)) => head,
+        _ => cmd,
+    })
+}
+/// The first of `names` given more than once, in any `-x`, `--x` or `--x=v` form;
+/// `-h` and `--help` are one flag.
+pub(crate) fn repeated<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
+    let mut seen = vec![];
+    for s in args.iter().take_while(|s| s.as_str() != "--") {
+        let Some(raw) = s.strip_prefix('-') else {
+            continue;
+        };
+        let name = match raw.trim_start_matches('-').split('=').next().unwrap_or("") {
+            "h" => "help",
+            name => name,
+        };
+        if names.contains(&name) {
+            if seen.contains(&name) {
+                return Some(name);
+            }
+            seen.push(name);
+        }
+    }
+    None
+}
+
+pub(crate) fn error(json: bool, cmd: &str, e: Error, mut out: Value) -> ExitCode {
+    let kind = match e.code {
+        ExitCode::Watch => "tmp",
+        ExitCode::Usage => "usage",
+        ExitCode::Rejected => "rejected",
+        ExitCode::Transport => "herdr",
+        ExitCode::NotImplemented => "not_implemented",
+        _ => "database",
+    };
+    if !out.is_object() {
+        out = json!({});
+    }
+    out["error"] = json!(e.message);
+    if out["kind"].is_null() {
+        out["kind"] = json!(kind);
+    }
+    if json {
+        eprintln!("taskr {cmd}: {}", e.message);
+        println!("{}", compact_json(&out).expect("JSON"));
+    } else {
+        let mut m = serde_json::Map::new();
+        for (k, v) in out.as_object().expect("object") {
+            let key = match k.as_str() {
+                "error" => "err",
+                "kind" => "k",
+                "attempt_id" => "p",
+                "outcome" => "o",
+                "outcome_event_id" => "oe",
+                "receipt_event_id" => "g",
+                "receipt" => "gok",
+                "round" => "r",
+                "answer_id" => "a",
+                "delivered" => "sent",
+                "asker_waiting" => "w",
+                "receipt_due_ms" => "due",
+                "event_id" => "e",
+                "decision_id" => "dc",
+                other => other,
+            };
+            m.insert(key.into(), v.clone());
+        }
+        println!(
+            "x1 {} {}",
+            e.code as u8,
+            compact_json(&Value::Object(m)).expect("JSON")
+        );
+    }
+    e.code
+}
+pub fn emit(cmd: &str, json_mode: bool, v: &Value) {
+    if json_mode {
+        println!("{}", compact_json(v).expect("JSON"));
+        return;
+    }
+    let suffix = if v["duplicate"] == true { " dup" } else { "" };
+    match cmd {
+        "new" => println!(
+            "n1 {}{}",
+            v["task_id"],
+            if v["status"] == "planned" {
+                " planned"
+            } else {
+                ""
+            }
+        ),
+        "got" => println!("g1 {} {}{suffix}", v["event_id"], v["round"]),
+        "start" | "note" | "ready" | "ask" | "done" | "fail" => println!(
+            "{}1 {}{suffix}",
+            match cmd {
+                "start" => "s",
+                "note" => "n",
+                "ready" => "r",
+                "ask" => "q",
+                "done" => "d",
+                _ => "f",
+            },
+            v["event_id"]
+        ),
+        "close" => {
+            println!(
+                "c1 {}{}",
+                v["task_id"],
+                if v["already"] == true { " already" } else { "" }
+            );
+            if let Some(teardown) = v.get("teardown") {
+                println!(
+                    "j1 {}",
+                    compact_json(&json!({"teardown":teardown})).expect("JSON")
+                );
+            }
+        }
+        "ack" => println!(
+            "k1 {}{}",
+            v["acked_event_id"],
+            if v["already"] == true { " already" } else { "" }
+        ),
+        "launch" => {
+            let mut m = json!({});
+            for k in [
+                "launch_id",
+                "replaced_launch_id",
+                "status",
+                "was_planned",
+                "root_id",
+                "tmpdir",
+            ] {
+                if v.get(k).is_some() {
+                    m[k] = v[k].clone();
+                }
+            }
+            println!("l1 {}", compact_json(&m).expect("JSON"));
+        }
+        "doc set" => println!(
+            "ds1 {} {}{}",
+            v["doc_id"],
+            v["version"],
+            if v["same"] == true { " same" } else { "" }
+        ),
+        "doc rm" => println!("dr1 {} {}", v["doc_id"], v["removed"]),
+        "doc backfill" => println!("j1 {}", compact_json(v).expect("JSON")),
+        "next" => println!(
+            "nx1 {}{}",
+            v["event_id"],
+            if v["next"].is_null() { " clear" } else { "" }
+        ),
+        "decide" => {
+            let mut out = json!({"e":v["event_id"],"k":v["kind"]});
+            if v.get("decision_id").is_some() {
+                out["dc"] = v["decision_id"].clone();
+            }
+            if v.get("revoked").is_some() {
+                out["revoked"] = v["revoked"].clone();
+            }
+            println!("dc1 {}", compact_json(&out).expect("JSON"));
+        }
+        "set" => println!("rf1 {}", compact_json(&v["event_ids"]).expect("JSON")),
+        "after" => match v["subscriptions"].as_array() {
+            Some(rows) => {
+                for r in rows {
+                    println!("j1 {}", compact_json(r).expect("JSON"));
+                }
+            }
+            None => println!(
+                "af1 {}{}",
+                v["subscription_id"],
+                if v["cancelled"] == true {
+                    " cancelled"
+                } else {
+                    ""
+                }
+            ),
+        },
+        "message status" | "delivery exhausted" => crate::cli::emit(false, v, false),
+        "delivery state" => println!("j1 {}", compact_json(v).expect("JSON")),
+        "delivery ls" => {
+            for r in v["attempts"].as_array().expect("attempts") {
+                println!("j1 {}", compact_json(r).expect("JSON"));
+            }
+        }
+        "consumer take" | "consumer renew" | "consumer release" | "consumer show" => {
+            if v["live"] == true {
+                println!(
+                    "cs1 {} live {} {} {}",
+                    v["fence"],
+                    v["holder"].as_str().unwrap_or(""),
+                    v["expires_at"].as_str().unwrap_or(""),
+                    if v["launch_id"].is_null() {
+                        format!("session={}", v["session_gen"])
+                    } else {
+                        format!("launch={}", v["launch_id"])
+                    }
+                );
+            } else {
+                println!("cs1 {} free", v["fence"]);
+            }
+        }
+        "delivery new" | "delivery submitted" | "delivery received" => println!(
+            "dv1 {} {} {}{suffix}",
+            v["attempt_id"],
+            v["state"].as_str().unwrap_or(""),
+            if v["launch_id"].is_null() {
+                format!("session={}", v["session_gen"])
+            } else {
+                format!("launch={}", v["launch_id"])
+            }
+        ),
+        "prompt" if v["path"] == "push" => println!("m1 {}", compact_json(v).expect("JSON")),
+        "prompt" | "answer" => {
+            let mut m = json!({});
+            for (k, v) in v.as_object().expect("object") {
+                if ["task_id", "ask_id", "target", "ok", "agent_status"].contains(&k.as_str()) {
+                    continue;
+                }
+                let key = match k.as_str() {
+                    "attempt_id" => "p",
+                    "outcome" => "o",
+                    "outcome_event_id" => "oe",
+                    "receipt_event_id" => "g",
+                    "receipt" => "gok",
+                    "round" => "r",
+                    "answer_id" => "a",
+                    "delivered" => "sent",
+                    "asker_waiting" => "w",
+                    "receipt_due_ms" => "due",
+                    other => other,
+                };
+                m[key] = v.clone();
+            }
+            println!(
+                "{}1 {}",
+                if cmd == "prompt" { "p" } else { "a" },
+                compact_json(&m).expect("JSON")
+            );
+        }
+        "wait" => inbox::emit_wait(v),
+        _ => {}
+    }
+}
+pub fn dispatch(json_mode: bool, args: &[String]) -> Option<ExitCode> {
+    let raw = args.first()?.as_str();
+    if raw == "hook" {
+        return Some(hook::run(&args[1..]));
+    }
+    let (cmd, tail) = if raw == "doc"
+        && args
+            .get(1)
+            .is_some_and(|s| ["set", "rm", "backfill"].contains(&s.as_str()))
+    {
+        (
+            match args[1].as_str() {
+                "set" => "doc set",
+                "rm" => "doc rm",
+                _ => "doc backfill",
+            },
+            &args[2..],
+        )
+    } else if matches!(raw, "delivery" | "consumer" | "message") {
+        const SUBS: [(&str, &str); 11] = [
+            ("status", "message status"),
+            ("new", "delivery new"),
+            ("submitted", "delivery submitted"),
+            ("received", "delivery received"),
+            ("ls", "delivery ls"),
+            ("state", "delivery state"),
+            ("exhausted", "delivery exhausted"),
+            ("take", "consumer take"),
+            ("renew", "consumer renew"),
+            ("release", "consumer release"),
+            ("show", "consumer show"),
+        ];
+        let Some((_, cmd)) = SUBS
+            .iter()
+            .find(|(s, cmd)| cmd.starts_with(raw) && args.get(1).is_some_and(|a| a == s))
+        else {
+            let mut f = flags(raw, json_mode);
+            if f.parse(&args[1..], 0, usize::MAX).is_ok() && f.help() {
+                // As the hub's check_args: a repeated help flag is refused, not read as help.
+                if let Some(k) = repeated(&args[1..], &["help"]) {
+                    return Some(error(
+                        f.json(),
+                        raw,
+                        store::usage(format!("{raw}: --{k} given more than once")),
+                        json!({}),
+                    ));
+                }
+                print!("{}", f.usage(&usage_line(raw)));
+                return Some(ExitCode::Ok);
+            }
+            return Some(error(
+                f.json(),
+                raw,
+                store::usage(match raw {
+                    "delivery" => "delivery needs new, submitted, received or ls",
+                    "message" => "message needs status",
+                    _ => "consumer needs take, renew, release or show",
+                }),
+                json!({}),
+            ));
+        };
+        (*cmd, &args[2..])
+    } else {
+        (raw, &args[1..])
+    };
+    if ![
+        "_dialog",
+        "new",
+        "launch",
+        "start",
+        "got",
+        "note",
+        "ask",
+        "answer",
+        "ready",
+        "done",
+        "fail",
+        "close",
+        "set",
+        "ack",
+        "wait",
+        "doc set",
+        "doc rm",
+        "doc backfill",
+        "prompt",
+        "handover",
+        "adopt",
+        "next",
+        "decide",
+        "after",
+        "delivery new",
+        "delivery submitted",
+        "delivery received",
+        "delivery ls",
+        "delivery state",
+        "delivery exhausted",
+        "message status",
+        "consumer take",
+        "consumer renew",
+        "consumer release",
+        "consumer show",
+    ]
+    .contains(&cmd)
+    {
+        return None;
+    }
+    let mut f = flags(cmd, json_mode);
+    let (min, max) = match cmd {
+        "start" | "wait" | "handover" | "doc backfill" | "delivery ls" => (0, 0),
+        "consumer take" | "consumer renew" | "consumer release" | "consumer show" => (0, 0),
+        "decide" | "after" => (0, 1),
+        "next" => (1, 2),
+        "done" => (0, 1),
+        "answer" | "doc set" | "_dialog" => (2, 2),
+        "set" => (2, 41),
+        // ask's TEXT is optional with --question: checked below, once flags are known.
+        "ask" => (0, 1),
+        _ => (1, 1),
+    };
+    let mut parsed = f.parse(tail, min, max);
+    if parsed.is_ok()
+        && cmd == "ask"
+        && !f.help()
+        && !f.was_set("question")
+        && f.positional.len() != 1
+    {
+        parsed = Err(format!(
+            "ask: expected 1 to 1 positional arguments, got {}",
+            f.positional.len()
+        ));
+    }
+    // A repeated help flag would run as a write locally but read as help to the hub.
+    let once: &[&str] = match cmd {
+        "prompt" | "message status" => &["as", "push", "pane", "help"],
+        _ if cmd.starts_with("delivery ") => {
+            &["as", "session", "adapter", "fence", "after", "help"]
+        }
+        _ if cmd.starts_with("consumer ") => {
+            &["as", "session", "holder", "ttl", "fence", "force", "help"]
+        }
+        // wait and ack: only once a consumer flag is given, so plain calls are unchanged.
+        "wait" | "ack" if f.was_set("fence") || f.was_set("session") => {
+            &["fence", "session", "help"]
+        }
+        _ => &[],
+    };
+    if parsed.is_ok()
+        && let Some(k) = repeated(tail, once)
+    {
+        parsed = Err(format!("{cmd}: --{k} given more than once"));
+    }
+    if let Err(e) = parsed {
+        return Some(error(f.json(), raw, store::usage(e), json!({})));
+    }
+    if f.help() {
+        print!("{}", f.usage(&usage_line(cmd)));
+        return Some(ExitCode::Ok);
+    }
+    let result = run(cmd, &f);
+    Some(match result {
+        Ok(v) => {
+            if v.get("error").is_some() {
+                let mut v = v;
+                let code = match v["_exit"].as_u64().unwrap_or(4) {
+                    2 => ExitCode::Usage,
+                    3 => ExitCode::Timeout,
+                    5 => ExitCode::Transport,
+                    6 => ExitCode::Rejected,
+                    _ => ExitCode::Database,
+                };
+                v.as_object_mut().expect("object").remove("_exit");
+                let message = v["error"].as_str().unwrap_or("").to_string();
+                return Some(error(f.json(), raw, Error { code, message }, v));
+            }
+            if cmd == "handover" || cmd == "adopt" {
+                return Some(ExitCode::Ok);
+            }
+            emit(cmd, f.json(), &v);
+            if v["timeout"] == true && (f.json() || v["interrupted"] == true) {
+                ExitCode::Timeout
+            } else {
+                ExitCode::Ok
+            }
+        }
+        Err(e) => error(f.json(), raw, e, json!({})),
+    })
+}
+/// A worker (TASKR_LAUNCH set) never passes a root's `--session`: a usage error, not a
+/// rejection, so it is never read as lost authority.
+pub(super) const WORKER_SESSION: &str =
+    "--session is for a root's --as ROOT; a worker uses TASKR_TASK and TASKR_LAUNCH";
+/// `--session GEN` for a root's `--as ROOT`: required with it, refused without it.
+fn root_session(f: &FlagSet, as_id: i64) -> Result<Option<i64>> {
+    let session = if f.was_set("session") {
+        if f.get_int("session") < 0 {
+            return Err(store::usage("--session must be 0 or an adopt event id"));
+        }
+        if as_id == 0 {
+            return Err(store::usage("--session needs --as ROOT"));
+        }
+        Some(f.get_int("session"))
+    } else {
+        None
+    };
+    if as_id != 0 && session.is_none() {
+        return Err(store::usage(
+            "--as ROOT needs --session GEN: the event id `taskr adopt` printed, 0 before any adopt",
+        ));
+    }
+    Ok(session)
+}
+fn positive_fence(f: &FlagSet) -> Result<i64> {
+    let fence = f.get_int("fence");
+    if fence <= 0 {
+        return Err(store::usage("--fence must be a positive fence"));
+    }
+    Ok(fence)
+}
+/// An adapter or holder label: [a-z0-9][a-z0-9._-]{0,31}.
+fn token(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 32
+        && (s.as_bytes()[0].is_ascii_lowercase() || s.as_bytes()[0].is_ascii_digit())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+}
+fn open() -> Result<db::Connection> {
+    let path = db::path().map_err(store::usage)?;
+    let db = db::open(&path).map_err(|message| Error {
+        code: ExitCode::Database,
+        message,
+    })?;
+    if store::rpc_context().is_none() {
+        db.busy_timeout(std::time::Duration::from_secs(30))?;
+    }
+    Ok(db)
+}
+fn run(cmd: &str, f: &FlagSet) -> Result<Value> {
+    let p = &f.positional;
+    match cmd {
+        "_dialog" => dialog::apply(&p[0], &p[1]),
+        "message status" => store::message::status(
+            &open()?,
+            store::id(&f.positional[0], "event id")?,
+            f.get_int("as"),
+        ),
+        "next" => {
+            let id = store::id(&p[0], "task id")?;
+            let text = p.get(1).map_or("", String::as_str).trim();
+            let clear = f.get_bool("clear");
+            if clear && p.len() == 2 {
+                return Err(store::usage("next: give TEXT or --clear, not both"));
+            }
+            if !clear && text.is_empty() {
+                return Err(store::usage("next needs TEXT or --clear"));
+            }
+            store::plan::next(&mut open()?, id, text, clear)
+        }
+        "decide" => {
+            let id = f.get_int("as");
+            if id <= 0 {
+                return Err(store::usage("decide needs --as ROOT_TASK_ID"));
+            }
+            let text = p.first().map_or("", String::as_str).trim();
+            let revoke = f.get_int("revoke");
+            if (revoke != 0) == (!text.is_empty()) {
+                return Err(store::usage(
+                    "decide needs exactly one of TEXT and --revoke EVENT_ID",
+                ));
+            }
+            if revoke < 0 {
+                return Err(store::usage("--revoke must be a positive event id"));
+            }
+            store::plan::decide(&mut open()?, id, text, revoke)
+        }
+        "after" => {
+            if f.was_set("cancel") {
+                if f.get_int("cancel") <= 0 {
+                    return Err(store::usage("--cancel must be a positive subscription id"));
+                }
+                if !p.is_empty() || ["as", "on", "keep", "list"].iter().any(|k| f.was_set(k)) {
+                    return Err(store::usage("after --cancel ID takes nothing else"));
+                }
+                return store::after::cancel(&mut open()?, f.get_int("cancel"));
+            }
+            let as_id = f.get_int("as");
+            if as_id <= 0 {
+                return Err(store::usage("after needs --as ROOT_TASK_ID"));
+            }
+            if f.get_bool("list") {
+                if !p.is_empty() || f.was_set("on") || f.was_set("keep") {
+                    return Err(store::usage("after --list takes only --as"));
+                }
+                return store::after::list(&open()?, as_id);
+            }
+            let Some(target) = p.first() else {
+                return Err(store::usage(
+                    "after needs TARGET: a task id, pr:N or pr:owner/repo#N",
+                ));
+            };
+            let (target, allowed, default) = if let Some(pr) = target.strip_prefix("pr:") {
+                (
+                    crate::daemon::github::target(pr)?,
+                    store::after::PR_SUBS,
+                    "merged",
+                )
+            } else if let Ok(id) = store::id(target, "TARGET") {
+                (id.to_string(), store::after::TASK_KINDS, "done,closed")
+            } else {
+                return Err(store::usage(format!(
+                    "after: TARGET is a task id, pr:N or pr:owner/repo#N, got {target:?}"
+                )));
+            };
+            let on = if f.was_set("on") {
+                f.get_string("on")
+            } else {
+                default
+            };
+            let mut kinds: Vec<&str> = vec![];
+            for k in on.split(',') {
+                if !allowed.contains(&k) {
+                    return Err(store::usage(format!(
+                        "--on: {k:?} is not one of {}",
+                        allowed.join(", ")
+                    )));
+                }
+                if !kinds.contains(&k) {
+                    kinds.push(k);
+                }
+            }
+            store::after::add(
+                &mut open()?,
+                as_id,
+                &target,
+                &kinds.join(","),
+                f.get_bool("keep"),
+            )
+        }
+        "delivery new" | "delivery submitted" | "delivery received" | "delivery ls"
+        | "delivery state" | "delivery exhausted" => {
+            let as_id = f.get_int("as");
+            if f.was_set("as") && as_id <= 0 {
+                return Err(store::usage("--as must be a positive task id"));
+            }
+            if cmd == "delivery ls" {
+                return store::delivery::list(&open()?, as_id, f.get_bool("open"));
+            }
+            let session = root_session(f, as_id)?;
+            if cmd == "delivery state" {
+                let id = store::id(&p[0], "event id")?;
+                let adapter = f.get_string("adapter");
+                let after = f.get_int("after");
+                if !token(adapter) || after < 0 {
+                    return Err(store::usage(
+                        "delivery state needs --adapter NAME and nonnegative --after",
+                    ));
+                }
+                return store::delivery::state(&open()?, as_id, session, id, adapter, after);
+            }
+            if cmd == "delivery exhausted" {
+                let id = store::id(&p[0], "event id")?;
+                let fence = if f.was_set("fence") {
+                    Some(f.get_int("fence"))
+                } else {
+                    None
+                };
+                return store::delivery::exhausted(&mut open()?, as_id, session, id, fence);
+            }
+            if cmd != "delivery new" {
+                let id = store::id(&p[0], "attempt id")?;
+                return if cmd == "delivery submitted" {
+                    store::delivery::submitted(&mut open()?, as_id, session, id)
+                } else {
+                    store::delivery::received(&mut open()?, as_id, session, id)
+                };
+            }
+            let id = store::id(&p[0], "event id")?;
+            let adapter = f.get_string("adapter");
+            if !token(adapter) {
+                return Err(store::usage(
+                    "delivery new needs --adapter NAME matching [a-z0-9][a-z0-9._-]{0,31}",
+                ));
+            }
+            let fence = if f.was_set("fence") {
+                Some(positive_fence(f)?)
+            } else {
+                None
+            };
+            store::delivery::new(&mut open()?, as_id, session, id, adapter, fence)
+        }
+        "consumer take" | "consumer renew" | "consumer release" | "consumer show" => {
+            let as_id = f.get_int("as");
+            if f.was_set("as") && as_id <= 0 {
+                return Err(store::usage("--as must be a positive task id"));
+            }
+            if cmd == "consumer show" {
+                return store::consumer::show(&open()?, as_id);
+            }
+            if f.was_set("session") && !store::env("TASKR_LAUNCH").is_empty() {
+                return Err(store::usage(WORKER_SESSION));
+            }
+            let session = root_session(f, as_id)?;
+            let ttl = if cmd == "consumer release" {
+                0
+            } else {
+                f.get_int("ttl")
+            };
+            if cmd != "consumer release" && !(1000..=3_600_000).contains(&ttl) {
+                return Err(store::usage("--ttl must be 1000 to 3600000 milliseconds"));
+            }
+            if cmd == "consumer take" {
+                let holder = f.get_string("holder");
+                if !token(holder) {
+                    return Err(store::usage(
+                        "consumer take needs --holder NAME matching [a-z0-9][a-z0-9._-]{0,31}",
+                    ));
+                }
+                return store::consumer::take(
+                    &mut open()?,
+                    as_id,
+                    session,
+                    holder,
+                    ttl,
+                    f.get_bool("force"),
+                );
+            }
+            let fence = positive_fence(f)?;
+            if cmd == "consumer renew" {
+                store::consumer::renew(&mut open()?, as_id, session, fence, ttl)
+            } else {
+                store::consumer::release(&mut open()?, as_id, session, fence)
+            }
+        }
+        "doc rm" => {
+            let id = store::id(&p[0], "document id")?;
+            if !f.get_bool("purge") {
+                return Err(store::usage(
+                    "doc rm requires --purge; the write-ahead log and earlier backups can still hold the text",
+                ));
+            }
+            documents::purge(&mut open()?, id)
+        }
+        "doc backfill" => {
+            let tree = f.get_int("tree");
+            if tree < 0 {
+                return Err(store::usage("--tree must be a positive task id"));
+            }
+            documents::backfill(&mut open()?, tree, f.get_bool("dry-run"))
+        }
+        "adopt" => handover::adopt(f),
+        "new" => {
+            orch::valid_name(&p[0], "name")?;
+            if f.get_bool("planned") && f.get_int("parent") == 0 {
+                return Err(store::usage(
+                    "--planned needs --parent: a plan is a lane of an orchestrator",
+                ));
+            }
+            if ![
+                "orchestrator",
+                "sub-orchestrator",
+                "implementer",
+                "reviewer",
+                "researcher",
+                "gate",
+            ]
+            .contains(&f.get_string("role"))
+            {
+                return Err(store::usage(
+                    "--role must be one of orchestrator, sub-orchestrator, implementer, reviewer, researcher, gate",
+                ));
+            }
+            orch::validate_location(f)?;
+            orch::new(&mut open()?, f)
+        }
+        "launch" => {
+            let id = store::id(&p[0], "task id")?;
+            if ["provider", "model", "effort"]
+                .iter()
+                .any(|k| f.get_string(k).is_empty())
+            {
+                return Err(store::usage(
+                    "launch needs --provider, --model and --effort",
+                ));
+            }
+            if f.was_set("agent") {
+                orch::valid_name(f.get_string("agent"), "--agent")?;
+            }
+            orch::validate_location(f)?;
+            let mut db = open()?;
+            let mut v = orch::launch(&mut db, id, f)?;
+            // The contract golden pins the --json object: the tmp dir is compact-only.
+            if !f.json() {
+                let root = store::root(&db, id)?;
+                v["root_id"] = json!(root);
+                v["tmpdir"] = json!(crate::tmp::lane(root, id).to_string_lossy());
+            }
+            Ok(v)
+        }
+        "start" => worker::start(&mut open()?),
+        "got" => {
+            let id = store::id(&p[0], "attempt event id")?;
+            worker::got(&mut open()?, id)
+        }
+        "note" | "ask" | "ready" | "done" | "fail" => {
+            let as_id = if matches!(cmd, "note" | "ask") {
+                f.get_int("as")
+            } else {
+                0
+            };
+            if as_id < 0 {
+                return Err(store::usage("--as must be a positive task id"));
+            }
+            let owner = matches!(cmd, "note" | "ask") && f.get_bool("owner");
+            if cmd == "note" && owner && (!store::env("TASKR_TASK").is_empty() || as_id == 0) {
+                return Err(store::reject(
+                    "--owner: only a root orchestrator's own note",
+                ));
+            }
+            let mut summary = p.first().cloned().unwrap_or_default();
+            let mut data = match cmd {
+                "ask" => Some(json!({"blocking":f.get_bool("blocking"),"owner":owner})),
+                "note" if owner => Some(json!({"owner":true})),
+                "ready" => Some(json!({})),
+                _ => None,
+            };
+            if cmd == "ask" {
+                let d = data.as_mut().expect("ask data");
+                if f.was_set("question") {
+                    if !owner {
+                        return Err(store::usage("--question needs --owner"));
+                    }
+                    let q = question::parse(f.get_string("question"))?;
+                    summary = question::summary(&summary, &q);
+                    d["question"] = q;
+                }
+                if f.get_bool("dialog") {
+                    if !owner {
+                        return Err(store::usage("--dialog needs --owner"));
+                    }
+                    d["dialog"] = json!(true);
+                }
+            }
+            if cmd == "ready" {
+                let d = data.as_mut().expect("ready data");
+                if !f.get_string("report").is_empty() {
+                    let cwd = store::caller_cwd()?;
+                    d["report"] = json!(orch::absolute(&cwd, f.get_string("report")));
+                }
+                let mut kv = json!({});
+                for s in f.get_strings("kv") {
+                    let Some((k, v)) = s.split_once('=') else {
+                        return Err(store::usage(format!(
+                            "invalid value {s:?} for flag -kv: --kv wants KEY=VALUE, got {s:?}"
+                        )));
+                    };
+                    if k.is_empty() {
+                        return Err(store::usage(format!(
+                            "invalid value {s:?} for flag -kv: --kv wants KEY=VALUE, got {s:?}"
+                        )));
+                    }
+                    kv[k] = json!(v);
+                }
+                if !kv.as_object().expect("object").is_empty() {
+                    d["kv"] = kv;
+                }
+            }
+            worker::write(
+                &mut open()?,
+                worker::Write {
+                    kind: cmd,
+                    summary: &summary,
+                    key: f.get_string("key"),
+                    data,
+                    status: match cmd {
+                        "ready" => "ready",
+                        "done" => "done",
+                        "fail" => "failed",
+                        _ => "",
+                    },
+                    owner,
+                    as_id,
+                },
+            )
+        }
+        "close" => {
+            let outcome = f.get_string("outcome");
+            if f.was_set("outcome")
+                && !["accepted", "reworked", "rejected", "abandoned"].contains(&outcome)
+            {
+                return Err(store::usage(
+                    "--outcome must be one of accepted, reworked, rejected, abandoned",
+                ));
+            }
+            let id = store::id(&p[0], "task id")?;
+            let mut db = open()?;
+            let root = if f.get_bool("clean-tmp") {
+                Some(store::root(&db, id)?)
+            } else {
+                None
+            };
+            let out = orch::close(&mut db, id, outcome)?;
+            if let Some(root) = root {
+                crate::tmp::cleanup::remove(root, (id != root).then_some(id)).map_err(|e| {
+                    store::Error {
+                        code: ExitCode::Watch,
+                        message: format!("close succeeded; tmp cleanup failed: {e:#}"),
+                    }
+                })?;
+            }
+            Ok(out)
+        }
+        "answer" => prompt::answer(f),
+        "ack" => {
+            let id = store::id(&p[0], "event id")?;
+            if f.get_int("as") <= 0 {
+                return Err(store::usage("ack needs --as TASK_ID"));
+            }
+            let fence = inbox::fence(f)?;
+            inbox::ack(&mut open()?, f.get_int("as"), id, true, fence.as_ref())
+        }
+        "wait" => inbox::wait(f),
+        "set" => {
+            let id = store::id(&p[0], "task id")?;
+            let mut pairs: Vec<(String, String)> = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
+            for s in &p[1..] {
+                let Some((k, v)) = s.split_once('=') else {
+                    return Err(store::usage(format!(
+                        "set wants KEY=VALUE (KEY= deletes), got {s:?}"
+                    )));
+                };
+                if k.is_empty()
+                    || (k.len() > 32 && store::tmp::host(k).is_none())
+                    || (k.starts_with("tmp.bytes.") && store::tmp::host(k).is_none())
+                    || !k.as_bytes()[0].is_ascii_lowercase()
+                    || !k.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b)
+                    })
+                {
+                    return Err(store::usage(format!(
+                        "set: key {k:?} must match [a-z][a-z0-9_.-]{{0,31}}"
+                    )));
+                }
+                if !seen.insert(k) {
+                    return Err(store::usage(format!("set: key {k} given twice")));
+                }
+                let v = v.trim();
+                if v.chars().count() > 200 {
+                    return Err(store::usage(format!(
+                        "set: the value of {k} is longer than 200 characters"
+                    )));
+                }
+                if v.chars().any(char::is_control) {
+                    return Err(store::usage(format!(
+                        "set: the value of {k} holds a control character; references are one line"
+                    )));
+                }
+                pairs.push((k.into(), v.into()));
+            }
+            if let Some((_, value)) = pairs.iter().find(|(k, _)| k == "glance.state") {
+                if !store::env("TASKR_TASK").is_empty() || !store::env("TASKR_LAUNCH").is_empty() {
+                    return Err(store::reject(
+                        "glance.state is root-only; TASKR_TASK and TASKR_LAUNCH must be unset",
+                    ));
+                }
+                if !value.is_empty() && value != "parked" {
+                    return Err(store::usage("glance.state must be parked or empty"));
+                }
+            }
+            let mut db = open()?;
+            if let Some((_, policy)) = pairs.iter().find(|(k, _)| k == "tmp.cleanup") {
+                if !["on-close", "root-close", "keep"].contains(&policy.as_str()) {
+                    return Err(store::usage(
+                        "tmp.cleanup must be on-close, root-close or keep",
+                    ));
+                }
+                if store::task(&db, id)?.parent.is_some() {
+                    return Err(store::usage("tmp.cleanup is for a root only"));
+                }
+            }
+            orch::set(&mut db, id, &pairs)
+        }
+        "doc set" => {
+            let id = store::id(&p[0], "task id")?;
+            let kind = p[1].as_str();
+            let name = f.get_string("name");
+            if !["goal", "plan"].contains(&kind) {
+                return Err(store::usage("doc set accepts goal or plan"));
+            }
+            if kind == "goal" && f.was_set("name") {
+                return Err(store::usage("goal takes no --name"));
+            }
+            if f.was_set("name")
+                && (name.is_empty()
+                    || name.len() > 64
+                    || !name.as_bytes()[0].is_ascii_lowercase()
+                        && !name.as_bytes()[0].is_ascii_digit()
+                    || !name.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b)
+                    }))
+            {
+                return Err(store::usage("--name must match [a-z0-9][a-z0-9._-]{0,63}"));
+            }
+            if f.get_string("file").is_empty() {
+                return Err(store::usage("doc set needs --file PATH"));
+            }
+            let path = orch::absolute(&store::caller_cwd()?, f.get_string("file"));
+            let input = if store::caller_machine().is_some() {
+                crate::hub::document_set_input(id, kind, name, &path)?
+            } else {
+                documents::file(&path, "")
+            };
+            if input.reason == "missing" {
+                return Err(store::usage(format!(
+                    "document file is missing or unreadable: {path}"
+                )));
+            }
+            if !input.reason.is_empty() {
+                return Err(store::usage(format!(
+                    "document file: {} ({path})",
+                    input.reason
+                )));
+            }
+            documents::set(&mut open()?, id, kind, name, &input)
+        }
+        "prompt" => prompt::prompt(f),
+        "handover" => handover::run(f),
+        _ => unreachable!(),
+    }
+}

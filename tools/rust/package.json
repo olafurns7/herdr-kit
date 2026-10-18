@@ -1,0 +1,9 @@
+{
+  "name": "@herdr-kit/rust",
+  "private": true,
+  "scripts": {
+    "build": "cd ../.. && cargo build --locked --workspace",
+    "test": "cd ../.. && sh tools/rust-checks.sh test",
+    "lint": "cd ../.. && sh tools/rust-checks.sh lint"
+  }
+}

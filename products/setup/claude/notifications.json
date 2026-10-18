@@ -1,0 +1,115 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

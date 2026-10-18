@@ -1,0 +1,11 @@
+{
+  "name": "herdr-kit",
+  "private": true,
+  "packageManager": "npm@11.8.0",
+  "workspaces": [
+    "tools/*"
+  ],
+  "devDependencies": {
+    "turbo": "2.5.8"
+  }
+}

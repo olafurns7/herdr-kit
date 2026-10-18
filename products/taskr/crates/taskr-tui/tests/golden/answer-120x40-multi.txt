@@ -1,0 +1,40 @@
+ taskr ❯ dashboard                                                        hub atlas · 2s ago   ● 5 need you  3 to check
+ [D Dashboard]  A Asks 5   F Fleet 11   I Detail
+1 asks+ · 2 checks+ · 3 camps+ · 4 PRs+ · 5 Shipped+ · 6 Build+ · 7 Decisions- · 8 Fleet- · 9 Log- · 0 Issues-
+H Health-
+ 3 notes still carry OWNER items
+ NEEDS YOU ────────────────────────────────────────────── 5  TO CHECK ─────────────────────────────────────────────── 3
+ ? ◆ fleet-hub            BLOCKING HUB                ⏎  25s ! map-tiles-polish                              laptop   2h
+   Release: Cut the v3.2 release today, or wait for the ca…    lead unregistered and silent
+ ? ◆ auth-rotation  ╭ Answer ask 61802 · docs-refresh ─────────────────────────────────────────────╮                  2h
+   Tokens: Which sig│                                                                              │
+▌? ◆ docs-refresh   │  Translations landed for three of the four locales. Locales: Which locales   │           mini  12m
+▌  Translations land│  ship in the first docs release?                                             │
+ ? ◇ tui-frames     │                                                                              │
+   Frames follow-up │     [ ] A  English                                                           │
+ ? ◇ ios-widgets    │            The source text; always complete.                                 │
+   WIDGET BATCH: 19 │     [x] B  German                                                            │
+ CAMPAIGNS ─────────│            Reviewed by the partner team last week.                           │──────────────── 11
+ ◐ search-index     │   ❯ [x] C  Japanese                                                          │                 19s
+   Research complete│            Machine draft; 40 pages are still unreviewed.                     │
+ ◐ auth-rotation    │     [ ] D  Portuguese                                                        │                 29s
+   Implementation sl│            Half translated; the glossary is not settled yet.                 │
+ ○ billing-export   │     …  write your own answer                                                 │                 33s
+   FYI 61448 from se│                                                                              │
+ ○ docs-refresh     │  ──────────────────────────────────────────────────────────────────────────  │                  2m
+   Hub FYI: keep the│   answer  B: German; C: Japanese                                             │
+ ○ checkout-flow    │                                                                              │                  3m
+   FIX: three P2 fin│   j k choose    space pick    tab add a note    ⏎ review    esc cancel       │
+ ◐ ios-widgets      │                                                                              │          laptop  7m
+   Widget batch appr│                                                                              │
+ ◐ tui-frames       │                                                                              │                  8m
+   NOW: plan rev 3.1│                                                                              │
+ · infra-layout     ╰──────────────────────────────────────────────────────────────────────────────╯                 12m
+   cache-audit lead root=4040 pane=w41:p1: campaign complete, docs PR merged
+ ◐ model-evals         ●●●●●●+ ▂▇█▅▂▁▁▂▁▁▁▁▁▁▁▁                                                                      14m
+   matrix run A finished
+ ○ api-pagination      ●       ▁▁▁█▁▂▁▁▂▁▁▁▂▁▁▁                                                                      54m
+   S4 cursor split merged; contract tests green on both hosts
+ ‖ legacy-importer                                                                                            parked  3h
+ · 2 quiet
+ ⏎ go to lead   a answer   l open   0-9 panels   H health   / filter   D A F I screens   y copy   s slotr   ? help

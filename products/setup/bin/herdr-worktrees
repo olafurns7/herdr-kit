@@ -1,0 +1,129 @@
+#!/bin/sh
+# Inventory local Git evidence; refs may be stale. New objects stay temporary.
+# Git may freshen existing object mtimes; repository object names and bytes stay unchanged.
+set -eu
+die() { printf 'herdr-worktrees: %s\n' "$*" >&2; exit 1; }
+local_env=$(git rev-parse --local-env-vars) || die 'cannot identify Git environment'
+unset $local_env
+export GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1
+json=0
+repo=.
+if [ "${1-}" = --json ]; then json=1; shift; fi
+[ "$#" -le 1 ] || die 'usage: herdr-worktrees [--json] [REPO]'
+[ "$#" -eq 0 ] || repo=$1
+command -v jq >/dev/null 2>&1 || die 'jq is required'
+git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || die "not a repository: $repo"
+# Keep path newlines, including the one printed by rev-parse, until stripping it once.
+current=$(if git rev-parse --show-toplevel 2>/dev/null; then printf x; fi)
+current=${current%x}
+current=${current%?}
+base=$(git -C "$repo" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null || :)
+if [ -n "$base" ]; then
+    base=$(git -C "$repo" rev-parse --verify "$base^{commit}" 2>/dev/null || :)
+fi
+partial=0
+if git -C "$repo" config --get-regexp '^(extensions\.partialclone|remote\..*\.promisor)$' >/dev/null; then
+    partial=1
+else
+    code=$?
+    [ "$code" -eq 1 ] || die 'cannot check partial-clone configuration'
+fi
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/herdr-worktrees.XXXXXX") || die 'cannot create temporary object directory'
+trap 'rm -rf "$tmp"' 0
+trap 'exit 1' 1 2 15
+mkdir "$tmp/objects" || die 'cannot create temporary object directory'
+objects=$(git -C "$repo" rev-parse --path-format=absolute --git-path objects && printf x) || die 'cannot locate objects'
+objects=${objects%x}
+objects=${objects%?}
+alternates=$(printf '%s' "$objects" | jq -Rs .) || die 'cannot encode object path'
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir && printf x) || die 'cannot locate common Git directory'
+common=${common%x}
+common=${common%?}
+if (cd "$tmp" && GIT_DIR="$common" git config --name-only --get-regexp '^merge\..*\.driver$') >"$tmp/drivers"; then
+    :
+else
+    code=$?
+    [ "$code" -eq 1 ] || die 'cannot read merge driver configuration'
+fi
+base_tree=
+[ -z "$base" ] || base_tree=$(git -C "$repo" rev-parse "$base^{tree}") || die 'cannot read base tree'
+# Check the listing before parsing; NUL records preserve all path bytes.
+git -C "$repo" worktree list --porcelain -z >"$tmp/worktrees" || die 'cannot list worktrees'
+worktrees=$(jq -Rsc '
+    split("\u0000\u0000")[] | select(length > 0) | split("\u0000")
+    | map(index(" ") as $i | if $i then {key:.[:$i], value:.[$i+1:]} else {key:., value:null} end)
+    | from_entries | select(has("bare") | not)
+' "$tmp/worktrees") || die 'cannot parse worktrees'
+rows=$(printf '%s\n' "$worktrees" | while IFS= read -r record; do
+    [ -n "$record" ] || continue
+    path=$(printf '%s\n' "$record" | jq -j '.worktree + "x"') || die 'cannot read worktree path'
+    path=${path%x}
+    head=$(printf '%s\n' "$record" | jq -r '.HEAD') || die 'cannot read head'
+    branch=$(printf '%s\n' "$record" | jq -r '(.branch // "detached") | ltrimstr("refs/heads/")') || die 'cannot read branch'
+    prunable=$(printf '%s\n' "$record" | jq -r 'has("prunable")') || die 'cannot read worktree status'
+    short=unknown dirty=unknown untracked=unknown ignored=unknown
+    ahead=unknown behind=unknown merged=unknown state=missing
+    if [ "$prunable" = false ] && [ -d "$path" ]; then
+        status=$(git -C "$path" -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all --ignored=matching) || die "cannot inspect $path"
+        counts=$(printf '%s\n' "$status" | awk '
+            NF { if (substr($0,1,2) == "??") u++; else if (substr($0,1,2) == "!!") i++; else d++ }
+            END { print d+0, u+0, i+0 }
+        ') || die 'cannot count status entries'
+        set -- $counts
+        dirty=$1 untracked=$2 ignored=$3 unpublished=
+        case $head in
+            *[!0]*)
+                short=$(git -C "$repo" rev-parse --short "$head") || die "cannot read head for $path"
+                if [ -n "$base" ]; then
+                    counts=$(git -C "$repo" rev-list --left-right --count "$head...$base") || die "cannot compare head for $path"
+                    set -- $counts
+                    ahead=$1 behind=$2
+                    if git -C "$repo" merge-base --is-ancestor "$head" "$base"; then
+                        merged=yes
+                    else
+                        code=$?
+                        [ "$code" -eq 1 ] || die "cannot check ancestry for $path"
+                        if [ "$partial" -eq 0 ]; then
+                            # Run outside worktrees; custom driver resolutions must not hide branch content.
+                            if tree=$(
+                                cd "$tmp" || die 'cannot enter temporary directory'
+                                GIT_CONFIG_COUNT=0
+                                while IFS= read -r driver_key; do
+                                    export "GIT_CONFIG_KEY_$GIT_CONFIG_COUNT=$driver_key" "GIT_CONFIG_VALUE_$GIT_CONFIG_COUNT=false" || die 'cannot disable merge driver'
+                                    GIT_CONFIG_COUNT=$((GIT_CONFIG_COUNT + 1))
+                                done <"$tmp/drivers"
+                                export GIT_CONFIG_COUNT
+                                GIT_DIR="$common" GIT_OBJECT_DIRECTORY="$tmp/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$alternates" \
+                                    git -c merge.default=text merge-tree --write-tree "$base" "$head" 2>/dev/null
+                            ); then
+                                merged=no
+                                [ "$tree" != "$base_tree" ] || merged=yes
+                            fi
+                        fi
+                    fi
+                fi
+                unpublished=$(git -C "$repo" rev-list --max-count=1 "$head" --not --remotes) || die "cannot check unpublished commits for $path"
+                ;;
+        esac
+        if [ "$path" = "$current" ]; then state=current
+        elif [ "$dirty" -gt 0 ] || [ "$untracked" -gt 0 ]; then state=dirty
+        elif [ -n "$unpublished" ]; then state=unpushed
+        elif [ "$merged" = yes ]; then state=merged
+        else state=open
+        fi
+    fi
+    jq -cn --arg path "$path" --arg branch "$branch" --arg head "$short" \
+        --arg dirty "$dirty" --arg untracked "$untracked" --arg ignored "$ignored" \
+        --arg ahead "$ahead" --arg behind "$behind" --arg merged "$merged" --arg state "$state" '
+        def count: tonumber? // .;
+        {path:$path, branch:$branch, head:$head, dirty:($dirty|count), untracked:($untracked|count),
+         ignored:($ignored|count), ahead:($ahead|count), behind:($behind|count), merged:$merged, state:$state}
+    ' || die 'cannot encode worktree'
+done) || die 'cannot inventory worktrees'
+if [ "$json" -eq 1 ]; then
+    printf '%s\n' "$rows" | jq -s .
+else
+    printf '%s\n' "$rows" | jq -r '
+        "path=\(.path | @json) branch=\(.branch | @json) head=\(.head) dirty=\(.dirty) untracked=\(.untracked) ignored=\(.ignored) ahead=\(.ahead) behind=\(.behind) merged=\(.merged) state=\(.state)"
+    '
+fi

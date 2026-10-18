@@ -1,0 +1,386 @@
+#!/bin/sh
+# Starts one registered, verified Herdr worker in seven checked steps:
+# tab (or given pane), taskr new, taskr launch, pane env, env check,
+# herdr agent start, taskr prompt. The first failed step stops the run.
+# Usage: herdr-launch [--workspace W] [--cwd DIR] [--push] LANE NAME BRIEF REPORT PARENT [PANE]
+#        herdr-launch --lanes
+#        herdr-launch [--push] --check [LANE...]
+# Without PANE the tab goes to W (default: the caller's workspace) with cwd
+# DIR (default: pwd -P). A given PANE may be in any workspace; its workspace,
+# tab, and cwd come from herdr pane get. A pane cwd containing , { } " or \
+# is not supported: the run stops at step 1.
+# --push starts the lane with its taskr push adapter (launch.md "--push"):
+# pi loads $HERDR_PUSH_PI_EXTENSION; claude gets a private --mcp-config and
+# the taskr development channel, whose start dialog step 6 answers; codex gets a
+# step 8 that runs `taskr push codex --codex-bin $HERDR_PUSH_CODEX_BIN` in its
+# own tab once the session has run `taskr start`.
+set -u
+
+usage='usage: herdr-launch --lanes | herdr-launch [--push] --check [LANE...] | herdr-launch [--workspace W] [--cwd DIR] [--push] LANE NAME BRIEF REPORT PARENT [PANE]'
+
+herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 2
+. "$herdr_bin_dir/herdr-lanes.sh"
+
+# herdr agent start with the native flags of the lane's kind: full permissions,
+# no sandbox, hooks
+# always trusted, and no prompt or folder-trust dialog. Isolation between
+# workers comes from the worktree and the brief's owned and forbidden files.
+# Claude: bypass mode, no sandbox settings. Folder trust comes from
+#   CLAUDE_CODE_SANDBOXED=1 (step 4), which is the trust bypass, not a
+#   sandbox: Claude Code 2.1.292 reads it only to skip the trust check and
+#   project-settings gating, never to turn on sandbox.enabled. Undocumented.
+# Codex: --dangerously-bypass-approvals-and-sandbox; both
+#   checkouts are trusted projects.
+# pi: no approval prompts of its own; --approve trusts project files.
+start_agent() {
+    case $kind in
+        claude) set -- --model "$model" --effort "$effort" --dangerously-skip-permissions \
+            --settings '{"agentPushNotifEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}}'
+            [ -z "$push" ] || set -- "$@" --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr ;;
+        codex) set -- -m "$model" -c "model_reasoning_effort=\"$effort\"" \
+            --dangerously-bypass-approvals-and-sandbox \
+            -c "projects={$codex_trust}" --dangerously-bypass-hook-trust ;;
+        pi) set -- --provider "$provider" --model "$model" --thinking "$effort" --approve
+            [ -z "$push" ] || set -- "$@" --extension "$HERDR_PUSH_PI_EXTENSION" ;;
+    esac
+    herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 90000 -- "$@" >/dev/null
+}
+
+# trust_paths: sets codex_trust, the Codex projects table that trusts the cwd
+# and, in a linked worktree, the main checkout. Fails on a path with " \ or
+# a control character, which the TOML string cannot carry.
+trust_paths() {
+    main=
+    common=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=
+    case $common in
+        */.git) [ "${common%/.git}" = "$cwd" ] || main=${common%/.git} ;;
+    esac
+    case $cwd$main in
+        *[\"\\]* | *[[:cntrl:]]*) return 1 ;;
+    esac
+    codex_trust="\"$cwd\"={trust_level=\"trusted\"}"
+    [ -z "$main" ] || codex_trust="$codex_trust,\"$main\"={trust_level=\"trusted\"}"
+}
+
+die() {
+    printf 'herdr-launch: %s\n' "$1" >&2
+    exit 2
+}
+
+workspace= tab= pane= task= launch= push_tab= mcp_config=
+step_fail() {
+    printf 'herdr-launch: step %s failed; so far: workspace=%s task=%s launch=%s tab=%s pane=%s%s%s\n' \
+        "$1" "${workspace:--}" "${task:--}" "${launch:--}" "${tab:--}" "${pane:--}" \
+        "${push_tab:+ push_tab=$push_tab}" "${mcp_config:+ mcp_config=$mcp_config}" >&2
+    exit 1
+}
+
+# json_str KEY JSON: the one distinct value of "KEY":"..." in JSON; fails
+# when it is missing or has two values.
+json_str() {
+    json_val=$(printf '%s\n' "$2" | tr ',{}' '\n\n\n' \
+        | sed -n "s/^ *\"$1\": *\"\\([^\"]*\\)\" *\$/\\1/p" | sort -u)
+    [ -n "$json_val" ] && [ "$(printf '%s\n' "$json_val" | wc -l)" -eq 1 ] \
+        && printf '%s\n' "$json_val"
+}
+
+# key_once KEY JSON: the raw text "KEY": occurs exactly once in JSON, counted
+# before any splitting, so a nested key of the same name (pane get's tokens
+# map) cannot stand in for one the reader could not read.
+key_once() {
+    [ "$(printf '%s\n' "$2" | awk -v k="\"$1\"" '{ n += gsub(k "[ ]*:", "") } END { print n + 0 }')" -eq 1 ]
+}
+
+json_num() {
+    json_val=$(printf '%s\n' "$2" | tr ',{}' '\n\n\n' \
+        | sed -n "s/^ *\"$1\": *\\([0-9][0-9]*\\) *\$/\\1/p" | sort -u)
+    [ -n "$json_val" ] && [ "$(printf '%s\n' "$json_val" | wc -l)" -eq 1 ] \
+        && printf '%s\n' "$json_val"
+}
+
+# Preflight never calls herdr or taskr, and hides harness version output.
+check_lanes() {
+    lane_table_load || return 2
+    [ $# -gt 0 ] || set -- $(printf '%s\n' "$lane_data" | jq -r 'keys[]')
+    check_status=0
+    for checked_lane do
+        reason=
+        if ! lane_info "$checked_lane" 2>/dev/null; then
+            reason=$(printf '%s\n' "$lane_data" | jq -r --arg lane "$checked_lane" '
+                if has($lane) then "denied: " + (.[$lane].denied | join(", ")) else "unknown lane" end')
+        elif ! command -v "$kind" >/dev/null 2>&1; then
+            reason="missing CLI: $kind"
+        elif ! "$kind" --version >/dev/null 2>&1; then
+            reason="$kind --version failed"
+        elif [ "$kind" != pi ] && [ -x "$HOME/.local/bin/codator" ] &&
+            ! "$HOME/.local/bin/codator" "$kind" --version >/dev/null 2>&1; then
+            reason="Codator $kind --version failed"
+        elif [ -n "$push" ]; then
+            case $kind in
+                pi) [ -f "${HERDR_PUSH_PI_EXTENSION-}" ] || reason='missing HERDR_PUSH_PI_EXTENSION' ;;
+                codex)
+                    case ${HERDR_PUSH_CODEX_BIN-} in
+                        *[\'\"\\]* | *[[:cntrl:]]*) reason='invalid HERDR_PUSH_CODEX_BIN' ;;
+                        /*) [ -f "$HERDR_PUSH_CODEX_BIN" ] && [ -x "$HERDR_PUSH_CODEX_BIN" ] &&
+                            "$HERDR_PUSH_CODEX_BIN" --version >/dev/null 2>&1 || reason='HERDR_PUSH_CODEX_BIN --version failed' ;;
+                        *) reason='missing absolute HERDR_PUSH_CODEX_BIN' ;;
+                    esac ;;
+            esac
+        fi
+        printf '%s: %s\n' "$checked_lane" "${reason:-ok}"
+        [ -z "$reason" ] || check_status=1
+    done
+    return "$check_status"
+}
+
+workspace= cwd= push=
+while :; do
+    case ${1-} in
+        --lanes)
+            [ $# -eq 1 ] || die "$usage"
+            lane_list || exit 2
+            exit 0
+            ;;
+        --check)
+            shift
+            check_lanes "$@"
+            exit $?
+            ;;
+        --workspace)
+            [ -n "${2-}" ] || die "--workspace needs a workspace id; $usage"
+            workspace=$2
+            shift 2
+            ;;
+        --cwd)
+            [ -n "${2-}" ] || die "--cwd needs a directory; $usage"
+            cwd=$(CDPATH= cd -- "$2" 2>/dev/null && pwd -P) || die "--cwd '$2' is not a directory"
+            shift 2
+            ;;
+        --push)
+            push=1
+            shift
+            ;;
+        *) break ;;
+    esac
+done
+[ $# -eq 5 ] || [ $# -eq 6 ] || die "$usage"
+lane=$1 name=$2 brief=$3 report=$4 parent=$5 given_pane=${6-}
+
+lane_info "$lane" || die "unknown lane '$lane'"
+case $name in
+    [a-z]*-?*) ;;
+    *) die "name '$name' must be PREFIX-SLUG and match [a-z][a-z0-9_-]{0,31}" ;;
+esac
+case $name in
+    *[!a-z0-9_-]*) die "name '$name' must match [a-z][a-z0-9_-]{0,31}" ;;
+esac
+[ "${#name}" -le 32 ] || die "name '$name' is longer than 32 characters"
+prefix=${name%%-*}
+case $prefix in
+    impl | mech | glm) role=implementer ;;
+    rs | arch | gather) role=researcher ;;
+    rev) role=reviewer ;;
+    orch) role=sub-orchestrator ;;
+    *) die "name prefix '$prefix-' is not impl-, mech-, rs-, rev-, arch-, glm-, orch-, or gather-" ;;
+esac
+case " $prefixes " in
+    *" $prefix "*) ;;
+    *) prefix_lanes=$(printf '%s\n' "$lane_data" | jq -r --arg prefix "$prefix" '
+           to_entries | map(select((.value.denied | length) == 0) | select(.value.prefixes | index($prefix)) | .key) | sort | join(" ")
+       ')
+       die "lane $lane does not launch as $prefix- (allowed: $prefixes; $prefix- lanes: $prefix_lanes)" ;;
+esac
+[ -f "$brief" ] || die "brief '$brief' does not exist"
+brief_role=$(sed -n '1s/^HERDR-BRIEF role=\([^[:space:]]*\).*$/\1/p' "$brief")
+case $brief_role in
+    orchestrator | sub-orchestrator | implementer | mechanical-worker | researcher | code-reviewer | reviewer | architect | code-validator) ;;
+    *) die 'brief first line must start with HERDR-BRIEF role=<supported role>' ;;
+esac
+case $role:$brief_role in
+    implementer:implementer | implementer:mechanical-worker | researcher:researcher | researcher:architect \
+    | reviewer:code-reviewer | reviewer:reviewer | reviewer:code-validator | sub-orchestrator:sub-orchestrator) ;;
+    *) die "brief role=$brief_role is not allowed for prefix=$prefix-" ;;
+esac
+brief_report=$(grep -m 1 -E '^(orchestrator=.*[[:blank:]])?report=' "$brief") \
+    || die 'brief needs the report= header'
+brief_report=${brief_report%"$(printf '\r')"}
+brief_report=${brief_report#*report=}
+brief_report=${brief_report%%[[:blank:]]*}
+[ "$brief_report" = "$report" ] || die "brief report=$brief_report, REPORT=$report: report paths must match"
+for field in 'Task topology:' 'Objective:' 'Acceptance:' 'Validation:'; do
+    grep -q "^$field" "$brief" || die "brief needs the $field header"
+done
+if [ "$role" = implementer ]; then
+    grep -q '^Ownership:' "$brief" || die 'brief needs the Ownership: header'
+fi
+case $report in
+    /*) ;;
+    *) die "report '$report' is not an absolute path" ;;
+esac
+case $parent in
+    '' | *[!0-9]*) die "parent '$parent' is not a task id" ;;
+esac
+case ${6+set} in
+    set)
+        [ -n "$given_pane" ] || die 'PANE is empty'
+        [ -z "$workspace" ] || die '--workspace applies only without PANE; the pane names its own workspace'
+        [ -z "$cwd" ] || die '--cwd applies only without PANE; the pane names its own cwd'
+        ;;
+esac
+if [ -n "$push" ]; then
+    case $kind in
+        pi)
+            [ -f "${HERDR_PUSH_PI_EXTENSION-}" ] \
+                || die "--push for pi needs HERDR_PUSH_PI_EXTENSION naming taskr's adapters/pi/taskr-push.ts"
+            ;;
+        codex)
+            case ${HERDR_PUSH_CODEX_BIN-} in
+                *[\'\"\\]* | *[[:cntrl:]]*) die 'HERDR_PUSH_CODEX_BIN must not contain quote characters, a backslash, or a control character' ;;
+                /*) ;;
+                *) die '--push for codex needs HERDR_PUSH_CODEX_BIN as an absolute path to the real Codex CLI' ;;
+            esac
+            [ -f "$HERDR_PUSH_CODEX_BIN" ] && [ -x "$HERDR_PUSH_CODEX_BIN" ] \
+                || die "HERDR_PUSH_CODEX_BIN '$HERDR_PUSH_CODEX_BIN' is not an executable file"
+            grep -q -F 'taskr start' "$brief" \
+                || die "--push for codex needs 'taskr start' in the brief: the push sidecar waits for the launch's thread and home registration"
+            ;;
+    esac
+fi
+
+# Compact output is what the parsers below read.
+unset TASKR_FORMAT
+
+# Step 1: a new tab in the task workspace, or the given pane.
+if [ -z "$given_pane" ]; then
+    [ -n "$cwd" ] || cwd=$(pwd -P)
+    if [ -z "$workspace" ]; then
+        current=$(herdr pane current --current) || step_fail '1 (herdr pane current)'
+        workspace=$(json_str workspace_id "$current") || step_fail '1 (workspace id from herdr pane current)'
+    fi
+    created=$(herdr tab create --workspace "$workspace" --cwd "$cwd" --label "$name" \
+        --env FLEET_ROLE=worker --env DISABLE_AUTO_UPDATE=true --no-focus) \
+        || step_fail '1 (herdr tab create)'
+    tab=$(json_str tab_id "$created") || step_fail '1 (tab id from herdr tab create)'
+    pane=$(json_str pane_id "$created") || step_fail '1 (pane id from herdr tab create)'
+else
+    pane=$given_pane
+    info=$(herdr pane get "$pane") || step_fail '1 (herdr pane get)'
+    for key in workspace_id tab_id cwd; do
+        key_once "$key" "$info" || step_fail "1 (\"$key\" is not in herdr pane get exactly once)"
+    done
+    workspace=$(json_str workspace_id "$info") || step_fail '1 (workspace id from herdr pane get)'
+    tab=$(json_str tab_id "$info") || step_fail '1 (tab id from herdr pane get)'
+    # The sed reader cannot unescape JSON, so a misread cwd must fail here.
+    unread='1 (the pane cwd could not be read; paths containing ,{}"\ are not supported)'
+    cwd=$(json_str cwd "$info") || step_fail "$unread"
+    case $cwd in
+        *\\*) step_fail "$unread" ;;
+    esac
+    [ -d "$cwd" ] || step_fail "$unread"
+    procs=$(herdr pane process-info --pane "$pane") || step_fail '1 (herdr pane process-info)'
+    fg=$(json_num foreground_process_group_id "$procs") \
+        || step_fail '1 (foreground process group from herdr pane process-info)'
+    shell_pid=$(json_num shell_pid "$procs") || step_fail '1 (shell pid from herdr pane process-info)'
+    [ "$fg" = "$shell_pid" ] || step_fail "1 (pane $pane is not at its shell prompt)"
+    herdr pane send-keys "$pane" ctrl+c >/dev/null || step_fail '1 (herdr pane send-keys ctrl+c)'
+fi
+
+# Codex trust needs the cwd, so a path it cannot carry stops before taskr new.
+[ "$kind" != codex ] || trust_paths \
+    || step_fail "1 (cwd '$cwd' or its main checkout contains \" \\ or a control character)"
+
+# Step 2: register. Compact output is "n1 <task>"; read the id at line end.
+out=$(taskr new "$name" --parent "$parent" --role "$role" --workspace "$workspace" \
+    --tab "$tab" --pane "$pane" --cwd "$cwd" --brief "$brief" --report "$report") \
+    || step_fail '2 (taskr new)'
+task=$(printf '%s\n' "$out" | sed -n 's/^n1 \([0-9][0-9]*\)$/\1/p')
+case $task in
+    '' | *[!0-9]*) task=; step_fail "2 (no single 'n1 <task>' line in: $out)" ;;
+esac
+
+# Step 3: launch. Compact output is 'l1 {"launch_id":<launch>,...}'.
+out=$(taskr launch "$task" --provider "$kind" --model "$model" --effort "$effort") \
+    || step_fail '3 (taskr launch)'
+launch=$(printf '%s\n' "$out" | sed -n 's/^l1 .*[{,]"launch_id":\([0-9][0-9]*\)[,}].*$/\1/p')
+case $launch in
+    '' | *[!0-9]*) launch=; step_fail "3 (no single '\"launch_id\":<id>' in: $out)" ;;
+esac
+
+# Step 4: export the ids, and forward codex/claude to Codator when it exists.
+# The parts are chained with && and end by setting herdr_launch_ok to the
+# launch id, so step 5 sees it only when every part succeeded.
+# Claude gets CLAUDE_CODE_SANDBOXED=1 for folder trust (see start_agent).
+# A pi lane first drops a pi() bwrap wrapper that a reused shell kept from
+# the earlier sandbox rule; ";" because zsh's unset -f fails when it is absent.
+setup=" export FLEET_ROLE=worker TASKR_TASK=$task TASKR_LAUNCH=$launch"
+[ "$kind" != pi ] || setup=" unset -f pi 2>/dev/null;$setup"
+[ "$kind" != claude ] || setup="$setup CLAUDE_CODE_SANDBOXED=1"
+if [ -x "$HOME/.local/bin/codator" ]; then
+    setup="$setup && codex() { \"\$HOME/.local/bin/codator\" codex \"\$@\"; } && claude() { \"\$HOME/.local/bin/codator\" claude \"\$@\"; }"
+fi
+setup="$setup && herdr_launch_ok=$launch"
+herdr pane run "$pane" "$setup" >/dev/null || step_fail '4 (herdr pane run export)'
+
+# Step 5: prove the whole setup landed. The command text holds no expanded
+# values, so only the shell's output can match.
+herdr pane run "$pane" 'echo "herdr-launch-env=$TASKR_TASK/$TASKR_LAUNCH/$FLEET_ROLE/$herdr_launch_ok"' >/dev/null \
+    || step_fail '5 (herdr pane run env check)'
+herdr pane wait-output "$pane" --match "herdr-launch-env=$task/$launch/worker/$launch" --timeout 15000 >/dev/null \
+    || step_fail "5 (the pane shell did not echo herdr-launch-env=$task/$launch/worker/$launch)"
+
+# Step 6: start the agent with the lane's native flags. A claude --push lane
+# first writes a private, task-specific config without inspecting the cwd's
+# project config. A no-clobber rename publishes it at 0600. Its
+# development-channel flag shows a dialog at every
+# start, so agent start fails with agent_not_ready; Enter picks the first
+# option, "I am using this for local development".
+if [ -n "$push" ] && [ "$kind" = claude ]; then
+    state_dir=$HOME/.local/state/herdr-orch/lane-push
+    mcp_config=$state_dir/taskr-mcp-$task.json
+    umask 077
+    mkdir -p -- "$state_dir" || step_fail '6 (create push config directory)'
+    chmod 0700 "$state_dir" || step_fail '6 (protect push config directory)'
+    [ ! -e "$mcp_config" ] && [ ! -L "$mcp_config" ] || step_fail '6 (push config path already exists)'
+    mcp_tmp=$(mktemp "$state_dir/.mcp.XXXXXX") || step_fail '6 (create push config temporary file)'
+    trap '[ -z "$mcp_tmp" ] || rm -f -- "$mcp_tmp"' 0
+    printf '%s\n' '{"mcpServers":{"taskr":{"command":"taskr","args":["mcp","--channel"]}}}' >"$mcp_tmp" \
+        || step_fail '6 (write push config)'
+    chmod 0600 "$mcp_tmp" || step_fail '6 (protect push config)'
+    mv -n -- "$mcp_tmp" "$mcp_config" && [ ! -e "$mcp_tmp" ] \
+        || step_fail '6 (push config exists or could not be saved)'
+    mcp_tmp=
+fi
+if ! start_agent; then
+    [ -n "$push" ] && [ "$kind" = claude ] || step_fail '6 (herdr agent start)'
+    screen=$(herdr pane read "$pane" --source visible --lines 40) \
+        || step_fail '6 (herdr agent start, then herdr pane read)'
+    case $screen in
+        *'Loading development channels'*) ;;
+        *) step_fail '6 (herdr agent start failed and the pane shows no development-channel dialog)' ;;
+    esac
+    herdr pane send-keys "$pane" Enter >/dev/null || step_fail '6 (herdr pane send-keys Enter at the development-channel dialog)'
+    herdr agent wait "$name" --until idle --timeout 90000 >/dev/null \
+        || step_fail '6 (the agent was not idle within 90 s after the development-channel dialog)'
+fi
+
+# Step 7: hand over the brief.
+taskr prompt "$task" --file "$brief" >/dev/null || step_fail '7 (taskr prompt)'
+
+# Step 8, codex --push only: the push sidecar in its own tab. It waits up to
+# 30 min for the launch's native_home, which `taskr start` in the session
+# records, then becomes `taskr push codex`. The task, launch and binary are
+# validated, so the single quotes hold.
+extra=
+if [ -n "$push" ] && [ "$kind" = codex ]; then
+    created=$(herdr tab create --workspace "$workspace" --cwd "$cwd" --label "$name-push" \
+        --env FLEET_ROLE=worker --env DISABLE_AUTO_UPDATE=true --no-focus) \
+        || step_fail '8 (herdr tab create)'
+    push_tab=$(json_str tab_id "$created") || step_fail '8 (tab id from herdr tab create)'
+    push_pane=$(json_str pane_id "$created") || step_fail '8 (pane id from herdr tab create)'
+    sidecar="export TASKR_TASK=$task TASKR_LAUNCH=$launch && i=0 && until taskr log $task --limit 1 | grep -q -F '\"native_home\":\"/'; do i=\$((i + 1)); if [ \$i -ge 360 ]; then echo 'herdr-launch: the session never ran taskr start; no push sidecar'; exit 1; fi; sleep 5; done && exec taskr push codex --codex-bin '$HERDR_PUSH_CODEX_BIN'"
+    herdr pane run "$push_pane" "$sidecar" >/dev/null || step_fail '8 (herdr pane run push sidecar)'
+    extra=" push_tab=$push_tab push_pane=$push_pane"
+fi
+[ -z "$mcp_config" ] || extra=" mcp_config=$mcp_config"
+
+printf 'task=%s launch=%s tab=%s pane=%s%s\n' "$task" "$launch" "$tab" "$pane" "$extra"

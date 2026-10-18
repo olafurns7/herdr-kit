@@ -1,0 +1,82 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Agent|Task|Workflow)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ \"${HERDR_ENV:-}\" = 1 ]; then printf '%s\\n' 'In-process delegation is disabled in Herdr; use herdr-launch.' >&2; exit 2; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "^AskUserQuestion$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ \"${HERDR_ENV:-}\" = 1 ]; then \"$HOME/.local/bin/taskr\" hook claude PreToolUse || exit 2; fi",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook claude SessionStart >/dev/null 2>&1; true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook claude Stop >/dev/null 2>&1; true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook claude UserPromptSubmit >/dev/null 2>&1; true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook claude StopFailure >/dev/null 2>&1; true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^AskUserQuestion$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ \"${HERDR_ENV:-}\" = 1 ]; then \"$HOME/.local/bin/taskr\" hook claude PostToolUse; fi",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "skipDangerousModePermissionPrompt": true
+}

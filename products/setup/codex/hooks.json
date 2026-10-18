@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook codex SessionStart >/dev/null 2>&1; true",
+            "timeout": 2,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook codex Stop >/dev/null 2>&1; true",
+            "timeout": 2,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook codex UserPromptSubmit >/dev/null 2>&1; true",
+            "timeout": 2,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,40 @@
+ taskr ❯ dashboard                                                        hub atlas · 2s ago   ● 2 need you  3 to check
+ [D Dashboard]  A Asks 2   F Fleet 11   I Detail
+1 asks+ · 2 checks+ · 3 camps+ · 4 PRs+ · 5 Shipped+ · 6 Build+ · 7 Decisions- · 8 Fleet- · 9 Log- · 0 Issues-
+H Health-
+ 3 notes still carry OWNER items
+ NEEDS YOU╭ Keys · dashboard · 1-26/36 · j k ────────────────────────────────────────────────────────────────╮─────── 3
+▌? ◇ tui-f│                                                                                                  │aptop   2h
+▌  Frames │   Move                                           Act                                             │
+ ? ◇ ios-w│    j k           down, up (arrows too)            a             answer this ask, else pick one   │        2h
+   WIDGET │    g G           first, last row                  p             park or unpark (confirms)        │
+          │    ctrl-d ctrl-u half page                        o             Decisions, Fleet or log row: op  │ mini  12m
+          │    tab           next card; shift-tab back        y             copy the jump command            │
+ CAMPAIGNS│    wheel         scroll                           r             refresh now                      │────── 11
+ ◐ search-│                                                   Answering: j k choose, tab types (a note       │       19s
+   Researc│   Go                                              after a structured ask's option), ⏎ reviews,   │
+ ◐ auth-ro│    D A F I       Dashboard, Asks, Fleet; I: the   y sends. A multi-select ask: space picks, ⏎    │       29s
+   Impleme│    [ ]           previous, next screen            reviews the set.                               │
+ ○ billing│    ⏎             go to the row's agent pane; on                                                  │       33s
+   FYI 614│    l             open the campaign               View                                            │
+ ○ docs-re│    h             back, close (esc too)            0-9           toggle asks, checks, campaigns,  │        2m
+   Hub FYI│    /             filter rows by name              H             toggle Health, the hub's produc  │
+ ○ checkou│    c             all campaigns, closed too        ?             this help                        │        3m
+   FIX: th│    s             slotr holders and queue          m             mouse on or off                  │
+ ◐ ios-wid│    click         select; double-click is ⏎        t             theme: dark, light, terminal     │laptop  7m
+   Widget │    ⏎ moves every client attached to that Herdr    ctrl-l        clear and redraw the screen      │
+ ◐ tui-fra│    server.                                        q             close; quits on a top-level scr  │        8m
+   NOW: pl│    Each screen keeps its place; switching reads                                                  │
+ · infra-l│    nothing. 0-9 and H shape the Dashboard only.  Marks                                           │       12m
+   cache-a│    Detail scrolls; esc or h returns to its row.   ? ask   ! to check   ◐ working   ○ waiting     │
+ ◐ model-e│    7, 9: the campaign last opened with l, as      ● lane   ● ready   · idle   × gone   ‖ parked  │       14m
+   matrix │    cached; l or o reads it again, r does not. 8:  ✓ done   ⊘ abandoned   ✗ rejected              │
+ ○ api-pag│    listed campaigns only; / filters it, not 7 or  ⏎ pane on this machine   ↗ another             │       54m
+   S4 curs│    9. 0: issues_repo issues by current assignee,  • changed since you looked                     │
+ ‖ legacy-│                                                                                                  │parked  3h
+ · 2 quiet╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+ ⏎ go to lead   a answer   l open   0-9 panels   H health   / filter   D A F I screens   y copy   s slotr   ? help

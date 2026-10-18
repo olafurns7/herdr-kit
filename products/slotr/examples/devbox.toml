@@ -1,0 +1,79 @@
+# Example only; no machine or tool-specific values are compiled into slotr.
+# Optional priority example:
+# [priority]
+# quiet_seconds = 30.0
+# fair_wait_seconds = 300.0
+# campaigns = ["team-a", "team-b-*"]
+# file = "~/.local/state/slotr/priority"
+[pools.runtime]
+slots = 2
+memory_gated = true
+evictable = true
+default_cost_mib = 7680
+max_lease = "4h"
+campaign_cap = 1
+[pools.runtime.kinds.dev-stack]
+cost_mib = 7680
+[pools.runtime.ports]
+base = 31000
+stride = 32
+probe = 7
+[pools.runtime.legacy_lock]
+path = "/tmp/runtime.lock"
+mode = "shared"
+# Heavy one-shot commands: type checks, lint, tests, builds, installs.
+# A stopped run exits 75 and is re-run; installs and builds included.
+[pools.heavy]
+slots = 2
+memory_gated = true
+evictable = true
+default_cost_mib = 6144
+# A run past one hour is stopped as lease_expired when another campaign waits.
+max_lease = "1h"
+campaign_cap = 0
+[pools.heavy.kinds.tsc]
+cost_mib = 6144
+[pools.heavy.kinds.oxlint]
+cost_mib = 6144
+[pools.heavy.kinds.vitest]
+cost_mib = 4096
+[pools.heavy.kinds.build]
+cost_mib = 6144
+[pools.heavy.kinds.install]
+cost_mib = 3072
+# Old `flock /tmp/heavy.lock CMD` callers keep working during a transition,
+# but they ignore priority and queue order.
+[pools.heavy.legacy_lock]
+path = "/tmp/heavy.lock"
+mode = "shared"
+[admission]
+reserve_mib = 5120
+psi_full_avg60_max = 5.0
+load1_per_core_max = 0.0
+recovery_healthy_seconds = 30.0
+queue_poll_ms = 1000
+[watchdog]
+# The stop event records this lock as held only when an old exclusive
+# flock caller holds it; the heavy pool's own shared holders do not count.
+observe_locks = ["/tmp/heavy.lock"]
+interval_ms = 2000
+on_pressure = "stop"
+stop_available_mib = 4000
+stop_available_samples = 2
+emergency_available_mib = 2000
+stop_psi_full_avg10_min = 20.0
+stop_psi_samples = 5
+term_grace_seconds = 15.0
+[lease]
+on_expiry = "stop"
+grace_seconds = 300.0
+waiter_min_wait_seconds = 300.0
+idle_release_minutes = 0.0
+idle_cpu_ms_per_min = 100.0
+[hooks]
+# The pane prompt wakes the owning agent whatever {task} is, and fails harmlessly when the pane is gone.
+on_admit = ["herdr", "agent", "prompt", "{pane}", "slotr: admitted {run} ({pool} slot {slot}, port {port_base}): {purpose}; events {events}"]
+on_warn = ["herdr", "agent", "prompt", "{pane}", "slotr: warning {run}: {reason}; campaign {campaign}; events {events}"]
+on_stop = ["herdr", "agent", "prompt", "{pane}", "slotr: stopped {run}: {reason}; re-queue with slotr run --pool {pool} --campaign {campaign} --purpose PURPOSE -- COMMAND; events {events}"]
+# Ledger note instead: no --as, so the forwarded TASKR_TASK is the task.
+# on_stop = ["taskr", "note", "slotr: stopped {run}: {reason}; events {events}"]

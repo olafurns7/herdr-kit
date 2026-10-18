@@ -1,0 +1,30 @@
+ taskr      2s ago   ● 5 need you  3 to check
+ [D Dash]  A Asks 5   F Fleet 11   I Detail
+panels 1+ 2+ 3+ 4+ 5+ 6+ 7- 8- 9- 0- H-
+ 3 notes still carry OWNER items
+ NEEDS YOU ──────────────────────────────── 5
+ ? ◆ fleet-hub            BLOCKING HUB  ⏎  25s
+   Release: Cut the v3.2 release today, or w…
+▌? ◆ auth-rotation        BLOCKING      ⏎   2m
+▌  Tokens: Which signing scheme should the r…
+ ? ◆ docs-refresh                       ⏎   4m
+   Translations landed for three of the four…
+ ? ◇ tui-frames           BLOCKING      ⏎  41s
+   Frames follow-up is ready: PR #212 (orpha…
+ ? ◇ ios-widgets                 laptop ↗   6m
+   WIDGET BATCH: 19 of 23 merged (14:02-14:0…
+ TO CHECK ───────────────────────────────── 3
+ ! map-tiles-polish                laptop   2h
+   lead unregistered and silent
+ ! infra-layout                             2h
+   lead idle with 3 results
+ ! host build-mini                   mini  12m
+   host stale: no heartbeat for 12 m
+ CAMPAIGNS ─────────────────────────────── 11
+ ◐ search-index      ●       ▁▁▁▁▁█▃       19s
+ ◐ auth-rotation     ●       ▁▁▁▄▄▁█       29s
+ ○ billing-export    ●       ▁▂▁▁▄█▁       33s
+ ○ docs-refresh      ●       ▁▁▁▁▁█▂        2m
+ ○ checkout-flow     ●●      ▁▂▁▃█▄█        3m
+ +6 more listed · F · 2 quiet unlisted · c
+ ⏎ go   a answer   l open   ? help

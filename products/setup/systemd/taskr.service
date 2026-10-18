@@ -1,0 +1,12 @@
+[Unit]
+Description=taskr ledger
+
+[Service]
+ExecStart=%h/.local/bin/taskr daemon --stay
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=2
+RestartPreventExitStatus=2
+
+[Install]
+WantedBy=default.target

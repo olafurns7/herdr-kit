@@ -1,0 +1,177 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "model": "opus[1m]",
+  "autoCompactWindow": 400000,
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook claude SessionStart >/dev/null 2>&1; true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook claude Stop >/dev/null 2>&1; true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${FLEET_ROLE:-}\" = worker ] || \"$HOME/.local/bin/moshi-hook\" claude-hook",
+            "async": true
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook claude UserPromptSubmit >/dev/null 2>&1; true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook claude StopFailure >/dev/null 2>&1; true",
+            "async": true
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash \"$HOME/.claude/statusline.sh\"",
+    "padding": 0
+  },
+  "extraKnownMarketplaces": {
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    }
+  },
+  "alwaysThinkingEnabled": true,
+  "skipDangerousModePermissionPrompt": true,
+  "agentPushNotifEnabled": true,
+  "enabledPlugins": {
+    "ponytail@ponytail": true
+  }
+}

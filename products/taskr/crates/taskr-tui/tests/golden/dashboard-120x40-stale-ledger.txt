@@ -1,0 +1,40 @@
+ taskr ❯ dashboard                                                              hub atlas · ◓   ! stale 40s  2 need you
+ [D Dashboard]  A Asks 2   F Fleet 11   I Detail
+1 asks+ · 2 checks+ · 3 camps+ · 4 PRs+ · 5 Shipped+ · 6 Build+ · 7 Decisions- · 8 Fleet- · 9 Log- · 0 Issues-
+H Health-
+ 3 notes still carry OWNER items
+ ! hub unreachable · showing 14:16 · retry 4s
+ NEEDS YOU ────────────────────────────────────────────── 2  TO CHECK ─────────────────────────────────────────────── 3
+▌? ◇ tui-frames           BLOCKING                    ⏎  41s ! map-tiles-polish                              laptop   2h
+▌  Frames follow-up is ready: PR #212 (orphaned asks hidde…    lead unregistered and silent
+ ? ◇ ios-widgets                               laptop ↗   6m ! infra-layout                                           2h
+   WIDGET BATCH: 19 of 23 merged (14:02-14:09Z, squash). S…    lead idle with 3 results
+                                                             ! host build-mini                                 mini  12m
+                                                               host stale: no heartbeat for 12 m
+ MY PRS ─────────────────────────────────────────────────────────────────────────────────────────────────── @demo-owner
+ 6 observed · demo-org/demo · 0s ago · search sample, first 30
+ 1 not readable
+ ? not known · N+? at least N, more unread · req ✗ only from an observed required failure · I every field
+ ✗ #42 Keep pending action labels readable            ✓2 ✗2 ◷0 · req ✗ · changes · behind · unres 3 · e2e-web, lint  12m
+ ◷ #41 Refresh campaign milestones                                    ✓1 ✗0 ◷1 · req ? · review · blocked · unres 0  24m
+ ◷ #39 Split the answer editor state                    ✓88+? ✗0+? ◷12+? · req ? · approved · unstable · unres 0 · ?  2h
+ ? #37 not readable                                                                      not readable · every field ?  ?
+ ✓ #40 Clarify owner answer copy                                      ✓2 ✗0 ◷0 · req ? · approved · clean · unres 0  37m
+ □ #38 DRAFT Sketch the fleet totals line                       checks ? head moved · req ? · none · draft · unres 0  2h
+ CAMPAIGNS ───────────────────────────────────────────── 11  SHIPPED ───────────────────────────────────────── observed
+ ◐ search-index        ●       ▁▁▁▁▁▁▁▁▁▁▁▁▁▁█▃          19s 4 observed merged / rolling 24h
+   Research complete: reports/ranking-options.md compares …  2 sampled; 0s ago · example-org/app
+ ◐ auth-rotation       ●       ▁▁▁▁▁▁▁▁▁▁▁▁▄▄▁█          29s 2 sampled; 0s ago · example-org/tools
+   Implementation slice: key rollover job, fake-clock test…  @alex · 2 PRs observed
+ ○ billing-export      ●       ▁▂▁█▁▁▂▁█▁▂▁▁▄█▁          33s @sam · 2 PRs observed
+   FYI 61448 from search-index (root 4310): the tokenizer …  BUILD QUEUE ───────────────────────────────────── observed
+•○ docs-refresh        ●       ▁▁▁▁▁▁▁▁▁▁▁▁▁▁█▂           2m 2 active observed · 0 unknown
+ ○ checkout-flow       ●●      ▂█▆▄██▄▃▂▁▂▁▃█▄█           3m 6 sampled; 0s ago · example-org/app
+ ◐ ios-widgets         —       ▂█▄▁▁▁▂▂▁▁▁▂▁▂▁    laptop  7m latest100-run sample · older may be missing
+ ◐ tui-frames          ●●●●○○  ▃▆▄▁█▄▁▁█▁▂▃▁▂▆▆           8m running (in_progress) · Build and test
+ · infra-layout        —       ▃▆▄▆▂▁▁▁▁▂▂▁█▁▃▃          12m   dashboard · 5m · example-org/app
+ ◐ model-evals         ●●●●●●+ ▂▇█▅▂▁▁▂▁▁▁▁▁▁▁▁          14m queued (queued) · Release checks
+ ○ api-pagination      ●       ▁▁▁█▁▂▁▁▂▁▁▁▂▁▁▁          54m   main · 1m · example-org/app
+ ‖ legacy-importer                                parked  3h
+ · 2 quiet
+ r retry   ⏎ go to lead   a answer   l open   0-9 panels   H health   / filter   D A F I screens   y copy   ? help

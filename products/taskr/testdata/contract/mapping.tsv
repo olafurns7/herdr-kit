@@ -1,0 +1,601 @@
+go_test	go_subtest	go_file	family	class	disposition	target	surface	reason	reviewed_by
+TestAccountLabel		contract_test.go	write:new	c	todo		cmd:new		
+TestAdopt		plan_test.go	write:new	b	todo		cmd:adopt;cmd:close;cmd:note;cmd:wait;cmd:handover;cmd:ack		
+TestAdoptWithoutHandover		plan_test.go	write:new	b	todo		cmd:new		
+TestAmbiguousPromptRecordedWithoutResend		scenarios_test.go	write:prompt	a	todo		cmd:prompt;cmd:log		
+TestAnswerPromptReceiptRouting		receipts_test.go	write:answer	a	todo		cmd:answer		
+TestAnswerRecipientAndHandoverOutputContracts		contract_test.go	write:answer	a	todo		cmd:answer;cmd:handover		
+TestAnswerWakesSubOrchestratorWait		scenarios_test.go	write:answer	a	todo		cmd:wait;cmd:ack;cmd:answer		
+TestAsRejections		as_test.go	write:new	a	blackbox	cargo:safety:root_as_rejects_worker_launch_mismatch_closed_and_missing_identities	cmd:close;cmd:note;cmd:ask		claude-opus:rev-port-safety
+TestAsksHideOrphans		orphan_asks_test.go	read:asks	a	blackbox	cargo:safety:orphan_asks_are_hidden_without_destroying_them_or_their_answers	cmd:answer;cmd:close;cmd:ask;cmd:asks		claude-opus:rev-port-safety
+TestAsksHideOrphans	fmt.Sprintf("%s/json=%v", tc.name, jsonMode)	orphan_asks_test.go	read:asks	a	blackbox	cargo:safety:orphan_asks_are_hidden_without_destroying_them_or_their_answers	cmd:answer;cmd:close;cmd:ask;cmd:asks		claude-opus:rev-port-safety
+TestAsyncNoReceiptExactlyOnce		receipts_test.go	write:new	c	todo		cmd:prompt;cmd:wait		
+TestAsyncReceiptOnTimeIsSilent		receipts_test.go	write:new	c	todo		cmd:prompt		
+TestBlockingAskRoundTrip		receipts_test.go	write:ask	a	todo		cmd:answer		
+TestBoundedAsksBudget		bounded_read_test.go	read:asks	a	blackbox	cargo:safety:bounded_asks_keep_every_open_question_and_the_newest_answered_suffix	cmd:answer;cmd:asks		claude-opus:rev-port-safety
+TestBoundedBudgetSubset		bounded_read_test.go	read:log	a	todo		cmd:log		
+TestBoundedLogCap150		bounded_read_test.go	read:log	a	todo		cmd:close;cmd:log		
+TestBoundedLogCapKeepsClosedRowsWhenEventsFit		bounded_read_test.go	read:log	a	todo		cmd:close;cmd:log		
+TestBoundedLogCapReportsDroppedLaunchOnly		bounded_read_test.go	read:log	a	todo		cmd:close;cmd:log		
+TestBoundedLogForwardCapDoesNotSkip		bounded_read_test.go	read:log	a	blackbox	cargo:safety:forward_log_budget_cursor_never_skips_or_duplicates_an_event	cmd:log		claude-opus:rev-port-safety
+TestBoundedLogLaunchRows		bounded_read_test.go	read:log	a	todo		cmd:close;cmd:log		
+TestBoundedLogPaging		bounded_read_test.go	read:log	a	todo		cmd:log		
+TestBoundedStatusOpenRowsOverCap		bounded_read_test.go	read:status	a	blackbox	cargo:safety:status_keeps_every_open_row_past_the_read_cap	cmd:next;cmd:status		claude-opus:rev-port-safety
+TestBoundedStatusTreeTrailer		bounded_read_test.go	read:status	a	todo		cmd:close;cmd:status		
+TestCLIAnswerUnchanged		dashboard_test.go	write:answer	a	todo		cmd:answer		
+TestCampaignGoalMatchesHandover		dashboard_campaign_test.go	write:new	b	todo		cmd:new		
+TestCampaignNotesOrderCapAndOwner		owner_notes_test.go	write:note	b	todo		cmd:note		
+TestCampaignPaging		dashboard_campaign_test.go	write:new	b	todo		cmd:new		
+TestCampaignRead		dashboard_campaign_test.go	write:new	b	todo		cmd:next;cmd:note;cmd:decide;cmd:close		
+TestCampaignReadAsksRefsAndStaleHost		cmd_campaign_test.go	read:campaign	c	todo		cmd:campaign		
+TestCampaignReadContract		cmd_campaign_test.go	read:campaign	a	todo		cmd:note;cmd:decide;cmd:close;cmd:set;cmd:next;cmd:answer;cmd:campaign;cmd:doc-get		
+TestCampaignReadPagingAndEmpty		cmd_campaign_test.go	read:campaign	c	todo		cmd:campaign		
+TestCampaignReadRPCFresh		cmd_campaign_test.go	read:campaign	b	todo		cmd:campaign		
+TestCampaignReadValidationAndHint		cmd_campaign_test.go	read:campaign	a	todo		cmd:campaign		
+TestCapacityBootstrapAndPromptBinding		capacity_test.go	write:prompt	c	todo		cmd:prompt		
+TestCapacityBootstrapAndPromptBinding	scenario	capacity_test.go	write:prompt	c	todo		cmd:prompt		
+TestCapacityBudgetCursor		capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityCandidateRaces		capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityCandidateRaces	scenario	capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityCurrentWarningStates		capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityCurrentWarningStates	status+"/"+variant	capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityEpisodesAndPrivacy		capacity_test.go	write:new	c	todo		cmd:wait;cmd:ack		
+TestCapacityIdentityAndLaunchFences		capacity_test.go	write:launch	c	todo		cmd:launch		
+TestCapacityIdentityAndLaunchFences	scenario	capacity_test.go	write:launch	c	todo		cmd:launch		
+TestCapacityIncidentChrome		capacity_chrome_test.go	write:new	c	todo		cmd:new		
+TestCapacityIncidentChrome	tc.name	capacity_chrome_test.go	write:new	c	todo		cmd:new		
+TestCapacityIncidentChromeRejectsAmbiguity		capacity_chrome_test.go	write:new	c	todo		cmd:new		
+TestCapacityIncidentChromeRejectsAmbiguity	tc.name	capacity_chrome_test.go	write:new	c	todo		cmd:new		
+TestCapacityIncidentWaitFilter		capacity_chrome_test.go	write:wait	a	todo		cmd:wait;cmd:ack		
+TestCapacityMalformedReadAndWriteFailure		capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityMalformedReadAndWriteFailure	scenario	capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityNewCLIProcessDedupe		capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityReadRevisionZero		capacity_chrome_test.go	write:new	c	todo		cmd:prompt		
+TestCapacityReadRevisionZero	name	capacity_chrome_test.go	write:new	c	todo		cmd:prompt		
+TestCapacityRecoveredHistory		capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacitySocketFailureBounds		capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacitySocketFailureBounds	scenario	capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityTail		capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityTail	tc.name	capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityUnavailableServer		capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityUnavailableServer	scenario	capacity_test.go	write:new	c	todo		cmd:new		
+TestCapacityWaitDefaultAndHeartbeat		capacity_test.go	write:wait	a	todo		cmd:wait;cmd:ack		
+TestCapacityWaitSkipsIneligible		capacity_test.go	write:wait	a	todo		cmd:wait		
+TestCapacityWaitSkipsIneligible	scenario	capacity_test.go	write:wait	a	todo		cmd:wait		
+TestCheckHubURL		hub_test.go	write:new	c	todo		cmd:daemon		
+TestClientBackfillTwoPagesAndHostScope		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc;cmd:doc-backfill		
+TestClientBackfillUsesMissSourceHost		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestClientDaemonIdentityFailureDoesNotStopDaemon		client_restart_test.go	net:daemon	b	todo		cmd:daemon;daemon:--restart		
+TestClientDaemonRestart		client_restart_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status;daemon:--restart		
+TestClientDaemonRestartRefusesUnverifiedRecord		client_restart_test.go	net:daemon	b	rust-unit	cargo:taskr:daemon::tests::client_identity_requires_a_complete_matching_record	cmd:daemon;daemon:--status;daemon:--restart		claude-opus:rev-port-safety
+TestClientDaemonRestartRefusesUnverifiedRecord	tc.name	client_restart_test.go	net:daemon	b	rust-unit	cargo:taskr:daemon::tests::client_identity_requires_a_complete_matching_record	cmd:daemon;daemon:--status;daemon:--restart		claude-opus:rev-port-safety
+TestClientDaemonStatusUsesIdentityRecord		client_restart_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status		
+TestClientDaemonStayUsageError		daemon_stay_test.go	net:daemon	b	todo		cmd:daemon;daemon:--stay		
+TestClientHostFilePromptCarriesWorkerContract		contract_test.go	write:prompt	b	todo		cmd:prompt		
+TestCloseMidLevelKeepsDescendantAsks		orphan_asks_test.go	read:asks	a	blackbox	cargo:safety:closing_an_intermediate_task_keeps_its_open_descendants_asks_live	cmd:close		claude-opus:rev-port-safety
+TestCloseOrphanOwnerAsks		orphan_asks_test.go	read:asks	a	blackbox	cargo:safety:close_warns_once_about_new_orphans_and_never_answers_them	cmd:ask;cmd:answer;cmd:close		claude-opus:rev-port-safety
+TestCloseOrphanOwnerAsks	fmt.Sprintf("%s/json=%v", target, jsonMode)	orphan_asks_test.go	read:asks	a	blackbox	cargo:safety:close_warns_once_about_new_orphans_and_never_answers_them	cmd:ask;cmd:answer;cmd:close		claude-opus:rev-port-safety
+TestCloseOrphanWarningRPC		orphan_asks_test.go	net:rpc-client	a	todo		rpc:/api/rpc		
+TestCloseOutcomeInvalid		close_outcome_test.go	write:close	a	todo		cmd:close		
+TestCloseOutcomeQueuedDelivery		close_outcome_test.go	write:close	b	todo		cmd:close;cmd:log		
+TestCloseOutcomeStoredAndLogged		close_outcome_test.go	read:log	a	todo		cmd:log;cmd:close		
+TestCloseOutcomeStoredAndLogged	outcome	close_outcome_test.go	read:log	a	todo		cmd:log;cmd:close		
+TestCloseOutcomeUsage		close_outcome_test.go	write:close	a	todo		cmd:help		
+TestCoalesceLateReceiptAfterConfirmNoReceipt		coalesce_test.go	write:new	a	todo		cmd:prompt;cmd:wait		
+TestCoalesceLateReceiptAfterDeliveredNoReceipt		coalesce_test.go	write:new	c	todo		cmd:prompt;cmd:wait;cmd:ack		
+TestCoalescePlainHintRules		coalesce_test.go	write:new	a	todo		cmd:close;cmd:wait		
+TestCoalescePlainHintRules	tt.name	coalesce_test.go	write:new	a	todo		cmd:close;cmd:wait		
+TestCoalesceResolvedReceiptPair		coalesce_test.go	write:new	c	todo		cmd:wait		
+TestCoalesceUnfilteredWaitKeepsOldestEnvelope		coalesce_test.go	write:wait	a	todo		cmd:wait		
+TestCommandHelpAndUnknownSuggestions		contract_test.go	write:new	b	todo		cmd:help		
+TestCompactDefaultAndJSONPin		compact_test.go	write:new	a	todo		cmd:new;cmd:version;cmd:status		
+TestCompactEventEscapesAndOpaquePayload		compact_test.go	write:new	a	todo		cmd:wait		
+TestCompactExceptionalMutations		compact_test.go	write:new	a	todo		cmd:next;cmd:decide;cmd:answer		
+TestCompactReadFormat1Pinned		compact_test.go	write:new	c	todo		cmd:new		
+TestCompactReadFormat1Pinned	tc.cmd	compact_test.go	write:new	c	todo		cmd:new		
+TestCompactReadsLossless		compact_test.go	write:new	b	todo		cmd:status		
+TestCompactReceiptAndOwnerAnswerKeepRecoveryData		compact_test.go	write:answer	c	todo		cmd:prompt;cmd:got;cmd:wait;cmd:log;cmd:ack;cmd:ask		
+TestCompactTransportDiagnostics		compact_test.go	write:new	a	todo		cmd:prompt;cmd:answer		
+TestCompactTransportDiagnostics	fmt.Sprintf("%s/%s/json=%t", tc.name, command, legacy)	compact_test.go	write:new	a	todo		cmd:prompt;cmd:answer		
+TestCompactWaitInterruptClearsWaiting		wait_filter_test.go	write:wait	b	todo		cmd:wait		
+TestCompactWaitTimeoutAndJSONPin		compact_test.go	write:wait	a	todo		cmd:wait		
+TestCompactWaitTimeoutAndJSONPin	fmt.Sprintf("%s/filter=%t/timeout=%s", mode.name, filtered, timeout)	compact_test.go	write:wait	a	todo		cmd:wait		
+TestCompactWaitTimeoutCleanupFailure		wait_filter_test.go	write:wait	a	blackbox	cargo:safety:timeout_cleanup_failure_is_a_database_error_with_the_marker_retained	cmd:wait		claude-opus:rev-port-safety
+TestCompactWaitTimeoutCountsOwedAndDue		compact_test.go	write:wait	a	todo		cmd:prompt;cmd:wait		
+TestConcurrentLivenessNoDuplicateHerdrEvents		scenarios_test.go	write:new	c	todo		cmd:prompt;cmd:close		
+TestContractClassification		classification_adapter_test.go	core	c	dropped			Go-internal: classification guard over tests.tsv and contractGuard; mapping.tsv and mapping_check replace it	sol:rev-s3-mapping
+TestContractGoldenProductionClock		classification_adapter_test.go	core	c	rust-unit	cargo:taskr_core:tests::default_build_ignores_frozen_now	env:TASKR_FROZEN_NOW		
+TestContractGoldenSchema		golden_adapter_test.go	core	c	dropped			Go-internal: syncs Rust search SQL from db.go; after S8 crates/taskr-core/src/search-*.sql is the source	sol:rev-s3-mapping
+TestContractGoldenVectors		golden_adapter_test.go	core	c	rust-unit	cargo:taskr_core:tests::go_golden_vectors	rpc:/api/rpc;spool		
+TestContractVersionAdapter		contract_adapter_test.go	read:version	a	todo		cmd:version		
+TestDaemonCampaignClientRoot		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignClosure		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignClosure	map[bool]string{false: "last-lane", true: "root"}[closeRoot]	daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignFailureRetry		daemon_campaign_token_test.go	net:daemon	b	todo		cmd:daemon		
+TestDaemonCampaignFirstReconcile		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignGoodListClearsRetryGate		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignMissingLaunchDoesNotCount		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignMixedRoots		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignMixedRoots	map[bool]string{false: "initial", true: "previously-written"}[existing]	daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignPaneCompatibility		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignPaneCompatibility	change	daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignPaneTokensBeforeWorkspaceCalls		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignPlannedTaskDoesNotCount		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignRelaunch		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignRootAndLanes		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignSameWorkspaceTab		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignTopRoot		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCampaignUnchanged		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonCoalescesBurst		daemon_test.go	net:daemon	b-conv	todo		cmd:prompt;cmd:daemon		
+TestDaemonEmptyPaneSetSubscribes		daemon_test.go	net:daemon	b-conv	todo		cmd:daemon;daemon:--status		
+TestDaemonExitsWhenSocketRemoved		daemon_test.go	net:daemon	b-conv	todo		cmd:daemon;daemon:--status		
+TestDaemonFailedWorkspaceListRetriesOnFallback		daemon_campaign_token_test.go	net:daemon	b	todo		cmd:daemon		
+TestDaemonFailedWorkspaceListRetryGate		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonFailedWorkspaceListRetryGate	map[bool]string{false: "nothing-wanted", true: "wanted"}[wanted]	daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonHeartbeatBeforeBlockedWorkspaceList		daemon_campaign_token_test.go	net:daemon	b	todo		cmd:daemon		
+TestDaemonLockRefusesSecondInstance		daemon_test.go	net:daemon	b-conv	shell	cell:daemon_cell	cmd:daemon		claude-opus:rev-port-safety
+TestDaemonNoHerdrCallsWithoutServer		daemon_test.go	net:daemon	b	todo		cmd:daemon		
+TestDaemonOnceDoesNotServe		dashboard_test.go	net:daemon	a	todo		cmd:daemon;daemon:--once		
+TestDaemonOnceMatchesWaitPoll		daemon_test.go	net:daemon	a	todo		cmd:wait;cmd:daemon;daemon:--once;daemon:--status		
+TestDaemonOwnerAskToken		daemon_owner_ask_token_test.go	net:daemon	c	todo		cmd:answer;cmd:ask;cmd:daemon		
+TestDaemonOwnerAskTokenMove		daemon_owner_ask_token_test.go	net:daemon	c	todo		cmd:answer;cmd:daemon		
+TestDaemonOwnerAskTokenRestart		daemon_owner_ask_token_test.go	net:daemon	c	todo		cmd:close;cmd:daemon		
+TestDaemonOwnerAskTokenRetry		daemon_owner_ask_token_test.go	net:daemon	c	todo		cmd:ask;cmd:daemon		
+TestDaemonOwnerAskTokenStaleUnlistedPane		daemon_owner_ask_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonOwnerAskTokenUnlistedPane		daemon_owner_ask_token_test.go	net:daemon	c	todo		cmd:ask;cmd:daemon		
+TestDaemonOwnerNotificationOnce		daemon_test.go	net:daemon	a	todo		cmd:answer;cmd:daemon;daemon:--once		
+TestDaemonPerPaneSubscriptions		daemon_test.go	net:daemon	b-conv	todo		cmd:close;cmd:daemon		
+TestDaemonReconnects		daemon_test.go	net:daemon	b-conv	todo		cmd:daemon		
+TestDaemonRestartAfterBinaryReplaced		daemon_restart_test.go	net:daemon	b	todo		cmd:daemon;daemon:--restart		
+TestDaemonRestartKeepsStay		daemon_restart_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status;daemon:--restart		
+TestDaemonRestartRefusesLookalike		daemon_restart_test.go	net:daemon	b	rust-unit	cargo:taskr:daemon::tests::daemon_identity_refuses_non_taskr_missing_self_and_invalid_pids;cargo:taskr:daemon::tests::daemon_identity_rejects_lookalike_executable_argv_and_reused_pid	cmd:daemon		claude-opus:rev-port-safety
+TestDaemonRestartRefusesNonTaskrPID		daemon_restart_test.go	net:daemon	b	rust-unit	cargo:taskr:daemon::tests::daemon_identity_refuses_non_taskr_missing_self_and_invalid_pids;cargo:taskr:daemon::tests::daemon_identity_rejects_lookalike_executable_argv_and_reused_pid;cargo:safety:daemon_restart_and_status_are_rejected_before_starting	cmd:daemon;daemon:--status;daemon:--restart		claude-opus:rev-port-safety
+TestDaemonRestartRefusesReusedPID		daemon_restart_test.go	net:daemon	b	rust-unit	cargo:taskr:daemon::tests::daemon_identity_rejects_lookalike_executable_argv_and_reused_pid	cmd:daemon		claude-opus:rev-port-safety
+TestDaemonRestartReplacesWithMinimalEnv		daemon_restart_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status;daemon:--restart		
+TestDaemonRestartWithoutDaemonStartsOne		daemon_restart_test.go	net:daemon	b	todo		cmd:daemon;daemon:--restart		
+TestDaemonSetupErrorWithID		daemon_test.go	net:daemon	b-conv	todo		cmd:daemon		
+TestDaemonStatusDashboardUsage		dashboard_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonStatusInvalidDashboardUsage		dashboard_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonStatusStale		daemon_restart_test.go	net:daemon	b-conv	todo		cmd:daemon;daemon:--status		
+TestDaemonStayAttachesAndReattaches		daemon_stay_test.go	net:daemon	b	todo		cmd:daemon		
+TestDaemonStayHerdrMissingDoesNotClaimOwnerAsk		daemon_stay_test.go	net:daemon	b	todo		cmd:daemon;daemon:--stay;daemon:--status		
+TestDaemonStayHerdrMissingStatus		daemon_stay_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status		
+TestDaemonStayHerdrMissingStatus	strconv.FormatBool(missing)	daemon_stay_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status		
+TestDaemonStayListenerRetries		daemon_stay_test.go	net:daemon	b	todo		cmd:daemon;rpc:/api/rpc		
+TestDaemonStayLockWaitCanBeStopped		daemon_restart_test.go	net:daemon	b	todo		cmd:daemon		
+TestDaemonStayOfflineRPCAndDashboard		daemon_stay_test.go	net:rpc-client	c	todo		cmd:daemon;cmd:ask;cmd:wait;rpc:/api/rpc;daemon:--stay;daemon:--status		
+TestDaemonStayRestartStaleIdentityNamesFile		daemon_restart_test.go	net:daemon	b	rust-unit	cargo:taskr:daemon::tests::local_identity_rejects_a_stale_or_corrupt_sidecar	cmd:daemon;daemon:--status;daemon:--restart		claude-opus:rev-port-safety
+TestDaemonStayResubscribeBeforeAckWritesAllPanes		daemon_stay_test.go	net:daemon	b	todo		cmd:daemon		
+TestDaemonStayResubscribeWritesOnlyNewPane		daemon_stay_test.go	net:daemon	c	todo		cmd:daemon		
+TestDaemonStayWaitsForLockAndTakesOver		daemon_restart_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status		
+TestDaemonStreamErrorNoSpin		daemon_test.go	net:daemon	b-conv	todo		cmd:daemon		
+TestDaemonStreamErrorResubscribes		daemon_test.go	net:daemon	b-conv	todo		cmd:prompt;cmd:daemon		
+TestDaemonSubscriptionShapeAndWriteSilence		daemon_test.go	net:daemon	b-conv	todo		cmd:status;cmd:daemon;daemon:--status		
+TestDaemonSupervisedInheritedInvocationRestartsQuickly		daemon_restart_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status;daemon:--restart		
+TestDaemonSupervisedRestartFallsBack		daemon_restart_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status;daemon:--restart		
+TestDaemonSupervisedRestartWaitsForReplacement		daemon_restart_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status;daemon:--restart		
+TestDaemonTokensOnlyOnChange		daemon_test.go	net:daemon	c	todo		cmd:answer;cmd:daemon		
+TestDashboardAddr		dashboard_test.go	write:new	b	todo		cmd:new		
+TestDashboardBindConflictDaemonCarriesOn		dashboard_test.go	net:daemon	b-conv	todo		cmd:daemon;daemon:--status		
+TestDashboardConfigTailnet		hub_test.go	write:new	b	todo		cmd:daemon		
+TestDashboardIPv6Host		dashboard_test.go	write:new	b	todo		cmd:new;rpc:/api/rpc		
+TestDashboardOffAndRefusedInDaemon		dashboard_test.go	net:daemon	b-conv	todo		cmd:daemon;daemon:--status		
+TestDashboardReadOnly		dashboard_test.go	write:new	b	todo		cmd:new;rpc:/api/rpc		
+TestDashboardServedByDaemon		dashboard_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status;rpc:/api/rpc		
+TestDashboardUsageClassification		dashboard_test.go	write:new	b	todo		cmd:new;rpc:/api/rpc		
+TestDashboardUsageFlushMergesPrunesAndSkipsIdle		usage_test.go	write:new	c	todo		cmd:new		
+TestDashboardUsageFlushRetainsCountsOnFailure		usage_test.go	write:new	c	todo		cmd:new		
+TestDecideRevokeAndOwnerAsks		plan_test.go	read:asks	c	todo		cmd:decide;cmd:answer		
+TestDocUploadBestEffortFailures		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadBestEffortFailures	mode	documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadCallerOwnsBriefAndPrompt		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadCapabilityGate		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadCapabilityOnlyOnDocumentCommands		documents_upload_test.go	read:doc	c	todo		rpc:/api/rpc;cmd:prompt;cmd:ready;cmd:done;cmd:fail;cmd:close;cmd:doc-set;cmd:doc-backfill;cmd:wait;cmd:note;cmd:doc-get		
+TestDocUploadCapabilityOnlyOnDocumentCommands	tc.name	documents_upload_test.go	read:doc	c	todo		rpc:/api/rpc;cmd:prompt;cmd:ready;cmd:done;cmd:fail;cmd:close;cmd:doc-set;cmd:doc-backfill;cmd:wait;cmd:note;cmd:doc-get		
+TestDocUploadCapturePoints		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc;cmd:ready		
+TestDocUploadCapturePoints	kind	documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc;cmd:ready		
+TestDocUploadChangedReportPathCapturesLatest		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadClientSetAndRequestCap		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc;cmd:doc-set		
+TestDocUploadClientSetAndRequestCap	tc.name	documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc;cmd:doc-set		
+TestDocUploadDifferentHostMisses		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadLegacyServerCapabilityFallback		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadMissReasons		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadMissReasons	tc.name	documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadMissingFileKeepsCapture		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadPromptOutputBeforeUpload		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc;cmd:prompt		
+TestDocUploadPromptSameNameNewPathCapturesLatest		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadPutValidationAndIdempotency		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadRepeatedReadyPreservesCapture		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadReportSamePathNewHostCapturesLatest		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocUploadReportStaysOnTaskHost		documents_upload_test.go	read:doc	b	todo		rpc:/api/rpc		
+TestDocumentsBackfill		documents_test.go	write:doc	b	todo		cmd:doc-backfill		
+TestDocumentsBackfillSameBasename		documents_test.go	write:doc	a	todo		cmd:doc-backfill		
+TestDocumentsCaptureIsolation		documents_test.go	write:doc	b	todo		cmd:prompt;cmd:close;cmd:handover		
+TestDocumentsCaptureIsolation	cmd	documents_test.go	write:doc	b	todo		cmd:prompt;cmd:close;cmd:handover		
+TestDocumentsCompactContract		documents_test.go	write:doc	b	todo		cmd:doc-set;cmd:doc-rm;cmd:wait		
+TestDocumentsFixBackfillHistory		documents_test.go	write:doc	a	todo		cmd:doc-set;cmd:doc-backfill		
+TestDocumentsFixBackfillHistory	scenario	documents_test.go	write:doc	a	todo		cmd:doc-set;cmd:doc-backfill		
+TestDocumentsFixCapturePanic		documents_test.go	write:doc	c	todo		cmd:doc-set		
+TestDocumentsFixFatalRollback		documents_test.go	write:doc	a	todo		cmd:ready;cmd:close;cmd:prompt;cmd:handover		
+TestDocumentsFixFatalRollback	command	documents_test.go	write:doc	a	todo		cmd:ready;cmd:close;cmd:prompt;cmd:handover		
+TestDocumentsFixLaneDocNoRecipient		documents_test.go	write:doc	a	todo		cmd:doc-set;cmd:wait		
+TestDocumentsFixPurgeClosedAndIDs		documents_test.go	write:doc	a	todo		cmd:doc-set;cmd:close;cmd:doc-rm		
+TestDocumentsFixPurgeMissReference		documents_test.go	write:doc	a	todo		cmd:doc-set;cmd:doc-rm		
+TestDocumentsFixPurgeSecureAndCheckpoint		documents_test.go	write:doc	c	todo		cmd:doc-set;cmd:doc-rm		
+TestDocumentsFixReadCapAndFileTypes		documents_test.go	write:doc	b	todo		cmd:doc-set		
+TestDocumentsFixReadCapAndFileTypes	"cap"	documents_test.go	write:doc	b	todo		cmd:doc-set		
+TestDocumentsFixReadCapAndFileTypes	kind	documents_test.go	write:doc	b	todo		cmd:doc-set		
+TestDocumentsFixReadsOutsideTransactions		documents_test.go	write:doc	b	todo		cmd:close;cmd:doc-backfill		
+TestDocumentsFixReadsOutsideTransactions	command	documents_test.go	write:doc	b	todo		cmd:close;cmd:doc-backfill		
+TestDocumentsFixRemovedReportAndGoal		documents_test.go	write:doc	a	todo		cmd:close;cmd:doc-ls;cmd:done;cmd:handover		
+TestDocumentsFixRemovedReportAndGoal	terminal	documents_test.go	write:doc	a	todo		cmd:close;cmd:doc-ls;cmd:done;cmd:handover		
+TestDocumentsFixReportABAAndAnswer		documents_test.go	write:doc	a	todo		cmd:answer		
+TestDocumentsGetAndLs		documents_test.go	read:doc	a	todo		cmd:doc-set;cmd:doc-get;cmd:doc-ls		
+TestDocumentsHandover		documents_test.go	read:handover	a	todo		cmd:doc-set;cmd:decide;cmd:close;cmd:handover		
+TestDocumentsMisses		documents_test.go	write:doc	a	todo		cmd:doc-set		
+TestDocumentsMisses	tc.name	documents_test.go	write:doc	a	todo		cmd:doc-set		
+TestDocumentsNew		documents_test.go	write:new	a	todo		cmd:new		
+TestDocumentsPromptFile		documents_test.go	write:prompt	a	todo		cmd:prompt		
+TestDocumentsPromptText		documents_test.go	write:prompt	a	todo		cmd:prompt;cmd:doc-get		
+TestDocumentsPurge		documents_test.go	write:doc	a	todo		cmd:doc-set;cmd:doc-rm		
+TestDocumentsPurgeBusyReader		documents_test.go	write:doc	c	todo		cmd:doc-set;cmd:doc-rm;cmd:note		
+TestDocumentsRPCCapture		documents_test.go	write:doc	b	todo		cmd:doc-set		
+TestDocumentsRPCRequests		documents_test.go	write:doc	b	todo		cmd:doc-get		
+TestDocumentsReportHostChangeBetween		documents_test.go	write:doc	b	todo		cmd:close		
+TestDocumentsReportPathOnlyRace		documents_test.go	write:doc	b	todo		cmd:close;cmd:done		
+TestDocumentsReportPathOnlyRace	command	documents_test.go	write:doc	b	todo		cmd:close;cmd:done		
+TestDocumentsReportPathRace		documents_test.go	write:doc	b	todo		cmd:close;cmd:done		
+TestDocumentsReportPathRace	command	documents_test.go	write:doc	b	todo		cmd:close;cmd:done		
+TestDocumentsReportStaleRead		documents_test.go	write:doc	b	todo		cmd:close		
+TestDocumentsReports		documents_test.go	write:ready	a	todo		cmd:close;cmd:done		
+TestDocumentsReports	terminal	documents_test.go	write:ready	a	todo		cmd:close;cmd:done		
+TestDocumentsSchema		documents_test.go	schema	a	todo		cmd:status;migration		
+TestDocumentsSet		documents_test.go	write:doc	a	todo		cmd:doc-set;cmd:close		
+TestExitCodesAndIdempotentKeys		contract_test.go	write:new	a	todo		cmd:new;cmd:note;cmd:wait;cmd:status		
+TestExpiredWaitDoesNotRunHerdr		contract_test.go	write:wait	a	todo		cmd:wait		
+TestFakeSocketEnforcesPaneID		daemon_test.go	net:daemon	c	todo		cmd:daemon		
+TestGateTaskHasNoLiveness		contract_test.go	write:new	a	todo		cmd:wait		
+TestGlanceBookkeepingGluedOwner		glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceBookkeepingGluedOwner	newer	glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceBookkeepingKeepsMigration		glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceCLI		glance_test.go	read:glance	a	todo		cmd:glance		
+TestGlanceCLI	tc.name	glance_test.go	read:glance	a	todo		cmd:glance		
+TestGlanceClosedIntermediate		glance_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceLeadRanksAndPrecedence		glance_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceLeads		glance_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceLeads	tc.name	glance_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceNeedsYouOrder		glance_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceOwnerAskStaleHost		glance_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceOwnerSQLSegmentBoundaries		glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceQuietBacklogVerdict		glance_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceRPCFresh		glance_test.go	net:rpc-client	b-conv	todo		cmd:ask;rpc:/api/rpc		
+TestGlanceReadHostsRPC		glance_reads_test.go	net:rpc-client	b	todo		cmd:glance;rpc:/api/rpc		
+TestGlanceReadTargets		glance_reads_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceReparkAndHostGuard		glance_trust_test.go	read:glance	a	todo		cmd:set		
+TestGlanceSnapshot		glance_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceSnapshot	tc.name	glance_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceSparkBuckets		glance_reads_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceStateRootOnly		glance_trust_test.go	read:glance	a	todo		cmd:set		
+TestGlanceSyntheticLatency		glance_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceSyntheticOwnerParser		glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceTrustIdleResults		glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceTrustIdleResults	fmt.Sprintf("%s/lease=%v", state, lease)	glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceTrustNotes		glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceTrustNotes	tc.text	glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceTrustParking		glance_trust_test.go	read:glance	c	todo		cmd:glance	intentional divergence T1: Rust counts only lane events and prompts to the lead after a park; root bookkeeping (notes, handovers, refs) no longer makes parked_active	
+TestGlanceTrustUnregistered		glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceTrustUnregistered	fmt.Sprintf("%s/lanes=%v", age, lanes)	glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceTrustUnregisteredQuietLanes		glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceUnlaunchedGate		glance_test.go	read:glance	c	todo		cmd:glance		
+TestGlanceWatchClientFetchDeadline		glance_watch_test.go	read:glance	b	todo		cmd:glance		
+TestGlanceWatchClientFetchErrors		glance_watch_test.go	read:glance	b	todo		cmd:glance		
+TestGlanceWatchClientFetchErrors	kind	glance_watch_test.go	read:glance	b	todo		cmd:glance		
+TestGlanceWatchFlagsAndRPCRefusal		glance_watch_test.go	net:rpc-client	b-conv	todo		cmd:glance;rpc:/api/rpc		
+TestGlanceWatchRPCLogging		glance_watch_test.go	net:rpc-client	b	todo		cmd:glance;cmd:status;cmd:campaign;rpc:/api/rpc		
+TestHandoverClosedSinceByEventID		plan_test.go	write:close	c	todo		cmd:handover;cmd:close		
+TestHandoverClosedSinceByEventID	delta.String()	plan_test.go	write:close	c	todo		cmd:handover;cmd:close		
+TestHandoverEscapesLedgerText		plan_test.go	write:new	b	todo		cmd:set;cmd:next;cmd:decide;cmd:handover		
+TestHandoverGolden		plan_test.go	write:new	b	todo		cmd:handover;cmd:close		
+TestHarnessHostIdentity		rpc_harness_test.go	net:rpc-client	a	todo		cmd:note;rpc:/api/rpc		
+TestHarnessRPCAdmission		rpc_harness_test.go	net:rpc-client	c	todo		rpc:/api/rpc		
+TestHarnessRPCDroppedConnection		rpc_harness_test.go	net:rpc-client	a	todo		cmd:wait;cmd:status;rpc:/api/rpc		
+TestHarnessRPCDuplicateFlags		rpc_harness_test.go	net:rpc-client	a	todo		cmd:prompt;cmd:handover;rpc:/api/rpc		
+TestHarnessRPCDuplicateFlags	tc.name	rpc_harness_test.go	net:rpc-client	a	todo		cmd:prompt;cmd:handover;rpc:/api/rpc		
+TestHarnessRPCPaths		rpc_harness_test.go	net:rpc-client	a	todo		rpc:/api/rpc		
+TestHarnessRPCWaits		rpc_harness_test.go	net:rpc-client	a	todo		cmd:note;cmd:wait;rpc:/api/rpc		
+TestHarnessRetry		rpc_harness_test.go	net:rpc-client	a	todo		cmd:note;rpc:/api/rpc		
+TestHarnessWaitAfterAdopt		rpc_harness_test.go	write:wait	b-conv	todo		cmd:wait;rpc:/api/rpc		
+TestHerdrCommandRefusesWithoutServer		herdr_test.go	write:new	b	todo		cmd:new		
+TestHerdrSubprocessPipeIsBounded		contract_test.go	write:new	a	todo		cmd:wait		
+TestHerdrSubprocessPipeIsBounded	tc.hold	contract_test.go	write:new	a	todo		cmd:wait		
+TestHintAfterDoneSilent		owed_test.go	write:done	a	todo		cmd:daemon;daemon:--once		
+TestHintArmedRowSilent		owed_test.go	write:new	a	todo		cmd:daemon;daemon:--once		
+TestHintBlockedAlwaysEmits		owed_test.go	write:new	a	todo		cmd:daemon;daemon:--once		
+TestHintCapacityEmitsOnOwnPath		owed_test.go	write:new	c	todo		cmd:new		
+TestHintMidTurnIdleWithGotEmits		owed_test.go	write:got	a	todo		cmd:daemon;daemon:--once		
+TestHintPostReady		owed_test.go	write:ready	a	todo		cmd:daemon;daemon:--once		
+TestHintStartupUnknownSilent		owed_test.go	write:start	a	todo		cmd:daemon;daemon:--once		
+TestHintUnarmedEmits		owed_test.go	write:new	a	todo		cmd:daemon;daemon:--once		
+TestHookClientRPCNormalizedFieldsAndHostCheck		hook_test.go	net:rpc-client	a	blackbox	cargo:hooks_rpc:rpc::client_rpc_normalized_fields_and_host_check	cmd:hook;rpc:/api/rpc	Contract CLI/Rust-hub RPC asserts normalized argv/env, persisted receipt/stalls, prompt privacy and authenticated host-b receipt rejection; host-check mutant fails	opus:rev-s4-hooks
+TestHookCodexBindingSurvivesWorkerIdentity		hook_test.go	write:new	b	blackbox	cargo:hooks:codex_binding_survives_worker_identity	cmd:hook;cmd:prompt;cmd:got;cmd:start	CLI hook-bound Codex session/source/native home survive start, model-first got and nested rebind	opus:rev-s4-hooks
+TestHookCodexBindingSurvivesWorkerIdentity	tc	hook_test.go	write:new	b	blackbox	cargo:hooks:codex_binding_survives_worker_identity	cmd:hook;cmd:prompt;cmd:got;cmd:start	CLI hook-bound Codex session/source/native home survive start, model-first got and nested rebind	opus:rev-s4-hooks
+TestHookCodexRolloutFallback		hook_test.go	write:new	b	blackbox	cargo:hooks:codex_rollout_fallback	cmd:hook;cmd:prompt;cmd:got;cmd:daemon;daemon:--once	CLI daemon scans Codex rollout timestamp/completed_at, newer-user/older-error suppression and coded/uncoded sub-orchestrator errors	opus:rev-s4-hooks
+TestHookCodexRolloutFallback	tc.name	hook_test.go	write:new	b	blackbox	cargo:hooks:codex_rollout_fallback	cmd:hook;cmd:prompt;cmd:got;cmd:daemon;daemon:--once	CLI daemon scans Codex rollout timestamp/completed_at, newer-user/older-error suppression and coded/uncoded sub-orchestrator errors	opus:rev-s4-hooks
+TestHookCodexRolloutReprompt		hook_test.go	write:new	b	blackbox	cargo:hooks:codex_rollout_reprompt	cmd:hook;cmd:prompt;cmd:got;cmd:daemon;daemon:--once	CLI daemon records the error stall once and does not reuse the old rollout error for a fresh prompt	opus:rev-s4-hooks
+TestHookDBBusyTimeout		hook_test.go	write:new	c	dropped		cmd:hook	Go driver introspection; the observable bound is asserted by cargo:hooks:deadline_with_held_db_lock (< 450 ms)	opus:rev-s4-hooks
+TestHookDeadlineWithHeldDBLock		hook_test.go	write:new	b	blackbox	cargo:hooks:deadline_with_held_db_lock	cmd:hook	CLI stays silent under a held DB lock, writes no binding and exits in less than 450 ms	opus:rev-s4-hooks
+TestHookFixtureFlowsAndReceipts		hook_test.go	write:new	b	blackbox	cargo:hooks:fixture_flows_and_receipts	cmd:hook;cmd:prompt	CLI fixture flows for claude, codex, opencode and pi; persisted binding/receipt identities, duplicate got and stall records, model-first got and ready-last markers	opus:rev-s4-hooks
+TestHookFixtureFlowsAndReceipts	tc.name	hook_test.go	write:new	b	blackbox	cargo:hooks:fixture_flows_and_receipts	cmd:hook;cmd:prompt	CLI fixture flows for claude, codex, opencode and pi; persisted binding/receipt identities, duplicate got and stall records, model-first got and ready-last markers	opus:rev-s4-hooks
+TestHookLockChild		hook_test.go	write:new	c	dropped		cmd:hook	Go test-process re-execution/readiness helper; real CLI launched by cargo:hooks:deadline_with_held_db_lock	opus:rev-s4-hooks
+TestHookMigrationFromV010		hook_test.go	write:new	b	blackbox	cargo:hooks:migration_from_v010	cmd:hook;migration	CLI status migrates the legacy ledger, adds transcript_path and preserves observed_version	opus:rev-s4-hooks
+TestHookNoStallAfterDoneFailOrAsk		hook_test.go	write:done	b	blackbox	cargo:hooks:no_stall_after_done_fail_or_ask	cmd:hook;cmd:prompt;cmd:done	CLI Stop emits no stall after done, fail or ask	opus:rev-s4-hooks
+TestHookNoStallAfterDoneFailOrAsk	outcome	hook_test.go	write:done	b	blackbox	cargo:hooks:no_stall_after_done_fail_or_ask	cmd:hook;cmd:prompt;cmd:done	CLI Stop emits no stall after done, fail or ask	opus:rev-s4-hooks
+TestHookOlderBinaryShellGuard		hook_test.go	write:new	b	shell	cargo:hooks:older_binary_shell_guard	cmd:hook	POSIX wrapper silences an older unsupported hook command and exits successfully	opus:rev-s4-hooks
+TestHookOpenCodeUncodedErrorStalls		hook_test.go	write:new	b	blackbox	cargo:hooks:opencode_uncoded_error_stalls	cmd:hook;cmd:prompt	CLI OpenCode session.error records a stall with unknown for an uncoded error	opus:rev-s4-hooks
+TestHookPiErrorCodes		hook_test.go	write:new	c	rust-unit	cargo:taskr:net::hook::tests::pi_error_codes	cmd:hook	Rust parser covers string/numeric diagnostic codes, diagnostic type, uncoded/aborted/normal stops and relative sessionFile rejection	opus:rev-s4-hooks
+TestHookPiErrorCodes	tc.name	hook_test.go	write:new	c	rust-unit	cargo:taskr:net::hook::tests::pi_error_codes	cmd:hook	Rust parser covers string/numeric diagnostic codes, diagnostic type, uncoded/aborted/normal stops and relative sessionFile rejection	opus:rev-s4-hooks
+TestHookPiUncodedErrorStalls		hook_test.go	write:new	b	blackbox	cargo:hooks:pi_uncoded_error_stalls	cmd:hook;cmd:prompt	CLI Pi agent_settled records a stall with unknown for an uncoded error	opus:rev-s4-hooks
+TestHookRoleStalls		hook_test.go	write:new	b	blackbox	cargo:hooks:role_stalls	cmd:hook;cmd:prompt	CLI plain/error stall rules for orchestrator, sub-orchestrator and reviewer	opus:rev-s4-hooks
+TestHookRoleStalls	tc.role	hook_test.go	write:new	b	blackbox	cargo:hooks:role_stalls	cmd:hook;cmd:prompt	CLI plain/error stall rules for orchestrator, sub-orchestrator and reviewer	opus:rev-s4-hooks
+TestHookSessionAndPaneBinding		hook_test.go	write:new	b	blackbox	cargo:hooks:session_and_pane_binding	cmd:hook;cmd:prompt	CLI session binding survives nested starts; rejects quoted receipts, wrong sessions/panes and stale launches	opus:rev-s4-hooks
+TestHookSilentNoopsAndPanic		hook_test.go	write:new	b	blackbox	cargo:hooks:silent_noops	cmd:hook	CLI silent no-ops and missing-ledger noncreation; injected-getenv panic dropped: no injectable getenv in Rust; no reachable panic on the path	opus:rev-s4-hooks
+TestHookUncodedStopFailureStalls		hook_test.go	write:new	b	blackbox	cargo:hooks:uncoded_stop_failure_stalls	cmd:hook;cmd:prompt	CLI uncoded StopFailure records unknown error for orchestrator, sub-orchestrator and implementer	opus:rev-s4-hooks
+TestHookUncodedStopFailureStalls	role	hook_test.go	write:new	b	blackbox	cargo:hooks:uncoded_stop_failure_stalls	cmd:hook;cmd:prompt	CLI uncoded StopFailure records unknown error for orchestrator, sub-orchestrator and implementer	opus:rev-s4-hooks
+TestHookedLivenessRule		hook_test.go	write:new	b	blackbox	cargo:hooks:hooked_liveness_rule	cmd:hook;cmd:prompt;cmd:daemon;daemon:--once	CLI daemon --once asserts hooked idle/unknown/done suppression counters, missing/blocked hints and non-hooked done hint	opus:rev-s4-hooks
+TestHubAdmission		hub_test.go	write:new	b	todo		cmd:daemon;rpc:/api/rpc		
+TestHubHostVariants		hub_test.go	write:new	b	todo		cmd:daemon;rpc:/api/rpc		
+TestHubIPv6Listener		hub_test.go	write:new	b	todo		cmd:daemon;daemon:--status;rpc:/api/rpc		
+TestHubListenerURLsIndependent		hub_test.go	write:new	b	todo		cmd:daemon		
+TestHubLoopbackBusyTailnetServes		hub_test.go	write:new	b	todo		cmd:daemon;daemon:--status;rpc:/api/rpc		
+TestHubTaggedOwnerCacheCapAndPort80		hub_test.go	write:new	b	todo		cmd:daemon;rpc:/api/rpc		
+TestHubTailnetRetryUntilAvailable		hub_test.go	write:new	b	todo		cmd:daemon;daemon:--status;rpc:/api/rpc		
+TestHubWhoisCache		hub_test.go	write:new	b	todo		cmd:daemon;rpc:/api/rpc		
+TestHubWithoutTailscaleServesLoopback		hub_test.go	write:new	b	todo		cmd:daemon;daemon:--status		
+TestInstallAnonymousTransport		install_test.go	write:new	b	todo		install:install.sh		
+TestInstallAnonymousTransport	tc.name	install_test.go	write:new	b	todo		install:install.sh		
+TestInstallPluginLink		install_test.go	write:new	b	todo		install:install.sh		
+TestInstallPluginLink	tc.name	install_test.go	write:new	b	todo		install:install.sh		
+TestInstallRunbookBootstrap		install_test.go	write:new	b	todo		install:install.sh		
+TestInstallRunbookBootstrap	tc.name	install_test.go	write:new	b	todo		install:install.sh		
+TestInstallSkillGH		install_test.go	write:new	b	todo		install:install.sh		
+TestInstallSkillGH	fmt.Sprint(corrupt)	install_test.go	write:new	b	todo		install:install.sh		
+TestInstallSkillLinks		install_test.go	write:new	b	todo		install:install.sh		
+TestInstallSkillLinks	tc.name	install_test.go	write:new	b	todo		install:install.sh		
+TestInstallSkillPermsNoAgentLinks		install_test.go	write:new	b	todo		install:install.sh		
+TestInstallSkillPermsNoAgentLinks	tc.name	install_test.go	write:new	b	todo		install:install.sh		
+TestInstallTUI		install_test.go	write:new	b	todo		install:install.sh		
+TestInstallTUI	transport+"/"+scenario	install_test.go	write:new	b	todo		install:install.sh		
+TestInstallTokenTransport		install_test.go	write:new	b	todo		install:install.sh		
+TestInstallTokenTransport	tc.name	install_test.go	write:new	b	todo		install:install.sh		
+TestInstallTokenTransport	"missing"	install_test.go	write:new	b	todo		install:install.sh		
+TestLateReceiptAfterNoReceipt		receipts_test.go	write:new	a	todo		cmd:prompt		
+TestLaunchRejectsRootTask		contract_test.go	write:launch	a	todo		cmd:launch;cmd:close		
+TestLaunchRelocates		contract_test.go	write:launch	a	todo		cmd:launch;cmd:prompt		
+TestLeadHostsDoNotCross		lead_test.go	write:new	b	todo		cmd:daemon		
+TestLeadHubListingFreshness		lead_test.go	write:new	b	todo		cmd:daemon		
+TestLeadObservedByHubPass		lead_test.go	write:new	c	todo		cmd:daemon;cmd:close		
+TestLeadRebindInvalidatesObservation		lead_test.go	write:new	b	todo		cmd:daemon		
+TestLegacyQuotaKeyColumnIsHarmless		contract_test.go	write:new	b	todo		cmd:new;migration		
+TestLivenessFailureLeavesObservations		contract_test.go	write:new	a	todo		cmd:prompt;cmd:wait;cmd:ack		
+TestLivenessSkipsWaitingTask		receipts_test.go	write:wait	a	todo		cmd:prompt;cmd:ack;cmd:wait;cmd:answer		
+TestLocalRole		hub_test.go	write:new	a	todo		cmd:daemon;daemon:--status		
+TestMigrationAddsLeadColumns		lead_test.go	write:new	b	todo		cmd:daemon;migration		
+TestMigrationAddsWaitingUntil		receipts_test.go	write:wait	b	todo		cmd:wait;migration		
+TestNextLatestWinsAndClear		plan_test.go	write:new	c	todo		cmd:new;cmd:next;cmd:status;cmd:log;cmd:close		
+TestNoHerdrCallWithoutServer		contract_test.go	write:new	a	todo		cmd:wait;cmd:prompt;cmd:answer;cmd:daemon;daemon:--once		
+TestNoHerdrCallWithoutServer	name	contract_test.go	write:new	a	todo		cmd:wait;cmd:prompt;cmd:answer;cmd:daemon;daemon:--once		
+TestNonHubRefusesRemote		hub_test.go	write:new	b	todo		cmd:daemon;rpc:/api/rpc		
+TestNotPlannedRecipientDefensive		plan_test.go	write:new	c	todo		cmd:new		
+TestNoteAndAskAsRoot		as_test.go	write:note	a	todo		cmd:note;cmd:ask		
+TestNotesStrictInput		owner_notes_test.go	write:note	a	todo		cmd:notes;cmd:note;cmd:help		
+TestNotesWindowsOrderAndBounds		owner_notes_test.go	write:note	a	todo		cmd:note;cmd:notes		
+TestOwes		owed_test.go	write:new	c	todo		cmd:new		
+TestOwnerAsksRouteToRoot		contract_test.go	read:asks	a	todo		cmd:asks;cmd:answer;cmd:wait		
+TestOwnerNoteClientRejectsBeforeSpoolOrRPC		owner_notes_test.go	net:spool	a	blackbox	cargo:safety:client_owner_notes_are_rejected_before_spooling_or_rpc	cmd:note;spool		claude-opus:rev-port-safety
+TestOwnerNoteKeyMatchesOwnerFlag		owner_notes_test.go	write:note	a	blackbox	cargo:safety:owner_note_keys_cannot_change_owner_semantics_or_overwrite_text	cmd:note;cmd:ask		claude-opus:rev-port-safety
+TestOwnerNoteKeyMatchesOwnerFlag	fmt.Sprint(storedOwner)	owner_notes_test.go	write:note	a	blackbox	cargo:safety:owner_note_keys_cannot_change_owner_semantics_or_overwrite_text	cmd:note;cmd:ask		claude-opus:rev-port-safety
+TestOwnerNoteRejectsWorkersWithoutWriting		owner_notes_test.go	write:note	a	blackbox	cargo:safety:owner_notes_refuse_every_worker_identity_without_writing	cmd:note		claude-opus:rev-port-safety
+TestOwnerNoteStoredAndWhole		owner_notes_test.go	write:note	b	todo		cmd:note;cmd:notes		
+TestOwnerNoteTrustWarning		glance_trust_test.go	write:note	a	todo		cmd:note;cmd:close		
+TestParseAfterDoubleDash		contract_test.go	write:new	a	todo		cmd:new		
+TestPiWorkerIgnoresInheritedCodexThread		hook_test.go	write:new	b	blackbox	cargo:hooks:pi_worker_ignores_inherited_codex_thread	cmd:hook;cmd:start	CLI Pi start ignores inherited CODEX_THREAD_ID and session_start binds the Pi session identity	opus:rev-s4-hooks
+TestPlannedAncestorBlocksSubtree		plan_test.go	write:new	a	todo		cmd:new;cmd:prompt;cmd:wait;cmd:ack		
+TestPlannedLifecycle		plan_test.go	write:new	c	todo		cmd:new;cmd:prompt;cmd:daemon;cmd:status;cmd:close;cmd:got;daemon:--once		
+TestPluginRunShDetaches		daemon_test.go	net:daemon	b	todo		cmd:daemon		
+TestPragmasOnEveryConnection		contract_test.go	write:new	c	todo		cmd:new		
+TestProbeClientRootTwoLaneWorkspaces		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestProbeLostTokensNotRepaired		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestProbeUnlistedWorkspaceListsEveryPass		daemon_campaign_token_test.go	net:daemon	c	todo		cmd:daemon		
+TestProcIdentitySelf		daemon_restart_test.go	net:daemon	b	todo		cmd:daemon		
+TestPromptConfirmNoReceipt		receipts_test.go	write:prompt	a	todo		cmd:prompt;cmd:log;cmd:answer		
+TestPromptConfirmReceipt		receipts_test.go	write:prompt	b	todo		cmd:prompt		
+TestPromptFileCarriesWorkerContractByRole		contract_test.go	write:prompt	c	todo		cmd:prompt		
+TestPromptFileSendsPathAndTextSendsLiteral		contract_test.go	write:prompt	a	todo		cmd:prompt		
+TestPromptOutcomes		contract_test.go	write:prompt	a	todo		cmd:prompt;cmd:status;cmd:answer;cmd:close		
+TestQuotaOf		contract_test.go	write:new	c	todo		cmd:new		
+TestQuotaScanEmitsOncePerDistinctKey		contract_test.go	write:new	c	todo		cmd:wait;cmd:ack		
+TestRPCBudget		rpc_test.go	net:rpc-client	c	todo		rpc:/api/rpc		
+TestRPCMigration		rpc_test.go	net:rpc-client	c	todo		cmd:note;cmd:status;rpc:/api/rpc;migration		
+TestRPCMigration	"v0.9.1 binary compatibility"	rpc_test.go	net:rpc-client	c	todo		cmd:note;cmd:status;rpc:/api/rpc;migration		
+TestRPCModes		rpc_test.go	net:rpc-client	a	todo		cmd:status;cmd:help;rpc:/api/rpc		
+TestRPCRepeatedFlagTokens		rpc_test.go	net:rpc-client	c	todo		rpc:/api/rpc		
+TestReceiptIdempotentAndWrongLaunchRejected		receipts_test.go	write:launch	a	blackbox	cargo:safety:receipts_are_once_only_bound_to_the_task_launch_and_prompt_kind	cmd:prompt;cmd:got;cmd:note;cmd:ask;cmd:start		claude-opus:rev-port-safety
+TestReceiptTimeoutFlag		receipts_test.go	write:new	a	todo		cmd:prompt		
+TestRelaunchOrCloseDropsReceipt		receipts_test.go	write:close	c	todo		cmd:prompt;cmd:close		
+TestRelayAsyncReceipt		receipts_test.go	write:new	b	todo		cmd:new		
+TestRelayCampaignClosure		relay_campaign_token_test.go	write:new	b	todo		cmd:daemon		
+TestRelayCampaignNotifiesBeforeTokenWrite		relay_campaign_token_test.go	write:new	b	todo		cmd:daemon		
+TestRelayCampaignNotifiesBeforeTokenWrite	fmt.Sprintf("fail-write=%v", failWrite)	relay_campaign_token_test.go	write:new	b	todo		cmd:daemon		
+TestRelayCampaignPreserveWithoutReply		relay_campaign_token_test.go	write:new	b	todo		cmd:daemon		
+TestRelayCampaignPreserveWithoutReply	mode	relay_campaign_token_test.go	write:new	b	todo		cmd:daemon		
+TestRelayCampaignTokenFailureDeliversOwnerAsk		relay_campaign_token_test.go	write:ask	b	todo		cmd:daemon;cmd:ask		
+TestRelayCampaignTokens		relay_campaign_token_test.go	write:new	b	todo		cmd:daemon		
+TestRelayDaemonLoop		relay_test.go	net:daemon	b	todo		cmd:daemon;daemon:--status		
+TestRelayMachineFilter		relay_test.go	write:new	b	todo		cmd:daemon;daemon:--once		
+TestRelayMachineFlagAndLimit		relay_test.go	write:new	b	todo		cmd:daemon;cmd:log		
+TestRelayOwnerAskToken		relay_owner_ask_token_test.go	write:ask	b	todo		cmd:daemon;cmd:ask		
+TestRelayOwnerAskTokenOlderServer		relay_owner_ask_token_test.go	write:ask	b	todo		cmd:daemon;cmd:ask		
+TestRelayPrompt		relay_test.go	write:prompt	b	todo		cmd:daemon;cmd:prompt		
+TestRenderGlanceGoldens		glance_watch_test.go	read:glance	c	rust-unit	cargo:taskr:read::glance::render::parity_tests::existing_go_frame_goldens_and_all_widths	cmd:glance		
+TestRenderGlanceGoldens	tc.name	glance_watch_test.go	read:glance	c	rust-unit	cargo:taskr:read::glance::render::parity_tests::existing_go_frame_goldens_and_all_widths	cmd:glance		
+TestRenderGlanceMoreCampaignsThanHeightKeepsCounts		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRenderGlanceNarrowHeaders		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRenderGlanceOverflowSkipsUnhelpfulDrop		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRenderGlanceReviewFixes		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRenderGlanceSanitizingAndColor		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRenderGlanceTinyHeightKeepsHeaderVerdict		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRenderGlanceTrust		glance_trust_test.go	read:glance	c	todo		cmd:glance		
+TestRenderGlanceUncertainHeadersNeverGreen		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRenderGlanceUnregisteredAndMissingSince		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestReplacedExe		daemon_restart_test.go	net:daemon	c	todo		cmd:daemon		
+TestReplayAfterWaitProcessDies		scenarios_test.go	write:wait	a	todo		cmd:wait;cmd:ack		
+TestReservedEventKeyPrefixes		receipts_test.go	write:new	a	blackbox	cargo:safety:reserved_receipt_and_capacity_keys_never_write_ordinary_events	cmd:note		claude-opus:rev-port-safety
+TestRestoredPaneReRegisteredByLaunch		scenarios_test.go	write:launch	a	todo		cmd:launch;cmd:log;cmd:status		
+TestRetryDeadline		rpc_retry_test.go	net:rpc-client	a	todo		cmd:wait;rpc:/api/rpc		
+TestRetryHealthyWaitTimeout		rpc_retry_test.go	write:wait	b-conv	todo		cmd:wait;rpc:/api/rpc		
+TestRetryHookDeadline		rpc_retry_test.go	net:rpc-client	a	todo		cmd:hook;rpc:/api/rpc		
+TestRetryNonRetryable		rpc_retry_test.go	net:rpc-client	a	todo		rpc:/api/rpc		
+TestRetryNonRetryable	tc.name	rpc_retry_test.go	net:rpc-client	a	todo		rpc:/api/rpc		
+TestRetryNonRetryable	"unverified connection"	rpc_retry_test.go	net:rpc-client	a	todo		rpc:/api/rpc		
+TestRetryNonRetryable	"usage"	rpc_retry_test.go	net:rpc-client	a	todo		rpc:/api/rpc		
+TestRetryPromptRelayUnchanged		rpc_retry_test.go	write:prompt	b	todo		cmd:prompt;rpc:/api/rpc		
+TestRetryRefusalCutOff		rpc_retry_test.go	net:rpc-client	a	todo		rpc:/api/rpc		
+TestRetryRefusalCutOff	fmt.Sprint(status)	rpc_retry_test.go	net:rpc-client	a	todo		rpc:/api/rpc		
+TestRetrySignal		rpc_retry_test.go	net:rpc-client	c	todo		cmd:note;rpc:/api/rpc		
+TestRetrySignal	sig.String()+"/"+phase	rpc_retry_test.go	net:rpc-client	c	todo		cmd:note;rpc:/api/rpc		
+TestRetryStillRunning		rpc_retry_test.go	net:rpc-client	c	todo		cmd:prompt;rpc:/api/rpc		
+TestRetryWaitLostReplyTimeout		rpc_retry_test.go	write:wait	b-conv	todo		cmd:wait;rpc:/api/rpc		
+TestRetryWaitLostReplyTimeout	format	rpc_retry_test.go	write:wait	b-conv	todo		cmd:wait;rpc:/api/rpc		
+TestRetryWaitServerReturns		rpc_retry_test.go	write:wait	b-conv	todo		cmd:wait;rpc:/api/rpc		
+TestRetryWindowBudget		rpc_retry_test.go	net:rpc-client	c	todo		rpc:/api/rpc		
+TestRetryWriteLostReply		rpc_retry_test.go	net:rpc-client	a	todo		rpc:/api/rpc		
+TestReusedNameRejectsOldLaunch		scenarios_test.go	write:launch	a	blackbox	cargo:safety:reused_task_names_reject_closed_stale_and_missing_launch_ready_events	cmd:close;cmd:wait		claude-opus:rev-port-safety
+TestReviewMacOwnerNotification		relay_test.go	write:new	b	todo		cmd:daemon;daemon:--once		
+TestRootTargetArmsNoReceipt		receipts_test.go	write:new	a	todo		cmd:prompt		
+TestRunWatchFetchPanic		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRunWatchFrameProtocol		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRunWatchFullWidthRow		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRunWatchQuitAndEOF		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRunWatchQuitAndEOF	key	glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRunWatchResizeAndAge		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRunWatchStaleRecoveryAndSerialization		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestRunWatchWaitsAfterFetchCompletion		glance_watch_test.go	write:wait	c	todo		cmd:wait		
+TestRunWatchWriteErrorRestores		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestSearchControlSnippet		search_test.go	read:search	a	todo		cmd:search		
+TestSearchDocumentVersionAndPurge		search_test.go	read:search	a	todo		cmd:doc-set;cmd:doc-rm		
+TestSearchFTS5Available		search_test.go	read:search	c	todo		cmd:search		
+TestSearchLimitAndOrder		search_test.go	read:search	a	todo		cmd:search		
+TestSearchMigration		search_test.go	read:search	b	todo		cmd:search;migration		
+TestSearchNULQuery		search_test.go	read:search	b	todo		cmd:search		
+TestSearchOwnerAnswer		search_test.go	read:search	a	todo		cmd:answer;cmd:ask		
+TestSearchQueriesAndFilters		search_test.go	read:search	a	todo		cmd:search		
+TestSearchQueriesAndFilters	query	search_test.go	read:search	a	todo		cmd:search		
+TestSearchRPC		search_test.go	net:rpc-client	a	todo		rpc:/api/rpc		
+TestSearchRepair		search_test.go	read:search	a	blackbox	cargo:busy_resilience:current_version_open_repairs_search	cmd:note;cmd:status;migration	Current-version CLI repairs missing table/trigger, old trigger and secure-delete; backfill and second-open rowids preserved	pending
+TestSearchRepair	missing	search_test.go	read:search	a	blackbox	cargo:busy_resilience:current_version_open_repairs_search	cmd:note;cmd:status;migration	Current-version CLI repairs missing table/trigger, old trigger and secure-delete; backfill and second-open rowids preserved	pending
+TestSearchSecureDeleteExisting		search_test.go	read:search	c	blackbox	cargo:busy_resilience:current_version_open_repairs_search	cmd:search	Current-version CLI repairs missing table/trigger, old trigger and secure-delete; backfill and second-open rowids preserved	pending
+TestSearchSnippet		search_test.go	read:search	a	todo		cmd:search		
+TestSearchSources		search_test.go	read:search	a	todo		cmd:search		
+TestSearchTransactionRollback		search_test.go	read:search	a	todo		cmd:doc-rm		
+TestSetRefs		plan_test.go	write:set	c	todo		cmd:set;cmd:close		
+TestSpoolAppliedRequestIsNotAppliedTwice		spool_test.go	net:spool	a	todo		cmd:note;spool		
+TestSpoolAttemptHonorsRetryWindow		rpc_retry_test.go	net:spool	a	todo		spool;rpc:/api/rpc		
+TestSpoolBadFilesQuarantineAndNotify		spool_test.go	net:spool	a	todo		cmd:spool-send;cmd:spool-ls;cmd:daemon;cmd:spool-rm;spool;daemon:--once;daemon:--status		
+TestSpoolClientDaemonSendsAfterSuccessfulObserve		spool_test.go	net:spool	c	todo		spool		
+TestSpoolCompactQueuedContract		spool_test.go	net:spool	c	todo		spool		
+TestSpoolConcurrentProcessesAllocateOrderedSequences		spool_test.go	net:spool	a	todo		spool		
+TestSpoolConcurrentSendersUseSendLock		spool_test.go	net:spool	a	todo		spool		
+TestSpoolDoneUploadsServerRequestedReport		spool_test.go	net:spool	a	todo		cmd:spool-send;spool		
+TestSpoolFileBound		spool_test.go	net:spool	a	blackbox	cargo:safety:full_spool_refuses_new_records_with_a_retry_and_preserves_all_500	cmd:note;spool		claude-opus:rev-port-safety
+TestSpoolForbiddenHeadStaysQueuedAndNotifiesOnce		spool_test.go	net:spool	a	todo		spool		
+TestSpoolHTTPErrorUsesJSONErrorAndLimitsBody		spool_test.go	net:spool	a	todo		spool		
+TestSpoolHTTPProxyErrorsKeepOrRefuse		spool_test.go	net:spool	a	todo		spool		
+TestSpoolHookLargeQueueWritesBeforeExit		spool_test.go	net:spool	a	todo		cmd:hook;spool		
+TestSpoolHookNeverAnswerProcessHelper		spool_test.go	net:spool	c	todo		cmd:hook;spool		
+TestSpoolHookQueueLockPollingAndDirectFallback		spool_test.go	net:spool	c	todo		spool		
+TestSpoolHookQueuesSilently		spool_test.go	net:spool	c	todo		spool		
+TestSpoolHookTimeoutWritesBeforeProcessExit		spool_test.go	net:spool	a	todo		cmd:hook;spool		
+TestSpoolListRemoveAndStatusStayLocal		spool_test.go	net:spool	a	todo		cmd:spool-ls;cmd:daemon;cmd:spool-rm;cmd:spool-send;spool;daemon:--status		
+TestSpoolNonRecordAndServerRefusalDoNotQueue		spool_test.go	net:spool	a	todo		spool		
+TestSpoolOldStallExpiresAndOldSessionStartRecords		spool_test.go	net:spool	a	todo		spool		
+TestSpoolOlderServerIgnoresQueuedAt		spool_test.go	net:spool	a	todo		spool		
+TestSpoolOutcomeUnknownKeepsQueue		spool_test.go	net:spool	a	todo		spool		
+TestSpoolOutcomeUnknownStaysStuckThenRefuses		spool_test.go	net:spool	a	todo		cmd:spool-ls;cmd:daemon;spool;daemon:--status		
+TestSpoolOutcomeUnknownStoredResultClearsQueue		spool_test.go	net:spool	a	todo		spool		
+TestSpoolOwnerNoteAndFreshRPCNotes		owner_notes_test.go	net:spool	a	todo		cmd:note;cmd:notes;spool		
+TestSpoolProxyFiveXXQueuesRecordOnly		spool_test.go	net:spool	a	todo		cmd:note;cmd:status;spool		
+TestSpoolQueueProcessHelper		spool_test.go	net:spool	c	todo		spool		
+TestSpoolQueueWriteFailurePrintsRetry		spool_test.go	net:spool	a	todo		cmd:note;spool		
+TestSpoolQueuedAtCoversEveryRecordEventPath		spool_test.go	net:spool	a	todo		cmd:got;cmd:ready;cmd:done;cmd:fail;cmd:decide;cmd:next;cmd:note;cmd:close;spool		
+TestSpoolQueuedAtCoversEveryRecordEventPath	name	spool_test.go	net:spool	a	todo		cmd:got;cmd:ready;cmd:done;cmd:fail;cmd:decide;cmd:next;cmd:note;cmd:close;spool		
+TestSpoolQueuedBehindSaysWhy		spool_test.go	net:spool	a	todo		cmd:note;spool		
+TestSpoolQueuedDoneTimeAndOrdinaryDone		spool_test.go	net:spool	a	todo		cmd:done;spool		
+TestSpoolQueuedOrderAndManualSend		spool_test.go	net:spool	a	todo		cmd:got;cmd:done;cmd:spool-send;spool		
+TestSpoolReadyReportCapturedAtQueueTime		spool_test.go	net:spool	a	todo		cmd:spool-send;spool		
+TestSpoolRecordCommandsQueueAfterTransportWindow		spool_test.go	net:spool	a	todo		cmd:got;cmd:ready;cmd:done;cmd:fail;cmd:decide;cmd:next;cmd:note;cmd:close;spool		
+TestSpoolRecordCommandsQueueAfterTransportWindow	tc.name	spool_test.go	net:spool	a	todo		cmd:got;cmd:ready;cmd:done;cmd:fail;cmd:decide;cmd:next;cmd:note;cmd:close;spool		
+TestSpoolRecordQueuesWhileSenderOwnsSendLock		spool_test.go	net:spool	a	todo		cmd:note;spool		
+TestSpoolRefusalMovesOnAndNotifiesOnce		spool_test.go	net:spool	a	todo		spool		
+TestSpoolRemoveBadFileByName		spool_test.go	net:spool	a	todo		cmd:spool-ls;cmd:spool-rm;spool		
+TestSpoolRetryWindow		spool_test.go	net:spool	c	todo		spool		
+TestSpoolStallAgeUsesClientClock		spool_test.go	net:spool	a	todo		spool		
+TestSpoolStallAgeUsesClientClock	tc.name	spool_test.go	net:spool	a	todo		spool		
+TestSpoolTransportErrorStopsInSequence		spool_test.go	net:spool	a	todo		spool		
+TestSpoolTransportFailureNeverStartsStuckClock		spool_test.go	net:spool	a	todo		spool		
+TestSpoolUpload429KeepsThenSendsInOrder		spool_test.go	net:spool	a	todo		spool		
+TestSpoolUploadFailureKeepsReady		spool_test.go	net:spool	a	todo		spool		
+TestSpoolUploadRefusalDropsAndContinues		spool_test.go	net:spool	a	todo		spool		
+TestStrictInputContracts		contract_test.go	write:new	a	todo		cmd:new		
+TestTailscaleSelf		hub_test.go	write:new	c	todo		cmd:daemon		
+TestTwoIndependentParentInboxes		scenarios_test.go	write:new	a	todo		cmd:wait;cmd:ack		
+TestTwoOpenAsksOneAnswered		scenarios_test.go	read:asks	a	todo		cmd:status;cmd:answer;cmd:asks		
+TestValidateNameAndHerdrIDShapes		validate_test.go	write:new	c	todo		cmd:new		
+TestWaitAckCleanupFailureRetainsBothIDs		wait_filter_test.go	write:ack	a	blackbox	cargo:safety:combined_ack_cleanup_failure_reports_both_ids_and_replays_only_the_next	cmd:answer;cmd:wait		claude-opus:rev-port-safety
+TestWaitBypassStaysNarrow		wait_filter_test.go	write:wait	a	blackbox	cargo:safety:ordinary_herdr_hints_do_not_bypass_wait_filters	cmd:wait		claude-opus:rev-port-safety
+TestWaitCapacityFilterReplay		wait_filter_test.go	write:wait	a	blackbox	cargo:safety:capacity_quota_and_stall_bypass_filters_and_replay_until_acked	cmd:wait		claude-opus:rev-port-safety
+TestWaitCapacityFilterReplay	tc.name	wait_filter_test.go	write:wait	a	blackbox	cargo:safety:capacity_quota_and_stall_bypass_filters_and_replay_until_acked	cmd:wait		claude-opus:rev-port-safety
+TestWaitCleanupFailureKeepsEventPending		receipts_test.go	write:wait	a	blackbox	cargo:safety:cleanup_failure_keeps_the_offered_answer_pending_for_replay	cmd:answer		claude-opus:rev-port-safety
+TestWaitCountsIgnoreClosedChild		wait_filter_test.go	write:close	a	todo		cmd:prompt;cmd:close;cmd:wait;cmd:ack		
+TestWaitFilterDeadlinePreservesBacklog		wait_filter_test.go	write:wait	a	blackbox	cargo:safety:filtered_wait_deadline_retains_the_unscanned_backlog	cmd:wait		claude-opus:rev-port-safety
+TestWaitFilterInterruptClearsWaiting		wait_filter_test.go	write:wait	b	todo		cmd:wait		
+TestWaitFilterObservedEventAndTimeout		wait_filter_test.go	write:wait	a	todo		cmd:prompt;cmd:wait		
+TestWaitFilterSkipAckReplay		wait_filter_test.go	write:ack	a	blackbox	cargo:safety:filtered_wait_skips_without_deleting_and_validates_before_ack	cmd:wait;cmd:ack		claude-opus:rev-port-safety
+TestWaitHeartbeatGating		daemon_test.go	write:wait	a	todo		cmd:prompt;cmd:status;cmd:wait;cmd:ack		
+TestWaitLivenessEmitsAndThrottles		contract_test.go	write:wait	b	todo		cmd:prompt;cmd:wait;cmd:ack		
+TestWaitObservesWhenHeartbeatGoesStale		daemon_test.go	write:wait	a	todo		cmd:prompt;cmd:wait		
+TestWaitTimeoutOutputForms		compact_test.go	write:wait	c	todo		cmd:wait		
+TestWaitTimeoutOutputForms	tc.name	compact_test.go	write:wait	c	todo		cmd:wait		
+TestWaitTimeoutZeroMaterializesAlarm		receipts_test.go	write:wait	a	todo		cmd:prompt		
+TestWaitWorkerIdentity		wait_filter_test.go	write:wait	a	blackbox	cargo:safety:worker_wait_cannot_read_another_inbox_or_use_a_stale_launch	cmd:answer;cmd:wait		claude-opus:rev-port-safety
+TestWaitWorkerIdentityClientMode		wait_filter_test.go	write:wait	b	todo		cmd:wait		
+TestWatchAgesAndAttentionKinds		glance_watch_test.go	read:glance	c	todo		cmd:glance		
+TestWithTxPanicReleasesWriterLock		db_test.go	write:new	c	todo		cmd:new		
+TestWorkerWaitMakesNoHerdrCalls		receipts_test.go	write:wait	b	todo		cmd:wait		
+-		crates/taskr/src/hub/events.rs	read:hub-events	rust	rust-unit	cargo:taskr:hub::events::tests::one_watcher_and_cap_across_loopback_and_tailnet_hubs	rpc:/api/events		
+-	root-next-milestone	crates/taskr/tests/checkin_cell.py	read:glance	rust	shell	cell:checkin_cell	cmd:glance	intentional divergence T2: root next is a glance milestone alongside root notes; lane next remains bookkeeping and does not replace the campaign milestone	pending
+-	glance-brief	crates/taskr/tests/glance_brief.rs	read:glance	rust	blackbox	cargo:glance_brief:brief_usage_errors;cargo:glance_brief:client_prints_hub_brief_unchanged;cargo:taskr:read::glance::render::parity_tests::brief_goldens;cargo:taskr:read::glance::render::parity_tests::brief_15_campaigns_under_2k;cargo:taskr:read::glance::render::parity_tests::brief_strips_control_zero_width_and_bidi;cargo:taskr:read::glance::tests::glance_json_omits_activity_id	cmd:glance	Rust-only glance --brief: the glance once as plain text with root= and ask= ids, --since cursor or duration; a client prints the hub reply unchanged	pending
+-		crates/taskr/tests/slotr.rs	read:slotr	rust	blackbox	cargo:slotr:passes_slotr_through_with_roots_and_its_runtime_dir;cargo:slotr:a_slotr_that_fails_is_unavailable_with_exit_zero;cargo:slotr:forwarded_calls_store_nothing_and_log_nothing	cmd:slotr	Rust-only H7 read: fake slotr passthrough, XDG_RUNTIME_DIR, roots, failures as available:false, client-forwarded calls not stored or logged	
+-	ask-question	crates/taskr/tests/owner_questions.rs	write:ask	rust	blackbox	cargo:owner_questions:structured_ask_round_trips_and_plain_ask_is_unchanged;cargo:owner_questions:usage_errors;cargo:owner_questions:client_ask_stores_the_same_data_on_the_hub;cargo:taskr:write::question::tests::rejects_each_rule;cargo:taskr:write::question::tests::normalizes_a_pasted_question;cargo:taskr:write::question::tests::derives_the_summary	cmd:ask;cmd:glance;cmd:asks	Rust-only ask --owner --question JSON: validated in the ask write arm, stored normalized in data.question, summary derived; glance needs_you and asks data carry it	pending
+-	ask-dialog	crates/taskr/tests/owner_questions.rs	write:ask	rust	blackbox	cargo:owner_questions:structured_ask_round_trips_and_plain_ask_is_unchanged;cargo:owner_questions:client_ask_stores_the_same_data_on_the_hub	cmd:ask;cmd:glance	Rust-only ask --owner --dialog: data.dialog=true and glance needs_you[].dialog, omitted when false	pending
+-	pr-poller	crates/taskr/src/daemon/github.rs	net:daemon	rust	rust-unit	cargo:taskr:daemon::github::tests::parses_links;cargo:taskr:daemon::github::tests::off_without_config_and_on_client_daemons;cargo:taskr:daemon::github::tests::each_sub_fires_once_and_checks_wait_for_two_stable_polls;cargo:taskr:daemon::github::tests::recipients_lead_root_and_closed;cargo:taskr:daemon::github::tests::a_null_alias_with_not_found_closes_and_unlinks;cargo:taskr:daemon::github::tests::backs_off_without_data_and_caps_on_auth;cargo:taskr:daemon::github::tests::polls_at_most_30_and_stretches_the_interval;cargo:taskr:daemon::github::tests::no_transaction_is_held_while_gh_runs	cmd:daemon;cmd:set	Rust-only hub PR poller (watch.json github.enabled): set pr=N|owner/repo#N links, gh api graphql off-thread against a fake gh, kind pr events to the lead, pr.state/pr.ci refs, back-off, 30-PR cap, no transaction across gh	pending
+-	pr-wait	crates/taskr/src/write/inbox/tests.rs	write:wait	rust	rust-unit	cargo:taskr:write::inbox::tests::wait_for_pr_coalesces_per_pr	cmd:wait	Rust-only kind pr (compact code pu): wait --for pr; an unacked older pr event is coalesced into a newer one for the same PR, filtered or not; a pending one replays	pending
+-	pr-noise	crates/taskr/src/read/glance.rs	read:glance	rust	rust-unit	cargo:taskr:read::glance::tests::pr_poller_noise_is_not_activity;cargo:taskr:read::glance::tests::park_ignores_root_bookkeeping	cmd:glance	Rust-only: pr events other than sub merged and the poller's source=github refs are not glance activity, parked-active or check-in R2 activity	pending
+-	after-fire	crates/taskr-core/src/store/after.rs	write:after	rust	rust-unit	cargo:taskr_core:store::after::tests::one_shot_and_keep_fire_for_task_targets;cargo:taskr_core:store::after::tests::pr_targets_fire_on_their_sub;cargo:taskr_core:store::after::tests::an_after_event_never_matches;cargo:taskr_core:store::after::tests::closed_waiters_are_skipped_and_close_cancels	cmd:after;cmd:close	Rust-only taskr after: a matching done/ready/closed/fail, or a pr event's sub, fires one after event (code af) into the waiter's inbox in the inserting transaction; one-shot sets fired_at, --keep repeats; an after event never matches; closed waiters are skipped; close cancels the closing task's subscriptions	pending
+-	after-cli	crates/taskr/tests/after.rs	write:after	rust	blackbox	cargo:after:subscribe_list_cancel_and_a_filtered_wait_wakes;cargo:after:a_client_subscribes_lists_and_waits_through_the_hub;cargo:taskr:hub::protocol::tests::rpc_flag_and_storage_contract	cmd:after;cmd:wait;cmd:close	Rust-only taskr after CLI: task and pr: targets (pr:N via watch.json default_repo), --on validation and defaults, --keep, --list (a hub read, not stored), --cancel, usage and rejection exits; a wait filtered by --for and --from wakes on af (bypass); a client forwards after and after --list to the hub	pending
+-	after-poller	crates/taskr/src/daemon/github.rs	net:daemon	rust	rust-unit	cargo:taskr:daemon::github::tests::an_unfired_subscription_keeps_a_closed_tasks_pr_polled	cmd:daemon;cmd:after	Rust-only: the hub poller keeps polling a PR whose linked task closed while an open root's unfired after pr: subscription targets it, and stops once it fires; a closed waiter's subscription does not	pending
+-	schema-v2	crates/taskr-core/src/schema.rs	schema	rust	rust-unit	cargo:taskr_core:schema::tests::v1_ledger_migrates_to_current_once_and_idempotently;cargo:taskr_core:schema::tests::migration_effect_requires_schema_version_bump	migration	Rust-only schema 2: the subscriptions table and its partial index on (target) where fired_at is null; a v1 ledger migrates once, also from a hub child before the daemon restarts, and a rerun is a no-op; the schema hash is re-pinned	pending
+-	tmp	crates/taskr/tests/tmp.rs	read:tmp	rust	blackbox	cargo:tmp:lane_and_root_paths;cargo:tmp:mkdir_makes_0700_dirs_and_is_idempotent;cargo:tmp:unmarked_base_is_preserved_until_explicit_mkdir;cargo:tmp:mkdir_refuses_unsafe_paths;cargo:tmp:mkdir_refuses_non_dedicated_bases_without_mutation;cargo:tmp:mkdir_accepts_empty_and_ledger_confirmed_legacy_bases;cargo:taskr:tmp::cleanup::tests::initialization_preflight_is_bounded_and_refuses_other_devices;cargo:tmp:unknown_task_is_rejected;cargo:tmp:a_client_makes_the_dir_on_its_own_host;cargo:taskr:hub::protocol::tests::rpc_flag_and_storage_contract	cmd:tmp;env:TASKR_TMP_BASE	Rust-only tmp ID [--mkdir]: <base>/<root>/<task> from integer ids, 0700 dirs made on the caller's host, lstat refusals (symlink, not a dir, other owner, group/world-writable), unknown task exit 6; initializer preflights dedicated canonical directories with ledger-confirmed root/lane membership before any marker or directory write, bounded to 4096 entries/60s; a client reads membership from the hub and the hub refuses a forwarded --mkdir	pending
+-	launch-tmpdir	crates/taskr/tests/tmp.rs	write:launch	rust	blackbox	cargo:tmp:launch_shows_root_and_tmpdir_in_compact_mode	cmd:launch	Rust-only: the compact l1 launch line adds root_id and tmpdir (the lane's tmp path on the host that runs the launch; nothing is made); the --json object is unchanged because the contract golden pins it	pending
+-	tmp-cleanup	crates/taskr/tests/tmp.rs	write:close	rust	blackbox	cargo:tmp:cleanup_policy_values_defaults_root_only_and_budget;cargo:tmp:close_clean_tmp_is_immediate_local_and_repeatable;cargo:tmp:close_clean_tmp_refuses_unsafe_base_after_recording_close;cargo:tmp:daemon_sweeps_ledger_state_with_grace_on_this_host;cargo:tmp:a_client_makes_the_dir_on_its_own_host	cmd:set;cmd:close;cmd:daemon;cmd:tmp	Rust-only T2 tmp.cleanup policy (ordinary ref budget, root only), local close --clean-tmp, fresh hub reads, daemon grace, queued close never deletes or spools paths/cleanup intent	pending
+-	tmp-removal	crates/taskr/src/tmp/cleanup.rs	net:daemon	rust	rust-unit	cargo:taskr:tmp::cleanup::tests::sweep_policies_grace_unknown_open_and_noninteger;cargo:taskr:tmp::cleanup::tests::campaign_removal_requires_all_lane_authority;cargo:taskr:tmp::cleanup::tests::marker_required_before_any_deletion;cargo:taskr:tmp::cleanup::tests::nofollow_unlinks_links_without_touching_the_target;cargo:taskr:tmp::cleanup::tests::refuses_unsafe_base_and_devices;cargo:taskr:tmp::cleanup::tests::failed_ledger_reads_and_one_unsafe_campaign_do_not_delete_other_paths;cargo:taskr:tmp::cleanup::tests::symlink_replacement_race_never_follows_target	cmd:daemon;cmd:close;env:TASKR_TMP_BASE	Rust-only T2 fd-relative no-follow recursive unlink, base uid/mode/explicit marker gate, same-device gate, canonical ids, whole-campaign lane authority, grace and per-candidate error isolation	pending
+-	tmp-sweep-worker	crates/taskr/src/daemon/tests.rs	net:daemon	rust	rust-unit	cargo:taskr:daemon::tests::slow_tmp_sweep_does_not_block_or_overlap_the_daemon;cargo:taskr:daemon::tests::tmp_lookup_errors_are_limited_but_removal_errors_remain_visible;cargo:tmp:daemon_limits_lookup_errors_without_hiding_removal_errors	cmd:daemon	Rust-only T2: one in-flight background tmp sweep; a slow sweep leaves resident daemon scheduling unblocked; --once remains synchronous	pending
+-	tmp-isolation	crates/taskr/tests/tmp_isolation.py	net:daemon	rust	shell	cargo:tmp:python_fixture_isolation;cargo:tmp:fixture_commands_keep_tmp_work_inside_scratch;cargo:taskr:daemon::restart::tests::detached_restart_preserves_tmp_base_without_worker_identity	cmd:daemon;env:TASKR_TMP_BASE	Rust-only T2: actual fixture environment builders isolate tmp under scratch HOME; detached restart preserves only the added TMP base; process-free Python proof invoked by the tmp cargo gate with a scratch-directory argument; construction barriers run before destructive gates	pending
+-	tmp-size	crates/taskr/tests/tmp.rs	net:daemon	rust	blackbox	cargo:tmp:daemon_size_json_boundary_known_zero_and_missing;cargo:tmp:campaign_log_telemetry_flood_preserves_events_and_page_count;cargo:tmp:daemon_size_closed_keep_root_skips_traversal_and_retains_report;cargo:taskr:read::glance::render::parity_tests::brief_size_follows_primary_text_and_keeps_urgent_rows;cargo:taskr_tui:glance::tests::tmp_size_yields_to_remote_primary_row_at_46_columns;cargo:tmp:daemon_size_persistence_budget_and_display;cargo:tmp:host_totals_malformed_and_overflow_are_not_zero;cargo:tmp:a_client_makes_the_dir_on_its_own_host;cargo:taskr:tmp::cleanup::size::tests::complete_logical_size_empty_links_and_authority;cargo:taskr:tmp::cleanup::size::tests::unsafe_unmarked_and_bounded_failure_preserve_prior_report;cargo:taskr_tui:glance::tests::tmp_size_narrow_fixture_keeps_urgent_rows_and_rejects_malformed_values	cmd:daemon;cmd:set;cmd:status;cmd:glance;env:TASKR_TMP_BASE	Rust-only T3: bounded descriptor measurement; own-host refs outside ordinary budget with 73-byte bookkeeping exception; real scratch hub/client daemon persistence; logical totals with absent/malformed/overflow handling and narrow TUI projection	pending
+-	schema-v3	crates/taskr-core/src/schema.rs	schema	rust	rust-unit	cargo:taskr_core:schema::tests::v2_ledger_migrates_to_current_and_search_repair_keeps_attempts;cargo:taskr_core:schema::tests::migration_effect_requires_schema_version_bump	migration	Rust-only schema 3: the delivery_attempts table (exactly one of launch_id/session_gen) and its task index; a v2 ledger migrates once, also from a hub child before the daemon restarts, keeping tasks, events, cursors and subscriptions; a healthy v3 ledger skips migration; a search repair reruns it without changing attempts; the schema hash is re-pinned	pending
+-	delivery-cli	crates/taskr/tests/delivery.rs	write:delivery	rust	blackbox	cargo:delivery:worker_receipts_are_fenced_by_launch_task_and_handled_state;cargo:delivery:root_receipts_are_fenced_by_the_adopt_generation;cargo:delivery:crash_boundaries_leave_rows_and_the_inbox_offers_until_ack;cargo:delivery:a_client_call_is_host_bound_replayed_by_key_and_never_queued;cargo:delivery:a_dropped_reply_replays_one_attempt_and_repeated_help_never_writes;cargo:delivery:delivery_new_follows_the_consumer_lease_and_receipts_ignore_it;cargo:taskr:hub::protocol::tests::rpc_flag_and_storage_contract	cmd:delivery;cmd:adopt;cmd:ack;cmd:wait	Rust-only taskr delivery new/submitted/received/ls: worker attempts bind the current launch, root attempts the adopt generation (--as ROOT --session GEN); wrong task, host, generation, stale launch, unaddressed or handled event, closed or planned task and env-only identity exit 6 with nothing written; idempotent receipts; received before submitted; late receipt after ack; crash boundaries per process; never moves the ack cursor; over RPC host-bound, stored by key (replay, unknown in flight), ls a fresh read, unreachable exits 5 with the retry line, never queued; a dropped reply retried under the same key is one attempt; a repeated help flag exits 2 unwritten; help is a read	pending
+-	schema-v4	crates/taskr-core/src/schema.rs	schema	rust	rust-unit	cargo:taskr_core:schema::tests::v3_ledger_migrates_to_v4_and_search_repair_keeps_leases;cargo:taskr_core:schema::tests::migration_effect_requires_schema_version_bump	migration	Rust-only schema 4: the consumer_leases table (one row per task, never deleted; a held lease binds exactly one of launch_id/session_gen); a v3 ledger migrates once, also from a hub child before the daemon restarts, keeping cursors and attempts; a healthy v4 ledger skips migration; a search repair reruns it without changing the lease row or its fence; the schema hash is re-pinned	pending
+-	consumer-cli	crates/taskr/tests/consumer.rs	write:consumer	rust	blackbox	cargo:consumer:competing_consumers_take_force_and_stale_fences;cargo:consumer:usage_and_repeated_flags_exit_2_unwritten;cargo:consumer:stale_bindings_free_the_lease_and_stop_in_flight_waits;cargo:consumer:handoff_replays_pending_events_within_the_cursor_rules;cargo:consumer:expiry_follows_the_frozen_clock;cargo:consumer:rpc_leases_are_host_bound_stored_by_key_and_never_queued;cargo:delivery:delivery_new_follows_the_consumer_lease_and_receipts_ignore_it;cargo:taskr:hub::protocol::tests::rpc_flag_and_storage_contract	cmd:consumer;cmd:wait;cmd:ack;cmd:delivery;cmd:adopt;cmd:launch;cmd:close	Rust-only taskr consumer take/renew/release/show: an opt-in inbox lease; take bumps the fence (refused while live or while a wait marker is set, unless --force); renew/release only by the live holder; while live, plain wait/ack/delivery new exit 6 and fenced ones (worker env, root --as/--session) are checked in every offer/ack transaction, so in-flight waits stop at the next poll after takeover, expiry (frozen clock), release, relaunch, adopt or close; lease changes never move cursors: pending events replay to the next consumer, legacy coalescing/filtering still apply; wait --ack keeps a committed ack; over RPC take/renew/release/ack stored by key (historical replay acquires nothing, a replayed release never clears a successor), show fresh, host-bound, never queued; usage and repeated flags exit 2 unwritten	pending
+-	inbox-cli	crates/taskr/tests/mcp.rs	read:inbox	rust	blackbox	cargo:mcp:inbox_cli_identity_limits_flags_and_help;cargo:mcp:reads_never_consume_and_inbox_is_a_raw_snapshot;cargo:mcp:client_mode_keeps_queued_unknown_and_replay_apart;cargo:taskr:hub::protocol::tests::mcp_is_local_only_and_inbox_is_a_fresh_read	cmd:inbox;cmd:wait;cmd:consumer	Rust-only taskr inbox [--as ROOT] [--limit N]: the caller's events after its ack cursor, oldest first, raw (superseded pr and no_receipt rows listed, no --for/--from), with acked_event_id, pending_event_id and more:true when cut, read with identity and cursors in one snapshot; never offers, expires, receipts or acks, so cursors, markers, meta and leases are unchanged and the next plain (or, under a live lease, fenced) wait returns what it would have; identity as delivery ls (worker env, root --as; stale launch, another task exit 6); --limit 1..200 else exit 2; repeated --as/--limit/help exit 2 locally and in check_args; over RPC a fresh read (a reused key sees new data, nothing stored), never queued	pending
+-	mcp-stdio	crates/taskr/tests/mcp.rs	mcp	rust	blackbox	cargo:mcp:framing_and_lifecycle_answer_every_request_and_keep_serving;cargo:mcp:startup_identity_is_fixed_and_bad_combinations_exit_2;cargo:mcp:tools_take_no_authority_and_invalid_params_run_nothing;cargo:mcp:literal_text_never_becomes_a_flag_or_recipient;cargo:mcp:reads_never_consume_and_inbox_is_a_raw_snapshot;cargo:mcp:bound_writes_commit_and_stale_bindings_are_rejected;cargo:mcp:client_mode_keeps_queued_unknown_and_replay_apart;cargo:mcp:an_expired_fence_is_refused_without_a_cursor_change;cargo:mcp:a_replaced_binary_and_stdin_eof_finish_the_running_call;cargo:taskr:mcp::tests::child_output_maps_to_outcomes;cargo:taskr:mcp::tests::large_stderr_and_stdout_are_bounded;cargo:taskr:mcp::tests::long_lines_are_discarded_through_their_newline;cargo:taskr:hub::protocol::tests::mcp_is_local_only_and_inbox_is_a_fresh_read	cmd:mcp;cmd:inbox;cmd:status;cmd:consumer;cmd:delivery;cmd:ack;cmd:note;cmd:ask;cmd:ready;cmd:done;cmd:fail;spool	Rust-only taskr mcp: a stdio MCP 2025-06-18 server bound at start (worker TASKR_TASK/TASKR_LAUNCH, root --as ROOT --session GEN; other combinations and --request-key exit 2); dispatched before client routing and refused by check_args, so it never opens a ledger or makes an RPC itself; framing (-32700/-32600/-32601/-32602 with exact ids, oversize and malformed UTF-8 lines, batches, lifecycle, notifications unanswered) keeps serving; tools take no authority arguments (additionalProperties false); argv is built with server flags first and literal text after --; taskr_ack needs a fence in both modes; each call runs this build as a child with stdin null and bounded output, mapping committed/queued/unknown/transport/rejected/usage/error; client-host writes carry a retry_handle whose request key is namespaced by task and launch or generation (no cross-binding replay; a replay is historical); queued, lost reply, stored-running unknown, refused host, document capture (missing/binary/too large/lost upload/queued) and stale launch/host/close/adopt/takeover/expiry are refused with nothing written	pending
+-	push-codex	crates/taskr/tests/push.rs	push	rust	blackbox	cargo:push:the_worker_binding_comes_from_the_launch_and_codex_sees_only_it;cargo:push:a_missing_wrong_or_malformed_binding_fails_before_the_take;cargo:push:a_changed_binding_or_launch_stops_for_good_and_releases;cargo:push:an_unreadable_binding_suspends_and_a_change_mid_submission_kills_it;cargo:push:a_receipt_may_precede_submitted_and_recovery_claims_only_queue_attempts;cargo:push:a_root_binding_is_the_operators_and_an_adopt_stops_it;cargo:push:a_refused_take_is_retried_never_forced_and_a_killed_sidecar_expires;cargo:push:failed_submissions_are_bounded_and_a_receipt_suppresses_them_across_restarts;cargo:push:a_spawn_failure_and_a_timeout_stay_unsubmitted_and_count;cargo:push:eof_or_a_takeover_during_a_submission_kills_it_and_bounds_its_pipes;cargo:push:hostile_summaries_stay_one_escaped_string_in_the_cli_message;cargo:push:push_itself_never_goes_over_rpc_and_its_steps_route;cargo:push:the_canary_selftest_passes_and_refuses_unowned_state;cargo:push:a_delayed_final_binding_read_never_spawns_after_eof_or_expiry;cargo:push:an_output_held_outside_the_group_strands_the_lease_and_stops;cargo:push:sustained_output_past_the_deadline_or_at_eof_is_killed_and_unconfirmed;cargo:taskr:mcp::push::tests::a_drain_that_never_runs_dry_returns_within_its_budget;cargo:taskr:mcp::push::tests::worker_bindings_are_typed;cargo:taskr:mcp::channel::tests::the_summary_is_one_bounded_escaped_string;cargo:taskr:hub::protocol::tests::mcp_is_local_only_and_inbox_is_a_fresh_read	cmd:push;cmd:consumer;cmd:wait;cmd:delivery;cmd:log;cmd:start;cmd:ack;cmd:adopt;cmd:launch	Rust-only taskr push codex: a local sidecar running the mcp --channel delivery loop with the queue sink; a worker's thread and native home come only from its current codex launch row (read through a routed log; provider codex, thread_id kind, UUID, absolute existing home; missing or malformed exits 6 before the take; --codex-thread/--codex-home refused), a root's from typed flags; each push is delivery new --adapter codex-queue, one bounded codex queue child (argv only, stdin null, CODEX_HOME the bound home, process group killed at the deadline or on stop, output drained and capped, never two at once, renewals continue), submitted only after exit 0 with its output closed (a deadline or stop with output open is unconfirmed; output held outside the group strands the lease to expiry and exits 6); the stop and lease are rechecked after the final binding read; non-zero, signal, timeout and spawn failure stay unsubmitted and count against the cap of 3 at the 120 s spacing; receipts suppress across restarts; the binding is rechecked before each offer and spawn (unreadable suspends, a change stops for good and releases); EOF cancels, reaps and releases; dispatched before routing, refused by check_args, never stored; tools/push-canary.sh selftest and refusals	pending
+-	orch-messages	crates/taskr/tests/messages.rs	messages	rust	blackbox	cargo:messages:routing_identity_text_status_and_loss_safe_waits;cargo:messages:pane_fallback_overrides_and_hidden_route_share_the_decision;cargo:messages:incoming_message_drives_glance_activity_without_owner_badges;cargo:channel:orchestrator_messages_receive_ack_restart_generation_and_alarm;cargo:channel:orchestrator_alarm_usage_is_not_retried_on_an_older_hub;cargo:channel:orchestrator_relay_replay_and_unknown_outcome_never_type_into_a_pane;cargo:channel:orchestrator_hidden_rpc_checks_sender_and_binary_text_before_writing;cargo:channel:orchestrator_server_pane_decision_survives_a_new_push_lease;cargo:taskr:daemon::checkin::message_tests::incoming_message_is_an_idle_signal_and_recent_activity	cmd:message;cmd:prompt;cmd:wait;cmd:inbox;cmd:log;cmd:campaign;cmd:glance;cmd:delivery	Rust root-to-root bounded text; server push-live route and terminal replay; sender identity and status; filtered-wait loss safety; receipt generations and restart; one sender alarm at cap; incoming activity without owner approval; Go mirrors shared help and root-pane path only	pending

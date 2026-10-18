@@ -1,0 +1,3076 @@
+#!/usr/bin/env python3
+"""Isolated integration checks: fake stats/manager, only owned child processes."""
+import concurrent.futures
+import contextlib
+import datetime
+import fcntl
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+
+TOOL = Path(os.environ['SLOTR_BINARY'])
+STUB = r'''#!/usr/bin/env python3
+import fcntl, json, os, pathlib, signal, sys
+root = pathlib.Path(os.environ['XDG_RUNTIME_DIR'])
+args = sys.argv[1:]
+lock_path = root / 'slotr/state.lock'
+if lock_path.exists():
+    with lock_path.open('r') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            for line in pathlib.Path('/proc/locks').read_text().splitlines():
+                fields = line.split()
+                if len(fields) > 5 and fields[1] == 'FLOCK' and fields[4] == str(os.getppid()) and fields[5].endswith(':' + str(lock_path.stat().st_ino)):
+                    print('blocking subprocess under state.lock', file=sys.stderr)
+                    sys.exit(9)
+
+if pathlib.Path(sys.argv[0]).name == 'systemctl':
+    if 'is-active' in args and (root / 'ctl-fail').exists():
+        print('boom', file=sys.stderr)
+        sys.exit(1)
+    if 'stop' in args and '--no-block' not in args:
+        # Real `systemctl stop` returns only when the stop job has finished.
+        import time
+        try:
+            pid = int((root / args[-1]).read_text())
+            os.kill(pid, signal.SIGTERM)
+        except (OSError, ValueError):
+            sys.exit(0)
+        while True:
+            try:
+                os.kill(pid, 0)
+                if pathlib.Path('/proc/%s/stat' % pid).read_text().split()[2] == 'Z':
+                    break
+            except OSError:
+                break
+            time.sleep(0.02)
+        sys.exit(0)
+
+name = pathlib.Path(sys.argv[0]).name
+if name == 'taskr':
+    with (root / 'notes').open('a') as log:
+        log.write(json.dumps(dict(args=args, task=os.environ.get('TASKR_TASK'), launch=os.environ.get('TASKR_LAUNCH'))) + '\n')
+    sys.exit(int(os.environ.get('NOTE_EXIT', '0')))
+if name == 'systemd-run':
+    unit = args[args.index('--unit') + 1]
+    # Admission must keep its shared compatibility lock through unit startup.
+    with (root / ('legacy-heavy.lock' if unit.startswith('slotr-heavy-') else 'legacy.lock')).open("a") as legacy:
+        try:
+            fcntl.flock(legacy, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            print("shared legacy lock lost during startup", file=sys.stderr)
+            sys.exit(9)
+    if (root / 'collision').exists():
+        (root / 'collision').unlink()
+        print('Failed to start transient service unit: Unit %s.service was already loaded or has a fragment file.' % unit, file=sys.stderr)
+        sys.exit(1)
+    (root / unit).write_text(str(os.getpid()))
+    with (root / 'launches').open('a') as log:
+        log.write(json.dumps(args[:args.index('--')]) + '\n')
+    cmd = args[args.index('--') + 1:]
+    if (root / 'detached').exists():
+        # Like real systemd-run --wait: the launcher waits; the service runs in its own session.
+        import subprocess
+        service = subprocess.Popen(cmd, start_new_session=True)
+        (root / unit).write_text(str(service.pid))
+        (root / 'launcher').write_text(str(os.getpid()))
+        sys.exit(service.wait())
+    os.execv(cmd[0], cmd)
+if 'Version' in ' '.join(args):
+    if (root / 'no-bus').exists():
+        print('Failed to connect to bus: No data available', file=sys.stderr)
+        sys.exit(1)
+    print('Version=fake')
+    sys.exit(0)
+unit = args[-1]
+path = root / unit
+try:
+    pid = int(path.read_text())
+    os.kill(pid, 0)
+    live = pathlib.Path('/proc/%s/stat' % pid).read_text().split()[2] != 'Z'
+except (OSError, ValueError):
+    live = False
+if 'is-active' in args:
+    print('active' if live else 'inactive')
+    sys.exit(0 if live else 3)
+if 'stop' in args:
+    if live:
+        os.kill(pid, signal.SIGTERM)
+    sys.exit(0)
+print('/' + unit)
+'''
+WORKLOAD = r'''
+import json, os, pathlib, signal, sys, time
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps(dict(pid=os.getpid(), slot=os.environ['SLOTR_SLOT'],
+                               base=os.environ.get('SLOTR_PORT_BASE', ''), run=os.environ['SLOTR_RUN'],
+                               literal=sys.argv[2:])))
+def terminated(s, f):
+    path.with_suffix(".term").write_text("TERM")
+    sys.exit(0)
+signal.signal(signal.SIGTERM, signal.SIG_IGN if "--ignore-term" in sys.argv[2:] else terminated)
+while True:
+    time.sleep(0.1)
+'''
+
+
+class AdmissionTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='slotr-test-')
+        self.root = Path(self.tmp.name)
+        self.runtime = self.root / 'runtime'
+        self.proc = self.root / 'proc'
+        self.cgroup = self.root / 'cgroup'
+        self.bin = self.root / 'bin'
+        for path in (self.runtime, self.proc / 'pressure', self.cgroup, self.bin, self.root / 'config/slotr'):
+            path.mkdir(parents=True)
+        for name in ('systemd-run', 'systemctl', 'taskr'):
+            path = self.bin / name
+            path.write_text(STUB)
+            path.chmod(0o755)
+        self.env = dict({k:v for k,v in os.environ.items() if not k.startswith('SLOTR_')}, XDG_RUNTIME_DIR=str(self.runtime), XDG_CONFIG_HOME=str(self.root / 'config'),
+                        XDG_STATE_HOME=str(self.root / 'state'), SLOTR_TEST='1',
+                        SLOTR_PROC_ROOT=str(self.proc), SLOTR_CGROUP_ROOT=str(self.cgroup),
+                        SLOTR_SYSTEMD_RUN=str(self.bin / 'systemd-run'), SLOTR_SYSTEMCTL=str(self.bin / 'systemctl'),
+                        PATH=str(self.bin) + ':' + os.environ['PATH'], TASKR_TASK='test-task', TASKR_LAUNCH='test-launch',
+                        SLOTR_PRIORITY__QUIET_SECONDS='0', HERDR_PANE_ID='test-pane', SECRET_SENTINEL='private-test-value')
+        self.cfg = dict(queue_poll_ms=40, watchdog_ms=70, term_grace_seconds=0.12,
+                        recovery_healthy_seconds=0.3, legacy_runtime_lock=str(self.runtime / 'legacy.lock'),
+                        ports={'base': self.free_block(), 'stride': 32})
+        self.write_config()
+        self.set_stats(20000)
+        self.children = []
+        self.workloads = []
+        self.logs = []
+
+    def free_block(self):
+        for base in range(24000, 30000, 64):
+            with contextlib.ExitStack() as stack:
+                try:
+                    for port in range(base, base + 128):
+                        stack.enter_context(socket.socket()).bind(('127.0.0.1', port))
+                    return base
+                except OSError:
+                    continue
+        self.fail('no scratch port block')
+
+    def write_config(self):
+        cfg = dict(pools=dict(runtime=dict(slots=self.cfg.get("runtime_slots", 2),
+                   memory_gated=self.cfg.get("memory_gated", True), evictable=self.cfg.get("evictable", True),
+                   default_cost_mib=7680, max_lease=self.cfg.get("max_lease", "4h"),
+                   campaign_cap=self.cfg.get("campaign_cap", 1),
+                   ports=dict(self.cfg["ports"], probe=7),
+                   legacy_lock=dict(path=self.cfg["legacy_runtime_lock"], mode="shared"),
+                   kinds={"dev-stack": dict(cost_mib=7680)})),
+                   admission=dict(queue_poll_ms=self.cfg["queue_poll_ms"],
+                                  recovery_healthy_seconds=self.cfg["recovery_healthy_seconds"]),
+                   watchdog=dict(interval_ms=self.cfg["watchdog_ms"],
+                                 term_grace_seconds=self.cfg["term_grace_seconds"],
+                                 observe_locks=[str(self.runtime / "heavy.lock")]),
+                   lease=dict(grace_seconds=self.cfg.get("grace", 0.2),
+                              waiter_min_wait_seconds=self.cfg.get("waiter_age", 0.1),
+                              on_expiry=self.cfg.get("on_expiry", "stop"),
+                              idle_release_minutes=self.cfg.get("idle_release_minutes", 0.0)),
+                   hooks=dict(on_admit=self.cfg.get("on_admit", []),
+                              on_warn=self.cfg.get("on_warn", []),
+                              on_stop=self.cfg.get("on_stop", ["taskr", "note", "{task}", "{reason}"])))
+        if "unknown" in self.cfg:
+            cfg["unknown"] = self.cfg["unknown"]
+        if "priority" in self.cfg:
+            cfg["priority"] = self.cfg["priority"]
+        if "heavy" in self.cfg:
+            cfg["pools"]["heavy"] = dict(slots=2, memory_gated=True, evictable=True,
+                default_cost_mib=6144, max_lease="1h", campaign_cap=0,
+                ports=dict(base=self.cfg['ports']['base'] + 64, stride=32, probe=7),
+                legacy_lock=dict(path=str(self.runtime / 'legacy-heavy.lock'), mode='shared'))
+            cfg['pools']['heavy'].update(self.cfg['heavy'])
+        lines = []
+        def table(obj, prefix=""):
+            if prefix:
+                lines.append("[" + prefix + "]")
+            for key, value in obj.items():
+                if not isinstance(value, dict):
+                    lines.append(key + " = " + json.dumps(value))
+            for key, value in obj.items():
+                if isinstance(value, dict):
+                    table(value, prefix + "." + key if prefix else key)
+        table(cfg)
+        (self.root / "config/slotr/config.toml").write_text("\n".join(lines) + "\n")
+
+    def set_stats(self, available, avg10=0, avg60=0):
+        for path, text in ((self.proc / 'meminfo', f'MemTotal: {self.cfg.get("total_mib", 65536) * 1024} kB\nMemAvailable: {available * 1024} kB\n'),
+                           (self.proc / 'pressure/memory', f'some avg10=0 avg60=0 avg300=0 total=0\nfull avg10={avg10} avg60={avg60} avg300=0 total=0\n'),
+                           (self.proc / 'loadavg', '99.0 0 0 1/1 1\n')):
+            pending = path.with_suffix('.tmp')
+            pending.write_text(text)
+            pending.replace(path)
+
+    def invoke(self, *args, env=None):
+        args = list(args)
+        if args[0] == "run":
+            at = args.index("--")
+            args[at:at] = ["--pool", "runtime", "--campaign", "oneshot", "--purpose", "test"]
+        return subprocess.run([str(TOOL), *args], env=env or self.env, capture_output=True, text=True, timeout=5)
+
+    def status(self):
+        (self.proc / "locks").write_text(Path("/proc/locks").read_text())
+        result = self.invoke("status", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        pool = data["pools"]["runtime"]
+        data["queue"] = pool["queue"]
+        data["budget"] = pool["budget"]
+        data["slots"] = pool["holders"]
+        if not data["slots"]:
+            data["slots"] = [dict(state="free", slot=0)]
+        return data
+
+    def wait(self, condition, timeout=6):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            value = condition()
+            if value:
+                return value
+            threading.Event().wait(0.04)
+        events = self.root / 'state/slotr/events.jsonl'
+        self.fail('condition timed out; logs: ' + ' '.join(p.read_text() for p in self.logs)
+                  + '; events: ' + (events.read_text() if events.exists() else ''))
+
+    def freeze(self, pid):
+        # Stop only outside a state transaction so other slotr processes can proceed.
+        lock = self.runtime / 'slotr/state.lock'
+        while True:
+            os.kill(pid, signal.SIGSTOP)
+            threading.Event().wait(0.01)
+            with lock.open('a') as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return
+                except BlockingIOError:
+                    pass
+            os.kill(pid, signal.SIGCONT)
+            threading.Event().wait(0.01)
+
+    def advance_warned(self, run, seconds):
+        # Keep the holder from cancelling its claim before the waiter sees the clock jump.
+        pid = int((self.runtime / run).read_text())
+        self.freeze(pid)
+        try:
+            self.advance(seconds)
+            wall = time.time()
+            self.wait(lambda: (q := self.status()['queue']) and datetime.datetime.fromisoformat(
+                q[0]['seen_at'].replace('Z', '+00:00')).timestamp() >= wall)
+        finally:
+            os.kill(pid, signal.SIGCONT)
+
+    def priority_file(self, text):
+        path = self.root / 'priority'
+        pending = path.with_suffix('.tmp')
+        pending.write_bytes(text.encode() if isinstance(text, str) else text)
+        pending.replace(path)
+        return path
+
+    def start(self, label, *literal, campaign=None, lease=None, task='test-task', pane='test-pane', pool='runtime', cost=None, **popen):
+        output = self.root / label
+        log = self.root / (label + '.log')
+        self.logs.append(log)
+        self.workloads.append(output)
+        with log.open('w') as stream:
+            child = subprocess.Popen([str(TOOL), 'run', '--pool', pool,
+                                      *(['--cost', str(cost)] if cost is not None else ['--kind', 'dev-stack'] if pool == 'runtime' else []),
+                                      '--campaign', campaign or label,
+                                      '--purpose', label, '--task', task, '--pane', pane,
+                                      *(['--lease', lease] if lease else []), '--',
+                                      sys.executable, '-c', WORKLOAD, str(output), *literal], env=self.env,
+                                     stdin=subprocess.DEVNULL, stdout=stream, stderr=stream, **popen)
+        self.children.append(child)
+        return child, output
+
+    def running(self, label):
+        return next((s for s in self.status()['slots'] if s.get('campaign') == label and s['state'] in ('running', 'overdue', 'yielding', 'warned')), None)
+
+    def admitted(self, label, output):
+        self.wait(output.exists)
+        return self.wait(lambda: self.running(label))
+
+    def anon(self, holder, mib):
+        path = self.cgroup / holder['run']
+        path.mkdir(exist_ok=True)
+        (path / 'memory.stat').write_text(f'anon {mib * 1024 * 1024}\nfile 999999999999\n')
+
+    def tearDown(self):
+        for child in self.children:
+            if child.poll() is None:
+                child.terminate()
+        for child in self.children:
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+        # Only groups created by this test's workload script are signalled.
+        for path in self.workloads:
+            if path.exists():
+                try:
+                    os.killpg(json.loads(path.read_text())['pid'], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        self.tmp.cleanup()
+
+    def test_budget_fifo_and_port_exports(self):
+        first, p1 = self.start('first', '$LITERAL', 'with spaces')
+        h1 = self.admitted('first', p1)
+        self.assertEqual(self.status()['budget']['outstanding_mib'], 7680)
+        second, p2 = self.start('second')
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        third, p3 = self.start('third')
+        self.wait(lambda: len(self.status()['queue']) == 2)
+        state = self.status()
+        self.assertEqual([q['campaign'] for q in state['queue']], ['second', 'third'])
+        self.assertEqual(state['queue'][0]['wait_reason'], 'memory_budget')
+        self.assertFalse(p2.exists())
+        self.set_stats(20479)
+        self.assertEqual(self.status()['queue'][0]['wait_reason'], 'memory_budget')
+        self.set_stats(20480)
+        h2 = self.admitted('second', p2)
+        self.assertFalse(p3.exists())
+        self.assertEqual(self.status()['queue'][0]['wait_reason'], 'no_slot')
+        self.assertEqual(abs(h1['port_base'] - h2['port_base']), 32)
+        for h, path in ((h1, p1), (h2, p2)):
+            payload = json.loads(path.read_text())
+            self.assertEqual(int(payload['base']), h['port_base'])
+            self.assertEqual(int(payload['slot']), h['slot'])
+            self.assertEqual(payload['run'], h['run'])
+        self.assertEqual(json.loads(p1.read_text())['literal'], ['$LITERAL', 'with spaces'])
+        flags = json.loads((self.runtime / 'launches').read_text().splitlines()[0])
+        for flag in ('--collect', '--wait', '--pipe', '--expand-environment=no', '--property=KillMode=control-group',
+                     '--property=Restart=no', '--property=MemoryAccounting=yes', '--property=OOMScoreAdjust=500', '--property=OOMPolicy=kill'):
+            self.assertIn(flag, flags)
+        self.assertNotIn('private-test-value', (self.runtime / 'slotr/state.json').read_text())
+
+    def test_resident_credit_not_file_cache(self):
+        _, p1 = self.start('first')
+        h1 = self.admitted('first', p1)
+        self.anon(h1, 1000)
+        self.set_stats(19479)
+        _, p2 = self.start('second')
+        self.wait(lambda: bool(self.status()['queue']))
+        self.assertFalse(p2.exists())
+        self.assertEqual(self.status()['budget']['outstanding_mib'], 6680)
+        self.set_stats(19480)
+        self.admitted('second', p2)
+
+    def test_dead_waiter_does_not_block_fifo(self):
+        self.set_stats(10000)
+        first, p1 = self.start('first')
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        _, p2 = self.start('second')
+        self.wait(lambda: len(self.status()['queue']) == 2)
+        first.kill()
+        first.wait(timeout=2)
+        self.set_stats(20000)
+        self.admitted('second', p2)
+        self.assertFalse(p1.exists())
+        self.assertEqual(self.status()['queue'], [])
+        self.assertFalse((self.runtime / 'slotr/ticket-1').exists())
+
+    def test_ports_busy_then_free_slot(self):
+        with socket.socket() as occupied:
+            occupied.bind(('127.0.0.1', self.cfg['ports']['base']))
+            _, output = self.start('skip')
+            h = self.admitted('skip', output)
+            self.assertEqual(h['slot'], 1)
+        self.children[0].terminate()
+        self.children[0].wait(timeout=3)
+        self.cfg['runtime_slots'] = 1
+        self.write_config()
+        with socket.socket() as occupied:
+            occupied.bind(('127.0.0.1', self.cfg['ports']['base']))
+            _, output = self.start('busy')
+            self.wait(lambda: bool(self.status()['queue']))
+            self.assertEqual(self.status()['queue'][0]['wait_reason'], 'ports_busy')
+            self.assertFalse(output.exists())
+        self.admitted('busy', output)
+
+    def test_legacy_exclusive_lock(self):
+        with open(self.cfg['legacy_runtime_lock'], 'w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            _, output = self.start('legacy')
+            self.wait(lambda: bool(self.status()['queue']))
+            queue = self.status()['queue'][0]
+            self.assertEqual(queue['wait_reason'], 'legacy_lock')
+            self.assertEqual(queue['legacy_holder_pid'], os.getpid())
+            self.assertFalse(output.exists())
+        h = self.admitted('legacy', output)
+        with open(self.cfg['legacy_runtime_lock'], 'r') as lock:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertEqual(h['slot'], 0)
+
+    def check_stop(self, available, avg10, expected, two=False):
+        self.set_stats(30000)
+        old, p1 = self.start('old')
+        self.admitted('old', p1)
+        victim = old
+        if two:
+            victim, p2 = self.start('new')
+            self.admitted('new', p2)
+        decoy = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+        self.children.append(decoy)
+        self.set_stats(available, avg10)
+        self.wait(lambda: victim.poll() is not None)
+        self.assertEqual(victim.returncode, 75)
+        if two:
+            self.assertIsNone(old.poll())
+        self.assertIsNone(decoy.poll())
+        events = [json.loads(line) for line in (self.root / 'state/slotr/events.jsonl').read_text().splitlines()]
+        stops = [e for e in events if e['event'] == 'stop']
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(stops[0]['reason'], expected)
+        self.assertEqual(stops[0]['run'], 'slotr-runtime-2' if two else 'slotr-runtime-1')
+        self.assertEqual(len(stops[0]['holders']), 2 if two else 1)
+        self.assertIn('anon_mib', stops[0]['holders'][0])
+        self.assertFalse(stops[0]['observed_locks'][str(self.runtime / 'heavy.lock')])
+        self.assertNotIn('private-test-value', json.dumps(events))
+        notes = [json.loads(line) for line in (self.runtime / 'notes').read_text().splitlines()]
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]['task'], 'test-task')
+        self.assertEqual(notes[0]['launch'], 'test-launch')
+        self.assertEqual(events[-1]['exit'], int(self.env.get('NOTE_EXIT', 0)))
+        return events
+
+    def test_watchdog_only_newest_and_recovery(self):
+        self.check_stop(3000, 0, 'stop_available_mib', two=True)
+        _, output = self.start('replacement')
+        self.wait(lambda: bool(self.status()['queue']))
+        self.assertEqual(self.status()['queue'][0]['wait_reason'], 'recovery')
+        self.assertFalse(output.exists())
+        self.set_stats(30000)
+        self.admitted('replacement', output)
+
+    def test_psi_stop(self):
+        self.check_stop(30000, 20, 'stop_psi_full_avg10')
+
+    def test_emergency_stop_note_failure_not_retried(self):
+        self.env['NOTE_EXIT'] = '6'
+        self.check_stop(1999, 0, 'emergency_available_mib')
+
+    def test_missing_psi_and_admission_threshold(self):
+        (self.proc / 'pressure/memory').unlink()
+        _, output = self.start('psi')
+        self.wait(lambda: bool(self.status()['queue']))
+        self.assertEqual(self.status()['queue'][0]['wait_reason'], 'psi')
+        self.set_stats(20000, avg60=5.01)
+        self.assertEqual(self.status()['queue'][0]['wait_reason'], 'psi')
+        self.assertFalse(output.exists())
+        self.set_stats(20000, avg60=5)
+        self.admitted('psi', output)
+
+    def test_reclaim_gone_unit_and_normal_exit(self):
+        result = self.invoke('run', '--kind', 'dev-stack', '--', sys.executable, '-c', 'import sys; sys.exit(17)')
+        self.assertEqual(result.returncode, 17, result.stderr)
+        _, output = self.start('after')
+        h = self.admitted('after', output)
+        self.assertEqual(h['slot'], 0)
+        self.assertEqual(h['admit_seq'], 2)
+        state = json.loads((self.runtime / 'slotr/state.json').read_text())
+        self.assertEqual(len(state['holders']), 1)
+
+    def test_unknown_kind_lists_selected_pool_and_never_admits(self):
+        self.cfg['heavy'] = dict(kinds={name: dict(cost_mib=6144)
+                                      for name in ('vitest', 'tsc', 'oxlint', 'install', 'build')})
+        self.write_config()
+        marker = self.root / 'payload'
+        for pool, kind, valid in (('heavy', 'tests', 'build, install, oxlint, tsc, vitest'),
+                                  ('heavy', 'lint', 'build, install, oxlint, tsc, vitest'),
+                                  ('runtime', 'build', 'dev-stack'),
+                                  ('heavy', 'build', 'none')):
+            with self.subTest(pool=pool, kind=kind, valid=valid):
+                if valid == 'none':
+                    self.cfg['heavy'] = {}
+                    self.write_config()
+                result = subprocess.run([str(TOOL), 'run', '--pool', pool, '--kind', kind,
+                                         '--campaign', 'kind-check', '--purpose', 'test', '--',
+                                         sys.executable, '-c', 'from pathlib import Path; Path(%r).touch()' % str(marker)],
+                                        env=self.env, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stderr.strip(),
+                                 f'slotr: unknown kind: {kind} (pool {pool}; valid kinds: {valid})')
+                self.assertFalse(marker.exists())
+                self.assertFalse((self.runtime / 'slotr').exists())
+                self.assertFalse((self.runtime / 'launches').exists())
+                self.assertFalse((self.root / 'state/slotr').exists())
+
+    def test_corrupt_config_unknown_kind_and_no_bus(self):
+        self.cfg['unknown'] = 1
+        self.write_config()
+        result = self.invoke('status', '--json')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('unknown', result.stderr)
+        del self.cfg['unknown']
+        self.cfg['runtime_slots'] = True
+        self.write_config()
+        self.assertIn('slots', self.invoke('status').stderr)
+        self.cfg['runtime_slots'] = 2
+        self.write_config()
+        result = self.invoke('run', '--kind', 'wrong', '--', 'true')
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse((self.runtime / 'slotr').exists())
+        (self.runtime / 'no-bus').touch()
+        result = self.invoke('run', '--kind', 'dev-stack', '--', 'true')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('no systemd user bus here; run it in a terminal', result.stderr)
+        root = self.runtime / 'slotr'
+        root.mkdir()
+        (root / 'state.json').write_text('{broken')
+        result = self.invoke('status', '--json')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(str(root / 'state.json'), result.stderr)
+        self.assertEqual((root / 'state.json').read_text(), '{broken')
+
+    def test_unit_collision_and_readonly_status(self):
+        (self.proc / 'locks').write_text(Path('/proc/locks').read_text())
+        before = {str(p.relative_to(self.root)): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        self.assertEqual(self.status()['slots'][0]['state'], 'free')
+        after = {str(p.relative_to(self.root)): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        before.pop('proc/locks', None)
+        after.pop('proc/locks', None)
+        self.assertEqual(before, after)
+        (self.runtime / 'collision').touch()
+        _, output = self.start('collision')
+        h = self.admitted('collision', output)
+        self.assertEqual(h['admit_seq'], 2)
+        self.assertEqual((self.runtime / 'slotr').stat().st_mode & 0o777, 0o700)
+
+    def events(self, kind):
+        path = self.root / "state/slotr/events.jsonl"
+        return [e for line in path.read_text().splitlines() if (e := json.loads(line))["event"] == kind] if path.exists() else []
+
+    def advance(self, seconds):
+        path = self.root / "clock"
+        offset = float(path.read_text()) if path.exists() else 0
+        pending = path.with_suffix('.tmp')
+        pending.write_text(str(offset + seconds))
+        pending.replace(path)
+        self.env["SLOTR_CLOCK_OFFSET_FILE"] = str(path)
+
+    def configure_clock(self):
+        self.env["SLOTR_CLOCK_OFFSET_FILE"] = str(self.root / "clock")
+        (self.root / "clock").write_text("0")
+
+    def test_campaign_cap_drains_without_yield(self):
+        self.set_stats(40000)
+        first, p1 = self.start("first", campaign="A")
+        self.wait(p1.exists)
+        second, p2 = self.start("second", campaign="A")
+        self.wait(p2.exists) # uncontended campaign may fill the pool
+        _, waiter = self.start("waiter", campaign="B")
+        self.wait(lambda: bool(self.status()["queue"]))
+        self.pause(0.6)
+        self.assertIsNone(second.poll())
+        self.assertIsNone(first.poll())
+        self.assertFalse(waiter.exists())
+        second.terminate(); second.wait(timeout=3)
+        self.wait(waiter.exists)
+        self.assertEqual(self.events("stop"), [])
+
+    def test_campaign_cap_skips_only_capped_head(self):
+        self.set_stats(40000)
+        first, p1 = self.start("first", campaign="A")
+        self.wait(p1.exists)
+        self.set_stats(10000)
+        second, p2 = self.start("second", campaign="A")
+        self.wait(lambda: len(self.status()["queue"]) == 1)
+        third, p3 = self.start("third", campaign="B")
+        self.wait(lambda: len(self.status()["queue"]) == 2)
+        self.wait(lambda: any(q['campaign'] == 'A' and q['wait_reason'] == 'campaign_cap' for q in self.status()['queue']))
+        self.assertFalse(p2.exists())
+        self.set_stats(40000)
+        self.wait(p3.exists)
+        self.assertFalse(p2.exists()) # no free slot until B releases
+        third.terminate()
+        third.wait(timeout=3)
+        self.wait(p2.exists) # no other campaign waits: A2 retains its place
+        self.assertIsNone(first.poll())
+        self.assertIsNone(second.poll())
+
+    def test_overdue_without_waiter_continues(self):
+        self.configure_clock()
+        child, path = self.start("old", lease="1s")
+        self.wait(path.exists)
+        self.advance(10)
+        self.wait(lambda: self.status()["slots"][0]["state"] == "overdue")
+        self.assertIsNone(child.poll())
+        self.assertEqual(self.events("stop"), [])
+        self.assertEqual(self.events("warn"), [])
+
+    def test_unhelpful_expiry_warns_once(self):
+        self.configure_clock()
+        old, path = self.start("old", lease="1s")
+        self.wait(path.exists)
+        self.set_stats(10000)
+        _, waiter = self.start("waiter")
+        self.wait(lambda: bool(self.status()["queue"]))
+        self.advance(10)
+        self.wait(lambda: bool(self.events("warn")))
+        before = len(self.events("warn"))
+        # Observe several watchdog samples by advancing real workload CPU stats.
+        self.wait(lambda: self.status()["slots"][0]["state"] == "overdue")
+        subprocess.run([sys.executable, "-c", "import time; time.sleep(0.4)"], check=True)
+        self.assertEqual(len(self.events("warn")), before)
+        self.assertEqual(before, 1)
+        self.assertIsNone(old.poll())
+        self.assertFalse(waiter.exists())
+        self.assertEqual(self.events("stop"), [])
+
+    def test_two_overdue_holders_one_waiter_one_stop(self):
+        self.configure_clock()
+        self.set_stats(40000)
+        old, p1 = self.start("old", lease="1s")
+        self.wait(p1.exists)
+        newer, p2 = self.start("newer", lease="1s")
+        self.wait(p2.exists)
+        _, waiter = self.start("waiter")
+        self.wait(lambda: bool(self.status()["queue"]))
+        self.advance(10)
+        self.wait(lambda: old.poll() is not None)
+        self.assertEqual(old.returncode, 75)
+        self.wait(waiter.exists)
+        self.assertIsNone(newer.poll())
+        self.assertEqual(len(self.events("stop")), 1)
+
+    def test_expiry_only_evicts_holder_that_preserves_effective_head(self):
+        self.configure_clock()
+        self.set_stats(40000)
+        older, p1 = self.start("older", campaign="A", lease="1s")
+        self.wait(p1.exists)
+        newer, p2 = self.start("newer", campaign="B", lease="1s")
+        self.wait(p2.exists)
+        _, a2 = self.start("A2", campaign="A")
+        self.wait(lambda: len(self.status()["queue"]) == 1)
+        _, c = self.start("C", campaign="C")
+        self.wait(lambda: len(self.status()["queue"]) == 2)
+        self.advance(10)
+        self.wait(lambda: newer.poll() is not None)
+        self.assertEqual(newer.returncode, 75)
+        self.wait(c.exists)
+        self.assertIsNone(older.poll())
+        self.assertFalse(a2.exists())
+        self.assertEqual(len(self.events("stop")), 1)
+
+    def test_expiry_cancelled_when_waiter_leaves(self):
+        self.configure_clock()
+        self.cfg["grace"] = 20
+        self.write_config()
+        self.set_stats(40000)
+        old, p1 = self.start("old", lease="1s")
+        self.wait(p1.exists)
+        newer, p2 = self.start("newer")
+        self.wait(p2.exists)
+        waiter, _ = self.start("waiter")
+        self.wait(lambda: bool(self.status()["queue"]))
+        self.advance(10)
+        self.wait(lambda: any(h["state"] == "warned" for h in self.status()["slots"]))
+        waiter.terminate()
+        waiter.wait(timeout=3)
+        self.wait(lambda: bool(self.events("warn_cancelled")))
+        self.advance(30)
+        self.assertIsNone(old.poll())
+        self.assertIsNone(newer.poll())
+        self.assertEqual(self.events("stop"), [])
+
+    def test_warn_expiry_never_stops(self):
+        self.configure_clock()
+        self.cfg["on_expiry"] = "warn"
+        self.write_config()
+        self.set_stats(40000)
+        old, p1 = self.start("old", lease="1s")
+        self.wait(p1.exists)
+        _, p2 = self.start("newer")
+        self.wait(p2.exists)
+        _, _ = self.start("waiter")
+        self.wait(lambda: bool(self.status()["queue"]))
+        self.advance(10)
+        self.wait(lambda: bool(self.events("warn")))
+        self.advance(100)
+        self.assertIsNone(old.poll())
+        self.assertEqual(self.events("stop"), [])
+
+    def test_unevictable_pressure_and_expiry(self):
+        self.configure_clock()
+        self.cfg["evictable"] = False
+        self.write_config()
+        old, p1 = self.start("old", lease="1s")
+        self.wait(p1.exists)
+        self.set_stats(1000)
+        _, _ = self.start("waiter")
+        self.wait(lambda: bool(self.status()["queue"]))
+        self.advance(10000)
+        subprocess.run([sys.executable, "-c", "import time; time.sleep(0.4)"], check=True)
+        self.assertIsNone(old.poll())
+        self.assertEqual(self.events("stop"), [])
+        self.assertEqual(self.events("warn"), [])
+
+    def test_idle_release_counts_only_while_waiter_fits(self):
+        self.cfg["idle_release_minutes"] = 0.005
+        self.cfg["max_lease"] = "0"
+        self.write_config()
+        self.set_stats(40000)
+        old, p1 = self.start("old")
+        h1 = self.admitted("old", p1)
+        self.anon(h1, 1000)
+        (self.cgroup / h1["run"] / "cpu.stat").write_text("usage_usec 0\n")
+        subprocess.run([sys.executable, "-c", "import time; time.sleep(0.4)"], check=True)
+        self.assertIsNone(old.poll())
+        self.assertEqual(self.events("warn"), [])
+        _, p2 = self.start("newer")
+        self.wait(p2.exists)
+        _, waiter = self.start("waiter")
+        self.wait(lambda: bool(self.status()["queue"]))
+        self.wait(lambda: old.poll() is not None)
+        self.assertEqual(old.returncode, 75)
+        self.wait(waiter.exists)
+        self.assertEqual([e["reason"] for e in self.events("stop")], ["idle_release"])
+
+    def test_hooks_literal_argv_and_empty_task_skip(self):
+        self.cfg["on_admit"] = ["taskr", "note", "{purpose}", "{task}", "{pane}", "{run}", "{port_base}", "literal with spaces", "$HOME"]
+        self.write_config()
+        child, path = self.start("literal purpose")
+        self.wait(path.exists)
+        notes = self.wait(lambda: (self.runtime / "notes").read_text() if (self.runtime / "notes").exists() else "")
+        args = json.loads(notes.splitlines()[0])["args"]
+        self.assertEqual(args[1:4], ["literal purpose", "test-task", "test-pane"])
+        self.assertEqual(args[-2:], ["literal with spaces", "$HOME"])
+        child.terminate()
+        child.wait(timeout=3)
+        _, path2 = self.start("skipped", task="")
+        self.wait(path2.exists)
+        self.assertEqual(len((self.runtime / "notes").read_text().splitlines()), 1)
+
+    def test_config_env_sources_and_defaults(self):
+        import tomllib
+        result = self.invoke("config", "show")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["sources"]["pools.runtime.slots"], "file")
+        self.assertEqual(data["sources"]["admission.reserve_mib"], "default")
+        override = dict(self.env, SLOTR_POOLS__RUNTIME__SLOTS="3", SLOTR_ADMISSION__RESERVE_MIB="123")
+        result = self.invoke("config", "show", env=override)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["config"]["pools"]["runtime"]["slots"], 3)
+        self.assertEqual(data["config"]["admission"]["reserve_mib"], 123)
+        self.assertEqual(data["sources"]["pools.runtime.slots"], "env")
+        bad = dict(self.env, SLOTR_ADMISSION__SURPRISE="3")
+        result = self.invoke("config", "show", env=bad)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("admission.surprise", result.stderr)
+        (self.root / "config/slotr/config.toml").unlink()
+        result = self.invoke("config", "show")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        built_in = json.loads(result.stdout)["config"]
+        example = tomllib.loads((Path(__file__).resolve().parents[1] / "config.example.toml").read_text())
+        for pool in built_in["pools"].values():
+            pool.pop("ports")
+            pool.pop("legacy_lock")
+            pool.pop("kinds")
+        example["priority"]["quiet_seconds"] = 0.0
+        self.assertEqual(built_in, example)
+        self.assertEqual(self.invoke("config", "check", str(self.root / "missing")).returncode, 2)
+
+    def test_explicit_config_required_and_file_precedence(self):
+        config = self.root / 'config/slotr/config.toml'
+        missing = str(self.root / 'missing.toml')
+        for selected, diagnostic in ((missing, f'config {missing}:'), ('', 'config path must not be empty')):
+            with self.subTest(selected=selected):
+                env = dict(self.env, SLOTR_CONFIG=selected)
+                for args in (('config', 'show'), ('config', 'check'), ('run', '--', 'true')):
+                    result = self.invoke(*args, env=env)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn(diagnostic, result.stderr)
+                self.assertFalse((self.runtime / 'slotr').exists())
+                result = self.invoke('config', 'check', str(config), env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('slotr: config OK', result.stdout)
+        result = self.invoke('config', 'check', missing, env=dict(self.env, SLOTR_CONFIG=str(config)))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(f'config {missing}:', result.stderr)
+
+    def test_absolute_config_and_payload_scratch_home_preserve_queue(self):
+        scratch = self.root / 'scratch-home'
+        scratch.mkdir()
+        priority = self.priority_file('task test-task 3\n')
+        self.cfg.update(heavy=dict(kinds=dict(build=dict(cost_mib=6144))),
+                        priority=dict(campaigns=[], file='~/priority'))
+        self.write_config()
+        env = dict(self.env, SLOTR_CONFIG=str(self.root / 'config/slotr/config.toml'),
+                   XDG_CONFIG_HOME=str(scratch / '.config'), HOME=str(self.root))
+        result = self.invoke('config', 'show', env=dict(env, HOME=str(scratch)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(json.loads(result.stdout)['config']['pools']), {'runtime', 'heavy'})
+        result = subprocess.run([str(TOOL), 'run', '--pool', 'heavy', '--kind', 'build',
+                                 '--campaign', 'scratch', '--purpose', 'test', '--task', 'test-task', '--',
+                                 'env', f'HOME={scratch}', f'TASKR_DB={scratch / "taskr.db"}',
+                                 sys.executable, '-c',
+                                 'import json,os; print(json.dumps({k:os.environ[k] for k in '
+                                 '("HOME","TASKR_DB","XDG_RUNTIME_DIR","SLOTR_POOL")}))'],
+                                env=env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('slotr: admitted slotr-heavy-1', result.stderr)
+        self.assertEqual(json.loads(result.stdout), dict(HOME=str(scratch), TASKR_DB=str(scratch / 'taskr.db'),
+                                                       XDG_RUNTIME_DIR=str(self.runtime), SLOTR_POOL='heavy'))
+        state = json.loads((self.runtime / 'slotr/state.json').read_text())
+        self.assertEqual(state['enqueue_seq'], 1)
+        self.assertEqual(state['queue'], [])
+        self.assertEqual(len(state['holders']), 1)
+        self.assertEqual(state['holders'][0]['pool'], 'heavy')
+        self.assertEqual(state['holders'][0]['level'], 3)
+        self.assertEqual(state['holders'][0]['cost_mib'], 6144)
+        self.assertEqual(len((self.runtime / 'launches').read_text().splitlines()), 1)
+        admits = self.events('admit')
+        self.assertEqual(len(admits), 1)
+        self.assertEqual(admits[0]['pool'], 'heavy')
+        self.assertEqual(admits[0]['cost_mib'], 6144)
+        result = self.invoke('status', '--json', env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['priority']['state'], 'ok')
+        self.assertTrue(priority.exists())
+        self.assertFalse((scratch / '.config/slotr').exists())
+
+    def test_stop_only_registered_unit_and_test_seams_gated(self):
+        self.assertEqual(self.invoke("stop", "unrelated.service").returncode, 2)
+        env = dict(self.env, SLOTR_TEST="0")
+        result = self.invoke("status", "--json", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(json.loads(result.stdout)["stats"]["load1"], 99.0)
+
+
+    def pause(self, seconds):
+        subprocess.run([sys.executable, '-c', 'import time; time.sleep(%r)' % seconds], check=True)
+
+    def notes(self):
+        path = self.runtime / 'notes'
+        return [json.loads(l)['args'] for l in path.read_text().splitlines()] if path.exists() else []
+
+    # --- item 1/2: wrong stop and lost queue place on a manager or state error
+    def test_probe_p01_manager_error_does_not_kill_holder_or_drop_waiter(self):
+        self.cfg['runtime_slots'] = 1
+        self.write_config()
+        holder, p1 = self.start('holder')
+        self.admitted('holder', p1)
+        waiter, _ = self.start('waiter')
+        self.wait(lambda: bool(self.status()['queue']))
+        (self.runtime / 'ctl-fail').touch()          # one failing `systemctl is-active`
+        self.pause(1.0)
+        (self.runtime / 'ctl-fail').unlink()
+        seen = dict(holder_rc=holder.poll(), waiter_rc=waiter.poll(), stop_events=len(self.events('stop')),
+                    on_stop_hook_runs=len(self.notes()), holder_log=(self.root / 'holder.log').read_text().strip().splitlines()[-1:],
+                    waiter_log=(self.root / 'waiter.log').read_text().strip().splitlines()[-1:])
+        self.assertEqual((seen['holder_rc'], seen['waiter_rc']), (None, None), seen)
+
+    def test_probe_p02_unreadable_state_does_not_kill_holder(self):
+        holder, p1 = self.start('holder')
+        self.admitted('holder', p1)
+        state = self.runtime / 'slotr/state.json'
+        good = state.read_bytes()
+        pending = state.with_suffix('.probe')
+        pending.write_text('{broken')
+        pending.replace(state)
+        self.pause(1.0)
+        rc = holder.poll()
+        pending.write_bytes(good)
+        pending.replace(state)
+        self.assertIsNone(rc, 'holder workload was terminated: rc=%s' % rc)
+
+    # --- item 2: `slotr stop` and a signalled frontend against a synchronous `systemctl stop`
+    def test_probe_p03_stop_command_reports_success(self):
+        self.cfg['term_grace_seconds'] = 6          # default is 15; anything above ctl's 5 s shows it
+        self.write_config()
+        (self.runtime / 'sync-stop').touch()
+        holder, p1 = self.start('holder')
+        h = self.admitted('holder', p1)
+        began = time.monotonic()
+        result = subprocess.run([str(TOOL), 'stop', h['run']], env=self.env, capture_output=True, text=True, timeout=40)
+        took = time.monotonic() - began
+        holder.wait(timeout=20)
+        self.assertEqual(result.returncode, 0, 'after %.1fs: %s' % (took, result.stderr.strip()))
+
+    def test_probe_p04_sigterm_frontend_relays_143(self):
+        self.cfg['term_grace_seconds'] = 6
+        self.write_config()
+        (self.runtime / 'sync-stop').touch()
+        holder, p1 = self.start('holder')
+        self.admitted('holder', p1)
+        holder.terminate()
+        holder.wait(timeout=30)
+        self.assertEqual(holder.returncode, 143, (self.root / 'holder.log').read_text()[-300:])
+
+    def test_sighup_frontend_stops_unit_and_releases_holder(self):
+        holder, p1 = self.start('holder')
+        self.admitted('holder', p1)
+        holder.send_signal(signal.SIGHUP)
+        holder.wait(timeout=30)
+        self.assertEqual(holder.returncode, 129, (self.root / 'holder.log').read_text()[-300:])
+        self.assertTrue(p1.with_suffix('.term').exists())
+        self.assertIsNone(self.running('holder'))
+        self.assertEqual(self.status()['pools']['runtime']['holders'], [])
+
+    def test_group_hup_after_launcher_exit_still_stops_detached_unit(self):
+        (self.runtime / 'detached').touch()
+        holder, p1 = self.start('holder', start_new_session=True)
+        self.admitted('holder', p1)
+        launcher = int((self.runtime / 'launcher').read_text())
+        os.kill(holder.pid, signal.SIGSTOP)           # the launcher handles the tab's HUP first
+        os.killpg(holder.pid, signal.SIGHUP)
+        self.wait(lambda: Path('/proc/%d/stat' % launcher).read_text().split()[2] == 'Z')
+        os.kill(holder.pid, signal.SIGCONT)
+        holder.wait(timeout=30)
+        self.assertEqual(holder.returncode, 129, (self.root / 'holder.log').read_text()[-300:])
+        self.assertTrue(p1.with_suffix('.term').exists())
+        self.assertEqual(self.status()['pools']['runtime']['holders'], [])
+
+    def test_inherited_hup_ignore_is_kept(self):
+        holder, p1 = self.start('holder', preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_IGN))
+        self.admitted('holder', p1)
+        holder.send_signal(signal.SIGHUP)
+        time.sleep(0.5)
+        self.assertIsNone(holder.poll())
+        self.assertFalse(p1.with_suffix('.term').exists())
+        self.assertIsNotNone(self.running('holder'))
+
+    # --- lead's smoke: A overdue, A2 yielding (same campaign), one waiter B
+    def lead_smoke(self, ignore_term=False):
+        self.configure_clock()
+        self.cfg['on_warn'] = ['taskr', 'note', '{task}', 'WARN', '{run}', '{reason}']
+        self.write_config()
+        self.set_stats(40000)
+        first, p1 = self.start('first', *(['--ignore-term'] if ignore_term else []), campaign='A', lease='1s')
+        self.wait(p1.exists)
+        second, p2 = self.start('second', campaign='A')
+        self.wait(p2.exists)
+        self.advance(10)                              # A is overdue before B arrives; A2 yields once B waits
+        _, waiter = self.start('waiter', campaign='B')
+        self.wait(lambda: bool(self.status()['queue']))
+        return first, second, waiter
+
+    def test_probe_p05_one_waiter_one_warn(self):
+        first, second, waiter = self.lead_smoke()
+        self.wait(lambda: first.poll() is not None)
+        self.wait(waiter.exists)
+        self.assertEqual(first.returncode, 75)
+        self.assertIsNone(second.poll())
+        warns = [(e['run'], e['reason']) for e in self.events('warn')]
+        hooks = [a for a in self.notes() if 'WARN' in a]
+        self.assertEqual(len(warns), 1, 'warn events: %s; on_warn hook runs: %s' % (warns, hooks))
+        self.assertEqual(len(hooks), 1)
+
+    def test_probe_p06_status_shows_stopping_during_term_grace(self):
+        self.cfg['term_grace_seconds'] = 1.5
+        first, second, waiter = self.lead_smoke(ignore_term=True)
+        self.wait(lambda: bool(self.events('stop')))
+        run = self.events('stop')[0]['run']
+        seen = [s.get('state') for s in self.status()['slots'] if s.get('run') == run]
+        self.assertEqual(seen, ['stopping'])
+
+    def test_probe_p07_one_warn_while_fit_flaps_during_grace(self):
+        self.configure_clock()
+        self.cfg['grace'] = 30
+        self.write_config()
+        self.set_stats(40000)
+        old, p1 = self.start('old', lease='1s')
+        self.wait(p1.exists)
+        newer, p2 = self.start('newer')
+        self.wait(p2.exists)
+        _, waiter = self.start('waiter')
+        self.wait(lambda: bool(self.status()['queue']))
+        self.advance(10)
+        self.wait(lambda: bool(self.events('warn')))
+        for _ in range(5):                            # the waiter stops fitting for one sample, then fits again
+            self.set_stats(10000)
+            self.pause(0.25)
+            self.set_stats(40000)
+            self.pause(0.25)
+        warns = [e['reason'] for e in self.events('warn')]
+        self.assertIsNone(old.poll())
+        self.assertEqual(len(warns), 1, 'warn events %s, cancels %d' % (warns, len(self.events('warn_cancelled'))))
+
+    # --- item 1: a stop for a waiter that cannot admit itself
+    def test_probe_p08_frozen_head_waiter_earns_no_stop(self):
+        self.configure_clock()
+        self.set_stats(40000)
+        old, p1 = self.start('old', lease='60s')
+        self.wait(p1.exists)
+        newer, p2 = self.start('newer')
+        self.wait(p2.exists)
+        waiter, out = self.start('waiter')
+        self.wait(lambda: bool(self.status()['queue']))
+        os.kill(waiter.pid, signal.SIGSTOP)           # Ctrl-Z in the waiter's pane
+        try:
+            self.advance(70)
+            self.pause(3.0)
+            self.assertIsNone(old.poll(), 'holder stopped (rc=%s) for a frozen waiter; waiter admitted=%s' % (old.returncode, out.exists()))
+        finally:
+            os.kill(waiter.pid, signal.SIGCONT)
+
+    # --- item 4: the stop side ignores the campaign cap
+    def test_probe_p09_no_eviction_for_a_campaign_already_at_cap(self):
+        self.configure_clock()
+        self.set_stats(40000)
+        a, p1 = self.start('a1', campaign='A', lease='1s')
+        self.wait(p1.exists)
+        b, p2 = self.start('b1', campaign='B')
+        self.wait(p2.exists)
+        _, b2 = self.start('b2', campaign='B')
+        self.wait(lambda: bool(self.status()['queue']))
+        self.advance(10)
+        self.pause(3.0)
+        self.assertIsNone(a.poll(), 'A stopped (rc=%s) so that B holds both slots; b2 admitted=%s' % (a.returncode, b2.exists()))
+
+    def test_probe_p10_free_slot_with_two_mutually_capped_waiters(self):
+        self.cfg['runtime_slots'] = 3
+        self.write_config()
+        self.set_stats(60000)
+        _, p1 = self.start('a1', campaign='A')
+        self.wait(p1.exists)
+        _, p2 = self.start('b1', campaign='B')
+        self.wait(p2.exists)
+        self.set_stats(10000)
+        _, a2 = self.start('a2', campaign='A')
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        _, b2 = self.start('b2', campaign='B')
+        self.wait(lambda: len(self.status()['queue']) == 2)
+        self.set_stats(60000)
+        self.pause(1.0)
+        reasons = [q['wait_reason'] for q in self.status()['queue']]
+        self.assertTrue(a2.exists() or b2.exists(), 'one slot free, nobody admitted; wait reasons %s' % reasons)
+
+    # --- item 1 control: on_pressure warn/off (expected to hold)
+    def pressure(self, policy):
+        self.env['SLOTR_WATCHDOG__ON_PRESSURE'] = policy
+        self.cfg['on_warn'] = ['taskr', 'note', '{task}', 'WARN', '{reason}']
+        self.write_config()
+        holder, p1 = self.start('holder')
+        self.admitted('holder', p1)
+        self.set_stats(1000)
+        self.pause(0.8)
+        self.assertIsNone(holder.poll())
+        self.assertEqual(self.events('stop'), [])
+        return len(self.events('warn'))
+
+    def test_probe_p11_on_pressure_warn_never_stops_and_warns_once(self):
+        self.assertEqual(self.pressure('warn'), 1)
+
+    def test_probe_p12_on_pressure_off_never_stops_or_warns(self):
+        self.assertEqual(self.pressure('off'), 0)
+
+    # --- item 6 / 2
+    def test_probe_p13_workload_stderr_cannot_fake_a_bus_error(self):
+        code = "import sys; print('worker: Failed to connect to message bus, retrying', file=sys.stderr); sys.exit(0)"
+        result = self.invoke('run', '--kind', 'dev-stack', '--', sys.executable, '-c', code)
+        self.assertEqual(result.returncode, 0, result.stderr.strip().splitlines()[-1:])
+
+    def test_probe_p14_non_utf8_environment_value(self):
+        env = {os.fsencode(k): os.fsencode(v) for k, v in self.env.items()}
+        env[b'LEGACY_LATIN1'] = b'caf\xe9'
+        result = subprocess.run([str(TOOL), 'config', 'show'], env=env, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace').strip()[:200])
+
+    def test_probe_p15_queued_waiter_leaves_the_legacy_lock_free(self):
+        self.set_stats(10000)                         # nothing runs; the waiter queues on memory_budget
+        self.start('waiter')
+        self.wait(lambda: bool(self.status()['queue']))
+        got = 0
+        with open(self.cfg['legacy_runtime_lock'], 'a') as lock:
+            for _ in range(100):
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                    got += 1
+                except BlockingIOError:
+                    pass
+                self.pause(0.01)
+        self.assertGreater(got, 50, 'an exclusive legacy user got the lock in %d of 100 tries while only a waiter existed' % got)
+
+    def test_probe_p16_collision_retry_with_the_systemd_255_message(self):
+        (self.runtime / 'collision').touch()
+        child, output = self.start('collision')
+        try:
+            self.wait(output.exists, timeout=3)
+        except AssertionError:
+            state = json.loads((self.runtime / 'slotr/state.json').read_text())
+            self.fail('no retry: frontend rc=%s, holder records left=%s, log=%s' % (
+                child.poll(), [(h['run'], h['started']) for h in state['holders']], (self.root / 'collision.log').read_text().strip()[-200:]))
+
+    def test_pressure_stop_precedes_slow_hook(self):
+        self.env["SLOTR_WATCHDOG__ON_PRESSURE"] = "stop"
+        self.cfg["on_stop"] = [sys.executable, "-c", "import pathlib,sys,time; pathlib.Path(sys.argv[1]).touch(); time.sleep(0.8)", str(self.root / "hook-started")]
+        self.write_config()
+        holder, output = self.start("holder")
+        self.admitted("holder", output)
+        self.set_stats(1000)
+        self.wait(lambda: (self.root / "hook-started").exists())
+        self.wait(lambda: output.with_suffix(".term").exists(), timeout=0.5)
+        self.assertIsNone(holder.poll(), "hook must still be running when TERM is observed")
+        holder.wait(timeout=5)
+        self.assertEqual(holder.returncode, 75)
+
+    def test_event_write_failure_does_not_kill_workload(self):
+        self.env["SLOTR_WATCHDOG__ON_PRESSURE"] = "warn"
+        holder, output = self.start("holder")
+        self.admitted("holder", output)
+        self.env["SLOTR_WATCHDOG__ON_PRESSURE"] = "warn"
+        # Fill the event path with a directory; all future event appends fail.
+        path = self.root / "state/slotr/events.jsonl"
+        path.unlink()
+        path.mkdir()
+        self.set_stats(1000)
+        self.pause(0.5)
+        self.assertIsNone(holder.poll())
+        path.rmdir()
+
+    def test_cleanup_failure_preserves_workload_exit(self):
+        code = "import pathlib,os,sys; pathlib.Path(os.environ['XDG_RUNTIME_DIR']+'/slotr/state.json').write_text('{broken'); sys.exit(17)"
+        result = self.invoke("run", "--kind", "dev-stack", "--", sys.executable, "-c", code)
+        self.assertEqual(result.returncode, 17, result.stderr)
+
+    def test_failed_start_removes_own_holder(self):
+        stub = (self.bin / "systemd-run").read_text()
+        (self.bin / "systemd-run").write_text(stub.replace("os.execv(cmd[0], cmd)", "sys.exit(23)"))
+        result = self.invoke("run", "--kind", "dev-stack", "--", "true")
+        self.assertEqual(result.returncode, 23, result.stderr)
+        state = json.loads((self.runtime / "slotr/state.json").read_text())
+        self.assertEqual(state["holders"], [])
+
+    def test_environment_names_only_and_invalid_name_skipped(self):
+        self.env["BASH_FUNC_x%%"] = "() { :; }"
+        child, output = self.start("holder")
+        self.admitted("holder", output)
+        flags = json.loads((self.runtime / "launches").read_text().splitlines()[0])
+        env_flags = [s for s in flags if s.startswith("--setenv=")]
+        self.assertIn("--setenv=SECRET_SENTINEL", env_flags)
+        self.assertFalse(any("private-test-value" in s for s in flags))
+        self.assertFalse(any("BASH_FUNC" in s for s in env_flags))
+        self.assertTrue(all("=" not in s[len("--setenv="):] for s in env_flags))
+        self.assertIn("--property=TimeoutStopSec=5.12", flags)
+
+    def test_boottime_state_and_optional_field_upgrade(self):
+        holder, output = self.start("holder")
+        self.admitted("holder", output)
+        path = self.runtime / "slotr/state.json"
+        # Freeze only owned processes while editing a snapshot, then continue.
+        state = json.loads(path.read_text())
+        supervisor_pid = int((self.runtime / state["holders"][0]["run"]).read_text())
+        os.kill(supervisor_pid, signal.SIGSTOP)
+        try:
+            state = json.loads(path.read_text())
+            h = state["holders"][0]
+            self.assertIsInstance(h["admitted_at"], (float,int))
+            self.assertLess(abs(h["admitted_at"] - time.clock_gettime(time.CLOCK_BOOTTIME)), 2)
+            for key in ["level", "stopping_at", "warned_at", "warned_for", "warned_waiters", "idle_since", "cpu_usage_usec", "cpu_sample_at", "lease_expires_at"]:
+                h.pop(key, None)
+            pending = path.with_suffix(".upgrade")
+            pending.write_text(json.dumps(state))
+            pending.replace(path)
+            view = self.status()["slots"][0]
+            self.assertEqual(view['level'], 0)
+            self.assertTrue(view["admitted_at"].endswith("Z"))
+        finally:
+            os.kill(supervisor_pid, signal.SIGCONT)
+        self.pause(0.3)
+        self.assertIsNone(holder.poll())
+
+    def test_memory_ungated_pool_ignores_recovery_and_missing_psi(self):
+        self.set_stats(30000)
+        holder, output = self.start("holder")
+        self.admitted("holder", output)
+        self.set_stats(1000)
+        self.wait(lambda: holder.poll() is not None)
+        self.assertEqual(holder.returncode, 75)
+        self.cfg["memory_gated"] = False
+        self.cfg["evictable"] = False
+        self.write_config()
+        (self.proc / "pressure/memory").unlink()
+        _, second = self.start("ungated")
+        self.wait(second.exists)
+
+    def test_impossible_cost_rejected_before_queue(self):
+        result = self.invoke("run", "--cost", "65536", "--", "true")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("MemTotal", result.stderr)
+        self.assertFalse((self.runtime / "slotr").exists())
+
+    def test_ipv6_busy_port_is_not_admitted(self):
+        try:
+            occupied = socket.socket(socket.AF_INET6)
+            occupied.bind(("::1", self.cfg["ports"]["base"]))
+        except OSError as error:
+            self.skipTest(str(error))
+        with occupied:
+            _, output = self.start("ipv6")
+            h = self.admitted("ipv6", output)
+            self.assertEqual(h["slot"], 1)
+
+    def test_zero_term_grace_rejected(self):
+        self.cfg["term_grace_seconds"] = 0
+        self.write_config()
+        result = self.invoke("config", "check")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("watchdog.term_grace_seconds", result.stderr)
+
+    def test_background_hook_pipe_writer_does_not_delay_supervisor(self):
+        self.cfg["on_admit"] = [sys.executable, "-c", "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(2)'])"]
+        self.write_config()
+        self.env["SLOTR_WATCHDOG__ON_PRESSURE"] = "stop"
+        holder, output = self.start("holder")
+        self.admitted("holder", output)
+        self.set_stats(1000)
+        self.wait(lambda: holder.poll() is not None, timeout=1.5)
+        self.assertEqual(holder.returncode, 75)
+        # Wait for the short-lived owned hook descendant before removing scratch dirs.
+        self.pause(2)
+
+
+    def test_warn_claim_cleared_when_holder_exits_without_a_stop(self):
+        self.configure_clock()
+        self.cfg["grace"] = 20
+        self.write_config()
+        self.set_stats(40000)
+        first, p1 = self.start("first", lease="1s")
+        self.wait(p1.exists)
+        second, p2 = self.start("second", lease="1s")
+        self.wait(p2.exists)
+        _, waiter = self.start("waiter")
+        self.wait(lambda: bool(self.status()["queue"]))
+        self.wait(lambda: bool(self.events("warn")))
+        self.set_stats(19000)
+        first.terminate()
+        first.wait(timeout=3)
+        self.assertEqual(first.returncode, 143)
+        self.assertEqual(self.events("stop"), [])
+        self.wait(lambda: any(e['run'].endswith('-2') for e in self.events('warn')))
+        self.advance_warned(next(e['run'] for e in self.events('warn') if e['run'].endswith('-2')), 21)
+        self.wait(lambda: second.poll() is not None)
+        self.assertEqual(second.returncode, 75)
+        self.wait(waiter.exists)
+        self.assertEqual(len(self.events("stop")), 1)
+        self.assertTrue(self.events("stop")[0]["run"].endswith("-2"))
+
+    def test_unreadable_live_ticket_is_retained(self):
+        self.set_stats(10000)
+        waiter, _ = self.start("waiter")
+        q = self.wait(lambda: self.status()["queue"])
+        ticket = self.runtime / "slotr" / ("ticket-" + str(q[0]["enqueue_seq"]))
+        ticket.chmod(0)
+        try:
+            self.assertEqual(len(self.status()["queue"]), 1)
+            self.assertIsNone(waiter.poll())
+        finally:
+            ticket.chmod(0o600)
+
+    def test_ticket_creation_does_not_block_under_state_lock(self):
+        root = self.runtime / "slotr"
+        root.mkdir()
+        with (root / "ticket-1").open("w") as ticket:
+            fcntl.flock(ticket, fcntl.LOCK_EX)
+            result = self.invoke("run", "--kind", "dev-stack", "--", "true")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads((root / "state.json").read_text())["enqueue_seq"], 2)
+        with (root / "state.lock").open("r") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_legacy_wall_timestamp_state_remains_readable(self):
+        holder, output = self.start("holder")
+        h = self.admitted("holder", output)
+        supervisor = int((self.runtime / h["run"]).read_text())
+        os.kill(supervisor, signal.SIGSTOP)
+        try:
+            path = self.runtime / "slotr/state.json"
+            state = json.loads(path.read_text())
+            for key in ["since", "admitted_at", "lease_expires_at"]:
+                state["holders"][0][key] = h[key]
+            pending = path.with_suffix(".legacy")
+            pending.write_text(json.dumps(state))
+            pending.replace(path)
+            self.assertEqual(self.status()["slots"][0]["state"], "running")
+        finally:
+            os.kill(supervisor, signal.SIGCONT)
+        self.pause(0.3)
+        self.assertIsNone(holder.poll())
+
+    def test_release_version_must_match_package(self):
+        # Only the read-only git preflight is stubbed. A mismatch exits before
+        # cargo or gh can run; no tags, commits or releases are created.
+        git = self.bin / "git"
+        git.write_text("#!/bin/sh\ncase \"$1:$2\" in status:--porcelain) exit 0;; rev-parse:--verify) exit 1;; *) exit 9;; esac\n")
+        git.chmod(0o755)
+        result = subprocess.run(["sh", "scripts/release.sh", "9999.0.0"], env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("VERSION must match Cargo.toml", result.stderr)
+
+
+
+    def test_probe_r01_a_stop_is_preceded_by_its_own_warning(self):
+        self.configure_clock()
+        self.cfg['on_warn'] = ['taskr', 'note', '{task}', 'WARN', '{run}', '{reason}']
+        self.cfg['grace'] = 1.0
+        self.write_config()
+        self.set_stats(40000)
+        old, p1 = self.start('old', lease='1s')
+        self.wait(p1.exists)
+        newer, p2 = self.start('newer')
+        self.wait(p2.exists)
+        self.set_stats(10000)                         # the waiter would not fit even without `old`
+        _, waiter = self.start('waiter')
+        self.wait(lambda: bool(self.status()['queue']))
+        self.advance(10)
+        self.wait(lambda: bool(self.events('warn')))
+        self.pause(0.5)
+        self.set_stats(40000)                         # now releasing `old` admits the waiter
+        self.wait(lambda: old.poll() is not None, timeout=8)
+        reasons = [e['reason'] for e in self.events('warn')]
+        hooks = [a[-1] for a in self.notes() if 'WARN' in a]
+        self.assertEqual(old.returncode, 75)
+        self.assertIn('lease_expired', reasons, 'stopped after only these warnings: events %s, hook runs %s' % (reasons, hooks))
+
+    def test_probe_r12_a_stop_after_a_cancelled_warning_is_warned_again(self):
+        self.configure_clock()
+        self.cfg['grace'] = 20
+        self.write_config()
+        self.set_stats(40000)
+        old, p1 = self.start('old', lease='1s')
+        self.wait(p1.exists)
+        newer, p2 = self.start('newer')
+        self.wait(p2.exists)
+        self.start('waiter')
+        self.wait(lambda: bool(self.status()['queue']))
+        self.advance(10)
+        self.wait(lambda: bool(self.events('warn')))
+        self.set_stats(10000)                         # at grace end the stop would not admit the waiter
+        for _ in range(13):
+            self.advance(2)
+            self.pause(0.2)
+        self.wait(lambda: bool(self.events('warn_cancelled')))
+        self.set_stats(40000)                         # the holder claims the same ticket again
+        self.wait(lambda: any(h.get('state') == 'warned' for h in self.status()['slots']))
+        for _ in range(13):
+            self.advance(2)
+            self.pause(0.2)
+        self.wait(lambda: old.poll() is not None)
+        log = [json.loads(l) for l in (self.root / 'state/slotr/events.jsonl').read_text().splitlines()]
+        order = [e['event'] for e in log if e['event'] in ('warn', 'warn_cancelled', 'stop')]
+        self.assertEqual(old.returncode, 75)
+        self.assertEqual(order, ['warn', 'warn_cancelled', 'warn', 'stop'], 'event order %s' % order)
+
+    def test_probe_r02_waiter_whose_ticket_left_state_does_not_wait_for_ever(self):
+        self.set_stats(10000)
+        waiter, _ = self.start('waiter')
+        self.wait(lambda: bool(self.status()['queue']))
+        (self.runtime / 'slotr/state.json').unlink()  # the operator's only repair for "corrupt state"
+        self.pause(1.5)
+        queued = len(self.status()['queue'])
+        self.assertTrue(waiter.poll() is not None or queued == 1,
+                        'waiter alive, not in the queue; log: %s' % (self.root / 'waiter.log').read_text().strip().splitlines()[-2:])
+
+    def test_probe_r03_new_request_can_enqueue_after_state_reset(self):
+        self.set_stats(10000)
+        self.start('waiter')
+        self.wait(lambda: bool(self.status()['queue']))
+        (self.runtime / 'slotr/state.json').unlink()
+        self.pause(0.5)
+        self.set_stats(40000)
+        second, out = self.start('second')
+        try:
+            self.wait(out.exists, timeout=3)
+        except AssertionError:
+            self.fail('second request rc=%s log=%s' % (second.poll(), (self.root / 'second.log').read_text().strip().splitlines()[-1:]))
+
+    def test_probe_r04_running_holder_stays_accounted_after_state_reset(self):
+        holder, p1 = self.start('holder')
+        h = self.admitted('holder', p1)
+        (self.runtime / 'slotr/state.json').unlink()
+        self.pause(1.0)
+        self.assertIsNone(holder.poll())
+        self.assertIn(h['run'], [s.get('run') for s in self.status()['slots']], 'the workload runs but no holder record exists')
+
+    def test_probe_r05_persistent_tick_error_is_reported_once(self):
+        holder, p1 = self.start('holder')
+        self.admitted('holder', p1)
+        (self.runtime / 'ctl-fail').touch()
+        self.pause(2.0)
+        (self.runtime / 'ctl-fail').unlink()
+        events = len(self.events('supervisor_tick_error'))
+        lines = (self.root / 'holder.log').read_text().count('supervisor tick')
+        self.assertIsNone(holder.poll())
+        self.assertLessEqual(max(events, lines), 2, '%d events and %d stderr lines in 2 s' % (events, lines))
+
+    def test_probe_r06_emergency_stop_still_happens_while_the_manager_fails(self):
+        self.set_stats(30000)
+        holder, p1 = self.start('holder')
+        self.admitted('holder', p1)
+        (self.runtime / 'ctl-fail').touch()
+        self.set_stats(1000)                          # below emergency_available_mib
+        self.pause(2.0)
+        rc = holder.poll()
+        (self.runtime / 'ctl-fail').unlink()
+        self.assertEqual(rc, 75, 'no stop in 2 s (28 ticks) at 1000 MiB available; stop events %d' % len(self.events('stop')))
+
+    def test_probe_r07_a_failed_workload_is_not_run_twice(self):
+        self.set_stats(60000)
+        _, p0 = self.start('other')                   # a second holder: its supervisor reconciles state
+        self.admitted('other', p0)
+        marker = self.root / 'ran'
+        code = ("import subprocess, sys; open(%r, 'a').write('ran\\n'); "
+                "print('error: object already exists', file=sys.stderr, flush=True); "
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(1.2)']); sys.exit(1)") % str(marker)
+        child = subprocess.Popen([str(TOOL), 'run', '--pool', 'runtime', '--kind', 'dev-stack', '--campaign', 'x', '--purpose', 'p',
+                                  '--', sys.executable, '-c', code], env=self.env, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.children.append(child)
+        try:
+            child.wait(timeout=6)
+        except subprocess.TimeoutExpired:
+            pass
+        runs = marker.read_text().count('ran')
+        self.assertEqual((runs, child.poll()), (1, 1), 'the command ran %d times; frontend rc=%s' % (runs, child.poll()))
+
+    def test_probe_r08_status_survives_a_huge_lease(self):
+        self.cfg['max_lease'] = '0'
+        self.write_config()
+        _, p1 = self.start('big', lease='1e15')
+        self.wait(p1.exists)
+        result = self.invoke('status', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr.strip()[:160])
+
+    def test_probe_r09_waiter_frozen_during_grace_cancels_at_grace_end(self):
+        self.configure_clock()
+        self.cfg['grace'] = 20
+        self.write_config()
+        self.set_stats(40000)
+        old, p1 = self.start('old', lease='1s')
+        self.wait(p1.exists)
+        newer, p2 = self.start('newer')
+        self.wait(p2.exists)
+        waiter, out = self.start('waiter')
+        self.wait(lambda: bool(self.status()['queue']))
+        self.advance(10)
+        self.wait(lambda: any(h.get('state') == 'warned' for h in self.status()['slots']))
+        os.kill(waiter.pid, signal.SIGSTOP)
+        try:
+            self.advance(30)
+            self.pause(2.0)
+            self.assertIsNone(old.poll(), 'stopped rc=%s for a waiter frozen during the grace' % old.returncode)
+            self.assertEqual(len(self.events('warn_cancelled')), 1)
+            self.assertEqual(self.events('stop'), [])
+        finally:
+            os.kill(waiter.pid, signal.SIGCONT)
+
+    def test_probe_r10_stop_of_a_term_ignoring_workload(self):
+        self.cfg['term_grace_seconds'] = 2
+        self.write_config()
+        holder, p1 = self.start('holder', '--ignore-term')
+        h = self.admitted('holder', p1)
+        began = time.monotonic()
+        result = subprocess.run([str(TOOL), 'stop', h['run']], env=self.env, capture_output=True, text=True, timeout=20)
+        took = time.monotonic() - began
+        holder.wait(timeout=10)
+        total = time.monotonic() - began
+        self.assertEqual(result.returncode, 0, result.stderr.strip())
+        self.assertLess(took, 1.0)
+        self.assertEqual(holder.returncode, 143)
+        self.assertTrue(1.5 < total < 4.5, 'unit ended after %.1f s (grace 2)' % total)
+
+    def test_probe_r11_warned_holder_stops_after_grace_and_waiter_is_admitted(self):
+        self.configure_clock()
+        self.cfg['grace'] = 20
+        self.cfg['on_warn'] = ['taskr', 'note', '{task}', 'WARN', '{run}', '{reason}']
+        self.write_config()
+        self.set_stats(40000)
+        old, p1 = self.start('old', lease='1s')
+        self.wait(p1.exists)
+        newer, p2 = self.start('newer')
+        self.wait(p2.exists)
+        _, out = self.start('waiter')
+        self.wait(lambda: bool(self.status()['queue']))
+        self.advance(10)
+        self.wait(lambda: bool(self.events('warn')))
+        self.pause(0.6)
+        self.assertIsNone(old.poll(), 'stopped before the grace ended')
+        self.advance_warned(self.events('warn')[0]['run'], 25)
+        self.wait(lambda: old.poll() is not None)
+        self.wait(out.exists)
+        self.assertEqual(old.returncode, 75)
+        self.assertEqual([e['reason'] for e in self.events('warn')], ['lease_expired'])
+        self.assertEqual(len(self.events('stop')), 1)
+        self.assertIsNone(newer.poll())
+
+    def test_advance_warned_waits_for_a_frozen_waiter_after_the_jump(self):
+        self.configure_clock()
+        self.cfg['grace'] = 20
+        self.cfg['runtime_slots'] = 1
+        self.write_config()
+        self.set_stats(40000)
+        holder, output = self.start('holder', lease='1s')
+        h = self.admitted('holder', output)
+        waiter, out = self.start('waiter')
+        self.wait(lambda: bool(self.events('warn')))
+        pid = int((self.runtime / h['run']).read_text())
+        self.freeze(waiter.pid)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            jump = pool.submit(self.advance_warned, h['run'], 21)
+            try:
+                self.wait(lambda: float((self.root / 'clock').read_text()) >= 21)
+                # The old helper lets the holder cancel while the waiter is still frozen.
+                self.wait(lambda: Path(f'/proc/{pid}/stat').read_text().split()[2] == 'T'
+                          or self.events('warn_cancelled'))
+                self.assertEqual(self.events('warn_cancelled'), [])
+                self.assertFalse(jump.done(), 'returned before the waiter saw the jump')
+            finally:
+                os.kill(waiter.pid, signal.SIGCONT)
+            jump.result(timeout=6)
+        self.wait(lambda: holder.poll() is not None)
+        self.wait(out.exists)
+        self.assertEqual(holder.returncode, 75)
+        self.assertEqual(len(self.events('warn')), 1)
+        self.assertEqual(len(self.events('stop')), 1)
+        self.assertEqual(self.events('warn_cancelled'), [])
+
+    def test_probe_r13_one_pressure_stop_while_the_newest_holder_is_stopping(self):
+        self.cfg['term_grace_seconds'] = 1.5
+        self.cfg['recovery_healthy_seconds'] = 5.0
+        self.write_config()
+        self.set_stats(40000)
+        older, p1 = self.start('older')
+        h1 = self.admitted('older', p1)
+        newest, p2 = self.start('newest', '--ignore-term')
+        h2 = self.admitted('newest', p2)
+        self.set_stats(1000)                          # emergency
+        self.wait(lambda: bool(self.events('stop')))
+        self.pause(0.7)
+        states = {s['run']: s['state'] for s in self.status()['slots']}
+        self.assertEqual(states.get(h2['run']), 'stopping')
+        self.assertIn(states.get(h1['run']), ('running', 'overdue'))
+        self.wait(lambda: newest.poll() is not None)
+        self.pause(0.5)
+        self.assertEqual(newest.returncode, 75)
+        self.assertIsNone(older.poll())
+        self.assertEqual([e['run'] for e in self.events('stop')], [h2['run']])
+
+    def test_probe_r14_status_times_are_wall_clock_and_lease_length_holds(self):
+        import datetime
+        _, p1 = self.start('holder', lease='90s')
+        h = self.admitted('holder', p1)
+        parse = lambda v: datetime.datetime.fromisoformat(v.replace('Z', '+00:00')).timestamp()
+        self.assertLess(abs(parse(h['admitted_at']) - time.time()), 10)
+        self.assertAlmostEqual(parse(h['lease_expires_at']) - parse(h['admitted_at']), 90, delta=0.01)
+        raw = json.loads((self.runtime / 'slotr/state.json').read_text())['holders'][0]
+        self.assertLess(abs(raw['admitted_at'] - time.clock_gettime(time.CLOCK_BOOTTIME)), 10)
+        self.assertLess(abs(parse(self.events('admit')[0]['at']) - time.time()), 10)
+
+    def test_probe_r15_non_utf8_value_is_passed_by_name_only(self):
+        env = {os.fsencode(k): os.fsencode(v) for k, v in self.env.items()}
+        env[b'LEGACY_LATIN1'] = b'caf\xe9'
+        out = self.root / 'latin'
+        child = subprocess.Popen([str(TOOL), 'run', '--pool', 'runtime', '--kind', 'dev-stack', '--campaign', 'x', '--purpose', 'p', '--',
+                                  sys.executable, '-c', WORKLOAD, str(out)], env=env, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.children.append(child); self.workloads.append(out)
+        self.wait(out.exists)
+        flags = json.loads((self.runtime / 'launches').read_text().splitlines()[0])
+        self.assertIn('--setenv=LEGACY_LATIN1', flags)   # documents the behaviour: real systemd-run must cope with the value
+        self.assertFalse(any('caf' in f for f in flags))
+
+
+    def test_claimant_keeps_waiter_when_an_older_holder_becomes_eligible(self):
+        self.configure_clock()
+        self.cfg['grace'] = 100
+        self.write_config()
+        self.set_stats(40000)
+        older, p1 = self.start('older', campaign='A', lease='60s')
+        self.wait(p1.exists)
+        newer, p2 = self.start('newer', campaign='A', lease='1s')
+        self.wait(p2.exists)
+        _, waiter = self.start('waiter', campaign='B')
+        self.wait(lambda: bool(self.events('warn')))
+        claimed_run = self.events('warn')[0]['run']
+        self.assertEqual(self.events('warn')[0]['reason'], 'lease_expired')
+        self.advance_warned(claimed_run, 110)
+        self.wait(lambda: newer.poll() is not None)
+        self.wait(waiter.exists)
+        self.assertEqual(newer.returncode, 75)
+        self.assertIsNone(older.poll())
+        self.assertEqual([e['run'] for e in self.events('warn')], [claimed_run])
+        self.assertEqual([e['run'] for e in self.events('stop')], [claimed_run])
+        self.assertEqual(self.events('warn_cancelled'), [])
+
+
+    def test_holder_probe_touch_and_contention_with_fake_herdr(self):
+        self.configure_clock()
+        self.cfg['runtime_slots'] = 1
+        self.cfg['campaign_cap'] = 0
+        self.cfg['grace'] = 30
+        self.write_config()
+        self.set_stats(40000)
+        self.env.update(HOME=str(self.root), TASKR_DB=str(self.root / 'taskr.db'),
+                        SLOTR_LEASE__HOLDER_PROBE='["herdr", "agent", "list"]',
+                        SLOTR_LEASE__HOLDER_IDLE_MINUTES='1.0')
+        listing = self.root / 'agents.json'
+        listing.write_text(json.dumps({'result': {'agents': [{'pane_id': 'holder-pane', 'agent_status': 'idle'}]}}))
+        herdr = self.bin / 'herdr'
+        herdr.write_text('#!' + sys.executable + '\n' +
+                        "import json, os, pathlib, sys\n" +
+                        "root = pathlib.Path(os.environ['HOME'])\n" +
+                        "assert sys.argv[1:] == ['agent', 'list']\n" +
+                        "with (root / 'probe-calls').open('a') as f: f.write('probe\\n')\n" +
+                        "print((root / 'agents.json').read_text())\n")
+        herdr.chmod(0o755)
+        holder, output = self.start('holder', pane='holder-pane')
+        h = self.admitted('holder', output)
+        def raw_holder():
+            return json.loads((self.runtime / 'slotr/state.json').read_text())['holders'][0]
+        self.wait(lambda: raw_holder().get('holder_idle_since') is not None)
+        self.pause(0.3)
+        self.assertEqual((self.root / 'probe-calls').read_text().count('probe'), 1)
+        self.advance(61)
+        self.wait(lambda: bool(self.events('warn')))
+        self.assertEqual([e['reason'] for e in self.events('warn')], ['holder_idle'])
+        self.assertTrue(self.status()['slots'][0]['holder_idle_since'].endswith('Z'))
+        self.advance(61)
+        self.wait(lambda: (self.root / 'probe-calls').read_text().count('probe') >= 3)
+        self.assertEqual(len(self.events('warn')), 1)
+        self.assertIsNone(holder.poll())
+        _, waiter = self.start('waiter', pane='waiter-pane')
+        self.wait(lambda: raw_holder().get('warned_for') is not None)
+        warned = raw_holder()
+        result = self.invoke('touch', h['run'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        touched = raw_holder()
+        self.assertEqual(touched['warned_for'], warned['warned_for'])
+        self.assertEqual(touched['warned_at'], warned['warned_at'])
+        self.assertIsNone(touched['idle_since'])
+        self.assertEqual(touched['lease_expires_at'], warned['lease_expires_at'])
+        self.assertEqual([e['run'] for e in self.events('touch')], [h['run']])
+        self.advance(30)
+        self.wait(lambda: bool(self.events('warn_cancelled')))
+        self.assertIsNone(raw_holder()['warned_for'])
+        self.assertIsNone(holder.poll())
+        self.assertEqual(len(self.events('warn')), 2)
+        self.advance(31)
+        self.wait(lambda: len(self.events('warn')) == 3)
+        self.assertEqual(self.events('warn')[-1]['reason'], 'holder_idle')
+        self.advance_warned(h['run'], 31)
+        self.wait(lambda: holder.poll() is not None)
+        self.wait(waiter.exists)
+        self.assertEqual(holder.returncode, 75)
+        self.assertEqual([e['reason'] for e in self.events('stop')], ['holder_idle'])
+        self.assertEqual(self.invoke('touch', 'unknown-run').returncode, 2)
+
+    def test_touch_succeeds_when_event_append_fails(self):
+        self.env.update(HOME=str(self.root), TASKR_DB=str(self.root / 'taskr.db'))
+        _, output = self.start('holder')
+        h = self.admitted('holder', output)
+        events = self.root / 'state/slotr/events.jsonl'
+        self.wait(events.exists)
+        events.unlink()
+        events.mkdir()
+        result = self.invoke('touch', h['run'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_priority_unknown_pool_in_queue_does_not_kill_waiter(self):
+        self.cfg.update(priority=dict(campaigns=['H']))
+        self.write_config()
+        self.set_stats(10000)
+        saved = self.env
+        self.env = dict(saved, SLOTR_POOLS__HEAVY__SLOTS='1')
+        try:
+            heavy, _ = self.start('H', pool='heavy', cost=7000)
+        finally:
+            self.env = saved
+        self.wait(lambda: 'memory_budget' in (self.root / 'H.log').read_text())
+        low, w = self.start('W', cost=1024)
+        self.wait(w.exists, timeout=3)
+        self.assertIsNone(low.poll())
+        self.assertIsNone(heavy.poll())
+        self.assertEqual(self.status()['slots'][0]['campaign'], 'W')
+
+    def test_priority_head_passes_fifo_within_pool(self):
+        self.cfg.update(runtime_slots=1, waiter_age=1000, priority=dict(campaigns=['P']))
+        self.write_config()
+        self.set_stats(40000)
+        holder, output = self.start('holder')
+        self.admitted('holder', output)
+        low, n = self.start('N')
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        high, p = self.start('P')
+        self.wait(lambda: [q['campaign'] for q in self.status()['queue']] == ['P', 'N'])
+        self.wait(lambda: self.status()['queue'][0]['level'] == 1)
+        # Freeze only owned waiters so status can observe the newly free slot.
+        self.freeze(low.pid)
+        self.freeze(high.pid)
+        try:
+            holder.terminate()
+            holder.wait(timeout=3)
+            self.wait(lambda: [q['wait_reason'] for q in self.status()['queue']] == ['ready', 'fifo'])
+        finally:
+            os.kill(low.pid, signal.SIGCONT)
+            os.kill(high.pid, signal.SIGCONT)
+        self.wait(p.exists)
+        self.assertFalse(n.exists())
+        high.terminate()
+        high.wait(timeout=3)
+        self.wait(n.exists)
+
+    def test_priority_within_level_stays_fifo(self):
+        self.cfg.update(runtime_slots=1, waiter_age=1000, priority=dict(campaigns=['P*']))
+        self.write_config()
+        self.set_stats(40000)
+        holder, output = self.start('holder')
+        self.admitted('holder', output)
+        first, p1 = self.start('P1')
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        _, p2 = self.start('P2')
+        self.wait(lambda: len(self.status()['queue']) == 2 and all(q['level'] == 1 for q in self.status()['queue']))
+        self.assertEqual([q['campaign'] for q in self.status()['queue']], ['P1', 'P2'])
+        holder.terminate()
+        holder.wait(timeout=3)
+        self.wait(p1.exists)
+        self.assertFalse(p2.exists())
+        first.terminate()
+        first.wait(timeout=3)
+        self.wait(p2.exists)
+
+    def test_queue_only_guard_retains_priority_and_fifo(self):
+        path = self.runtime / 'legacy-heavy.lock'
+        path.touch()
+        self.cfg.update(heavy=dict(slots=1, legacy_lock=dict(path=str(path), mode='shared', queue_only=True)),
+                        waiter_age=1000, priority=dict(campaigns=['P*']))
+        self.write_config()
+        self.set_stats(40000)
+        holder, output = self.start('holder', pool='heavy')
+        self.wait(output.exists)
+        _, n = self.start('N', pool='heavy')
+        self.wait(lambda: len(self.status()['pools']['heavy']['queue']) == 1)
+        first, p1 = self.start('P1', pool='heavy')
+        self.wait(lambda: len(self.status()['pools']['heavy']['queue']) == 2)
+        second, p2 = self.start('P2', pool='heavy')
+        self.wait(lambda: [q['campaign'] for q in self.status()['pools']['heavy']['queue']] == ['P1', 'P2', 'N'])
+        marker = self.root / 'bare-payload'
+        refused = self.invoke('flock-check', '--config', str(self.root / 'config/slotr/config.toml'), '--',
+                              str(path), '/usr/bin/touch', str(marker))
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        self.assertIn('slotr run --pool heavy', refused.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual(len(self.status()['pools']['heavy']['queue']), 3)
+        holder.terminate()
+        holder.wait(timeout=3)
+        self.wait(p1.exists)
+        self.assertFalse(p2.exists())
+        self.assertFalse(n.exists())
+        first.terminate()
+        first.wait(timeout=3)
+        self.wait(p2.exists)
+        self.assertFalse(n.exists())
+        second.terminate()
+        second.wait(timeout=3)
+        self.wait(n.exists)
+
+    def test_priority_does_not_pass_campaign_cap(self):
+        self.cfg.update(priority=dict(campaigns=['P']), grace=1)
+        self.write_config()
+        self.set_stats(40000)
+        first, output = self.start('first', campaign='P')
+        self.wait(output.exists)
+        self.set_stats(10000)
+        second, p2 = self.start('second', campaign='P')
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        lower, n = self.start('N')
+        self.wait(lambda: len(self.status()['queue']) == 2)
+        self.wait(lambda: [q['wait_reason'] for q in self.status()['queue']] == ['memory_budget', 'campaign_cap'])
+        self.set_stats(40000)
+        self.wait(n.exists)
+        self.assertEqual(self.status()['queue'][0]['wait_reason'], 'campaign_cap')
+        self.pause(0.4)
+        self.assertFalse(p2.exists())
+        self.assertIsNone(first.poll())
+        self.assertIsNone(lower.poll())
+        self.assertIsNone(second.poll())
+        self.assertEqual(self.events('warn'), [])
+        self.assertEqual(self.events('stop'), [])
+
+    def test_priority_file_adds_and_hub_lifts(self):
+        path = self.priority_file('campaign N 2\n')
+        self.cfg.update(runtime_slots=1, waiter_age=1000, priority=dict(campaigns=['P'], file=str(path)))
+        self.write_config()
+        holder, output = self.start('holder')
+        self.admitted('holder', output)
+        _, n = self.start('N')
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        high, p = self.start('P')
+        self.wait(lambda: self.status()['queue'][0]['campaign'] == 'N' and self.status()['queue'][0]['level'] == 2)
+        path.rename(path.with_suffix('.removed'))
+        self.wait(lambda: self.status()['queue'][0]['campaign'] == 'P' and all(q['level'] <= 1 for q in self.status()['queue']))
+        self.priority_file('campaign cop* 3\ntask special 4\ncampaign P 0\n')
+        self.start('copilot-x')
+        self.start('by-task', task='special')
+        self.wait(lambda: len(self.status()['queue']) == 4 and self.status()['queue'][0]['level'] == 4)
+        self.assertEqual([(q['campaign'], q['level']) for q in self.status()['queue']],
+                         [('by-task', 4), ('copilot-x', 3), ('P', 1), ('N', 0)])
+        self.priority_file('')
+        self.wait(lambda: all(q['level'] == (1 if q['campaign'] == 'P' else 0) for q in self.status()['queue']))
+        self.wait(lambda: self.status()['queue'][0]['campaign'] == 'P')
+        holder.terminate()
+        holder.wait(timeout=3)
+        self.wait(p.exists)
+        self.assertFalse(n.exists())
+        high.terminate()
+        high.wait(timeout=3)
+        self.wait(n.exists)
+
+    def test_priority_file_malformed_and_torn_is_ignored(self):
+        path = self.priority_file(b'# comment\n\ngarbage\ncampaign N -1\ntask test-task 4294967296\ncampaign N 2 extra\ncampaign N 2\n\xff\ncampaign P')
+        self.cfg.update(runtime_slots=1, waiter_age=1000, priority=dict(campaigns=['P', 'holder'], file=str(path)))
+        self.write_config()
+        _, output = self.start('holder')
+        self.admitted('holder', output)
+        self.start('P')
+        self.start('N')
+        self.wait(lambda: len(self.status()['queue']) == 2 and self.status()['queue'][0]['level'] == 2)
+        self.assertEqual([(q['campaign'], q['level']) for q in self.status()['queue']], [('N', 2), ('P', 1)])
+        path.unlink()
+        path.mkdir() # An unreadable source also falls back to static matches.
+        self.wait(lambda: self.status()['queue'][0]['campaign'] == 'P' and self.status()['priority']['state'] == 'missing')
+        path.rmdir()
+        os.mkfifo(path)
+        for source in ('fifo', 'oversize'):
+            if source == 'oversize':
+                self.priority_file(b'campaign N 9\n' + b' ' * (65537 - len(b'campaign N 9\n')))
+            self.wait(lambda: self.status()['priority']['state'] == 'missing')
+            self.wait(lambda: [(q['campaign'], q['level']) for q in self.status()['queue']] == [('P', 1), ('N', 0)])
+            self.wait(lambda: self.status()['slots'][0]['level'] == 1)
+        self.priority_file(b'campaign N 2\n' + b' ' * (65536 - len(b'campaign N 2\n')))
+        self.wait(lambda: self.status()['priority']['state'] == 'ok' and self.status()['queue'][0]['level'] == 2)
+        self.assertEqual(self.events('waiter_tick_error'), [])
+        self.assertEqual(self.events('supervisor_tick_error'), [])
+
+    def test_priority_wait_holds_lower_waiter_only_while_higher_is_admissible(self):
+        self.configure_clock()
+        self.cfg.update(heavy={}, waiter_age=1000, priority=dict(campaigns=['V']))
+        self.write_config()
+        self.set_stats(8000)
+        high, v = self.start('V', pool='heavy')
+        self.wait(lambda: len(self.status()['pools']['heavy']['queue']) == 1 and self.status()['pools']['heavy']['queue'][0]['level'] == 1)
+        self.freeze(high.pid)
+        try:
+            _, w = self.start('W', cost=3072)
+            self.wait(lambda: len(self.status()['queue']) == 1)
+            self.set_stats(20000)
+            self.wait(lambda: self.status()['queue'][0]['wait_reason'] == 'priority_wait')
+            self.wait(lambda: 'priority_wait' in (self.root / 'W.log').read_text())
+            self.assertFalse(w.exists())
+        finally:
+            os.kill(high.pid, signal.SIGCONT)
+        self.wait(v.exists)
+        self.wait(w.exists) # high is at its cap, so it holds no extra capacity
+        for child in self.children:
+            child.terminate(); child.wait(timeout=3)
+        self.wait(lambda: not self.status()['pools']['heavy']['holders'] and not self.status()['pools']['runtime']['holders'])
+        self.set_stats(9000)
+        high2, v2 = self.start('V2', campaign='V', pool='heavy')
+        self.wait(lambda: len(self.status()['pools']['heavy']['queue']) == 1)
+        _, w2 = self.start('W2', cost=3072)
+        self.wait(lambda: bool(self.status()['queue']) and self.status()['queue'][0]['wait_reason'] == 'priority_wait')
+        self.assertFalse(v2.exists()); self.assertFalse(w2.exists())
+        self.freeze(high2.pid)
+        try:
+            self.advance(6)
+            self.wait(w2.exists) # stale demand drops its hold (quiet tail disabled here)
+        finally:
+            os.kill(high2.pid, signal.SIGCONT)
+        self.set_stats(40000)
+        self.wait(v2.exists)
+
+    def test_priority_wait_ends_when_higher_waiter_is_blocked_by_ports_or_legacy(self):
+        # S7 rewritten so the higher waiter stays live: only "not admissible" can release W.
+        self.cfg.update(heavy={}, waiter_age=1000, priority=dict(campaigns=['V']))
+        self.write_config()
+        self.set_stats(8000)
+        high, v = self.start('V', pool='heavy')
+        self.wait(lambda: len(self.status()['pools']['heavy']['queue']) == 1 and self.status()['pools']['heavy']['queue'][0]['level'] == 1)
+        heavy_q = lambda: self.status()['pools']['heavy']['queue'][0]['wait_reason']
+        lock = (self.runtime / 'legacy-heavy.lock').open('a')
+        try:
+            with contextlib.ExitStack() as stack:
+                base = self.cfg['ports']['base'] + 64
+                for port in [base, base + 32]:
+                    stack.enter_context(socket.socket()).bind(('127.0.0.1', port))
+                _, w = self.start('W', cost=3072)
+                self.wait(lambda: len(self.status()['queue']) == 1)
+                self.set_stats(30000)
+                self.wait(lambda: heavy_q() == 'ports_busy')
+                self.wait(w.exists, timeout=3)
+                self.assertEqual(heavy_q(), 'ports_busy')
+                fcntl.flock(lock, fcntl.LOCK_EX)  # wait for any short probe before ports free up
+            self.wait(lambda: heavy_q() == 'legacy_lock')
+            _, w2 = self.start('W2', cost=3072)
+            self.wait(w2.exists, timeout=3)
+            self.assertEqual(heavy_q(), 'legacy_lock')
+            self.assertIsNone(high.poll())
+            self.assertFalse(v.exists())
+        finally:
+            lock.close()
+        self.wait(v.exists)
+
+    def test_pressure_victim_lowest_level_first(self):
+        self.cfg.update(priority=dict(campaigns=['P']), recovery_healthy_seconds=10)
+        self.write_config()
+        self.set_stats(40000)
+        low, n = self.start('N')
+        self.admitted('N', n)
+        high, p = self.start('P')
+        self.admitted('P', p)
+        self.wait(lambda: next(h for h in self.status()['slots'] if h['campaign'] == 'P')['level'] == 1)
+        self.set_stats(3000)
+        self.wait(lambda: low.poll() is not None)
+        self.assertEqual(low.returncode, 75)
+        self.assertIsNone(high.poll())
+        self.assertEqual([e['run'] for e in self.events('stop')], ['slotr-runtime-1'])
+
+    def test_pressure_victim_newest_within_level(self):
+        self.cfg.update(priority=dict(campaigns=['old', 'new']))
+        self.write_config()
+        self.check_stop(3000, 0, 'stop_available_mib', two=True)
+
+    def test_priority_never_stops_healthy_holders(self):
+        self.cfg.update(priority=dict(campaigns=['P']), waiter_age=0.3, grace=0.3)
+        self.write_config()
+        self.set_stats(40000)
+        old, n1 = self.start('N1')
+        self.admitted('N1', n1)
+        other, n2 = self.start('N2')
+        self.admitted('N2', n2)
+        self.start('P')
+        self.wait(lambda: bool(self.status()['queue']))
+        self.pause(0.8)
+        self.assertIsNone(old.poll()); self.assertIsNone(other.poll())
+        self.assertEqual(self.events('warn'), [])
+        self.assertEqual(self.events('stop'), [])
+
+    def test_priority_yield_never_targets_equal_level_or_same_campaign(self):
+        path = self.priority_file('task promoted 2\n')
+        self.cfg.update(runtime_slots=1, priority=dict(campaigns=['P*'], file=str(path)))
+        self.write_config()
+        self.set_stats(40000)
+        holder, output = self.start('P1')
+        self.admitted('P1', output)
+        equal, _ = self.start('P2')
+        self.wait(lambda: bool(self.status()['queue']) and self.status()['queue'][0]['level'] == 1)
+        self.pause(0.6)
+        self.assertEqual(self.events('warn'), [])
+        equal.terminate()
+        equal.wait(timeout=3)
+        self.wait(lambda: not self.status()['queue'])
+        self.start('same', campaign='P1', task='promoted')
+        self.wait(lambda: bool(self.status()['queue']) and self.status()['queue'][0]['level'] == 2)
+        self.pause(0.6)
+        self.assertEqual(self.events('warn'), [])
+        self.assertEqual(self.events('stop'), [])
+        self.assertIsNone(holder.poll())
+
+    def test_priority_arrival_cancels_claim_and_rewarns(self):
+        self.cfg.update(runtime_slots=1, priority=dict(campaigns=['P']), grace=1, waiter_age=0.2)
+        self.write_config()
+        self.set_stats(40000)
+        holder, output = self.start('holder', lease='0.1s')
+        self.admitted('holder', output)
+        lower, n = self.start('N')
+        self.wait(lambda: bool(self.events('warn')))
+        self.assertIsNotNone(self.status()['queue'][0]['stop_claimed_by'])
+        high, p = self.start('P')
+        self.wait(lambda: bool(self.events('warn_cancelled')))
+        self.wait(lambda: next(q for q in self.status()['queue'] if q['campaign'] == 'N')['stop_claimed_by'] is None)
+        self.wait(lambda: len(self.events('warn')) == 2)
+        self.assertEqual(self.status()['queue'][0]['campaign'], 'P')
+        self.wait(lambda: holder.poll() is not None)
+        self.assertEqual(holder.returncode, 75)
+        self.wait(p.exists)
+        self.assertFalse(n.exists())
+        self.assertIsNone(self.status()['queue'][0]['stop_claimed_by'])
+        self.assertEqual(len(self.events('stop')), 1)
+        high.terminate()
+        high.wait(timeout=3)
+        self.wait(n.exists)
+        self.assertIsNone(lower.poll())
+
+    def test_heavy_pool_two_shared_holders_and_old_exclusive_flock(self):
+        self.cfg.update(heavy={})
+        self.write_config()
+        self.set_stats(40000)
+        first, h1 = self.start('H1', pool='heavy')
+        self.wait(h1.exists)
+        second, h2 = self.start('H2', pool='heavy')
+        self.wait(h2.exists)
+        path = self.runtime / 'legacy-heavy.lock'
+        self.assertNotEqual(subprocess.run(['flock', '-xn', str(path), 'true']).returncode, 0)
+        first.terminate()
+        second.terminate()
+        first.wait(timeout=3)
+        second.wait(timeout=3)
+        self.wait(lambda: not self.status()['pools']['heavy']['holders'])
+        marker = self.root / 'exclusive-ready'
+        external = subprocess.Popen(['flock', '-x', str(path), sys.executable, '-c',
+            'import pathlib,sys; pathlib.Path(sys.argv[1]).touch(); sys.stdin.read()', str(marker)], stdin=subprocess.PIPE)
+        self.children.append(external)
+        try:
+            self.wait(marker.exists)
+            waiter, h3 = self.start('H3', pool='heavy')
+            self.wait(lambda: bool(self.status()['pools']['heavy']['queue']) and self.status()['pools']['heavy']['queue'][0]['wait_reason'] == 'legacy_lock')
+            q = self.status()['pools']['heavy']['queue'][0]
+            self.assertIsInstance(q['legacy_holder_pid'], int)
+            self.assertIn('holder pid', (self.root / 'H3.log').read_text())
+            self.assertFalse(h3.exists())
+        finally:
+            external.communicate(timeout=3)
+        self.wait(h3.exists)
+        self.assertIsNone(waiter.poll())
+
+    def test_stopped_heavy_run_exits_75_with_reason_on_stderr(self):
+        self.cfg.update(heavy={})
+        self.write_config()
+        self.set_stats(40000)
+        holder, output = self.start('H', pool='heavy')
+        self.wait(output.exists)
+        self.set_stats(3000)
+        self.wait(lambda: holder.poll() is not None)
+        self.assertEqual(holder.returncode, 75)
+        self.assertEqual((self.root / 'H.log').read_text().count('slotr: stopped slotr-heavy-1: stop_available_mib'), 1)
+
+    def test_status_reports_levels_and_priority_source(self):
+        self.assertEqual(self.status()['priority']['state'], 'off')
+        defaults = json.loads(self.invoke('config', 'show').stdout)
+        self.assertEqual(defaults['config']['priority'], dict(campaigns=[], file='', quiet_seconds=0.0, fair_wait_seconds=300.0))
+        self.assertEqual(defaults['sources']['priority.file'], 'default')
+        path = self.priority_file('campaign N 2\n')
+        self.env['HOME'] = str(self.root)
+        self.cfg.update(runtime_slots=1, waiter_age=1000, priority=dict(campaigns=['P'], file='~/priority', quiet_seconds=0.0, fair_wait_seconds=300.0))
+        self.write_config()
+        shown = json.loads(self.invoke('config', 'show').stdout)
+        self.assertEqual(shown['config']['priority'], dict(campaigns=['P'], file='~/priority', quiet_seconds=0.0, fair_wait_seconds=300.0))
+        self.assertEqual(shown['sources']['priority.file'], 'file')
+        self.assertEqual(self.invoke('config', 'check').returncode, 0)
+        override = dict(self.env, SLOTR_PRIORITY__CAMPAIGNS='["X*"]', SLOTR_PRIORITY__FILE='')
+        shown = json.loads(self.invoke('config', 'show', env=override).stdout)
+        self.assertEqual(shown['config']['priority'], dict(campaigns=['X*'], file='', quiet_seconds=0.0, fair_wait_seconds=300.0))
+        self.assertEqual(shown['sources']['priority.campaigns'], 'env')
+        self.assertEqual(shown['sources']['priority.file'], 'env')
+        self.assertEqual(self.invoke('config', 'check', env=override).returncode, 0)
+        holder, output = self.start('holder')
+        self.admitted('holder', output)
+        _, n = self.start('N')
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        high, p = self.start('P')
+        self.wait(lambda: len(self.status()['queue']) == 2 and self.status()['queue'][0]['level'] == 2)
+        view = self.status()
+        self.assertEqual(view['schema_version'], 1)
+        self.assertEqual(view['slots'][0]['level'], 0)
+        self.assertEqual([q['campaign'] for q in view['queue']], ['N', 'P'])
+        self.assertEqual([q['position'] for q in view['queue']], [1, 2])
+        self.assertEqual(view['priority']['state'], 'ok')
+        self.assertIsInstance(view['priority']['age_seconds'], int)
+        text = self.invoke('status').stdout
+        self.assertIn('weight=0', text)
+        self.assertIn('weight=2', text)
+        self.assertIn('Priority:', text)
+        path.rename(path.with_suffix('.removed'))
+        self.assertEqual(self.status()['priority']['state'], 'missing')
+        # Old schema-1 state without levels still loads; owners refresh afterward.
+        state_path = self.runtime / 'slotr/state.json'
+        supervisor_pid = int((self.runtime / view['slots'][0]['run']).read_text())
+        frozen = [child.pid for child in self.children] + [supervisor_pid]
+        for pid in frozen:
+            self.freeze(pid)
+        try:
+            snapshot = json.loads(state_path.read_text())
+            for run in snapshot['holders'] + snapshot['queue']:
+                run.pop('level', None)
+            pending = state_path.with_suffix('.upgrade')
+            pending.write_text(json.dumps(snapshot))
+            pending.replace(state_path)
+            upgraded = self.status()
+            self.assertEqual(upgraded['schema_version'], 1)
+            self.assertTrue(all(run['level'] == run['weight'] for run in upgraded['slots'] + upgraded['queue']))
+        finally:
+            for pid in frozen:
+                os.kill(pid, signal.SIGCONT)
+        self.wait(lambda: self.status()['queue'][0]['campaign'] == 'P')
+        holder.terminate()
+        holder.wait(timeout=3)
+        self.wait(p.exists)
+        self.assertFalse(n.exists())
+        high.terminate()
+        high.wait(timeout=3)
+        self.wait(n.exists)
+
+    def test_running_holder_level_follows_the_file(self):
+        path = self.priority_file('')
+        self.cfg.update(priority=dict(file=str(path)), recovery_healthy_seconds=10)
+        self.write_config()
+        self.set_stats(40000)
+        other, n = self.start('N')
+        self.admitted('N', n)
+        promoted, p = self.start('P')
+        self.admitted('P', p)
+        self.assertTrue(all(h['level'] == 0 for h in self.status()['slots']))
+        self.priority_file('campaign P 2\n')
+        self.wait(lambda: next(h for h in self.status()['slots'] if h['campaign'] == 'P')['level'] == 2)
+        self.set_stats(3000)
+        self.wait(lambda: other.poll() is not None)
+        self.assertEqual(other.returncode, 75)
+        self.assertIsNone(promoted.poll())
+        self.assertEqual([e['run'] for e in self.events('stop')], ['slotr-runtime-1'])
+
+    def managed(self, action, *args):
+        result = self.invoke('priority', action, *map(str,args))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def test_managed_policy_exact_precedence_clear_and_concurrency(self):
+        path = self.priority_file('campaign A* 2\ntask special 7\n')
+        self.cfg['priority'] = dict(campaigns=['B'], file=str(path))
+        self.write_config(); self.set_stats(10000)
+        self.start('A', task='special'); self.start('B')
+        self.wait(lambda: len(self.status()['queue']) == 2)
+        original = {q['campaign']:(q['enqueue_seq'],q['since']) for q in json.loads((self.runtime/'slotr/state.json').read_text())['queue']}
+        self.managed('set','A',0)
+        self.managed('set','B',4294967295)
+        view = self.status()
+        self.assertEqual([(q['campaign'],q['weight']) for q in view['queue']], [('B',4294967295),('A',0)])
+        self.assertTrue(all(q['weight'] == q['level'] and q['weight_source']=='managed' for q in view['queue']))
+        self.assertEqual(original,{q['campaign']:(q['enqueue_seq'],q['since']) for q in json.loads((self.runtime/'slotr/state.json').read_text())['queue']})
+        self.managed('clear','A')
+        self.assertEqual(next(q for q in self.status()['queue'] if q['campaign']=='A')['weight'],7)
+        self.managed('clear','B')
+        self.assertEqual(next(q for q in self.status()['queue'] if q['campaign']=='B')['weight'],1)
+        for name, weight in [('A*','1'), ('?','2'), ('\n','1'), ('','1'), ('ok','-1'), ('ok','4294967296')]:
+            self.assertEqual(self.invoke('priority','set',name,weight).returncode,2)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda i:self.managed('set','job'+str(i),i),range(12)))
+        policy = self.root/'state/slotr/priority.json'
+        data = json.loads(self.managed('list','--json').stdout)
+        self.assertEqual(data['campaigns'],{'job'+str(i):i for i in range(12)})
+        self.assertEqual(data['generation'],16)
+        self.assertEqual(policy.stat().st_mode & 0o777,0o600)
+        before = {str(p):p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        self.managed('list','--json'); self.status()
+        after = {str(p):p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        for key in before:
+            if key.endswith(('priority.json','state.json','scheduling.json')):
+                # Live waiters may heartbeat; the read-only check freezes them below.
+                continue
+            if key.endswith('events.jsonl'): self.assertEqual(before[key],after[key])
+
+    def test_policy_fault_closes_admission_but_not_cached_pressure(self):
+        self.cfg['recovery_healthy_seconds']=10
+        self.write_config(); self.set_stats(40000)
+        low, p1=self.start('low'); self.admitted('low',p1)
+        high, p2=self.start('high'); self.admitted('high',p2)
+        self.managed('set','low',0); self.managed('set','high',9)
+        self.wait(lambda: all(q['level']==(9 if q['campaign']=='high' else 0)
+                              for q in json.loads((self.runtime/'slotr/state.json').read_text())['holders']))
+        (self.root/'state/slotr/priority.json').write_text('{bad')
+        self.assertIn('priority_policy_error',self.status()['priority']['error'])
+        result=self.invoke('run','--cost','0','--','true')
+        self.assertEqual(result.returncode,2); self.assertIn('priority_policy_error',result.stderr)
+        self.set_stats(1000)
+        self.wait(lambda: low.poll() is not None)
+        self.assertEqual(low.returncode,75); self.assertIsNone(high.poll())
+        self.assertEqual(self.events('stop')[0]['caller']['actor'],'watchdog')
+
+    def test_quiet_handoff_expires_without_holder_refresh(self):
+        self.configure_clock(); self.env['SLOTR_PRIORITY__QUIET_SECONDS']='30'
+        self.cfg['priority']=dict(campaigns=['H']); self.cfg['campaign_cap']=2
+        self.write_config(); self.set_stats(40000)
+        high,h=self.start('H'); self.admitted('H',h)
+        low,l=self.start('low',cost=1024)
+        self.wait(lambda: self.status()['queue'] and self.status()['queue'][0]['wait_reason']=='priority_wait')
+        self.advance(29); self.pause(0.2); self.assertFalse(l.exists())
+        self.advance(2); self.wait(l.exists); self.assertIsNone(high.poll())
+        # A producer arriving at second 31 cannot reclaim an admitted lower run.
+        self.start('H2',campaign='H',cost=1024)
+        self.wait(lambda: bool(self.status()['queue']))
+        self.assertIsNone(low.poll()); self.assertEqual(self.events('stop'),[])
+        low.terminate(); low.wait(timeout=3)
+        self.wait((self.root/'H2').exists)
+
+    def test_reweight_clears_quiet_hold_before_expiry(self):
+        self.env['SLOTR_PRIORITY__QUIET_SECONDS']='30'
+        self.cfg['priority']=dict(campaigns=['H']); self.cfg['campaign_cap']=2
+        self.write_config(); self.set_stats(40000)
+        high,out=self.start('H'); self.wait(out.exists)
+        _,lower=self.start('lower',cost=1024)
+        self.wait(lambda: self.status()['queue'] and self.status()['queue'][0]['wait_reason']=='priority_wait')
+        self.managed('set','H',0)
+        self.wait(lower.exists)
+        self.assertIsNone(high.poll()); self.assertEqual(self.events('stop'),[])
+
+    def test_mixed_legacy_task_weights_keep_last_demand_quiet_hold(self):
+        self.env['SLOTR_PRIORITY__QUIET_SECONDS']='30'
+        self.cfg.update(runtime_slots=3, campaign_cap=3,
+                        priority=dict(file=str(self.priority_file('task special 7\n'))))
+        self.write_config(); self.set_stats(60000)
+        ordinary,a=self.start('ordinary',campaign='C',task='ordinary',cost=1024)
+        self.wait(a.exists)
+        special,b=self.start('special',campaign='C',task='special',cost=1024)
+        self.wait(b.exists)
+        _,lower=self.start('lower',cost=1024)
+        self.wait(lambda: bool(self.status()['queue']) or lower.exists())
+        self.pause(0.3)
+        self.assertFalse(lower.exists(), 'ordinary holder erased the last demand quiet hold')
+        activity=next(a for a in self.status()['pools']['runtime']['activity'] if a['campaign']=='C')
+        self.assertEqual(activity['weight'],7)
+        self.managed('set','C',0)
+        self.wait(lower.exists)
+        self.assertIsNone(ordinary.poll()); self.assertIsNone(special.poll())
+
+    def test_policy_entry_alone_never_holds_and_positive_cap_is_hard(self):
+        self.set_stats(60000); self.cfg['runtime_slots']=3; self.cfg['campaign_cap']=2
+        self.write_config(); self.managed('set','H',1)
+        _,a=self.start('A'); self.wait(a.exists) # H policy entry alone has no activity
+        self.start('H1',campaign='H'); self.wait((self.root/'H1').exists)
+        self.start('H2',campaign='H'); self.wait((self.root/'H2').exists)
+        self.start('H3',campaign='H')
+        self.wait(lambda: self.status()['queue'] and self.status()['queue'][0]['wait_reason']=='campaign_cap')
+        self.assertFalse((self.root/'H3').exists())
+
+    def test_fair_turn_reserves_memory_and_bypasses_quiet_priority(self):
+        self.configure_clock(); self.cfg['heavy']={}; self.write_config()
+        self.set_stats(8000)
+        _,old=self.start('old',cost=5120)
+        self.wait(lambda: len(self.status()['queue'])==1)
+        self.advance(301); self.pause(0.2)
+        self.managed('set','H',1)
+        _,high=self.start('H',pool='heavy',cost=1024)
+        self.wait(lambda: self.status()['pools']['heavy']['queue'] and self.status()['pools']['heavy']['queue'][0]['wait_reason']=='fair_turn')
+        self.assertFalse(high.exists())
+        self.set_stats(30000); self.wait(old.exists); self.wait(high.exists)
+        self.assertEqual(self.events('fair_admit')[0]['campaign'],'old')
+
+    def test_aged_external_blockers_never_reserve_other_pools_and_keep_age(self):
+        self.configure_clock(); self.cfg['heavy']={}; self.write_config()
+        self.managed('set','H',10); self.set_stats(30000)
+        lock=(self.runtime/'legacy-heavy.lock').open('a')
+        with contextlib.ExitStack() as ports:
+            for port in [self.cfg['ports']['base']+64,self.cfg['ports']['base']+96]:
+                ports.enter_context(socket.socket()).bind(('127.0.0.1',port))
+            self.start('H',pool='heavy',cost=1024)
+            q=self.wait(lambda: self.status()['pools']['heavy']['queue'])[0]
+            self.advance(301); self.pause(0.2)
+            view=self.status()['pools']['heavy']['queue'][0]
+            self.assertEqual(view['fair_deferred'],'ports_busy')
+            _,lower=self.start('lower',cost=1024); self.wait(lower.exists)
+            fcntl.flock(lock,fcntl.LOCK_EX)
+        try:
+            self.wait(lambda: self.status()['pools']['heavy']['queue'][0]['fair_deferred']=='legacy_lock')
+            _,lower2=self.start('lower2',cost=1024); self.wait(lower2.exists)
+            self.assertEqual(self.status()['pools']['heavy']['queue'][0]['enqueue_seq'],q['enqueue_seq'])
+        finally: lock.close()
+        self.wait((self.root/'H').exists)
+        self.assertEqual(self.events('fair_admit')[0]['campaign'],'H')
+
+    def test_manual_stop_audit_precedes_signal_and_failure_refuses(self):
+        self.set_stats(40000)
+        stub=(self.bin/'systemctl').read_text()
+        (self.bin/'systemctl').write_text(stub.replace("if 'stop' in args:\n    if live:",
+            "if 'stop' in args:\n    events = pathlib.Path(os.environ['XDG_STATE_HOME']) / 'slotr/events.jsonl'\n    assert any(e['event']=='stop' and e.get('phase')=='requested' and e['run']==unit for e in map(json.loads,events.read_text().splitlines()))\n    if (root / 'stop-fail').exists(): sys.exit(1)\n    if live:"))
+        child,out=self.start('manual'); h=self.admitted('manual',out)
+        events=self.root/'state/slotr/events.jsonl'; saved=events.read_text()
+        events.unlink(); events.mkdir()
+        result=self.invoke('stop',h['run'],'--reason','owned cancellation')
+        self.assertEqual(result.returncode,2); self.assertIsNone(child.poll())
+        events.rmdir(); os.mkfifo(events)
+        try:
+            result=self.invoke('stop',h['run'])
+            self.assertEqual(result.returncode,2); self.assertIsNone(child.poll())
+            fd=os.open(events,os.O_RDONLY|os.O_NONBLOCK)
+            try:
+                result=self.invoke('stop',h['run'])
+                self.assertEqual(result.returncode,2); self.assertIsNone(child.poll())
+                self.assertIn('regular file',result.stderr)
+            finally: os.close(fd)
+        finally:
+            events.unlink(); events.write_text(saved)
+        (self.runtime/'stop-fail').touch()
+        result=self.invoke('stop',h['run'])
+        self.assertEqual(result.returncode,2); self.assertIsNone(child.poll())
+        self.assertEqual(self.status()['stop_intents'][h['run']]['phase'],'failed')
+        (self.runtime/'stop-fail').unlink()
+        result=self.invoke('stop',h['run'],'--reason','owned cancellation')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.wait(lambda: child.poll() is not None)
+        requested=[e for e in self.events('stop') if e['phase']=='requested'][-1]
+        self.assertEqual(requested['reason'],'manual'); self.assertEqual(requested['reason_text'],'owned cancellation')
+        self.assertEqual(requested['caller']['uid'],os.getuid()); self.assertEqual(requested['caller']['actor'],'cli')
+        self.assertIsInstance(requested['caller']['pid'],int)
+        self.assertNotIn('private-test-value',events.read_text())
+        self.assertEqual(self.invoke('stop','unknown').returncode,2)
+
+    def test_quiet_legacy_blocker_does_not_hold_other_pool(self):
+        self.env['SLOTR_PRIORITY__QUIET_SECONDS']='30'
+        self.cfg.update(heavy=dict(slots=2),priority=dict(campaigns=['H']))
+        self.write_config(); self.set_stats(40000)
+        high,out=self.start('H',pool='heavy',cost=1024); self.wait(out.exists)
+        high.terminate(); high.wait(timeout=3)
+        with (self.runtime/'legacy-heavy.lock').open('a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            view=self.status()['pools']['heavy']
+            self.assertFalse(view['holders']); self.assertFalse(view['queue'])
+            self.assertTrue(any(a['campaign']=='H' and a['quiet_expires_in_seconds']>0
+                                for a in view['activity']))
+            _,lower=self.start('lower',cost=1024)
+            self.wait(lambda: bool(self.status()['queue']) or lower.exists())
+            self.pause(0.3)
+            self.assertTrue(lower.exists(),'quiet external legacy lock held another pool')
+            _,own=self.start('own',pool='heavy',cost=1024)
+            self.wait(lambda: self.status()['pools']['heavy']['queue'])
+            self.assertFalse(own.exists())
+            self.assertEqual(self.status()['pools']['heavy']['queue'][0]['wait_reason'],'legacy_lock')
+
+    def test_quiet_other_pool_fifo_cannot_block_watchdog(self):
+        self.env['SLOTR_PRIORITY__QUIET_SECONDS']='30'
+        self.cfg.update(runtime_slots=3,heavy=dict(slots=2),priority=dict(campaigns=['H']))
+        self.write_config(); self.set_stats(40000)
+        child,out=self.start('protected',cost=1024); self.wait(out.exists)
+        data=json.loads(out.read_text()); pid=data['pid']
+        supervisor=int((self.runtime/data['run']).read_text())
+        high,hout=self.start('H',pool='heavy',cost=1024); self.wait(hout.exists)
+        high.terminate(); high.wait(timeout=3)
+        view=self.status()['pools']['heavy']
+        self.assertFalse(view['holders']); self.assertFalse(view['queue'])
+        path=self.runtime/'legacy-heavy.lock'; path.unlink(); os.mkfifo(path)
+        try:
+            lower,_=self.start('lower',cost=1024); self.pause(.4)
+            self.set_stats(1000); self.pause(1.2)
+            stat=Path(f'/proc/{pid}/stat'); wchan=Path(f'/proc/{supervisor}/wchan')
+            evidence=dict(workload_state=stat.read_text().split()[2] if stat.exists() else 'gone',
+                          term_received=out.with_suffix('.term').exists(),
+                          supervisor_wchan=wchan.read_text() if wchan.exists() else 'gone',
+                          waiter_wchan=Path(f'/proc/{lower.pid}/wchan').read_text()
+                          if Path(f'/proc/{lower.pid}/wchan').exists() else 'gone')
+            print(evidence,flush=True)
+        finally:
+            fd=os.open(path,os.O_RDWR|os.O_NONBLOCK)
+            path.unlink(); path.touch(); self.pause(.15); os.close(fd)
+        self.assertTrue(evidence['term_received'],'other-pool legacy FIFO blocks watchdog through state.lock')
+        self.assertIn(evidence['workload_state'],['gone','Z'])
+        self.assertEqual(child.wait(timeout=3),75)
+
+    def test_replaceable_runtime_files_refuse_fifos_without_hanging(self):
+        self.assertEqual(self.invoke('priority','set','synthetic','1').returncode,0)
+        paths = [self.root/'config/slotr/config.toml', self.runtime/'slotr/state.json',
+                 self.runtime/'slotr/state.lock', self.runtime/'slotr/state.json.tmp',
+                 self.runtime/'slotr/scheduling.json.tmp', self.root/'state/slotr/priority.json.tmp']
+        for path in paths:
+            with self.subTest(path=path.name):
+                saved=path.read_bytes() if path.exists() else None
+                path.unlink(missing_ok=True); os.mkfifo(path)
+                try:
+                    result=self.invoke('priority','set','synthetic','2')
+                    self.assertNotEqual(result.returncode,0,result.stderr)
+                finally:
+                    path.unlink()
+                    if saved is not None:
+                        path.write_bytes(saved)
+        ticket=self.runtime/'slotr/ticket-99999'; os.mkfifo(ticket)
+        # Cleanup probes an unregistered ticket under state.lock and conservatively retains it.
+        _,out=self.start('ticket-probe',cost=1024); self.wait(out.exists)
+        self.assertTrue(ticket.is_fifo())
+
+    def test_observation_fifos_cannot_delay_emergency_term(self):
+        self.configure_clock()
+        self.set_stats(40000)
+        child,out=self.start('pressure',cost=1024); self.admitted('pressure',out)
+        run=json.loads(out.read_text())['run']
+        paths=[self.cgroup/run/'memory.stat', self.cgroup/run/'cpu.stat',
+               self.proc/'pressure/memory', self.proc/'loadavg', self.root/'clock',
+               self.runtime/'heavy.lock']
+        for path in paths:
+            path.parent.mkdir(parents=True,exist_ok=True)
+            path.unlink(missing_ok=True); os.mkfifo(path)
+        self.pause(.2)
+        pending=self.proc/'meminfo.tmp'
+        pending.write_text('MemTotal: 67108864 kB\nMemAvailable: 1024000 kB\n')
+        pending.replace(self.proc/'meminfo')
+        try:
+            self.wait(lambda: child.poll() is not None)
+            self.assertEqual(child.wait(timeout=3),75)
+            self.assertTrue(out.with_suffix('.term').exists())
+        finally:
+            for path in paths:
+                path.unlink(missing_ok=True)
+
+    def test_scheduling_fifo_cannot_delay_emergency_term(self):
+        self.fifo_cannot_delay_emergency_term('scheduling.json')
+
+    def test_stops_fifo_cannot_delay_emergency_term(self):
+        self.fifo_cannot_delay_emergency_term('stops.json')
+
+    def fifo_cannot_delay_emergency_term(self,name):
+        self.set_stats(40000)
+        child,out=self.start('pressure',cost=1024); self.admitted('pressure',out)
+        pid=json.loads(out.read_text())['pid']
+        self.pause(0.15) # workload installs its signal handler after writing its PID
+        path=self.runtime/'slotr'/name
+        saved=path.read_bytes() if path.exists() else b'{}'
+        path.unlink(missing_ok=True); os.mkfifo(path)
+        try:
+            self.pause(0.3) # exercise optional refresh before the pressure tick
+            self.set_stats(1000)
+            def terminated():
+                try:
+                    return Path(f'/proc/{pid}/stat').read_text().split()[2]=='Z'
+                except FileNotFoundError:
+                    return True
+            deadline=time.monotonic()+2
+            self.wait(lambda: terminated() or time.monotonic()>=deadline)
+            self.assertTrue(terminated(),name+' FIFO delayed workload termination')
+            self.assertTrue(out.with_suffix('.term').exists())
+            self.assertEqual(child.wait(timeout=3),75)
+        finally:
+            if path.is_fifo():
+                fd=os.open(path,os.O_RDWR|os.O_NONBLOCK)
+                path.unlink(); path.write_bytes(saved)
+                self.pause(0.15); os.close(fd)
+
+
+    def test_unknown_port_owner_cannot_create_cross_pool_weight_or_fair_hold(self):
+        self.configure_clock(); self.cfg['heavy'] = dict(slots=2)
+        self.write_config(); self.set_stats(40000)
+        occupant, output=self.start('occupant',pool='heavy'); self.wait(output.exists)
+        base=self.cfg['ports']['base']+64
+        with contextlib.ExitStack() as external:
+            for port in [base,base+32]:
+                external.enter_context(socket.socket()).bind(('127.0.0.1',port))
+            self.managed('set','H',5)
+            self.start('H',pool='heavy',cost=1024)
+            self.wait(lambda: bool(self.status()['pools']['heavy']['queue']))
+            self.advance(301); self.pause(0.2)
+            _,lower=self.start('lower',cost=1024); self.wait(lower.exists)
+            self.assertEqual(self.status()['pools']['heavy']['queue'][0]['cross_pool_deferred'],'ports_busy_or_unknown_owner')
+            self.assertIsNone(occupant.poll())
+        self.wait((self.root/'H').exists)
+        self.assertIsNone(occupant.poll())
+
+    def test_unknown_port_owner_cannot_create_cross_pool_equal_weight_hold(self):
+        self.cfg['heavy'] = dict(slots=2)
+        self.write_config(); self.set_stats(40000)
+        occupant,output=self.start('occupant',pool='heavy'); self.wait(output.exists)
+        base=self.cfg['ports']['base']+64
+        external=contextlib.ExitStack(); self.addCleanup(external.close)
+        for port in [base,base+32]:
+            external.enter_context(socket.socket()).bind(('127.0.0.1',port))
+        self.start('blocked',pool='heavy',cost=1024)
+        self.wait(lambda: bool(self.status()['pools']['heavy']['queue']))
+        _,lower=self.start('lower',cost=1024); self.wait(lower.exists)
+        self.assertEqual(self.status()['pools']['heavy']['queue'][0]['cross_pool_deferred'],'ports_busy_or_unknown_owner')
+        self.assertIsNone(occupant.poll())
+        external.close()
+        self.wait((self.root/'blocked').exists)
+
+    def test_reweight_all_jobs_in_one_generation_without_restarting_holders(self):
+        self.set_stats(60000)
+        self.cfg['runtime_slots']=2; self.write_config()
+        first,a=self.start('first',campaign='C'); self.admitted('C',a)
+        second,b=self.start('second',campaign='C'); self.wait(b.exists)
+        self.set_stats(8000)
+        for i in range(8): self.start('queued'+str(i),campaign='C')
+        self.wait(lambda: len(self.status()['queue'])==8)
+        original={q['enqueue_seq']:q['since'] for q in json.loads((self.runtime/'slotr/state.json').read_text())['queue']}
+        self.managed('set','C',3)
+        raw=json.loads((self.runtime/'slotr/state.json').read_text())
+        self.assertTrue(all(q['level']==3 and q['policy_generation']==1 for q in raw['queue']+raw['holders']))
+        view=self.status()
+        self.assertTrue(all(q['weight']==q['level']==3 and q['policy_generation']==1 for q in view['queue']+view['slots']))
+        self.assertEqual(original,{q['enqueue_seq']:q['since'] for q in raw['queue']})
+        self.assertIsNone(first.poll()); self.assertIsNone(second.poll()); self.assertEqual(self.events('stop'),[])
+        frozen=[c.pid for c in self.children]+[int((self.runtime/h['run']).read_text()) for h in raw['holders']]
+        for pid in frozen: self.freeze(pid)
+        try:
+            files=[self.root/'state/slotr/priority.json',self.runtime/'slotr/state.json',self.runtime/'slotr/scheduling.json']
+            before=[p.read_bytes() for p in files]
+            self.status(); self.managed('list','--json')
+            self.assertEqual(before,[p.read_bytes() for p in files])
+        finally:
+            for pid in frozen: os.kill(pid,signal.SIGCONT)
+
+    def test_manual_duplicate_pending_recovery_and_completion_are_visible(self):
+        self.set_stats(40000)
+        stub=(self.bin/'systemctl').read_text()
+        (self.bin/'systemctl').write_text(stub.replace("if 'stop' in args:\n    if live:","if 'stop' in args:\n    if (root/'accept-only').exists(): sys.exit(0)\n    if live:"))
+        (self.runtime/'accept-only').touch()
+        child,out=self.start('manual'); h=self.admitted('manual',out)
+        self.assertEqual(self.invoke('stop',h['run']).returncode,0)
+        first=self.status()['stop_intents'][h['run']]
+        self.assertEqual(self.invoke('stop',h['run']).returncode,0)
+        self.assertEqual(len([e for e in self.events('stop') if e['phase']=='requested']),1)
+        self.assertEqual(self.status()['stop_intents'][h['run']]['id'],first['id'])
+        # Simulate the durable boundary after requested intent but before submission.
+        path=self.runtime/'slotr/stops.json'
+        intents=json.loads(path.read_text()); intents[h['run']]['phase']='requested'; path.write_text(json.dumps(intents))
+        self.start('reconciler',cost=1024)
+        self.wait(lambda: self.status()['stop_intents'][h['run']]['phase']=='submitted')
+        self.assertIsNone(child.poll())
+        (self.runtime/'accept-only').unlink()
+        child.terminate(); child.wait(timeout=3)
+        self.wait(lambda: any(e.get('stop_id')==first['id'] and e['phase']=='completed' for e in self.events('stop')))
+
+    def test_watchdog_survives_policy_and_scheduling_persistence_faults(self):
+        self.cfg['recovery_healthy_seconds']=10; self.write_config(); self.set_stats(40000)
+        low,out=self.start('low'); self.admitted('low',out)
+        self.managed('set','low',0)
+        (self.root/'state/slotr/priority.json').write_text('{bad')
+        scheduling=self.runtime/'slotr/scheduling.json'
+        scheduling.unlink(); scheduling.mkdir() # makes both read and persistence fail
+        events=self.root/'state/slotr/events.jsonl'; events.unlink(); events.mkdir()
+        self.set_stats(1000)
+        self.wait(lambda: low.poll() is not None)
+        self.assertEqual(low.returncode,75)
+        self.assertIn('stop audit gap',(self.root/'low.log').read_text())
+        scheduling.rmdir(); events.rmdir()
+
+    def test_audit_fifo_cannot_delay_emergency_term_or_kill(self):
+        self.set_stats(40000)
+        for label,literal in [('term',()),('kill',('--ignore-term',))]:
+            with self.subTest(signal=label):
+                child,out=self.start(label,*literal,cost=1024)
+                self.wait(out.exists)
+                pid=json.loads(out.read_text())['pid']
+                self.pause(0.1) # workload installs its signal handler after writing its PID
+                events=self.root/'state/slotr/events.jsonl'
+                saved=events.read_bytes(); events.unlink(); os.mkfifo(events)
+                try:
+                    self.set_stats(1000)
+                    def terminated():
+                        try:
+                            return Path(f'/proc/{pid}/stat').read_text().split()[2]=='Z'
+                        except FileNotFoundError:
+                            return True
+                    deadline=time.monotonic()+2
+                    self.wait(lambda: terminated() or time.monotonic()>=deadline)
+                    self.assertTrue(terminated(), 'audit FIFO delayed workload termination')
+                    self.assertEqual(out.with_suffix('.term').exists(),label=='term')
+                    self.assertEqual(child.wait(timeout=3),75)
+                    self.assertIn('stop audit gap',(self.root/(label+'.log')).read_text())
+                finally:
+                    # Release an old binary's blocked open so failure cleanup can finish.
+                    fd=os.open(events,os.O_RDONLY|os.O_NONBLOCK)
+                    self.pause(0.15); os.close(fd)
+                    events.unlink(); events.write_bytes(saved)
+                    self.set_stats(40000)
+
+
+class FlockTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='slotr-flock-test-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.protected = self.root / 'heavy.lock'
+        self.protected.touch()
+        self.runtime = self.root / 'runtime.lock'
+        self.runtime.touch()
+        self.policy = self.root / 'config.toml'
+        self.policy.write_text(f'''[pools.heavy.legacy_lock]
+path = {json.dumps(str(self.protected))}
+mode = "shared"
+queue_only = true
+[pools.runtime.legacy_lock]
+path = {json.dumps(str(self.runtime))}
+mode = "exclusive"
+''')
+        self.shim = self.root / 'flock'
+        self.compile_launcher(self.shim, TOOL)
+        self.env = dict({k: v for k, v in os.environ.items() if not k.startswith('SLOTR_')},
+                        HOME=str(self.root / 'empty-home'), XDG_CONFIG_HOME=str(self.root / 'empty-config'),
+                        XDG_RUNTIME_DIR=str(self.root / 'queue'), XDG_STATE_HOME=str(self.root / 'state'),
+                        SHELL='/bin/sh')
+
+    def compile_launcher(self, output, checker):
+        source = Path(__file__).resolve().parents[1] / 'scripts/flock-shim.c'
+        result = subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-O2',
+                                 '-DSLOTR_BINARY=' + json.dumps(str(checker)),
+                                 '-DSLOTR_CONFIG=' + json.dumps(str(self.policy)),
+                                 str(source), '-o', str(output)], capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def invoke(self, *args, **kwargs):
+        return subprocess.run([str(self.shim), *args], env=kwargs.pop('env', self.env),
+                              capture_output=True, timeout=4, **kwargs)
+
+    def shell(self, script, *args, **kwargs):
+        return subprocess.run(['/bin/sh', '-c', script, 'test', str(self.shim), *map(str, args)],
+                              env=self.env, capture_output=True, timeout=4, **kwargs)
+
+    def refused(self, result):
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(b'slotr run --pool', result.stderr)
+        self.assertFalse((self.root / 'queue').exists())
+
+    def test_protected_aliases_and_descriptors_never_execute_or_lock(self):
+        symbolic = self.root / 'symbolic'
+        symbolic.symlink_to(self.protected)
+        hard = self.root / 'hard'
+        os.link(self.protected, hard)
+        marker = self.root / 'payload'
+        identity = self.protected.stat()
+        for path in [self.protected, symbolic, hard, './heavy.lock', './sub/../heavy.lock']:
+            (self.root / 'sub').mkdir(exist_ok=True)
+            for options in [[], ['-s'], ['-u'], ['-snw0'], ['--nonblock', '-E33']]:
+                with self.subTest(path=path, options=options):
+                    result = self.invoke(*options, str(path), '/usr/bin/touch', str(marker), cwd=self.root)
+                    self.refused(result)
+                    self.assertIn(b'heavy', result.stderr)
+                    self.assertIn(os.fsencode(self.protected), result.stderr)
+        for spelling in ['9', '+9', '09', ' 9', '\t9', '\v9', '\f9']:
+            self.refused(self.shell('exec 9<>"$2"; "$1" -n "$3"', self.protected, spelling))
+        for options in ['-s', '-u', '-w0', '-E33']:
+            self.refused(self.shell('exec 9<>"$2"; "$1" "$3" 9', self.protected, options))
+        self.refused(self.shell('exec 9<>"$2"; "$1" /proc/self/fd/9 /usr/bin/touch "$3"', self.protected, marker))
+        with self.protected.open('r+b') as fd:
+            self.refused(self.invoke('--', '-0', stdin=fd))
+        self.assertFalse(marker.exists())
+        self.assertEqual((identity.st_dev, identity.st_ino), (self.protected.stat().st_dev, self.protected.stat().st_ino))
+        with self.protected.open('r+b') as fd:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_native_file_directory_shell_and_byte_preservation(self):
+        self.assertEqual(subprocess.run(['/usr/bin/flock', '--version'], capture_output=True).stdout,
+                         b'flock from util-linux 2.39.3\n')
+        directory = self.root / 'directory'
+        directory.mkdir()
+        dangling = self.root / 'dangling'
+        dangling.symlink_to(self.root / 'referent')
+        for path in [self.runtime, directory, self.root / 'new', dangling, self.root / '9']:
+            with self.subTest(path=path):
+                result = self.invoke('-n', str(path), '/bin/sh', '-c', 'exit 17')
+                self.assertEqual(result.returncode, 17, result.stderr)
+        self.assertTrue((self.root / 'referent').is_file())
+        missing = self.root / 'missing-parent/lock'
+        self.assertEqual(self.invoke(str(missing), '/usr/bin/true').returncode,
+                         subprocess.run(['/usr/bin/flock', str(missing), '/usr/bin/true'], capture_output=True).returncode)
+        self.assertFalse(missing.parent.exists())
+        for options in [['-s'], ['-e'], ['-x'], ['-u'], ['-w', '0'], ['-E33'], ['-o'], ['-F'],
+                        ['--shared'], ['--exclusive'], ['--unlock'], ['--nb'], ['--non'],
+                        ['--wait=0'], ['--timeout', '0'], ['--conflict-exit-code', '33'],
+                        ['--close'], ['--no-fork'], ['--verbose'], ['--sh'], ['--ex'], ['--un'],
+                        ['--ti=0'], ['--wa=0'], ['--con=33'], ['--cl'], ['--no-f'], ['--verb'], ['--']]:
+            with self.subTest(options=options):
+                result = self.invoke(*options, str(self.runtime), '/bin/sh', '-c', 'exit 19')
+                self.assertEqual(result.returncode, 19, result.stderr)
+        for marker in ['-c', '--command']:
+            self.assertEqual(self.invoke(str(self.runtime), marker, 'exit 23').returncode, 23)
+        path = os.fsencode(self.root) + b'/nonutf8-\xff.lock'
+        result = self.invoke(path, os.fsencode(sys.executable), b'-c',
+                             b'import os,sys;sys.stdout.buffer.write(os.fsencode(sys.argv[1]))', b'--payload-\xff')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b'--payload-\xff')
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual(self.invoke(str(self.runtime), '/bin/sh', '-c', 'kill -TERM $$').returncode, 128 + signal.SIGTERM)
+        self.assertEqual(self.invoke('-F', str(self.runtime), '/bin/sh', '-c', 'kill -TERM $$').returncode, -signal.SIGTERM)
+        for option in ['--help', '--version', '-h?', '-V?', '--he', '--vers']:
+            guarded = self.invoke(option, '--unknown')
+            native = subprocess.run(['/usr/bin/flock', option, '--unknown'], capture_output=True)
+            self.assertEqual((guarded.returncode, guarded.stdout), (native.returncode, native.stdout))
+
+    def test_watch_fd9_persists_conflicts_and_unlocks(self):
+        script = '''
+exec 9<>"$2"
+"$1" -n 9 || exit 90
+/usr/bin/flock -n -E33 "$2" /usr/bin/true
+[ "$?" = 33 ] || exit 91
+"$1" -n -E33 "$2" /usr/bin/true
+[ "$?" = 33 ] || exit 92
+"$1" -w 0 -E 34 "$2" /usr/bin/true
+[ "$?" = 34 ] || exit 93
+"$1" -w .02 -E35 "$2" /usr/bin/true
+[ "$?" = 35 ] || exit 94
+"$1" -u 9 || exit 95
+/usr/bin/flock -n "$2" /usr/bin/true || exit 96
+"$1" -s +9 || exit 97
+/usr/bin/flock -s -n "$2" /usr/bin/true || exit 98
+/usr/bin/flock -x -n -E36 "$2" /usr/bin/true
+[ "$?" = 36 ] || exit 99
+"$1" -u 09
+'''
+        result = self.shell(script, self.runtime)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for spelling in ['+9', '09', ' 9', '\t9', '\v9', '\f9']:
+            result = self.shell('exec 9<>"$2"; "$1" -n "$3" || exit; /usr/bin/flock -n -E33 "$2" true; [ "$?" = 33 ]', self.runtime, spelling)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        with self.runtime.open('r+b') as fd:
+            self.assertEqual(self.invoke('--', '-0', stdin=fd).returncode, 0)
+            with self.runtime.open('r+b') as independent:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(independent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self.invoke('-u', '0', stdin=fd).returncode, 0)
+
+    def test_fixed_policy_ignores_overrides_and_preserves_payload_environment_fds(self):
+        hostile = dict(self.env, SLOTR_CONFIG=str(self.root / 'absent.toml'),
+                       SLOTR_POOLS__HEAVY__LEGACY_LOCK__QUEUE_ONLY='false',
+                       SLOTR_POOLS__HEAVY__LEGACY_LOCK__PATH=str(self.runtime),
+                       SLOTR_ADMISSION__QUEUE_POLL_MS='not-a-number')
+        self.refused(self.invoke(str(self.protected), '/usr/bin/true', env=hostile))
+        result = self.invoke(str(self.runtime), sys.executable, '-c',
+                             'import json,os;print(json.dumps(dict(os.environ)))', env=hostile)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), hostile)
+        self.runtime.write_bytes(b'preserved-contents')
+        result = self.shell('exec 9<"$2"; "$1" "$3" "$4" -c \'import os;os.write(1,os.read(9,100))\'', self.runtime, self.root / 'other', sys.executable)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b'preserved-contents')
+
+    def test_invalid_policy_and_uncertain_target_fail_closed(self):
+        valid = self.policy.read_text()
+        for policy in ['', 'bad = [', '[pools.heavy]\nslots=1\n',
+                       valid.replace('queue_only = true', 'queue_only = false'),
+                       valid.replace('queue_only = true', 'queue_only = "yes"'),
+                       valid.replace(str(self.protected), 'relative.lock'),
+                       valid.replace(str(self.protected), str(self.root / 'absent')),
+                       valid.replace(str(self.protected), str(self.root))]:
+            with self.subTest(policy=policy):
+                self.policy.write_text(policy)
+                self.refused(self.invoke(str(self.root / 'uncreated'), '/usr/bin/true'))
+                self.refused(self.invoke('--help'))
+                self.assertFalse((self.root / 'uncreated').exists())
+        self.policy.unlink()
+        self.refused(self.invoke(str(self.runtime), '/usr/bin/true'))
+        self.policy.write_text(valid)
+        relative = subprocess.run([str(TOOL), 'flock-check', '--config', 'config.toml', '--',
+                                   str(self.runtime), '/usr/bin/true'], cwd=self.root, env=self.env, capture_output=True)
+        self.refused(relative)
+        loop = self.root / 'loop'
+        loop.symlink_to(loop)
+        self.refused(self.invoke(str(loop), '/usr/bin/true'))
+        self.policy.write_text(valid.replace(str(self.protected), str(loop)))
+        self.refused(self.invoke(str(self.runtime), '/usr/bin/true'))
+        self.policy.write_text(valid)
+        if os.geteuid() != 0:
+            denied = self.root / 'denied'
+            denied.mkdir()
+            denied.chmod(0)
+            try:
+                self.refused(self.invoke(str(denied / 'lock'), '/usr/bin/true'))
+            finally:
+                denied.chmod(0o700)
+        self.protected.rename(self.root / 'renamed')
+        self.refused(self.invoke(str(self.runtime), '/usr/bin/true'))
+
+    def test_ambiguous_or_malformed_native_syntax_refuses(self):
+        for args in [[], ['--n'], ['--no'], ['--v'], ['--c'], ['--future'], ['--command'],
+                     ['--shared=1'], ['--help=x'], ['-w'], ['-E'], ['--timeout'], ['--conflict-exit-code'],
+                     ['-?h'], ['-0'], ['--', '-1'], ['9 '], ['0x9'], ['2147483648'], ['99999'],
+                     [str(self.runtime), '-c'], [str(self.runtime), '--command', 'true', 'extra']]:
+            with self.subTest(args=args):
+                result = self.invoke(*args)
+                self.assertEqual(result.returncode, 2, result.stderr)
+        # A value that resembles help is consumed, so it cannot bypass target refusal.
+        self.refused(self.invoke('-w', '--help', str(self.protected), '/usr/bin/true'))
+
+    def test_checker_is_silent_and_never_executes_native_or_payload(self):
+        target, marker = self.root / 'checker-target', self.root / 'checker-payload'
+        result = subprocess.run([str(TOOL), 'flock-check', '--config', str(self.policy), '--',
+                                 str(target), '/usr/bin/touch', str(marker)], env=self.env,
+                                capture_output=True, timeout=4)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b'', b''))
+        self.assertFalse(target.exists())
+        self.assertFalse(marker.exists())
+        old = subprocess.run([str(TOOL), 'flock', '--config', str(self.policy), '--',
+                              str(target), '/usr/bin/touch', str(marker)], env=self.env,
+                             capture_output=True, timeout=4)
+        self.assertEqual(old.returncode, 2)
+        self.assertFalse(target.exists())
+        self.assertFalse(marker.exists())
+
+    def test_native_raw_environment_argv_and_stdin_from_original_state(self):
+        raw = {os.fsencode(k): os.fsencode(v) for k, v in self.env.items()}
+        raw.update({b'ODD-NAME': b'odd', b'BASH_FUNC_sample%%': b'() { :; }',
+                    b'BAD\xffNAME': b'raw\xfe', b'PWD': b'/caller/pwd', b'EMPTY': b'',
+                    b'SLOTR_CONFIG': b'/absent', b'SLOTR_POOLS__HEAVY__LEGACY_LOCK__QUEUE_ONLY': b'false'})
+        outputs = []
+        for tool in ['/usr/bin/flock', str(self.shim)]:
+            result = subprocess.run([tool, str(self.runtime), '/usr/bin/env', '-0'], env=raw,
+                                    capture_output=True, timeout=4, restore_signals=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs.append(dict(entry.split(b'=', 1) for entry in result.stdout.split(b'\0') if entry))
+        self.assertEqual(outputs, [raw, raw])
+        args = [b'', b'a b', b'raw\xff', b'--', b'\n', b'$()']
+        outputs = []
+        for tool in ['/usr/bin/flock', str(self.shim)]:
+            result = subprocess.run([os.fsencode(tool), os.fsencode(self.runtime), os.fsencode(sys.executable), b'-c',
+                                     b'import os,sys;sys.stdout.buffer.write(b"\\0".join(os.fsencode(a) for a in sys.argv[1:]))',
+                                     *args], env=self.env, capture_output=True, timeout=4, restore_signals=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs.append(result.stdout)
+        self.assertEqual(outputs, [b'\0'.join(args)] * 2)
+        data = b'stdin\0raw\xff\n'
+        for tool in ['/usr/bin/flock', str(self.shim)]:
+            result = subprocess.run([tool, str(self.runtime), '/usr/bin/cat'], env=self.env,
+                                    input=data, capture_output=True, timeout=4, restore_signals=False)
+            self.assertEqual((result.returncode, result.stdout), (0, data), result.stderr)
+
+    def test_native_mask_dispositions_epipe_and_closed_standard_fds(self):
+        def state(ignore_chld, block):
+            def setup():
+                signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+                signal.signal(signal.SIGCHLD, signal.SIG_IGN if ignore_chld else signal.SIG_DFL)
+                signal.pthread_sigmask(signal.SIG_SETMASK, block)
+            return setup
+        for ignore in [False, True]:
+            for block in [[], [signal.SIGUSR1], [signal.SIGCHLD], [signal.SIGUSR1, signal.SIGCHLD]]:
+                outputs = []
+                for tool in ['/usr/bin/flock', str(self.shim)]:
+                    result = subprocess.run([tool, '-F', str(self.runtime), '/usr/bin/cat', '/proc/self/status'],
+                                            env=self.env, capture_output=True, timeout=4, restore_signals=False,
+                                            preexec_fn=state(ignore, block))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    outputs.append([line for line in result.stdout.splitlines()
+                                    if line.startswith((b'SigBlk:', b'SigIgn:', b'SigPnd:', b'ShdPnd:'))])
+                self.assertEqual(outputs[0], outputs[1], (ignore, block))
+        # printf is executed directly; its EPIPE diagnostic/exit proves ignored SIGPIPE behavior.
+        for tool in ['/usr/bin/flock', str(self.shim)]:
+            read, write = os.pipe()
+            os.close(read)
+            try:
+                result = subprocess.run([tool, '-F', str(self.runtime), '/usr/bin/printf', 'data'],
+                                        env=self.env, stdout=write, stderr=subprocess.PIPE, timeout=4,
+                                        restore_signals=False, preexec_fn=state(False, []))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(b'Broken pipe', result.stderr)
+            finally:
+                os.close(write)
+        for fd in range(3):
+            outputs = []
+            for tool in ['/usr/bin/flock', str(self.shim)]:
+                result = subprocess.run([tool, '-n', str(fd)], env=self.env, capture_output=True,
+                                        timeout=4, restore_signals=False, preexec_fn=lambda fd=fd: os.close(fd))
+                outputs.append((result.returncode, result.stdout, result.stderr))
+            self.assertEqual(outputs[0], outputs[1], fd)
+        marker = self.root / 'standard-fd-payload'
+        for fd in [0, 1, 2, 9]:
+            self.protected.write_bytes(b'')
+            def opened(fd=fd):
+                owned = os.open(self.protected, os.O_RDWR)
+                os.dup2(owned, fd, inheritable=True)
+                if owned != fd:
+                    os.close(owned)
+            result = subprocess.run([str(self.shim), '-n', str(fd)], env=self.env, capture_output=True,
+                                    timeout=4, preexec_fn=opened, restore_signals=False, close_fds=False)
+            self.assertEqual(result.returncode, 2, (fd, result.stderr))
+            diagnostic = self.protected.read_bytes() if fd == 2 else result.stderr
+            self.assertIn(b'queue-only pool heavy', diagnostic)
+            self.assertIn(os.fsencode(self.protected), diagnostic)
+            self.protected.write_bytes(b'')
+            result = subprocess.run([str(self.shim), f'/proc/self/fd/{fd}', '/usr/bin/touch', str(marker)],
+                                    env=self.env, capture_output=True, timeout=4, preexec_fn=opened,
+                                    restore_signals=False, close_fds=False)
+            self.assertEqual(result.returncode, 2, (fd, result.stderr))
+            diagnostic = self.protected.read_bytes() if fd == 2 else result.stderr
+            self.assertIn(b'queue-only pool heavy', diagnostic)
+            self.assertIn(os.fsencode(self.protected), diagnostic)
+            self.assertFalse(marker.exists())
+
+    def test_checker_failures_and_stops_never_run_native(self):
+        checker = self.root / 'fake-checker'
+        launcher = self.root / 'failure-launcher'
+        self.compile_launcher(launcher, checker)
+        for mode, body in [('missing', None), ('nonexec', '#!/bin/sh\nexit 0\n'),
+                           ('exit1', '#!/bin/sh\nexit 1\n'), ('exit2', '#!/bin/sh\nexit 2\n'),
+                           ('signal', '#!/bin/sh\nkill -TERM "$$"\n'), ('stop', '#!/bin/sh\nkill -STOP "$$"\n')]:
+            if checker.exists():
+                checker.unlink()
+            if body is not None:
+                checker.write_text(body)
+                checker.chmod(0o600 if mode == 'nonexec' else 0o700)
+            for ignore in [False, True]:
+                for blocked in [False, True]:
+                    def state():
+                        signal.signal(signal.SIGCHLD, signal.SIG_IGN if ignore else signal.SIG_DFL)
+                        signal.pthread_sigmask(signal.SIG_SETMASK, [signal.SIGCHLD] if blocked else [])
+                    target, marker = self.root / 'failure-target', self.root / 'failure-marker'
+                    result = subprocess.run([str(launcher), str(target), '/usr/bin/touch', str(marker)],
+                                            env=self.env, capture_output=True, timeout=4, preexec_fn=state,
+                                            restore_signals=False)
+                    self.assertNotEqual(result.returncode, 0, (mode, ignore, blocked))
+                    self.assertFalse(target.exists())
+                    self.assertFalse(marker.exists())
+
+    def test_actual_launcher_source_faults_restoration_and_pending_boundary(self):
+        source = Path(__file__).resolve().parents[1] / 'scripts/flock-shim.c'
+        harness = self.root / 'launcher-harness.c'
+        harness.write_text(r'''
+#define _POSIX_C_SOURCE 200809L
+#include <assert.h>
+#include <errno.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+static const char *mode;
+static int actions, waits, killed, native_called;
+static pid_t checker_child;
+static struct sigaction expected;
+static sigset_t expected_mask;
+static int real_child(void) { return !strncmp(mode, "real-", 5); }
+static int action(int sig, const struct sigaction *a, struct sigaction *old)
+{
+    actions++;
+    if ((!strcmp(mode, "snapshot") && actions == 1) ||
+        (!strcmp(mode, "prepare") && actions == 2) ||
+        (!strcmp(mode, "restore") && actions == 3)) {
+        errno = EIO;
+        return -1;
+    }
+    return sigaction(sig, a, old);
+}
+static pid_t owned_fork(void)
+{
+    if (real_child()) {
+        checker_child = fork();
+        return checker_child;
+    }
+    if (!strcmp(mode, "fork")) { errno = EAGAIN; return -1; }
+    return 424242;
+}
+static pid_t owned_wait(pid_t pid, int *status, int options)
+{
+    if (real_child()) {
+        assert(pid == checker_child && pid > 0);
+        waits++;
+        return waitpid(pid, status, options);
+    }
+    assert(pid == 424242);
+    waits++;
+    assert(options == (waits == 1 || !strcmp(mode, "eintr") ? WUNTRACED : 0));
+    if (!strcmp(mode, "eintr") && waits == 1) { errno = EINTR; return -1; }
+    if (!strcmp(mode, "wait")) { errno = ECHILD; return -1; }
+    if (!strcmp(mode, "wrong")) return pid + 1;
+    if (!strcmp(mode, "stop")) *status = waits == 1 ? (SIGSTOP << 8) | 0x7f : SIGKILL;
+    else if (!strcmp(mode, "signal")) *status = SIGTERM;
+    else if (!strcmp(mode, "unknown")) *status = 0xffff;
+    else *status = 0;
+    return pid;
+}
+static int owned_kill(pid_t pid, int sig)
+{
+    assert(pid == (real_child() ? checker_child : 424242) && sig == SIGKILL);
+    killed++;
+    return real_child() ? kill(pid, sig) : 0;
+}
+static void *allocation(size_t size)
+{
+    if (!strcmp(mode, "malloc")) { errno = ENOMEM; return NULL; }
+    return malloc(size);
+}
+static int execute(const char *path, char *const argv[])
+{
+    if (strcmp(path, "/usr/bin/flock")) return execv(path, argv);
+    native_called++;
+    struct sigaction restored;
+    sigset_t mask, pending;
+    assert(sigaction(SIGCHLD, NULL, &restored) == 0);
+    assert(sigprocmask(SIG_SETMASK, NULL, &mask) == 0);
+    assert(sigpending(&pending) == 0);
+    assert(restored.sa_handler == expected.sa_handler && restored.sa_flags == expected.sa_flags);
+    for (int s = 1; s < 65; s++) {
+        assert(sigismember(&restored.sa_mask, s) == sigismember(&expected.sa_mask, s));
+        assert(sigismember(&mask, s) == sigismember(&expected_mask, s));
+    }
+    if (!strcmp(mode, "real-block") || !strcmp(mode, "real-pending"))
+        assert(sigismember(&pending, SIGCHLD) == 1);
+    errno = ENOSYS; /* Observe before native exec, only in this isolated harness. */
+    return -1;
+}
+#define main launcher_main
+#define sigaction(...) action(__VA_ARGS__)
+#define fork() owned_fork()
+#define waitpid(...) owned_wait(__VA_ARGS__)
+#define kill(...) owned_kill(__VA_ARGS__)
+#define execv(...) execute(__VA_ARGS__)
+#define malloc(...) allocation(__VA_ARGS__)
+''' + '#include ' + json.dumps(str(source)) + r'''
+#undef main
+#undef sigaction
+#undef fork
+#undef waitpid
+#undef kill
+#undef execv
+#undef malloc
+int main(int argc, char **argv)
+{
+    assert(argc == 2);
+    mode = argv[1];
+    struct sigaction initial = {0};
+    initial.sa_handler = strstr(mode, "ignore") || !real_child() ? SIG_IGN : SIG_DFL;
+    initial.sa_flags = strstr(mode, "nocldwait") || !real_child() ? SA_NOCLDWAIT | SA_RESTART : 0;
+    assert(sigemptyset(&initial.sa_mask) == 0 && sigaddset(&initial.sa_mask, SIGUSR2) == 0);
+    assert(sigaction(SIGCHLD, &initial, NULL) == 0);
+    assert(sigaction(SIGCHLD, NULL, &expected) == 0);
+    assert(!(initial.sa_flags & SA_NOCLDWAIT) || (expected.sa_flags & SA_NOCLDWAIT));
+    assert(sigemptyset(&expected_mask) == 0 && sigaddset(&expected_mask, SIGUSR1) == 0);
+    if (strstr(mode, "block") || strstr(mode, "pending") || !real_child())
+        assert(sigaddset(&expected_mask, SIGCHLD) == 0);
+    assert(sigprocmask(SIG_SETMASK, &expected_mask, NULL) == 0);
+    if (strstr(mode, "pending")) assert(kill(getpid(), SIGCHLD) == 0);
+    char *args[] = {"launcher", "/uncreated/target", "/usr/bin/true", NULL};
+    int result = launcher_main(3, args);
+    int allowed = (real_child() && !strstr(mode, "fail") && !strstr(mode, "stop")) || !strcmp(mode, "eintr");
+    assert(native_called == allowed);
+    assert(result == (allowed ? 127 : strstr(mode, "fail") ? 1 : !strcmp(mode, "signal") ? 128 + SIGTERM : 2));
+    if (strstr(mode, "stop")) assert(killed == 1 && waits == 2);
+    if (!strcmp(mode, "eintr")) assert(waits == 2);
+    if (!strcmp(mode, "fork") || !strcmp(mode, "wait") || !strcmp(mode, "wrong") ||
+        !strcmp(mode, "stop") || !strcmp(mode, "signal") || !strcmp(mode, "unknown") ||
+        strstr(mode, "fail") || strstr(mode, "stop")) {
+        struct sigaction restored;
+        assert(sigaction(SIGCHLD, NULL, &restored) == 0);
+        assert(restored.sa_handler == expected.sa_handler && restored.sa_flags == expected.sa_flags);
+    }
+    puts("actual-source harness passed");
+    return 0;
+}
+''')
+        checker = self.root / 'harness-checker'
+        checker.symlink_to('/usr/bin/true')
+        executable = self.root / 'launcher-harness'
+        result = subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                                 '-DSLOTR_BINARY=' + json.dumps(str(checker)),
+                                 '-DSLOTR_CONFIG=' + json.dumps(str(self.policy)),
+                                 str(harness), '-o', str(executable)], capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for mode in ['malloc', 'snapshot', 'prepare', 'fork', 'wait', 'wrong', 'restore', 'stop',
+                     'signal', 'unknown', 'eintr', 'real-block', 'real-pending', 'real-ignore-block',
+                     'real-nocldwait', 'real-nocldwait-block', 'real-nocldwait-fail',
+                     'real-nocldwait-block-fail', 'real-nocldwait-stop', 'real-nocldwait-block-stop']:
+            checker.unlink()
+            if 'stop' in mode and mode.startswith('real-'):
+                checker.write_text('#!/bin/sh\nkill -STOP "$$"\n')
+                checker.chmod(0o700)
+            else:
+                checker.symlink_to('/usr/bin/false' if 'fail' in mode else '/usr/bin/true')
+            result = subprocess.run([str(executable), mode], env=self.env, capture_output=True,
+                                    timeout=4, restore_signals=False)
+            self.assertEqual(result.returncode, 0, (mode, result.stderr))
+            self.assertEqual(result.stdout, b'actual-source harness passed\n')
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2, failfast=True)

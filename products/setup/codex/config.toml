@@ -1,0 +1,39 @@
+model_context_window = 400000
+model_auto_compact_token_limit = 350000
+model = "gpt-6.1-sol"
+web_search = "live"
+suppress_unstable_features_warning = true
+plan_mode_reasoning_effort = "medium"
+
+service_tier = "default"
+model_reasoning_effort = "medium"
+
+[features.context_management]
+experimental_mode = true
+
+[features]
+shell_snapshot = true
+multi_agent = true
+apps = true
+hooks = true
+memories = true
+
+[agents]
+max_concurrent_threads_per_session = 16
+max_depth = 2
+
+[notice]
+hide_rate_limit_model_nudge = true
+
+[plugins."github@openai-curated"]
+enabled = true
+
+[plugins."ponytail@ponytail"]
+enabled = true
+
+[marketplaces.ponytail]
+source_type = "git"
+source = "https://github.com/DietrichGebert/ponytail.git"
+
+[tui]
+status_line = ["git-branch", "current-dir", "five-hour-limit", "weekly-limit", "context-remaining", "used-tokens", "model-with-reasoning"]

@@ -1,0 +1,40 @@
+ taskr ❯ detail                                                           hub atlas · 2s ago   ● 2 need you  3 to check
+  D Dashboard   A Asks 2   F Fleet 11  [I Detail]
+╭ Shipped · @alex ─────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ from Dashboard · SHIPPED · row 1                                                                                     │
+│ 2 observed / rolling 24h                                                                                             │
+│                                                                                                                      │
+│ Observed cached sample; not a full total.                                                                            │
+│ 2 sampled; 0s ago · example-org/app                                                                                  │
+│ 2 sampled; 0s ago · example-org/tools                                                                                │
+│ example-org/app #38 Preserve owner action identity                                                                   │
+│ example-org/tools #39 Preserve owner action identity                                                                 │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ h back   a asks   D A F I screens   s slotr   q quit   ? help

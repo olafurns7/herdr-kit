@@ -1,0 +1,218 @@
+#!/bin/sh
+# Adopt the current hub pane and exec cdl with a generation-bound push channel.
+set -u
+usage='usage: herdr-hub ROOT [--lane opus-high] [-- CLAUDE_ARGS...] | herdr-hub --new NAME [--lane opus-high] [-- CLAUDE_ARGS...] | herdr-hub check ROOT'
+root= pane= gen= mcp_config= lease=unknown check_task= step=0
+tmp= adopt_err= lock=
+cleanup() {
+    [ -z "$tmp" ] || rm -f -- "$tmp"
+    [ -z "$adopt_err" ] || rm -f -- "$adopt_err"
+    [ -z "$lock" ] || rmdir -- "$lock"
+    :
+}
+trap cleanup 0
+trap 'fail interrupted' 1 2 3 15
+fail() {
+    failure_reason=$1
+    printf 'herdr-hub: step %s failed: %s\n' "$step" "$1" >&2
+    if [ "$step" -ge 3 ]; then
+        printf 'ROOT=%s GEN=%s pane=%s mcp_config=%s lease=%s check_task=%s\n' \
+            "$root" "${gen:--}" "$pane" "${mcp_config:--}" "$lease" "${check_task:--}" >&2
+    fi
+    [ -z "$gen" ] || lock=
+    exit 1
+}
+die() { printf 'herdr-hub: %s\n' "$1" >&2; exit 2; }
+number() { case $1 in '' | *[!0-9]* | 0) return 1 ;; esac; }
+identifier() { case $1 in '' | *[!A-Za-z0-9:_-]*) return 1 ;; esac; }
+# Root reads/adoption must not inherit the caller's worker identity. Routing stays.
+ledger() ( unset TASKR_TASK TASKR_LAUNCH; taskr "$@"; )
+latest_gen() {
+    log=$(ledger --json log "$root" --limit 0) || return 1
+    printf '%s\n' "$log" | jq -ser '[.[] | select(.kind == "adopt") | .id] | max // 0'
+}
+read_lease() {
+    lease=unknown
+    lease_json=$(ledger --json consumer show --as "$root") || return 1
+    lease=$(printf '%s\n' "$lease_json" | jq -er 'if .live == true then "live" elif .live == false then "free" else error("missing live") end')
+}
+current_lease() {
+    printf '%s\n' "$lease_json" | jq -e --argjson gen "$gen" \
+        '.live == true and .session_gen == $gen and (.holder | type == "string" and startswith("mcp-channel-"))' >/dev/null
+}
+
+[ $# -gt 0 ] || die "$usage"
+command -v jq >/dev/null 2>&1 || die 'jq is required'
+if [ "$1" = check ]; then
+    [ $# -eq 2 ] || die "$usage"
+    root=$2
+    number "$root" || die 'ROOT must be a positive task id'
+    if ! gen=$(latest_gen) || ! read_lease; then
+        printf 'unknown\n'; exit 2
+    fi
+    if [ "$lease" = live ] && printf '%s\n' "$lease_json" | jq -e --argjson gen "$gen" '.session_gen == $gen' >/dev/null; then
+        printf 'live\n'; exit 0
+    fi
+    printf 'stale\n'; exit 1
+fi
+name= lane=opus-high
+if [ "$1" = --new ]; then
+    [ $# -ge 2 ] || die "$usage"
+    name=$2
+    case $name in '' | [!a-z]* | *[!a-z0-9_-]*) die 'NAME must match [a-z][a-z0-9_-]{0,31}' ;; esac
+    [ "${#name}" -le 32 ] || die 'NAME must match [a-z][a-z0-9_-]{0,31}'
+    shift 2
+else
+    root=$1
+    number "$root" || die 'ROOT must be a positive task id'
+    shift
+fi
+while [ $# -gt 0 ]; do
+    case $1 in
+        --lane) [ $# -ge 2 ] || die "$usage"; lane=$2; shift 2 ;;
+        --) shift; break ;;
+        *) die "$usage" ;;
+    esac
+done
+step=1
+pane=${HERDR_PANE_ID:-} workspace=${HERDR_WORKSPACE_ID:-} tab=${HERDR_TAB_ID:-}
+identifier "$pane" && identifier "$workspace" && identifier "$tab" || die 'valid HERDR_PANE_ID, HERDR_WORKSPACE_ID and HERDR_TAB_ID are required'
+[ "$pane" != null ] && [ "$workspace" != null ] && [ "$tab" != null ] || die 'invalid pane location'
+herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || die 'resolve launcher directory'
+. "$herdr_bin_dir/herdr-lanes.sh"
+lane_info "$lane" || die "unknown lane '$lane'"
+[ "$kind" = claude ] || die 'Claude hubs only'
+case " $prefixes " in *' orch '*) ;; *) die 'hub lane must allow orch prefix' ;; esac
+[ -x "$herdr_bin_dir/cdl" ] || die 'sibling cdl must be executable'
+if [ -z "$name" ]; then
+    campaign=$(ledger --json campaign "$root") || fail 'read root campaign'
+    printf '%s\n' "$campaign" | jq -e --argjson root "$root" '.root | .id == $root and .role == "orchestrator" and .status == "open"' >/dev/null || fail 'ROOT is not an open root orchestrator'
+    old=$(printf '%s\n' "$campaign" | jq -r '.root.pane_id // ""') || fail 'read recorded hub pane'
+    if [ -n "$old" ] && [ "$old" != "$pane" ]; then
+        agents=$(herdr agent list) || fail 'read agent list'
+        printf '%s\n' "$agents" | jq -e --arg old "$old" \
+            '.result.agents | type == "array" and all(.[]; .pane_id != $old)' >/dev/null || fail 'recorded hub pane is occupied'
+    fi
+    step=2
+    deadline=$(($(date +%s) + 75))
+    while :; do
+        read_lease || fail 'read predecessor lease'
+        [ "$lease" = live ] || break
+        [ "$(date +%s)" -lt "$deadline" ] || fail 'predecessor lease is still live after 75 s'
+        sleep 3
+    done
+else
+    step=3
+    out=$(ledger --json new "$name" --role orchestrator --workspace "$workspace" --tab "$tab" --pane "$pane") || fail 'create root (inspect ledger before retry)'
+    root=$(printf '%s\n' "$out" | jq -er '.task_id') || fail 'read root id'
+    number "$root" || fail 'invalid root id'
+fi
+step=3
+state_dir=$HOME/.local/state/herdr-orch/lead-push/$root
+old_umask=$(umask)
+umask 077
+mkdir -p -- "$state_dir" || fail 'create state directory'
+chmod 0700 "$state_dir" || fail 'protect state directory'
+mkdir -- "$state_dir/start.lock" || fail 'another start needs reconciliation'
+lock=$state_dir/start.lock
+# Recheck the lease under the adoption lock.
+read_lease && [ "$lease" = free ] || fail 'lease changed before adopt'
+tmp=$(mktemp "$state_dir/.handover.XXXXXX") || fail 'create handover temporary file'
+adopt_err=$(mktemp "$state_dir/.adopt.XXXXXX") || fail 'create adopt stderr file'
+ledger adopt "$root" --workspace "$workspace" --tab "$tab" --pane "$pane" >"$tmp" 2>"$adopt_err" || { cat "$adopt_err" >&2; fail 'adopt (inspect ledger before retry)'; }
+gen=$(sed -n "s/^taskr adopt: task $root now at pane .*; event \([0-9][0-9]*\)$/\1/p" "$adopt_err")
+number "$gen" || fail 'could not read adopt generation'
+handover=$state_dir/handover-$gen.md
+[ ! -e "$handover" ] && [ ! -L "$handover" ] || fail 'handover already exists'
+mv -n -- "$tmp" "$handover" && [ ! -e "$tmp" ] || fail 'handover already exists or could not be saved'
+tmp=
+latest=$(latest_gen) || fail 'read latest adopt'
+[ "$latest" = "$gen" ] || fail 'generation conflict after adopt; do not re-adopt'
+
+step=4
+mcp_config=$state_dir/taskr-mcp-$gen.json
+[ ! -e "$mcp_config" ] && [ ! -L "$mcp_config" ] || fail 'generation config exists'
+tmp=$(mktemp "$state_dir/.mcp.XXXXXX") || fail 'create config temporary file'
+jq -nc --arg root "$root" --arg gen "$gen" \
+    '{mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as",$root,"--session",$gen]}}}' >"$tmp" || fail 'render config'
+chmod 0600 "$tmp" || fail 'protect config'
+mv -n -- "$tmp" "$mcp_config" && [ ! -e "$tmp" ] || fail 'generation config exists or could not be saved'
+tmp=
+rm -f -- "$adopt_err" || fail 'remove adopt stderr temporary file'
+adopt_err=
+
+hub_ref=$(ledger --json log "$root" --limit 0) || fail 'read hub ref'
+hub_ref=$(printf '%s\n' "$hub_ref" | jq -sr '[.[] | select(.kind == "ref" and .data.key == "hub")] | max_by(.id) | .data.value // ""') || fail 'parse hub ref'
+latest=$(latest_gen) || fail 'read generation before exec'
+[ "$latest" = "$gen" ] || fail 'generation conflict before exec'
+
+prove() (
+    trap '' HUP
+    failure_reason='prover interrupted'
+    finish() {
+        rc=$?
+        trap - 0
+        if [ "$rc" -eq 0 ]; then
+            result=live
+            cleanup
+        else
+            result="failed: $failure_reason"
+            if [ -n "$check_task" ]; then
+                ledger --json close "$check_task" --outcome rejected || printf 'herdr-hub: could not close failed gate %s\n' "$check_task" >&2
+            fi
+        fi
+        printf '%s\n' "$result" >"$state_dir/hub-check-$gen.result"
+        ledger note "hub push check $gen: $result" --as "$root" || printf 'herdr-hub: could not record result note\n' >&2
+        exit "$rc"
+    }
+    trap finish 0
+    trap 'fail interrupted' INT QUIT TERM
+    step=5
+    deadline=$(($(date +%s) + 600))
+    while :; do
+        kill -0 "$$" 2>/dev/null || fail 'cdl exited before the channel lease'
+        latest=$(latest_gen) || fail 'read generation while waiting for lease'
+        [ "$latest" = "$gen" ] || fail 'generation conflict while waiting for lease'
+        read_lease || fail 'read live-check lease'
+        if current_lease; then break; fi
+        [ "$(date +%s)" -lt "$deadline" ] || fail 'no current-generation MCP channel lease within 600 s'
+        sleep 3
+    done
+    out=$(ledger --json new "hub-push-check-$gen" --parent "$root" --role gate) || fail 'create check task (inspect before retry)'
+    check_task=$(printf '%s\n' "$out" | jq -er '.task_id') || fail 'read check task id'
+    number "$check_task" || fail 'invalid check task id'
+    out=$(ledger --json launch "$check_task" --provider shell --model none --effort none) || fail 'launch check task (inspect before retry)'
+    check_launch=$(printf '%s\n' "$out" | jq -er '.launch_id') || fail 'read check launch id'
+    number "$check_launch" || fail 'invalid check launch id'
+    out=$(unset TASKR_TASK TASKR_LAUNCH; TASKR_TASK=$check_task TASKR_LAUNCH=$check_launch taskr --json ready "hub push check $gen" --report "$mcp_config") || fail 'send check event (inspect before retry)'
+    event=$(printf '%s\n' "$out" | jq -er '.event_id') || fail 'check event not committed (queued or unknown; inspect before retry)'
+    number "$event" || fail 'invalid check event id'
+    while :; do
+        kill -0 "$$" 2>/dev/null || fail 'cdl exited before the ack'
+        latest=$(latest_gen) || fail 'read generation during live check'
+        [ "$latest" = "$gen" ] || fail 'generation conflict during live check'
+        read_lease && current_lease || fail 'current-generation channel lease lost'
+        deliveries=$(ledger --json delivery ls --as "$root") || fail 'read check delivery'
+        inbox=$(ledger --json inbox --as "$root") || fail 'read check ack'
+        if printf '%s\n' "$deliveries" | jq -e --argjson gen "$gen" --argjson event "$event" \
+            '.attempts | any(.[]; .event_id == $event and .session_gen == $gen and (.received_at | type == "string" and length > 0))' >/dev/null \
+            && printf '%s\n' "$inbox" | jq -e --argjson event "$event" '.acked_event_id | type == "number" and . >= $event' >/dev/null; then
+            break
+        fi
+        [ "$(date +%s)" -lt "$deadline" ] || fail 'check event was not received and acked within 600 s'
+        sleep 3
+    done
+    out=$(ledger --json close "$check_task" --outcome accepted) || fail 'close check task (inspect before retry)'
+    printf '%s\n' "$out" | jq -e --argjson task "$check_task" '.task_id == $task and .queued != true' >/dev/null || fail 'check task close not confirmed'
+)
+prover_log=$state_dir/hub-check-$gen.log
+( set -C; : >"$prover_log" ) || fail 'prover log already exists or could not be created'
+prove </dev/null >"$prover_log" 2>&1 &
+printf 'ROOT=%s GEN=%s mcp_config=%s prover_log=%s\n' "$root" "$gen" "$mcp_config" "$prover_log"
+[ "$hub_ref" = on ] || printf 'To make this the hub: taskr set %s hub=on\n' "$root"
+prompt="You are the hub root $root. herdr-hub adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence. Read the handover at $handover. A \"hub push check $gen\" event will arrive: record it and ack it."
+unset TASKR_TASK TASKR_LAUNCH
+step=6
+umask "$old_umask"
+exec "$herdr_bin_dir/cdl" --model "$model" --effort "$effort" --mcp-config "$mcp_config" \
+    --dangerously-load-development-channels server:taskr "$@" "$prompt"

@@ -1,0 +1,21 @@
+onboarding = false
+# Herdr config template. Full reference: herdr --default-config
+
+[terminal]
+# New panes, tabs, and workspaces inherit the source pane/workspace directory.
+new_cwd = "follow"
+
+# Global for every repo; Herdr adds <repo>/<branch-slug> under it.
+[worktrees]
+directory = "@PROJECTS_ROOT@/.worktrees"
+
+[experimental]
+kitty_graphics = true
+
+[ui]
+sidebar_collapsed_mode = "compact"
+
+# Sounds cannot be filtered by agent role; Moshi callbacks suppress worker tabs,
+# while orchestrators can notify through Moshi or `herdr notification show`.
+[ui.sound]
+enabled = false

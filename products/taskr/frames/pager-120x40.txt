@@ -1,0 +1,40 @@
+ taskr ❯ tui-frames ❯ report                                              hub atlas · 2s ago   ● 2 need you  3 to check
+╭ report · arch-plan-counter2 · v1 ────────────────────────────────────────────────────────────────────────── 1-36/64 ─╮
+│ Counter-review 2: the frames plan (rev 3)                                                                            █
+│                                                                                                                      █
+│ Task 4176 (arch-plan-counter2). Read-only.                                                                           █
+│                                                                                                                      █
+│ Verdict first                                                                                                        █
+│                                                                                                                      █
+│ Hold the send until three wording fixes land (P1-1, P1-2, P1-3). Rev 3 takes every point from the                    █
+│ first review but one, which a later owner note replaced. The layout work is solid. The gaps are in                   █
+│ the places a reader checks first: short rows, the counts, and the install path.                                      █
+│                                                                                                                      █
+│ Findings, ranked                                                                                                     █
+│                                                                                                                      █
+│ P1-1. Short rows are only specified for the first screen                                                             █
+│                                                                                                                      █
+│ The detail screens, the reply box, the key list, the full list and the reader have no short layout,                  █
+│ and the first screen leaves room unused.                                                                             █
+│                                                                                                                      █
+│   | Frame | Size | Empty rows |                                                                                      █
+│   | list-short | 46x30 | 7 of 30 |                                                                                   █
+│   | item-detail | 46x30 | 7 |                                                                                        █
+│   | old-data | 46x30 | 6 |                                                                                           │
+│                                                                                                                      │
+│ • The short list hides every second line once ten items do not fit, then leaves 7 rows empty.                        │
+│ • The item table has six columns; at 46 they cannot all fit, and the plan does not say which go                      │
+│   first.                                                                                                             │
+│ • A reader in a narrow pane opens a detail screen almost at once.                                                    │
+│                                                                                                                      │
+│ Wording fix:                                                                                                         │
+│                                                                                                                      │
+│ 1. Hide second lines one at a time: never more than one empty row while any second line is hidden.                   │
+│ 2. Add short layouts for the detail screens, the reply box, the key list, the full list and the                      │
+│    reader.                                                                                                           │
+│ 3. Drop a trailing `OWNER: nothing.` from shown note text.                                                           │
+│                                                                                                                      │
+│ P1-2. The estimate and its parts disagree                                                                            │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ space page   y copy   q close
