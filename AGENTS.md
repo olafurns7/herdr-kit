@@ -74,7 +74,8 @@ slotr run --pool heavy --kind build --campaign YOUR_CAMPAIGN \
 ```
 
 Follow the brief's validation scope; a worker runs the leaf checks and leaves
-the gate to the lead, which runs it at the worker's committed head. Report the checked commit and commands.
+the gate to the lead, which runs it at a head that contains the worker's commit.
+Report the checked commit and commands.
 Focused checks and source inspection do not prove runtime or release behavior.
 
 ## Privacy and upstream text
