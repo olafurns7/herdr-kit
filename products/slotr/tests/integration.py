@@ -428,22 +428,30 @@ class AdmissionTest(unittest.TestCase):
             self.admitted('new', p2)
         decoy = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
         self.children.append(decoy)
-        self.set_stats(available, avg10)
-        self.wait(lambda: victim.poll() is not None)
+        if two:
+            # Under unchanged pressure the older supervisor stops its own run once recovery_healthy_seconds pass.
+            supervisor = int((self.runtime / 'slotr-runtime-1').read_text())
+            self.freeze(supervisor)
+        try:
+            self.set_stats(available, avg10)
+            self.wait(lambda: victim.poll() is not None)
+            events = [json.loads(line) for line in (self.root / 'state/slotr/events.jsonl').read_text().splitlines()]
+            notes = [json.loads(line) for line in (self.runtime / 'notes').read_text().splitlines()]
+        finally:
+            if two:
+                os.kill(supervisor, signal.SIGCONT)
         self.assertEqual(victim.returncode, 75)
         if two:
             self.assertIsNone(old.poll())
         self.assertIsNone(decoy.poll())
-        events = [json.loads(line) for line in (self.root / 'state/slotr/events.jsonl').read_text().splitlines()]
         stops = [e for e in events if e['event'] == 'stop']
-        self.assertEqual(len(stops), 1)
+        self.assertEqual(len(stops), 1, stops)
         self.assertEqual(stops[0]['reason'], expected)
         self.assertEqual(stops[0]['run'], 'slotr-runtime-2' if two else 'slotr-runtime-1')
         self.assertEqual(len(stops[0]['holders']), 2 if two else 1)
         self.assertIn('anon_mib', stops[0]['holders'][0])
         self.assertFalse(stops[0]['observed_locks'][str(self.runtime / 'heavy.lock')])
         self.assertNotIn('private-test-value', json.dumps(events))
-        notes = [json.loads(line) for line in (self.runtime / 'notes').read_text().splitlines()]
         self.assertEqual(len(notes), 1)
         self.assertEqual(notes[0]['task'], 'test-task')
         self.assertEqual(notes[0]['launch'], 'test-launch')
@@ -2202,9 +2210,14 @@ class AdmissionTest(unittest.TestCase):
         high,h=self.start('H'); self.admitted('H',h)
         low,l=self.start('low',cost=1024)
         self.wait(lambda: self.status()['queue'] and self.status()['queue'][0]['wait_reason']=='priority_wait')
-        self.advance(29); self.pause(0.2); self.assertFalse(l.exists())
-        self.advance(2); self.wait(l.exists); self.assertIsNone(high.poll())
-        # A producer arriving at second 31 cannot reclaim an admitted lower run.
+        # Real time since H's admission counts toward the hold too; jump to 5 s before its observed expiry.
+        left=next(a for a in self.status()['pools']['runtime']['activity'] if a['campaign']=='H')['quiet_expires_in_seconds']
+        self.advance(left-5); wall=time.time()
+        seen=lambda q: datetime.datetime.fromisoformat(q['seen_at'].replace('Z','+00:00')).timestamp()>=wall
+        self.wait(lambda: l.exists() or ((q:=self.status()['queue']) and seen(q[0]) and q[0]['wait_reason']=='priority_wait'))
+        self.assertFalse(l.exists())
+        self.advance(6); self.wait(l.exists); self.assertIsNone(high.poll())
+        # A producer arriving after the hold expired cannot reclaim an admitted lower run.
         self.start('H2',campaign='H',cost=1024)
         self.wait(lambda: bool(self.status()['queue']))
         self.assertIsNone(low.poll()); self.assertEqual(self.events('stop'),[])
