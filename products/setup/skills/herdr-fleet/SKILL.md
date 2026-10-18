@@ -47,7 +47,9 @@ Launch helpers forward Codex and Claude through an existing `~/.local/bin/codato
 never install it or read its accounts. For a resume, preserve the recorded account and native session.
 Do not bypass an account manager's refusal or inspect credential files.
 
-If a host uses slotr, write its exact pool/kind command in the worker brief.
+If a host uses slotr, a leaf brief gets no `slotr run` line except the one
+focused repro that a gate failure prompt names. The parent's head gate passes
+`--cost MIB` or an existing `--kind`.
 Keep local admission configuration and notification credentials outside this repo.
 The default hook templates call taskr; the Claude template also denies Agent,
 Task and Workflow under HERDR_ENV=1 (Codex has no such hook). Public notification

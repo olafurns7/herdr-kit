@@ -7,7 +7,7 @@ description: "Delegate work inside Herdr (HERDR_ENV=1): the agent hierarchy, whi
 
 This skill is the team policy for delegating work inside Herdr: **when** to delegate, **where** agents live, and **which** model runs each lane. The upstream `herdr` skill owns CLI syntax. The **owner** is the developer who runs the session. The installed `herdr` is the command authority: use only commands it accepts, never a web-only or remembered one. The upstream skill comes from `herdr --skill`; regenerate it after each Herdr upgrade.
 
-herdr-kit (github.com/olafurns7/herdr-kit) is the canonical home. Its installer puts this skill at `~/.agents/skills/herdr-orchestration` and links it into Claude Code, Codex, and OpenCode; repositories carry no copy. The taskr hub, orchestrators, and sub-orchestrators load it with the upstream `herdr`, `herdr-fleet`, and `taskr` skills. Workers and reviewers do not load it: the global instructions, the taskr skill, and their brief carry the role rules they need. A repository's AGENTS.md fills its slots: worktree setup plugin, skills to load in briefs, issue tracker, review skill, publish workflow. A personal host skill may add account selection, notification wiring, a heavy-command lock, and machine specifics; its private table and overlay define operator-specific lanes and rules.
+herdr-kit (github.com/olafurns7/herdr-kit) is the canonical home. Its installer puts this skill at `~/.agents/skills/herdr-orchestration` and links it into Claude Code, Codex, and OpenCode; repositories carry no copy. The taskr hub, orchestrators, and sub-orchestrators load it with the upstream `herdr`, `herdr-fleet`, and `taskr` skills. Workers and reviewers do not load it: the global instructions, the taskr skill, and their brief carry the role rules they need. A repository's AGENTS.md fills its slots: worktree setup plugin, skills to load in briefs, issue tracker, review skill, publish workflow, leaf checks (fast commands a leaf runs, with no heavy-command lock), and head gate (the parent's gate command and its cost; `workflow.md` "Head gate"). A repository without Leaf checks and Head gate keeps the commands that the lead writes into Validation. A personal host skill may add account selection, notification wiring, a heavy-command lock, and machine specifics; its private table and overlay define operator-specific lanes and rules.
 
 A host may carry a private `lanes.json` and fleet `local.md`. Review against source text; use the installed text for what a host does today.
 
@@ -28,7 +28,7 @@ Load each file at the step that names it, not up front. Each says at its top whe
 | --- | --- |
 | `lanes.md` | choosing a configured lane or effort, a quota fallback, or a resume |
 | `launch.md` | a recurring watch or poll (`herdr-loop`); opening the hub workspace; creating a campaign or task worktree or workspace; starting a campaign lead; reusing or rearranging an existing tab or pane; a manual launch, or recovery after `herdr-launch` is missing or failed |
-| `workflow.md` | registering a campaign root or changing its plan; writing an orchestrator, sub-orchestrator, or code-reviewer brief; settled waits on a reviewer; a validation gate lane; work without a ledger; a stalled, blocked, or odd-looking agent |
+| `workflow.md` | registering a campaign root or changing its plan; writing an orchestrator, sub-orchestrator, or code-reviewer brief; settled waits on a reviewer; a head gate; work without a ledger; a stalled, blocked, or odd-looking agent |
 | `owner.md` | (hub or campaign lead) asking the owner anything or handing the owner an action, each milestone, parking a campaign, going idle on unattended work, answering "what happened" |
 | `teardown.md` | stopping an owned worker, closing a tab or workspace, after a reboot or crash |
 | `recovery.md` | any resume or prompt to a restored pane; your own session restarted; the taskr server unreachable |
@@ -120,7 +120,8 @@ Ownership: <files or module you may edit>   Forbidden: <files you must not touch
 Context: <current behavior, evidence, decisions already made>
 Skills to load: <repository skills mapped to this work; code-reviewers also name taskr references/review.md>
 Acceptance: <observable conditions>
-Validation: <exact commands, one per acceptance item>; wrap heavy ones in the host's heavy-command lock, if any
+Validation: <exact commands, one per acceptance item>: leaf checks only (the Leaf checks slot); no build, suite, or gate
+  Gate: parent at head (implementer or fixer)
 Progress: taskr SKILL.md worker rules
 
 Other agents share this repository. Preserve their edits. Do not commit, push,
@@ -131,6 +132,8 @@ changed files, summary, validation evidence, risks, and blockers to the report
 path, then reply with the path and three lines.
 ```
 
+An implementer or fixer brief replaces the sentence that starts "Do not commit" with: "You MAY commit your owned paths only, with exactly `git add -- PATHS && git commit -m MSG -- PATHS`. On `index.lock`, retry up to 3 times, then `taskr ask --blocking`; never delete a lock. Do not push, amend, rebase, open a PR, update the issue tracker, or start agents. When committed: `taskr ready SLICE --report REPORT --kv head=<full OID>`, then `taskr done`. Stay in your pane: the lane stays done but open until the gate at your head is green and review is READY." Ownership must be disjoint: a path-limited commit does not separate two lanes' edits to one file. Reviewer and researcher briefs stay read-only.
+
 A brief that hands a slotr runtime to a worker (`herdr-fleet`) says the worker stops its run with `slotr stop <run>` before `taskr done`, unless the brief hands the runtime to the lead.
 
 Never run `slotr stop` on another campaign's run to enforce priority. Keep your request queued and ask the hub through taskr with the campaign, pool and observed wait reason. The hub sets campaign weights with `slotr priority set`. slotr applies caps, quiet holds and the fairness floor at admission. Weight changes never revoke an admission. Stop only an owned run under its cleanup or cancellation authority, with `--reason`.
@@ -139,7 +142,7 @@ The brief and launch record carry the task topology and the task-qualified agent
 
 Require each Codex and Claude worker's initial report or checkpoint to record the provider, the effective native-home path, and the native session reference. Inside Codex it queries only `CODEX_HOME` and `CODEX_THREAD_ID` (`printf '%s\n' "$CODEX_HOME" "$CODEX_THREAD_ID"`; empty home means `~/.codex`); inside Claude only `CLAUDE_CONFIG_DIR` (empty means `~/.claude`). No environment dumps, invented Claude variables, or credential or profile stores. `CODEX_THREAD_ID` is the Codex session ID; a Herdr `agent_session` from `agent get` is an optional fallback while the name is live. A Claude session reference counts only if its CLI or Herdr reports it. Validate a saved ID as nonempty and not literal `null`; if none is verified, record that limitation, and stop and report when a resume needs it. Record provider, model, and effort from the actual launch argv, not `agent get`.
 
-When the host skill defines a heavy-command lock, at most one heavy command runs host-wide under it, and your own gates use it too; write the wrapped commands into Validation. Keep a campaign's briefs, reports, and plan doc in `~/.local/state/herdr-orch/<repo>-<campaign>/` on the host where its lanes run, never in a worktree (removed at teardown) or `/tmp` (lost at reboot). Keep database dumps, toolchains, `node_modules`, and repository clones out of it: bulk evidence stays in the task worktree.
+When the host skill defines a heavy-command lock, at most one heavy command runs host-wide under it, and your head gates use it too. A leaf gets a wrapped command only for the one focused repro that a failure prompt names (`workflow.md` "Head gate"). Keep a campaign's briefs, reports, and plan doc in `~/.local/state/herdr-orch/<repo>-<campaign>/` on the host where its lanes run, never in a worktree (removed at teardown) or `/tmp` (lost at reboot). Keep database dumps, toolchains, `node_modules`, and repository clones out of it: bulk evidence stays in the task worktree.
 
 Collect with one long wait (default 540000 ms timeout, Codex orchestrators included); pass `--ack` only for a newly handled pending event, and after a timeout or an error that reports `acked_event_id`, do not repeat that ack:
 
@@ -153,8 +156,8 @@ Never loop short waits, shell `sleep` for a lane, or put this wait in an `&` bac
 
 - Never branch, switch, stash, or commit in the shared main checkout. Other agents run there. The orchestrator's own edits to tracked files go to a task worktree first, and every commit, push, and PR runs from that task worktree. A task worktree has one task workspace; it is not a worker-only workspace.
 - Implementer report read and the worktree diff inspected by the orchestrator.
-- Independent review under the brief and operator policy, then the repository's review skill on the final diff.
-- Run the repository's local publish gate once, under the host's heavy-command lock if it has one, then publish with its PR workflow from the task worktree. Publication stays with the orchestrator.
+- Independent review of a gated head under the brief and operator policy, then the repository's review skill on the final diff.
+- A green head gate at the final head that ran the repository's full gate command after `git clean -ffdx` is the publish gate. Else run the full gate once at the final head, under the host's heavy-command lock if it has one. Then publish with the repository's PR workflow from the task worktree. Publication stays with the orchestrator.
 - Merge only when verified, evaled where a runtime lane applies, CI green where the repository has CI, and every review comment resolved.
 
 Only the hub and the campaign leads write to the owner (`owner.md`).

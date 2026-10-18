@@ -1,6 +1,6 @@
 # Workflow: ledger, brief variants, reviews, and results
 
-Load when: registering a campaign root or changing its plan; writing an orchestrator, sub-orchestrator, or code-reviewer brief; at settled waits on a reviewer; running a validation gate lane; working without a ledger; when a prompt stalls or an agent is blocked or its status looks wrong. Part of herdr-orchestration; `SKILL.md` is the core (brief header, universal brief rules, wait command).
+Load when: registering a campaign root or changing its plan; writing an orchestrator, sub-orchestrator, or code-reviewer brief; at settled waits on a reviewer; running a head gate; working without a ledger; when a prompt stalls or an agent is blocked or its status looks wrong. Part of herdr-orchestration; `SKILL.md` is the core (brief header, universal brief rules, wait command).
 
 ## Goal, plan, and documents
 
@@ -51,7 +51,7 @@ In a `sub-orchestrator` brief, write "Do not commit, push, open a PR, or update 
 
 ## Review journal
 
-Give each reviewer brief the author's stated intent, exact base/head, scope, and allowed checks.
+Give each reviewer brief the author's stated intent, exact base/head, scope, and allowed checks. A code-reviewer brief names `head=OID` and the green gate receipt (attempt, command, scope, exit, log). The reviewer reads `BASE..OID`, checks that the receipt matches the head and names skipped suites, and runs no build or suite. For a check that the gate does not cover, it asks the parent with `taskr ask --blocking`; the parent runs that check in the gate lane as a new attempt and answers with its receipt. Without the receipt, the reviewer withholds READY. Gate green is evidence to inspect, not proof of correctness. A review fix goes to the done-but-open lane or a new fixer; its new head needs a new gate and review at that head.
 Request Act / Consider / Noted / Dismissed findings under [the review reference](../herdr-practices/references/review.md) when the optional practices pack is installed; otherwise include the needed criteria in the brief.
 
 This checkpoint policy applies to substantial Herdr reviews in all repositories. In each `code-reviewer` brief, include `journal=<absolute path>` in the header (usually the report sibling `<report>.live.md`) and grant writes only to the named report and journal, with a temporary sibling permitted solely for atomic journal replacement. Keep reviewed source files and other repository paths read-only. Omit the journal for a trivial one-line review and for non-review roles.
@@ -91,9 +91,27 @@ The report file is the durable result; the pane read is for state. For an idle f
 
 For tests, servers, and other non-agent processes in a pane, wait with `herdr pane wait-output <pane-id> --regex '<pattern>' --timeout <ms>`. `agent wait` is for agents only.
 
-## Validation gate lanes
+## Head gate
 
-An exact validation gate (run commands, report exit codes) needs no model. Create a helper tab under `launch.md`, register it with `--role gate`, launch it with `--provider shell --model none --effort none`, export its ids, and run the commands in its pane with `herdr pane run`. Chain the commands with `&&` and end with the ledger report, such as `lint && test; rc=$?; taskr ready "gate <name>" --kv exit=$rc`, so that any failing command makes the exit nonzero and the result arrives in your `taskr wait`. Without a ledger, end with an exit marker instead (`echo "gate-exit=$?"`) and wait with `herdr pane wait-output` for a regex that matches it. Wrap heavy commands in the host's heavy-command lock. Use a model for a gate only when the output needs triage: reading failures, not only exit codes. `herdr-launch` has no gate lane: register and run a gate by hand as above.
+Leaves run only the repository's Leaf checks, commit their owned paths, and report `ready --kv head=OID`. The parent (lead or sub-orchestrator) runs one clean, admitted gate per head; a gate needs no model. Set up once per campaign: `git worktree add --detach <campaign worktree>-gate` (disposable, never an editing worktree); a helper tab under `launch.md`, registered with `--role gate`, launched with `--provider shell --model none --effort none`, ids exported (`herdr-launch` has no gate lane); and the evidence folder `<campaign folder>/gates/`, outside the gate worktree. For each attempt N, pin the full OID and send this line with one `herdr pane run` (GATE_CMD and its cost from the Head gate slot; INSTALL_STEP is `true` when the gate installs dependencies itself):
+
+```sh
+L=/ABS/CAMPAIGN/gates/OID12-N.log   # absolute, outside the gate worktree, one per attempt
+( cd GATE_WT && git checkout --detach --force OID && git clean -ffdxq || exit 90
+  command -v slotr >/dev/null || exit 91
+  exec slotr run --pool heavy --cost MIB --campaign C --purpose "gate OID12 #N" \
+    --task "$TASKR_TASK" --pane "$HERDR_PANE_ID" -- sh -c 'INSTALL_STEP || exit 92; GATE_CMD'
+) >"$L" 2>&1; rc=$?; test -s "$L" || rc=93
+taskr ready "gate OID12 #N exit=$rc" --report "$L" --kv head=OID --kv exit=$rc --kv cmd=CMD_ID --kv clean=ffdx
+```
+
+Do not add `tee`: the exit status comes from the command. A successful `ready` does not prove the log was captured: read the log path. A repository may keep a dependency cache through `git clean` only when its Head gate slot names it. Exit 90 (checkout or clean), 91 (no slotr), 92 (install), 93 (no log), and a slotr stop are incomplete, not red, and no lane is charged. A host without slotr drops the slotr check and wrapper by an explicit brief line, never by fallback. Without a ledger, end with `echo "gate-exit=$rc"` and wait with `herdr pane wait-output` for it.
+
+Run one gate at a time per campaign. When a gate ends, gate the newest head that contains every reported ready head (`git merge-base --is-ancestor`); this batches heads. The dedupe key is the full OID, the exact gate command (with scope and BASE), and the cleanup; do not run a green key again, and run a different key at the same OID as a new attempt. Record the latest `gate.head`, `gate.exit`, and `gate.log` on the root with `taskr set`. A stopped gate (exit 75 with `slotr: stopped RUN: REASON`) is incomplete: keep the run and reason, retry once for `emergency_available_mib`, `stop_available_mib`, `stop_psi_full_avg10`, or `lease_expired`; a second stop, a `manual` stop, another or unknown reason, or a configuration error is the parent's decision (raise the cost or lease, gate later, or ask the owner). A payload's own exit 75 without the slotr line is red.
+
+On red, failing files are a hint, not proof of cause: read the failure and its dependency path. Send the failure to the one lane at fault, or each lane its part; when the cause is unclear (tooling, lockfile, a provider change that breaks a consumer), start an integration fixer with the batch's heads. Send it with `taskr prompt LANE --file gates/FAIL-OID12-N.md`: head, command, exit, failing excerpt, log path, and optionally the one focused command, under the heavy-command lock, that the leaf may run once per fix round. The leaf fixes, commits, and reports a new head. This policy caps fix rounds: after three red gates charged to one lane, the parent decides (fixer lane, smaller slice, or owner ask). On green, lanes stay done but open until review is READY; then close them (`accepted` or `reworked`) and tear down their tabs.
+
+With a branch per lane, the parent merges each lane branch into the campaign branch. On a conflict, record base, head, and paths, run `git merge --abort`, and prompt the leaf: "merge campaign base BASE into your branch, resolve inside your owned paths, commit, report the new head". A conflict in paths that the leaf does not own goes to the parent or a fixer. Then merge again.
 
 ## Context cost
 
