@@ -276,7 +276,7 @@ pub fn supervise(run: &str, cmd: &[String], cfg: &Config) -> Result<i32> {
     eprintln!("slotr: admitted {}", h.run);
     let result = (|| {
         let _ = manager::event(
-            json!({"event":"admit","run":h.run,"pool":h.request.pool,"campaign":h.request.campaign,"cost_mib":h.request.cost_mib,"weight":h.request.level,"level":h.request.level,"policy_generation":h.request.policy_generation}),
+            json!({"event":"admit","run":h.run,"pool":h.request.pool,"campaign":h.request.campaign,"cost_mib":h.request.cost_mib,"weight":h.request.level,"level":h.request.level,"policy_generation":h.request.policy_generation,"waited_ms":((h.admitted_at - h.request.since) * 1000.0).max(0.0) as u64}),
         );
         manager::hook(cfg, "on_admit", &h, "admitted");
         let mut memory_count: u32 = 0;

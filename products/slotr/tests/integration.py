@@ -861,6 +861,8 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(len(admits), 1)
         self.assertEqual(admits[0]['pool'], 'heavy')
         self.assertEqual(admits[0]['cost_mib'], 6144)
+        self.assertIs(type(admits[0]['waited_ms']), int)
+        self.assertGreaterEqual(admits[0]['waited_ms'], 0)
         result = self.invoke('status', '--json', env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['priority']['state'], 'ok')
