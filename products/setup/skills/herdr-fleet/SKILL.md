@@ -49,7 +49,9 @@ Do not bypass an account manager's refusal or inspect credential files.
 
 If a host uses slotr, write its exact pool/kind command in the worker brief.
 Keep local admission configuration and notification credentials outside this repo.
-The default hook templates call taskr; the Claude template also denies Agent, Task and Workflow under HERDR_ENV=1 (Codex has no such hook). Public notification fragments are selected explicitly.
+The default hook templates call taskr; the Claude template also denies Agent,
+Task and Workflow under HERDR_ENV=1 (Codex has no such hook). Public notification
+fragments are selected explicitly.
 Private notification additions belong in locally kept settings.
 
 ## taskr roles

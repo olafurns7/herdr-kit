@@ -18,9 +18,9 @@ curl -fsSL -o slotr-install.sh \
   SLOTR_VERSION=slotr/v0.3.1 sh slotr-install.sh
 ```
 
-Downloads the Linux x86_64 release, verifies the installer and archive checksums, and installs
-to `~/.local/bin`. For the latest stable release or a different pin with
-`SLOTR_VERSION`, see [install](docs/install.md#versions).
+Downloads the Linux x86_64 release, verifies the installer and archive
+checksums, and installs to `~/.local/bin`. For the latest stable release or a
+different pin with `SLOTR_VERSION`, see [install](docs/install.md#versions).
 
 ## Quick agent setup
 

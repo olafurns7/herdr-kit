@@ -339,8 +339,9 @@ herdr-launch LANE impl-api "$PWD/worker-brief.md" "$PWD/worker-report.md" ROOT
 ```
 
 Replace LANE with an allowed lane from `herdr-launch --lanes` and ROOT with
-your parent task ID. The report path must be absolute; the brief file must exist. The launcher
-creates a worker tab; add PANE after ROOT to use an existing idle shell pane.
+your parent task ID. The report path must be absolute; the brief file must
+exist. The launcher creates a worker tab; add PANE after ROOT to use an
+existing idle shell pane.
 Expect `task=ID launch=ID tab=TAB pane=PANE`; the worker receives the brief through
 taskr and still runs `got`, `ready` and `done` or `fail` explicitly.
 

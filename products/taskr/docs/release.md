@@ -76,7 +76,10 @@ or other build version is refused. The script runs on Linux and:
   in the repository [README.md](../../../README.md) and
   [QUICKSTART.md](../../../QUICKSTART.md), the taskr [README.md](../README.md),
   [AGENTS_SETUP.md](../AGENTS_SETUP.md), [docs/install.md](install.md), and
-  [products/setup/README.md](../../setup/README.md).
+  [products/setup/README.md](../../setup/README.md). Update the `TASKR_VERSION`
+  default in [products/setup/bootstrap.sh](../../setup/bootstrap.sh) and its
+  pin assertions in [bootstrap_test.sh](../../setup/tests/bootstrap_test.sh)
+  and [install_test.sh](../../setup/tests/install_test.sh) to the same tag.
 
 The thirteen assets are the eight platform binaries, `SKILL.md`, `install.sh`,
 `skill.tar.gz`, `plugin.tar.gz` and `SHA256SUMS`. The installer installs both
