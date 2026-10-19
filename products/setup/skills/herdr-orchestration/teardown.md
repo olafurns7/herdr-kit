@@ -8,7 +8,7 @@ Use `SKILL.md` Preflight for the memory check and heavy-agent limits.
 
 ## Per-worker teardown
 
-- After collecting an owned worker's report and result, verify the live agent identity before quitting only that worker:
+- After collecting an owned worker's report and result (for a committing leaf, also after the gate is green and review is READY at a head that contains its commit), verify the live agent identity before quitting only that worker:
 
 ```bash
 herdr agent get impl-<slug>

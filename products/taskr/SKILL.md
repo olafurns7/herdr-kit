@@ -18,7 +18,7 @@ Worker (a HERDR-BRIEF prompt): `prompt --file` to an implementer, researcher or 
 taskr got ATTEMPT
 taskr start                           # optional
 taskr note "progress"
-taskr ready "slice" --report PATH [--kv K=V]
+taskr ready "slice" --report PATH [--kv K=V]   # after a commit: --kv head=FULL_OID
 taskr ask "question" --blocking [--owner]
 taskr done "report"                   # or fail
 ```
