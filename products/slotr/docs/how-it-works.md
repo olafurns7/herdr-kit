@@ -148,6 +148,9 @@ systemd-run receives only valid environment variable names via
 - State is locked and atomically replaced in
   `${XDG_RUNTIME_DIR:-/run/user/UID}/slotr`.
 - Events append to `${XDG_STATE_HOME:-~/.local/state}/slotr/events.jsonl`.
+  Each `admit` event carries `waited_ms`, the whole milliseconds from entering
+  the queue to admission, clamped at 0; a request cancelled while queued writes
+  no admit event, so it is not counted.
 - Managed weights live in `${XDG_STATE_HOME:-~/.local/state}/slotr/priority.json`.
   Scheduling clocks and manual stop intent use `scheduling.json` and `stops.json`
   beside runtime state, under the existing lock. Runtime schema is 1.

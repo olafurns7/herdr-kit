@@ -861,11 +861,32 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(len(admits), 1)
         self.assertEqual(admits[0]['pool'], 'heavy')
         self.assertEqual(admits[0]['cost_mib'], 6144)
+        self.assertIs(type(admits[0]['waited_ms']), int)
+        self.assertGreaterEqual(admits[0]['waited_ms'], 0)
         result = self.invoke('status', '--json', env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['priority']['state'], 'ok')
         self.assertTrue(priority.exists())
         self.assertFalse((scratch / '.config/slotr').exists())
+
+    def test_admit_waited_ms_matches_queued_holder_timestamps(self):
+        self.configure_clock()
+        self.cfg['runtime_slots'] = 1
+        self.write_config()
+        holder, p1 = self.start('holder')
+        self.admitted('holder', p1)
+        _, p2 = self.start('waiter')
+        self.wait(lambda: bool(self.status()['queue']))
+        self.advance(30)
+        holder.terminate(); holder.wait(timeout=3)
+        h = self.admitted('waiter', p2)
+        raw = next(r for r in json.loads((self.runtime / 'slotr/state.json').read_text())['holders']
+                   if r['run'] == h['run'])
+        admit = self.wait(lambda: next((e for e in self.events('admit') if e['run'] == h['run']), None))
+        self.assertIs(type(admit['waited_ms']), int)
+        self.assertGreater(admit['waited_ms'], 0)
+        self.assertEqual(admit['waited_ms'], int(max(0, (raw['admitted_at'] - raw['since']) * 1000)))
+        self.assertGreaterEqual(admit['waited_ms'], 30000)
 
     def test_stop_only_registered_unit_and_test_seams_gated(self):
         self.assertEqual(self.invoke("stop", "unrelated.service").returncode, 2)
