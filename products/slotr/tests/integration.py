@@ -271,6 +271,15 @@ class AdmissionTest(unittest.TestCase):
                 self.fail(f'freeze timed out: pid {pid} not stopped outside {lock} within {timeout}s')
             threading.Event().wait(0.01)
 
+    def lock_free(self, path):
+        # True when an exclusive flock on path succeeds now; it is released at once.
+        with open(path, 'a') as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except BlockingIOError:
+                return False
+
     def advance_warned(self, run, seconds):
         # Keep the holder from cancelling its claim before the waiter sees the clock jump.
         pid = int((self.runtime / run).read_text())
@@ -1055,11 +1064,13 @@ class AdmissionTest(unittest.TestCase):
         self.wait(p2.exists)
         waiter, out = self.start('waiter')
         self.wait(lambda: bool(self.status()['queue']))
-        os.kill(waiter.pid, signal.SIGSTOP)           # Ctrl-Z in the waiter's pane
+        self.freeze(waiter.pid)                       # Ctrl-Z in the waiter's pane, outside its state transaction
         try:
             self.advance(70)
             self.pause(3.0)
             self.assertIsNone(old.poll(), 'holder stopped (rc=%s) for a frozen waiter; waiter admitted=%s' % (old.returncode, out.exists()))
+            # The supervisors were free to decide: the frozen waiter does not hold state.lock.
+            self.wait(lambda: self.lock_free(self.runtime / 'slotr/state.lock'))
         finally:
             os.kill(waiter.pid, signal.SIGCONT)
 
@@ -1128,19 +1139,39 @@ class AdmissionTest(unittest.TestCase):
 
     def test_probe_p15_queued_waiter_leaves_the_legacy_lock_free(self):
         self.set_stats(10000)                         # nothing runs; the waiter queues on memory_budget
-        self.start('waiter')
+        waiter, _ = self.start('waiter')
         self.wait(lambda: bool(self.status()['queue']))
-        got = 0
-        with open(self.cfg['legacy_runtime_lock'], 'a') as lock:
-            for _ in range(100):
+        legacy = self.cfg['legacy_runtime_lock']
+        def free_while_frozen(pid, timeout):
+            # A poll takes the legacy lock just before its state transaction and drops it just after,
+            # so freeze() may land inside that bracket: retry until a freeze finds the lock free.
+            deadline = time.monotonic() + timeout
+            while True:
+                self.freeze(pid, timeout=max(deadline - time.monotonic(), 0.5))
                 try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    fcntl.flock(lock, fcntl.LOCK_UN)
-                    got += 1
-                except BlockingIOError:
-                    pass
-                self.pause(0.01)
-        self.assertGreater(got, 50, 'an exclusive legacy user got the lock in %d of 100 tries while only a waiter existed' % got)
+                    if self.lock_free(legacy):
+                        return True
+                finally:
+                    os.kill(pid, signal.SIGCONT)
+                if time.monotonic() >= deadline:
+                    return False
+                threading.Event().wait(0.04)
+        self.assertTrue(free_while_frozen(waiter.pid, 6),
+                        'a queued waiter frozen outside its state transaction kept the legacy lock for 6s')
+        self.assertIsNone(waiter.poll(), 'waiter exited (rc=%s); the free lock proves nothing' % waiter.returncode)
+        self.assertEqual(len(self.status()['queue']), 1, 'waiter left the queue; the free lock proves nothing')
+        # Control: a waiter that keeps its shared legacy lock between polls fails the same check.
+        marker = self.root / 'keeper'
+        keeper = subprocess.Popen([sys.executable, '-c', 'import fcntl, pathlib, sys, time\n'
+                                   'f = open(sys.argv[1], "a"); fcntl.flock(f, fcntl.LOCK_SH)\n'
+                                   'pathlib.Path(sys.argv[2]).touch(); time.sleep(60)', legacy, str(marker)])
+        self.children.append(keeper)
+        try:
+            self.wait(marker.exists)
+            self.assertFalse(free_while_frozen(keeper.pid, 1), 'control: the check passed while a process kept the legacy lock')
+        finally:
+            keeper.kill()
+            keeper.wait()
 
     def test_probe_p16_collision_retry_with_the_systemd_255_message(self):
         (self.runtime / 'collision').touch()
@@ -1505,10 +1536,10 @@ class AdmissionTest(unittest.TestCase):
         self.wait(lambda: bool(self.status()['queue']))
         self.advance(10)
         self.wait(lambda: any(h.get('state') == 'warned' for h in self.status()['slots']))
-        os.kill(waiter.pid, signal.SIGSTOP)
+        self.freeze(waiter.pid)
         try:
             self.advance(30)
-            self.pause(2.0)
+            self.wait(lambda: self.events('warn_cancelled') or self.events('stop') or old.poll() is not None)
             self.assertIsNone(old.poll(), 'stopped rc=%s for a waiter frozen during the grace' % old.returncode)
             self.assertEqual(len(self.events('warn_cancelled')), 1)
             self.assertEqual(self.events('stop'), [])
@@ -2403,9 +2434,16 @@ class AdmissionTest(unittest.TestCase):
         path=self.runtime/'legacy-heavy.lock'; path.unlink(); os.mkfifo(path)
         try:
             lower,_=self.start('lower',cost=1024); self.pause(.4)
-            self.set_stats(1000); self.pause(1.2)
+            self.set_stats(1000)
+            # Poll /proc and files only: the FIFO stays in place for the whole observation.
             stat=Path(f'/proc/{pid}/stat'); wchan=Path(f'/proc/{supervisor}/wchan')
-            evidence=dict(workload_state=stat.read_text().split()[2] if stat.exists() else 'gone',
+            def state():
+                try: return stat.read_text().split()[2]
+                except OSError: return 'gone'
+            began=time.monotonic(); deadline=began+6
+            while not (out.with_suffix('.term').exists() and state() in ('gone','Z')) and time.monotonic()<deadline:
+                threading.Event().wait(0.04)
+            evidence=dict(seconds=round(time.monotonic()-began,2), workload_state=state(),
                           term_received=out.with_suffix('.term').exists(),
                           supervisor_wchan=wchan.read_text() if wchan.exists() else 'gone',
                           waiter_wchan=Path(f'/proc/{lower.pid}/wchan').read_text()
@@ -2414,8 +2452,8 @@ class AdmissionTest(unittest.TestCase):
         finally:
             fd=os.open(path,os.O_RDWR|os.O_NONBLOCK)
             path.unlink(); path.touch(); self.pause(.15); os.close(fd)
-        self.assertTrue(evidence['term_received'],'other-pool legacy FIFO blocks watchdog through state.lock')
-        self.assertIn(evidence['workload_state'],['gone','Z'])
+        self.assertTrue(evidence['term_received'],'other-pool legacy FIFO blocks watchdog through state.lock: %s'%evidence)
+        self.assertIn(evidence['workload_state'],['gone','Z'],evidence)
         self.assertEqual(child.wait(timeout=3),75)
 
     def test_replaceable_runtime_files_refuse_fifos_without_hanging(self):
