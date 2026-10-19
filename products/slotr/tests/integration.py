@@ -1142,6 +1142,10 @@ class AdmissionTest(unittest.TestCase):
         waiter, _ = self.start('waiter')
         self.wait(lambda: bool(self.status()['queue']))
         legacy = self.cfg['legacy_runtime_lock']
+        def polled(log):
+            # Logged only after a completed poll took the legacy lock and passed its release
+            # (runtime.rs:113, :215, :223); queue entry alone precedes the first acquisition.
+            self.wait(lambda: log.exists() and 'slotr: waiting: memory_budget' in log.read_text())
         def free_while_frozen(pid, timeout):
             # A poll takes the legacy lock just before its state transaction and drops it just after,
             # so freeze() may land inside that bracket: retry until a freeze finds the lock free.
@@ -1156,22 +1160,24 @@ class AdmissionTest(unittest.TestCase):
                 if time.monotonic() >= deadline:
                     return False
                 threading.Event().wait(0.04)
+        polled(self.root / 'waiter.log')
         self.assertTrue(free_while_frozen(waiter.pid, 6),
                         'a queued waiter frozen outside its state transaction kept the legacy lock for 6s')
         self.assertIsNone(waiter.poll(), 'waiter exited (rc=%s); the free lock proves nothing' % waiter.returncode)
         self.assertEqual(len(self.status()['queue']), 1, 'waiter left the queue; the free lock proves nothing')
-        # Control: a waiter that keeps its shared legacy lock between polls fails the same check.
-        marker = self.root / 'keeper'
+        # Control: a waiter that logs its poll but keeps its shared legacy lock fails the same barrier and check.
+        log = self.root / 'keeper.log'
         keeper = subprocess.Popen([sys.executable, '-c', 'import fcntl, pathlib, sys, time\n'
                                    'f = open(sys.argv[1], "a"); fcntl.flock(f, fcntl.LOCK_SH)\n'
-                                   'pathlib.Path(sys.argv[2]).touch(); time.sleep(60)', legacy, str(marker)])
+                                   'pathlib.Path(sys.argv[2]).write_text("slotr: waiting: memory_budget\\n"); time.sleep(60)',
+                                   legacy, str(log)])
         self.children.append(keeper)
         try:
-            self.wait(marker.exists)
+            polled(log)
             self.assertFalse(free_while_frozen(keeper.pid, 1), 'control: the check passed while a process kept the legacy lock')
         finally:
             keeper.kill()
-            keeper.wait()
+            keeper.wait(timeout=3)
 
     def test_probe_p16_collision_retry_with_the_systemd_255_message(self):
         (self.runtime / 'collision').touch()
