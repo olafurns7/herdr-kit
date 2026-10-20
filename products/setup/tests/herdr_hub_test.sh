@@ -562,6 +562,18 @@ ledger() {
     assert not (hold / 'start.guard').exists()
     print(f'case {count}: the hold mark never overwrites a replacement start.lock', flush=True)
 
+    # Review 7981 Consider: with a stale guard the hold mark cannot be written, so the failure says to reconcile by hand.
+    count += 1
+    stale = scratch / 'hold-stale-guard'
+    stale.mkdir()
+    (stale / 'hold.sh').write_text(prelude + '\ntrap cleanup 0\ntake_lock\ngen=7\nmkdir "$state_dir/start.guard"\n' +
+                                   "fail 'generation conflict after adopt; do not re-adopt'\n")
+    run_stale = subprocess.run([shell, str(stale / 'hold.sh')], env=dict(race_env, CASE=str(stale)), capture_output=True, text=True)
+    assert run_stale.returncode == 1, run_stale
+    assert 'could not mark ' in run_stale.stderr and 'reconcile it by hand before any rerun' in run_stale.stderr, run_stale.stderr
+    assert (stale / 'start.lock').is_dir() and 'hold' not in (stale / 'start.lock/owner').read_text()
+    print(f'case {count}: a stale guard turns the skipped hold mark into a reconcile-by-hand message', flush=True)
+
     # Review 7963 F1: A gets SIGTERM after its rmdir of start.guard while B, holding the guard, has read A's owner.
     # A's exit trap must not remove B's guard, or C enters and B then reclaims C's live lock. Both launchers.
     for script in ('herdr-hub', 'herdr-lead'):

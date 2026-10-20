@@ -27,6 +27,8 @@ fail() {
         if [ -n "$lock" ] && take_guard; then
             ! own_lock || printf '%s %s hold\n' "$$" "$host" >"$lock/owner"
             drop_guard
+        elif [ -n "$lock" ]; then
+            printf '%s: could not mark %s hold (start.guard is held): reconcile it by hand before any rerun\n' "${0##*/}" "$lock" >&2
         fi ;;
     esac
     [ -z "$gen" ] || lock=
