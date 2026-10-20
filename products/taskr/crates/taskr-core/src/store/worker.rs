@@ -1,6 +1,15 @@
 use super::*;
 
 pub fn resolve(db: &Connection, as_id: i64) -> Result<Task> {
+    resolve_inner(db, as_id, true)
+}
+
+/// Only `consumer show --as ROOT` may inspect a root from another admitted host.
+pub(super) fn resolve_consumer_show(db: &Connection, as_id: i64) -> Result<Task> {
+    resolve_inner(db, as_id, false)
+}
+
+fn resolve_inner(db: &Connection, as_id: i64, root_host_required: bool) -> Result<Task> {
     let ts = env("TASKR_TASK");
     let ls = env("TASKR_LAUNCH");
     if as_id != 0 {
@@ -28,7 +37,9 @@ pub fn resolve(db: &Connection, as_id: i64) -> Result<Task> {
                 "--as is only for a root orchestrator: task {as_id} has launch {l}; it writes with TASKR_TASK and TASKR_LAUNCH"
             )));
         }
-        check_host(db, as_id)?;
+        if root_host_required {
+            check_host(db, as_id)?;
+        }
         return Ok(t);
     }
     if ts.is_empty() {
