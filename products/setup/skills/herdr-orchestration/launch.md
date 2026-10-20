@@ -37,7 +37,16 @@ The hub registers one long-lived root per repository once, with its location fla
 
 ### Owner hub in its current pane
 
-After the old hub Claude exits, run at that pane's shell prompt:
+To restart a running hub onto a new session, the hub records its handover and then runs, in its own pane:
+
+```bash
+taskr handover --as <root> --note "<checkpoint>"
+herdr-hub move <root> --lane opus-high    # --no-handover skips the handover check
+```
+
+`move` refuses unless the root is recorded at this pane and has a handover newer than its latest adopt. It needs `setsid` (util-linux; macOS lacks it by default) and fails before anything is stopped without it. It records the Claude session of the agent in this pane, starts the helper with `setsid` (log `lead-push/<root>/hub-move-<pid>.log`), and returns only once the helper reports that it leads its own process group; the hub then ends its turn. The helper waits for the hub to go idle and stops it with `herdr-lead stop <root> <pane> --session <sid>`, which refuses a pane now holding another agent. It waits for the lease to expire, types `herdr-hub <root> --lane <lane>` at the pane's shell, and follows `hub-check-<gen>.result` for up to 2520 s, the prover's full lease and backlog budget. A helper failure is noted on the root.
+
+After the old hub Claude exits, a person can also run at that pane's shell prompt:
 
 ```bash
 herdr-hub <root> --lane opus-high
@@ -47,15 +56,17 @@ herdr-hub check <root>
 ```
 
 `herdr-hub` (needs Codator and `--codator`) waits for the old lease, adopts once, and execs sibling `cdl`
-with the lane and generation MCP config. It preserves refs and only suggests
-`taskr set <root> hub=on` when needed. Answer the development-channel dialog
-by hand; the hub skips adopt and uses taskr MCP tools with pushed fences.
-The detached prover requires the matching lease and a received-and-acked gate
-event within 600 s. It closes the gate accepted or rejected and notes the result.
+with the lane and generation MCP config, passing the prompt after `--` (Claude's channel
+and MCP config flags take several values). It preserves refs and only suggests
+`taskr set <root> hub=on` when needed. The detached prover answers the development-channel
+dialog once; the hub skips adopt and uses taskr MCP tools with pushed fences.
+The prover requires the matching lease and a received-and-acked gate
+event within 600 s; while the hub acks older pushed events, each new ack extends the wait (up to 30 min).
+It closes the gate accepted or rejected and notes the result.
 `$HOME/.local/state/herdr-orch/lead-push/<root>/hub-check-<gen>.log` and `.result`
 record `live` or `failed: REASON`; `check` reports lease/generation only (0/1/2:
-live/stale/unknown). On failure, reconcile before removing `start.lock` or retrying
-(see `recovery.md`). After the hub exits, remove its MCP config by literal path.
+live/stale/unknown). After a failure, see `recovery.md` for `start.lock`.
+After the hub exits, remove its MCP config by literal path.
 
 For each campaign the hub creates the campaign worktree workspace and starts the campaign lead in its root tab. The agent name is `orch-<campaign>`:
 
@@ -72,16 +83,20 @@ task_workspace_id=$(printf '%s\n' "$wt" | jq -er '.result.workspace.workspace_id
 herdr-lead start <root> <pane> --worktree <campaign worktree> --lane opus-high --prompt-file <lead brief>
 # Alternatively, replace an existing plain lead after stopping it:
 herdr-lead start <root> <pane> --worktree <campaign worktree> --predecessor-pane <old pane> --prompt-file <lead brief>
+# Or move a running lead to a new session in one command (same pane, or name another):
+herdr-lead move <root> <pane> --worktree <campaign worktree> --prompt-file <lead brief>
 herdr-lead check <root>
 ```
+
+`move` first checks the destination (free name and pane, location; for another pane also its shell prompt and host) and that the agent in the root's recorded pane is the root's lead `orch-<slug>` on this host. It then asks that lead for `taskr handover` (`--no-handover` skips this) and fails before stopping anything if none is recorded. It then stops that lead (`herdr-lead stop <root> <pane>`: wait for idle, `esc ctrl+c ctrl+c`, at most 120 s, shell prompt, lease free within 120 s) and runs `start` with that pane as predecessor. `stop` sends keys only to the root's lead: it rechecks the agent's name and Claude session right before each key sequence and refuses any other occupant of the pane. Run `start` or `move` detached or with a tool timeout of at least 30 min. Each run logs its steps to `lead-push/<root>/lead-start-<pid>.log`.
 
 Do not use `herdr-launch` for a lead: it registers a child. `herdr-lead` accepts any Claude lane that allows `orch-` (default `opus-high`), checks the target shell and predecessor lease, clears worker identity, adopts the root once, and keeps the worktree cwd. It writes immutable `0600` configs and handovers under `$HOME/.local/state/herdr-orch/lead-push/<root>/`, passes the config with `--mcp-config`, and answers the development-channel dialog. It never writes `.mcp.json`. Its acceptance check must still pass on every start.
 
 After the lead is closed, delete its `$HOME/.local/state/herdr-orch/lead-push/<root>/taskr-mcp-<gen>.json` by literal path.
 
-The lead brief says **"herdr-lead adopted you; skip adopt"** and carries the root and generation from the helper's prompt. A second adopt, even in the same pane, fences that channel. Handle pushed events with taskr MCP receipt/inbox/consumer/ack tools and the supplied fence; deduplicate against the inbox before effects. No plain `taskr wait` or `taskr ack` in a push lead. A live lease alone is insufficient: `start` creates a throwaway gate child, emits its ready event, waits up to 240 s for current-generation receipt and ack, and closes the child accepted. Only its final `ROOT live at GEN (event E received and acked)` line accepts startup. `check` prints `live`, `stale`, or `unknown` (exit 0, 1, or 2); it checks lease/generation only, not end-to-end delivery.
+The lead brief says **"herdr-lead adopted you; skip adopt"** and carries the root and generation from the helper's prompt. A second adopt, even in the same pane, fences that channel. Handle pushed events with taskr MCP receipt/inbox/consumer/ack tools and the supplied fence; deduplicate against the inbox before effects. No plain `taskr wait` or `taskr ack` in a push lead. A live lease alone is insufficient: `start` creates a throwaway gate child, emits its ready event, waits up to 240 s for current-generation receipt and ack, and closes the child accepted. A successor first acks older pushed events in order; it prints that backlog, and each new ack extends the wait by up to 240 s (at most 30 min). Only its final `ROOT live at GEN (event E received and acked)` line accepts startup. `check` prints `live`, `stale`, or `unknown` (exit 0, 1, or 2); it checks lease/generation only, not end-to-end delivery.
 
-Move leads one at a time, starting low-traffic; stop rollout on any failed live check. On failure at or after adoption the helper prints `ROOT= GEN= pane= mcp_config= agent= lease= check_task=`. Inspect that state and the ledger before recovery; never blindly rerun, re-adopt, or start a second agent. Recovery and account-pinned resume are in `recovery.md` "Your own session".
+Move leads one at a time, starting low-traffic; stop rollout on any failed live check. On failure at or after adoption the helper prints `ROOT= GEN= pane= mcp_config= agent= lease= check_task= log=`. Inspect that state and the ledger before recovery; never blindly rerun, re-adopt, or start a second agent. Recovery and account-pinned resume are in `recovery.md` "Your own session".
 
 For a plain lead, use an authorized `orch-` lane and send the brief with `herdr agent prompt`. It registers its own root if needed (`workflow.md` "Brief variants"), and its first ledger act on the root is `taskr adopt <root> --pane <pane>`. The hub checks that `taskr campaign <root>` does not read `unregistered` before reporting startup. A root without a pane cannot be watched or focused from the owner's view. Every lead brief says owner decisions and actions are owner asks; owner notes only summarize them (`owner.md`). A repository's worktree setup plugin may skip `orch/*` branches. The lead needs no dependencies and runs gates in task worktrees.
 

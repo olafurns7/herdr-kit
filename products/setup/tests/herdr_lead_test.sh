@@ -15,7 +15,11 @@ printf '%s\n' "$line" >>"$CALLS"
 case "$1 $2" in
     'agent list')
         agents='{"result":{"agents":[]}}'
+        [ ! -f "$CASE/waited-idle" ] || [ -z "${AGENTS_AFTER_WAIT:-}" ] || AGENTS=$AGENTS_AFTER_WAIT
+        [ -f "$CASE/stopped" ] && AGENTS=
         printf '%s\n' "${AGENTS:-$agents}" ;;
+    'pane send-keys')
+        case " $* " in *' ctrl+c '*) [ "${STOP_IGNORED:-}" = 1 ] || : >"$CASE/stopped" ;; esac ;;
     'pane get') printf '%s\n' '{"result":{"pane":{"workspace_id":"wA","tab_id":"wA:t1"}}}' ;;
     'pane process-info')
         fg=400
@@ -34,9 +38,13 @@ case "$1 $2" in
     'pane wait-output') [ "${ENV_BAD:-}" != 1 ] || exit 1 ;;
     'agent start')
         : >"$CASE/started"
-        [ "${DIALOG:-}" != 1 ] || exit 1
+        [ "${DIALOG:-}" != 1 ] || { printf '%s\n' '{"error":{"code":"agent_not_ready"}}' >&2; exit 1; }
         ;;
     'agent prompt')
+        case $4 in *'taskr handover --as 42'*)
+            [ "${NO_HANDOVER:-}" = 1 ] || : >"$CASE/handover"
+            exit 0 ;;
+        esac
         printf '%s' "$4" >"$CASE/prompt-sent"
         case ${PROMPT_RESULT:-} in
             stall) printf '%s\n' 'agent_prompt_stalled' >&2; exit 1 ;;
@@ -53,6 +61,7 @@ case "$1 $2" in
         printf '{"result":{"agent":{"agent_status":"%s"},"type":"agent"}}\n' "$status"
         ;;
     'agent wait')
+        [ "$5" != idle ] || : >"$CASE/waited-idle"
         if [ "$5" = working ]; then
             n=0
             [ ! -f "$CASE/working-waits" ] || n=$(cat "$CASE/working-waits")
@@ -110,7 +119,12 @@ case "$1 $2" in
             symlink) ln -s "$CASE/missing" "$config" ;;
         esac
         ;;
-    'log 42') printf '{"record":"event","id":%s,"kind":"adopt"}\n' "${LATEST:-7}" ;;
+    'log 42')
+        printf '{"record":"event","id":%s,"kind":"adopt"}\n' "${LATEST:-7}"
+        printf '{"record":"event","id":3,"kind":"handover"}\n'
+        [ ! -f "$CASE/handover" ] || printf '{"record":"event","id":6,"kind":"handover"}\n'
+        ;;
+    'glance ') printf '{"caller_host":"%s"}\n' "${CALLER_HOST:-}" ;;
     'new lead-push-check-7') printf '{"task_id":43}\n' ;;
     'launch 43') printf '{"launch_id":8}\n' ;;
     'ready lead push check 7')
@@ -118,7 +132,18 @@ case "$1 $2" in
         printf '{"event_id":9}\n'
         ;;
     'delivery ls') printf '{"attempts":[{"event_id":9,"session_gen":%s,"received_at":%s}]}\n' "${DELIVERY_GEN:-7}" "${RECEIVED:-\"now\"}" ;;
-    'inbox --as') printf '{"acked_event_id":%s}\n' "${ACK:-9}" ;;
+    'inbox --as')
+        if [ -n "${ACKS:-}" ]; then
+            n=0
+            [ ! -f "$CASE/inbox-reads" ] || n=$(cat "$CASE/inbox-reads")
+            n=$((n + 1))
+            printf '%s\n' "$n" >"$CASE/inbox-reads"
+            ACK=$(printf '%s\n' "$ACKS" | cut -d ' ' -f "$n")
+            [ -n "$ACK" ] || ACK=${ACKS##* }
+            printf '{"acked_event_id":%s,"events":[{"id":2},{"id":3}]}\n' "$ACK"
+        else
+            printf '{"acked_event_id":%s}\n' "${ACK:-9}"
+        fi ;;
     'close 43') printf '{"task_id":43}\n' ;;
     *) exit 1 ;;
 esac
@@ -151,7 +176,7 @@ EOF
     chmod 0755 "$home/.local/bin/codator"
     : >"$case_dir/calls"
     FAIL= LEASE= LATEST= LEASE_GEN= AGENTS= BUSY= ENV_BAD= DIALOG= ACK= RECEIVED= DELIVERY_GEN= CONFIG_EXISTS= HOLDER= CAMPAIGN=
-    DIALOG_SCREEN=
+    DIALOG_SCREEN= STOP_IGNORED= NO_HANDOVER= ACKS= AGENTS_AFTER_WAIT= CALLER_HOST=
     PROMPT_RESULT= PROMPT_VISIBLE= WAIT_RESULTS= GET_STATUSES= ENTER_DELAYS=
     printf 'case: %s\n' "$name"
 }
@@ -162,7 +187,8 @@ run() {
         ENV_BAD="$ENV_BAD" DIALOG="$DIALOG" DIALOG_SCREEN="$DIALOG_SCREEN" ACK="$ACK" RECEIVED="$RECEIVED" DELIVERY_GEN="$DELIVERY_GEN" \
         CONFIG_EXISTS="$CONFIG_EXISTS" HOLDER="$HOLDER" CAMPAIGN="$CAMPAIGN" TASKR_TASK=99 TASKR_LAUNCH=100 \
         PROMPT_RESULT="$PROMPT_RESULT" PROMPT_VISIBLE="$PROMPT_VISIBLE" WAIT_RESULTS="$WAIT_RESULTS" \
-        GET_STATUSES="$GET_STATUSES" HERDR_LEAD_ENTER_DELAYS="$ENTER_DELAYS" \
+        GET_STATUSES="$GET_STATUSES" HERDR_LEAD_ENTER_DELAYS="$ENTER_DELAYS" STOP_IGNORED="$STOP_IGNORED" NO_HANDOVER="$NO_HANDOVER" ACKS="$ACKS" \
+        AGENTS_AFTER_WAIT="$AGENTS_AFTER_WAIT" CALLER_HOST="$CALLER_HOST" \
         sh "$repo_dir/bin/herdr-lead" "$@" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
 }
 expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/err")"; }
@@ -291,15 +317,46 @@ has err 'agent=orch-example lease=unknown check_task=-'
 [ "$(grep -c 'taskr|adopt' "$case_dir/calls")" = 1 ] || fail 'adopted twice'
 [ "$(grep -c 'herdr|agent|start' "$case_dir/calls")" = 1 ] || fail 'started twice'
 
-new_case 'post-adopt failure keeps lock and blocks blind re-adoption'
+new_case 'post-adopt failure keeps lock; a rerun reclaims it from the exited owner'
 FAIL='taskr log'
 start
 expect_rc 1
-[ -d "$home/.local/state/herdr-orch/lead-push/42/start.lock" ] || fail 'post-adopt lock was removed'
+lock_dir=$home/.local/state/herdr-orch/lead-push/42/start.lock
+[ -d "$lock_dir" ] || fail 'post-adopt lock was removed'
+read -r owner_pid owner_host <"$lock_dir/owner" || fail 'lock has no owner'
+[ "$owner_host" = "$(uname -n)" ] || fail 'lock owner host'
+# The fake ledger repeats generation 7; a real rerun adopts a new one.
+rm -f "$home/.local/state/herdr-orch/lead-push/42/handover-7.md" "$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json"
+FAIL=
+start
+expect_rc 0
+has err "reclaimed start.lock from exited pid $owner_pid"
+[ ! -d "$lock_dir" ] || fail 'successful rerun kept lock'
+[ "$(grep -c 'taskr|adopt' "$case_dir/calls")" = 2 ] || fail 'rerun did not adopt'
+
+new_case 'generation conflict lock is never reclaimed'
+LATEST=8
 start
 expect_rc 1
-has err 'another start needs reconciliation'
-[ "$(grep -c 'taskr|adopt' "$case_dir/calls")" = 1 ] || fail 'blind rerun adopted again'
+LATEST=
+start
+expect_rc 1
+has err 'another start needs reconciliation (start.lock owner: '
+has err ' hold)'
+[ "$(grep -c 'taskr|adopt' "$case_dir/calls")" = 1 ] || fail 'rerun adopted after a generation conflict'
+
+new_case 'lock without owner or with a live owner is refused'
+lock_dir=$home/.local/state/herdr-orch/lead-push/42/start.lock
+mkdir -p "$lock_dir"
+start
+expect_rc 1
+has err 'another start needs reconciliation (start.lock owner: not recorded)'
+printf '%s %s\n' "$$" "$(uname -n)" >"$lock_dir/owner"
+start
+expect_rc 1
+has err "another start needs reconciliation (start.lock owner: $$ "
+lacks calls 'taskr|adopt'
+[ -d "$lock_dir" ] || fail 'refused start removed the lock'
 
 new_case 'single-line prompt names the absolute file and waits for working'
 printf 'Additional brief.\n\nSecond line.\n' >"$case_dir/prompt"
@@ -426,6 +483,12 @@ printf 'Additional brief.\n' >"$case_dir/prompt"
 start --prompt-file "$case_dir/prompt"
 expect_rc 0
 [ ! -d "$home/.local/state/herdr-orch/lead-push/42/start.lock" ] || fail 'successful start kept lock'
+lacks err 'agent_not_ready'
+has out 'herdr-lead: answered the development-channel dialog'
+start_log=$(ls "$home/.local/state/herdr-orch/lead-push/42/"lead-start-*.log) || fail 'no start log'
+for n in 1 2 3 4 5 6 7 8; do grep -F "step $n:" "$start_log" >/dev/null || fail "start log misses step $n"; done
+grep -F '42 live at 7' "$start_log" >/dev/null || fail 'start log misses the live line'
+grep -F 'agent_not_ready' "$start_log" >/dev/null || fail 'start log misses the blocked start'
 for n in 1 2 3 4 5 6 7 8; do has out "herdr-lead: step $n:"; done
 has out 'herdr-lead: 42 live at 7 (event 9 received and acked)'
 has calls 'codator|claude|--version'
@@ -444,6 +507,7 @@ has calls "taskr|ready|lead push check 7|--report|$home/.local/state/herdr-orch/
 has calls 'taskr|close|43|--outcome|accepted|env=/'
 [ "$(wc -l <"$case_dir/prompt-sent")" -eq 0 ] || fail 'prompt contains a newline'
 case $(cat "$case_dir/prompt-sent") in *' lead-push-gen-7') ;; *) fail 'missing end token' ;; esac
+grep -F 'if the handover Note lists session timers to re-arm, create each again' "$case_dir/prompt-sent" >/dev/null || fail 'prompt does not ask to re-arm session timers'
 config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
 jq -e '.mcpServers.taskr == {command:"taskr",args:["mcp","--channel","--as","42","--session","7"]}' "$config" >/dev/null || fail 'bad config'
 [ "$(ls -l "$config" | cut -c 1-10)" = -rw------- ] || fail 'config mode is not 0600'
@@ -536,6 +600,20 @@ start --resume saved-session --account example
 expect_rc 0
 has calls '--|--account|example|--resume|saved-session|--model|claude-opus-5-5'
 
+new_case 'live check waits while the successor drains an inbox backlog'
+ACKS='1 2 3 4 5 6 7 8 8 9'
+start
+expect_rc 0
+has out 'herdr-lead: check event 9 waits behind 2 unacked events'
+has out 'herdr-lead: 42 live at 7 (event 9 received and acked)'
+
+new_case 'live check still fails when acks stop advancing'
+ACKS='1 2 3'
+start
+expect_rc 1
+has err 'check event was not received and acked within 240 s (acked through 3; backlog 2)'
+lacks calls 'taskr|close'
+
 for mode in unreceived unacked wrong-generation wrong-holder; do
     new_case "live check refuses $mode"
     case $mode in
@@ -549,6 +627,149 @@ for mode in unreceived unacked wrong-generation wrong-holder; do
     lacks calls 'taskr|close'
     has err 'ROOT=42 GEN=7 pane=wA:p1 mcp_config='
 done
+
+moved_campaign='{"root":{"id":42,"name":"example","role":"orchestrator","status":"open","pane_id":"wA:p1"}}'
+old_lead='{"result":{"agents":[{"name":"orch-example","pane_id":"wA:p1","agent_session":{"value":"s1"}}]}}'
+move() { run move 42 wA:p1 --worktree "$work" "$@"; }
+
+new_case 'move asks for a handover, stops the predecessor, then starts'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead
+move
+expect_rc 0
+has calls 'herdr|agent|prompt|orch-example|'
+has calls 'taskr handover --as 42'
+has calls 'Session timers to re-arm: each CronCreate job or background loop you armed'
+has calls 'herdr|agent|wait|wA:p1|--until|idle|--timeout|120000'
+has calls 'herdr|pane|send-keys|wA:p1|esc|ctrl+c|ctrl+c'
+has out 'herdr-lead: move: handover event 6 recorded'
+has out 'herdr-lead: 42 live at 7 (event 9 received and acked)'
+[ "$(grep -c 'taskr|adopt' "$case_dir/calls")" = 1 ] || fail 'adopted twice'
+[ -n "$(grep -n 'taskr handover' "$case_dir/calls" | head -1)" ] || fail 'no handover prompt'
+[ "$(grep -n 'send-keys|wA:p1|esc' "$case_dir/calls" | cut -d: -f1)" -lt "$(grep -n 'taskr|adopt' "$case_dir/calls" | cut -d: -f1)" ] || fail 'adopted before stopping'
+grep -F 'move: handover event 6 recorded' "$home/.local/state/herdr-orch/lead-push/42/"lead-start-*.log >/dev/null || fail 'start log misses move lines'
+
+new_case 'move without a recorded handover stops nothing'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead NO_HANDOVER=1
+move
+expect_rc 1
+has err 'orch-example recorded no handover; nothing was stopped'
+lacks calls 'herdr|pane|send-keys'
+lacks calls 'taskr|adopt'
+
+new_case 'move --no-handover skips the prompt'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead
+move --no-handover
+expect_rc 0
+lacks calls 'taskr handover --as 42'
+has calls 'herdr|pane|send-keys|wA:p1|esc|ctrl+c|ctrl+c'
+
+new_case 'move fails when the predecessor keeps running'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead STOP_IGNORED=1
+move --no-handover
+expect_rc 1
+has err 'orch-example still runs in wA:p1 after 120 s'
+[ "$(grep -c 'herdr|pane|send-keys|wA:p1|ctrl+c|ctrl+c' "$case_dir/calls")" = 1 ] || fail 'did not resend ctrl+c once'
+lacks calls 'taskr|adopt'
+
+new_case 'move validates a busy destination before the handover or stop'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead BUSY=wA:p3
+run move 42 wA:p3 --worktree "$work"
+expect_rc 1
+has err 'target pane is not at its shell prompt'
+lacks calls 'taskr handover --as 42'
+lacks calls 'herdr|pane|send-keys'
+run move 42 wA:p3 --worktree "$work" --no-handover
+expect_rc 1
+has err 'target pane is not at its shell prompt'
+lacks calls 'herdr|pane|send-keys'
+lacks calls 'taskr|adopt'
+
+new_case 'move to another pane checks its host before the stop'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead ENV_BAD=1
+run move 42 wA:p3 --worktree "$work" --no-handover
+expect_rc 1
+has err 'target is not on this host'
+lacks calls 'herdr|pane|send-keys'
+
+new_case 'move refuses an unrelated agent in the recorded pane'
+CAMPAIGN=$moved_campaign AGENTS='{"result":{"agents":[{"name":"worker-unrelated","pane_id":"wA:p1"}]}}'
+move
+expect_rc 1
+has err 'wA:p1 runs worker-unrelated (session unknown), not the lead of root 42; nothing was sent to it'
+lacks calls 'herdr|agent|prompt'
+move --no-handover
+expect_rc 1
+has err 'not the lead of root 42'
+lacks calls 'herdr|pane|send-keys'
+lacks calls 'taskr|adopt'
+
+new_case 'move refuses predecessor-pane and a root without a pane'
+move --predecessor-pane wA:p2
+expect_rc 2
+move
+expect_rc 1
+has err 'root has no recorded lead pane to move from'
+lacks calls 'taskr|adopt'
+
+new_case 'stop waits for a live lease to expire'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead LEASE=live
+run stop 42 wA:p1
+expect_rc 1
+has err 'predecessor lease is still live after 120 s'
+LEASE=
+run stop 42 wA:p1
+expect_rc 0
+has out 'herdr-lead: wA:p1 is at its shell prompt and the lease of 42 is free'
+
+new_case 'stop refuses a pane that is not the recorded root pane'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead
+run stop 42 wA:p9
+expect_rc 1
+lacks calls 'herdr|pane|send-keys'
+
+new_case 'stop refuses an unrelated agent in the recorded pane'
+CAMPAIGN=$moved_campaign AGENTS='{"result":{"agents":[{"name":"worker-unrelated","pane_id":"wA:p1"}]}}'
+run stop 42 wA:p1
+expect_rc 1
+has err 'wA:p1 runs worker-unrelated (session unknown), not the lead of root 42'
+lacks calls 'herdr|pane|send-keys'
+
+new_case 'stop rechecks the lead session right before its keys'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead
+AGENTS_AFTER_WAIT='{"result":{"agents":[{"name":"orch-example","pane_id":"wA:p1","agent_session":{"value":"s2"}}]}}'
+run stop 42 wA:p1
+expect_rc 1
+has calls 'herdr|agent|wait|wA:p1|--until|idle'
+has err 'wA:p1 runs orch-example (session s2), not the lead of root 42'
+lacks calls 'herdr|pane|send-keys'
+
+new_case 'stop --session names the hub to stop, whatever its name'
+CAMPAIGN=$moved_campaign AGENTS='{"result":{"agents":[{"name":null,"pane_id":"wA:p1","agent_session":{"value":"s1"}}]}}'
+run stop 42 wA:p1 --session s9
+expect_rc 1
+has err 'wA:p1 runs an unnamed agent (session s1), not the lead of root 42'
+lacks calls 'herdr|pane|send-keys'
+run stop 42 wA:p1 --session s1
+expect_rc 0
+has calls 'herdr|pane|send-keys|wA:p1|esc|ctrl+c|ctrl+c'
+
+new_case 'stop and move refuse a root adopted on another host'
+CAMPAIGN='{"root":{"id":42,"name":"example","role":"orchestrator","status":"open","pane_id":"wA:p1","host":"other.example.com"}}'
+AGENTS=$old_lead
+run stop 42 wA:p1
+expect_rc 1
+has err 'root 42 was adopted on other.example.com, not this host'
+move --no-handover
+expect_rc 1
+has err 'root 42 was adopted on other.example.com, not this host'
+lacks calls 'herdr|pane|send-keys'
+CALLER_HOST=other.example.com
+run stop 42 wA:p1
+expect_rc 0
+CAMPAIGN=$moved_campaign
+run stop 42 wA:p1
+expect_rc 1
+has err 'root 42 was adopted on the ledger host, not this host (other.example.com)'
 
 new_case 'check live'
 LEASE=live
@@ -578,4 +799,58 @@ LEASE=bad
 run check 42
 expect_rc 2
 has out unknown
+# Review 7908 F1: A reads a dead owner and pauses mid-reclaim while B and then C start. Only one may enter.
+for script in herdr-lead herdr-hub; do
+    new_case "$script start.lock reclaim admits one starter while another reclaims"
+    race=$case_dir/race
+    mkdir -p "$race/bin"
+    # A pauses once, right after its first read of the owner file (cat or sed, whichever the launcher uses).
+    cat >"$race/bin/cat" <<'EOF'
+#!/bin/sh
+PATH=/usr/bin:/bin "${0##*/}" "$@"; rc=$?
+case "$WHO:$*" in
+    A:*start.lock/owner)
+        if [ ! -f "$RACE/paused-A" ]; then
+            : >"$RACE/paused-A"
+            i=0; until [ -f "$RACE/go-A" ] || [ "$i" -ge 600 ]; do i=$((i + 1)); sleep 0.05; done
+        fi ;;
+esac
+exit "$rc"
+EOF
+    cp "$race/bin/cat" "$race/bin/sed"
+    chmod 0755 "$race/bin/cat" "$race/bin/sed"
+    {
+        printf '%s\n' 'set -u' 'state_dir=$RACE root=42 host=$(uname -n) guard= lock=' \
+            "number() { case \$1 in '' | *[!0-9]* | 0) return 1 ;; esac; }" \
+            'fail() { printf "%s\n" "$1" >&2; [ -z "$guard" ] || rmdir -- "$guard"; exit 1; }'
+        awk '/^# start.guard serializes/ { on = 1 } on { print } /^release_lock\(\) \{/ { last = 1 } last && /^}/ { exit }' "$repo_dir/bin/$script"
+        printf '%s\n' 'take_lock' ': >"$RACE/entered-$WHO"' \
+            'i=0; until [ -f "$RACE/release" ] || [ "$i" -ge 600 ]; do i=$((i + 1)); sleep 0.05; done'
+    } >"$race/take.sh"
+    mkdir "$race/start.lock"
+    printf '2147483647 %s\n' "$(uname -n)" >"$race/start.lock/owner"
+    starter() { env -i PATH="$race/bin:/usr/bin:/bin" RACE="$race" WHO="$1" sh "$race/take.sh" 2>"$race/$1.err" & }
+    wait_file() {
+        i=0
+        until [ -f "$race/$1" ]; do i=$((i + 1)); [ "$i" -le 200 ] || { : >"$race/go-A"; : >"$race/release"; fail "no $1"; }; sleep 0.05; done
+    }
+    starter A; a=$!
+    wait_file paused-A
+    starter B; b=$!
+    sleep 1
+    [ ! -f "$race/entered-B" ] || { : >"$race/go-A"; : >"$race/release"; fail 'B entered while A was reclaiming'; }
+    : >"$race/go-A"
+    wait_file entered-A
+    rc=0; wait "$b" || rc=$?
+    [ "$rc" = 1 ] || fail "B exit $rc"
+    grep -F 'another start needs reconciliation (start.lock owner: ' "$race/B.err" >/dev/null || fail "B: $(cat "$race/B.err")"
+    starter C; c=$!
+    rc=0; wait "$c" || rc=$?
+    [ "$rc" = 1 ] || fail "C exit $rc"
+    : >"$race/release"
+    wait "$a" || fail 'A failed'
+    [ ! -f "$race/entered-B" ] && [ ! -f "$race/entered-C" ] || fail 'a second starter entered'
+    [ ! -e "$race/start.guard" ] || fail 'start.guard left behind'
+done
+
 printf 'PASS: %s herdr-lead cases\n' "$count"
