@@ -551,16 +551,20 @@ pub fn set(db: &mut Connection, id: i64, pairs: &[(String, String)]) -> Result<V
                 have.insert(k.clone(), v.clone());
             }
         }
-        // PR and per-host tmp bookkeeping stay outside the ordinary ref budget.
-        let ordinary = have
+        // PR, glance and per-host tmp bookkeeping stay outside the ordinary ref budget.
+        let ordinary: Vec<_> = have
             .keys()
             .filter(|k| {
-                !["pr.state", "pr.ci"].contains(&k.as_str()) && super::tmp::host(k).is_none()
+                !["pr.state", "pr.ci", "glance.state"].contains(&k.as_str())
+                    && super::tmp::host(k).is_none()
             })
-            .count();
-        if ordinary > 20 {
+            .map(String::as_str)
+            .collect();
+        if ordinary.len() > 20 {
             return Err(reject(format!(
-                "task {id} would have {ordinary} references; at most 20 (delete one with KEY=)"
+                "task {id} would have {} references; at most 20 (delete one with KEY=): {}",
+                ordinary.len(),
+                ordinary.join(", ")
             )));
         }
         let mut ids = Vec::new();

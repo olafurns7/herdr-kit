@@ -52,6 +52,18 @@ fn md_or(s: &str, none: &str) -> String {
         md(s)
     }
 }
+/// Rows of each long list a successor reads in full; older rows are counted, not printed.
+const KEEP: usize = 20;
+/// Characters of free text in one list row before it is clipped.
+const ROW: usize = 600;
+fn clip(s: &str) -> String {
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.chars().count() <= ROW {
+        s
+    } else {
+        format!("{}…", s.chars().take(ROW).collect::<String>())
+    }
+}
 fn cell(s: String) -> String {
     if s.is_empty() { "–".into() } else { s }
 }
@@ -114,8 +126,29 @@ pub fn render(db: &Connection, id: i64, note: &str, adopted: bool) -> Result<Ren
         "select id,created_at,coalesce(summary,'') as summary from events where task_id=? and kind='handover' order by id desc limit 2",
         &[&id],
     )?;
-    let since = marks.get(if adopted { 1 } else { 0 });
     let latest = marks.first();
+    // Without an earlier handover, the window opens at the adopt of the session that wrote the latest one.
+    let since = match marks.get(if adopted { 1 } else { 0 }) {
+        Some(m) => Some((m.clone(), "previous handover")),
+        None => rows(
+            db,
+            "select id,created_at from events where task_id=?1 and kind='adopt' and id<?2 order by id desc limit 1",
+            &[
+                &id,
+                &match (adopted, latest) {
+                    (true, Some(l)) => n(l, "id"),
+                    (true, None) => db.query_row(
+                        "select coalesce(max(id),0) from events where task_id=? and kind='adopt'",
+                        [id],
+                        |r| r.get(0),
+                    )?,
+                    (false, _) => i64::MAX,
+                },
+            ],
+        )?
+        .pop()
+        .map(|m| (m, "adopt")),
+    };
     let note = if adopted {
         latest.map_or("", |v| text(v, "summary"))
     } else {
@@ -177,16 +210,45 @@ pub fn render(db: &Connection, id: i64, note: &str, adopted: bool) -> Result<Ren
         md_or_raw(&refs(db, id, ", ")?, "none")
     )
     .expect("string");
+    if !note.trim().is_empty() {
+        writeln!(out, "## Note\n\n{}\n", md(note)).expect("string");
+    }
+    // An answered ask sorts at its newest answer, so a late or superseding owner answer stays among the newest.
     let decisions = rows(
         db,
-        "with recursive sub(id) as(select ?1 union all select t.id from tasks t join sub on t.parent_id=sub.id) select e.id,e.kind,coalesce(e.summary,'') as summary,coalesce(a.created_at,e.created_at) as created_at,t.name as name,coalesce(a.summary,'') as answer,coalesce(a.id,0) as answer_id from events e join tasks t on t.id=e.task_id left join events a on a.id=e.answered_by where ((e.kind='decision' and e.task_id=?1) or(e.kind='ask' and e.answered_by is not null and json_extract(e.data,'$.owner')=1 and coalesce(json_extract(a.data,'$.withdrawn'),0)=0 and e.task_id in(select id from sub))) and not exists(select 1 from events r where r.kind='revoke' and r.related_event_id=e.id and r.task_id=?1) order by e.id",
+        "with recursive sub(id) as(select ?1 union all select t.id from tasks t join sub on t.parent_id=sub.id) select e.id,e.kind,coalesce(e.summary,'') as summary,coalesce(a.created_at,e.created_at) as created_at,t.name as name,coalesce(a.summary,'') as answer,coalesce(a.id,0) as answer_id from events e join tasks t on t.id=e.task_id left join events a on a.id=e.answered_by where ((e.kind='decision' and e.task_id=?1) or(e.kind='ask' and e.answered_by is not null and json_extract(e.data,'$.owner')=1 and coalesce(json_extract(a.data,'$.withdrawn'),0)=0 and e.task_id in(select id from sub))) and not exists(select 1 from events r where r.kind='revoke' and r.related_event_id=e.id and r.task_id=?1) order by coalesce(a.id,e.id),e.id",
         &[&id],
     )?;
     out.push_str("## Decisions in force\n\n");
     if decisions.is_empty() {
         out.push_str("None.\n");
     }
-    for d in &decisions {
+    let (older, newest) = decisions.split_at(decisions.len().saturating_sub(KEEP));
+    if !older.is_empty() {
+        let ids = |ask: bool| {
+            older
+                .iter()
+                .filter(|d| (d["kind"] == "ask") == ask)
+                .map(|d| n(d, "id").to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let (plain, asks) = (ids(false), ids(true));
+        write!(
+            out,
+            "{} older entries are in force but not shown here (newest {KEEP} below).",
+            older.len()
+        )
+        .expect("string");
+        if !plain.is_empty() {
+            write!(out, " Decisions: {plain}.").expect("string");
+        }
+        if !asks.is_empty() {
+            write!(out, " Owner answers to asks: {asks}.").expect("string");
+        }
+        writeln!(out, " Find one with `taskr search TERMS --root {id}`.\n").expect("string");
+    }
+    for d in newest {
         if d["kind"] == "ask" {
             writeln!(
                 out,
@@ -194,8 +256,8 @@ pub fn render(db: &Connection, id: i64, note: &str, adopted: bool) -> Result<Ren
                 n(d, "id"),
                 md(text(d, "name")),
                 n(d, "answer_id"),
-                md(text(d, "summary")),
-                md(text(d, "answer"))
+                md(&clip(text(d, "summary"))),
+                md(&clip(text(d, "answer")))
             )
             .expect("string");
         } else {
@@ -204,7 +266,7 @@ pub fn render(db: &Connection, id: i64, note: &str, adopted: bool) -> Result<Ren
                 "- Decision {} ({}): {}",
                 n(d, "id"),
                 md(text(d, "created_at")),
-                md(text(d, "summary"))
+                md(&clip(text(d, "summary")))
             )
             .expect("string");
         }
@@ -222,7 +284,10 @@ pub fn render(db: &Connection, id: i64, note: &str, adopted: bool) -> Result<Ren
     let mut closed: Vec<_> = all
         .iter()
         .filter(|r| {
-            r["status"] == "closed" && since.is_none_or(|s| n(r, "closed_event") > n(s, "id"))
+            r["status"] == "closed"
+                && since
+                    .as_ref()
+                    .is_none_or(|(s, _)| n(r, "closed_event") > n(s, "id"))
         })
         .collect();
     closed.sort_by_key(|r| (n(r, "closed_event"), n(r, "id")));
@@ -320,37 +385,44 @@ pub fn render(db: &Connection, id: i64, note: &str, adopted: bool) -> Result<Ren
         )
         .expect("string");
     }
-    if let Some(s) = since {
+    if let Some((s, from)) = &since {
         writeln!(
             out,
-            "\n## Closed since the previous handover (event {}, {})\n",
+            "\n## Closed since the {from} (event {}, {})\n",
             n(s, "id"),
             md(text(s, "created_at"))
         )
         .expect("string");
     } else {
-        out.push_str("\n## Closed lanes (no earlier handover)\n\n");
+        out.push_str("\n## Closed lanes (no earlier handover or adopt)\n\n");
     }
     if closed.is_empty() {
         out.push_str("None.\n");
     }
-    for r in &closed {
+    let (earlier, recent) = closed.split_at(closed.len().saturating_sub(KEEP));
+    if !earlier.is_empty() {
+        writeln!(
+            out,
+            "{} earlier closed lanes are not listed ({} of them gates; newest {KEEP} below). `taskr campaign {id} --all` lists every lane.\n",
+            earlier.len(),
+            earlier.iter().filter(|r| r["role"] == "gate").count()
+        )
+        .expect("string");
+    }
+    for r in recent {
         write!(
             out,
             "- {}, {}, closed {}: {}",
             label(r),
             md(text(r, "role")),
             md(text(r, "closed_at")),
-            md_or(text(r, "final"), "no final summary")
+            md_or(&clip(text(r, "final")), "no final summary")
         )
         .expect("string");
         if !text(r, "report").is_empty() {
             write!(out, " (report {})", md(text(r, "report"))).expect("string");
         }
         out.push('\n');
-    }
-    if !note.trim().is_empty() {
-        writeln!(out, "\n## Note\n\n{}", md(note)).expect("string");
     }
     Ok(Rendered {
         text: out,

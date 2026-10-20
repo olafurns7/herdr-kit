@@ -4,13 +4,13 @@ Load when: before any resume and before prompting a restored pane; when your own
 
 ## Your own session
 
-Before a planned stop, handover, or context compaction, finish or back out of the current atomic step. Refresh the [campaign plan](workflow.md#goal-plan-and-documents) if intent changed and record `taskr next`; checkpoint with `taskr handover --as <me> --note "<checkpoint>"`: evidence for done work, each in-flight lane's expected next event, and proof gaps. Use the existing ledger and reports, not a new checkpoint format.
+Before a planned stop, handover, or context compaction, finish or back out of the current atomic step. Refresh the [campaign plan](workflow.md#goal-plan-and-documents) if intent changed and record `taskr next`; checkpoint with `taskr handover --as <me> --note "<checkpoint>"`: evidence for done work, each in-flight lane's expected next event, and proof gaps. Under "Session timers to re-arm" list each session-scoped timer (Claude CronCreate job, background loop) with its schedule and full prompt; they die with the session, and the successor re-creates them and notes the new ids. Use the existing ledger and reports, not a new checkpoint format.
 
 On resume, read the campaign plan, ledger, and latest reports before re-deriving work; use `taskr search <terms> --root <root>` for a missing decision.
 
 For a plain orchestrator, a new session starts with `taskr adopt <me>` and continues from the handover and inbox (`workflow.md` "Goal, plan, and documents"). Stop the predecessor's wait before adoption, then arm your own `taskr wait`.
 
-For a Claude push lead, settle the handover and quit the predecessor first. Verify that no live agent occupies its pane and wait for `taskr consumer show --as <root>` to report `live:false`; quitting can leave the lease live until its 60 s expiry. A running channel keeps renewing, so waiting alone does not stop it. Start the successor on the same host with:
+For a running Claude push lead, `herdr-lead move <root> <pane> --worktree <campaign worktree> --prompt-file <lead brief>` does the whole restart: it asks for the handover, stops the lead, waits for the lease, then starts and proves the successor (`launch.md`); a hub restarts itself with `herdr-hub move <root>`. To do it by hand, settle the handover and quit the predecessor first (`herdr-lead stop <root> <pane>` waits for idle, quits it, and waits for the lease). Verify that no live agent occupies its pane and wait for `taskr consumer show --as <root>` to report `live:false`; quitting can leave the lease live until its 60 s expiry. A running channel keeps renewing, so waiting alone does not stop it. Start the successor on the same host with:
 
 ```bash
 herdr-lead start <root> <pane> --worktree <campaign worktree> --predecessor-pane <old pane> --prompt-file <lead brief>
@@ -23,7 +23,7 @@ Verify the saved account/native home before resuming; Codator selects that home 
 
 If startup fails after adoption, preserve its printed `ROOT/GEN/pane/mcp_config/agent/lease/check_task` state. Inspect the saved handover, latest adopt, agent, lease, delivery, inbox, and any check task before continuing; never blindly adopt again or start another agent. Stop the failed push lead before a plain rollback, observe `live:false`, then start a plain successor without the channel flags or helper config and let it consume the pending inbox. Inventory any project channel configuration without overwriting or deleting it. Keep the handover and per-generation config for reconciliation. There is no in-place rebind: use controlled stop-and-start or stop-and-resume.
 
-A crash or a failure after adopt leaves `$HOME/.local/state/herdr-orch/lead-push/<root>/start.lock`. Prove no `herdr-lead start <root>` or `herdr-hub <root>` runs, reconcile the printed state, then `rmdir` it.
+A crash or a failure after adopt leaves `$HOME/.local/state/herdr-orch/lead-push/<root>/start.lock`; its `owner` file names the process and host. Every start takes, reclaims, releases and marks it under the short-lived `start.guard` directory, and releases or marks only a lock that is still its own (a hub's detached prover may finish after a rerun reclaimed it), so two starts never hold it at once. A rerun on the same host reclaims the lock when that process has exited, then still requires a free lease and a free target pane. It never reclaims a lock marked `hold` (a generation conflict: another adopter may be live), a lock owned by a live process or another host, or a lock without `owner` (made by an older helper). For those, prove no `herdr-lead` or `herdr-hub` run for the root is active, reconcile the printed state and the step log (`lead-start-<pid>.log` or `hub-check-<gen>.log`), then remove `owner` and `rmdir` the lock. A `start.guard` left by a killed start blocks later starts after 10 s; remove it with `rmdir` once no start for the root runs.
 
 ## When the taskr server is unreachable
 

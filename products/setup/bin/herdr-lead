@@ -2,23 +2,34 @@
 # Start one same-host Claude root lead, bound to one immutable adopt generation.
 set -u
 
-usage='usage: herdr-lead start ROOT PANE --worktree DIR [--lane opus-high] [--resume SID --account NAME] [--predecessor-pane P] [--prompt-file F] | herdr-lead check ROOT'
+usage='usage: herdr-lead start ROOT PANE --worktree DIR [--lane opus-high] [--resume SID --account NAME] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--lane opus-high] [--resume SID --account NAME] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT'
 root= pane= gen= mcp_config= agent= lease=unknown check_task= step=0
-tmp= adopt_err= lock=
+tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf=
 cleanup() {
+    # A signal must not cut a lock or guard release in half.
+    trap '' 1 2 3 15
     [ -z "$tmp" ] || rm -f -- "$tmp"
     [ -z "$adopt_err" ] || rm -f -- "$adopt_err"
-    [ -z "$lock" ] || rmdir -- "$lock"
+    [ -z "$lock" ] || release_lock
+    [ -z "$guard" ] || drop_guard
     :
 }
 trap cleanup 0
 trap 'fail interrupted' 1 2 3 15
 fail() {
     printf 'herdr-lead: step %s failed: %s\n' "$step" "$1" >&2
+    note "step $step failed: $1"
     if [ "$step" -ge 4 ]; then
-        printf 'ROOT=%s GEN=%s pane=%s mcp_config=%s agent=%s lease=%s check_task=%s\n' \
-            "$root" "${gen:--}" "$pane" "${mcp_config:--}" "${agent:--}" "$lease" "${check_task:--}" >&2
+        printf 'ROOT=%s GEN=%s pane=%s mcp_config=%s agent=%s lease=%s check_task=%s log=%s\n' \
+            "$root" "${gen:--}" "$pane" "${mcp_config:--}" "${agent:--}" "$lease" "${check_task:--}" "${log_file:--}" >&2
     fi
+    # A concurrent adopter may be live: never let a rerun reclaim this lock.
+    case $1 in *'generation conflict'*)
+        if [ -n "$lock" ] && take_guard; then
+            ! own_lock || printf '%s %s hold\n' "$$" "$host" >"$lock/owner"
+            drop_guard
+        fi ;;
+    esac
     [ -z "$gen" ] || lock=
     exit 1
 }
@@ -41,17 +52,169 @@ current_lease() {
     printf '%s\n' "$lease_json" | jq -e --argjson gen "$gen" \
         '.live == true and .session_gen == $gen and (.holder | type == "string" and startswith("mcp-channel-"))' >/dev/null
 }
+# start.guard serializes every change to start.lock: acquire, reclaim, release and the hold mark.
+take_guard() {
+    [ -z "$guard" ] || return 0
+    tries=0
+    until mkdir -- "$state_dir/start.guard" 2>/dev/null; do
+        tries=$((tries + 1))
+        [ "$tries" -le 100 ] || return 1
+        sleep 0.1
+    done
+    guard=$state_dir/start.guard
+}
+# Forget the guard before removing it: an exit trap between the two must not remove a guard another start took.
+drop_guard() { dropped=$guard; guard=; rmdir -- "$dropped"; }
+# Take start.lock, reclaiming it only from a dead owner on this host; callers recheck the lease under it.
+# The owner file's first line is "PID HOST" (or "PID HOST hold"); its second line makes this run's copy unique.
+take_lock() {
+    lock_dir=$state_dir/start.lock
+    take_guard || fail "$state_dir/start.guard is held for 10 s; remove it only if no herdr-lead or herdr-hub start runs for root $root"
+    if ! mkdir -- "$lock_dir" 2>/dev/null; then
+        owner=$(sed -n 1p -- "$lock_dir/owner" 2>/dev/null) || owner=
+        owner_pid=${owner%% *}
+        owner_host=${owner#* }
+        if ! number "$owner_pid" || [ "$owner_host" != "$host" ] || kill -0 "$owner_pid" 2>/dev/null; then
+            fail "another start needs reconciliation (start.lock owner: ${owner:-not recorded})"
+        fi
+        rm -f -- "$lock_dir/owner" && rmdir -- "$lock_dir" && mkdir -- "$lock_dir" || fail 'reclaim start.lock'
+        printf '%s: reclaimed start.lock from exited pid %s\n' "${0##*/}" "$owner_pid" >&2
+    fi
+    lock_owner="$$ $host
+started $(date +%s)"
+    printf '%s\n' "$lock_owner" >"$lock_dir/owner" || { rm -f -- "$lock_dir/owner"; rmdir -- "$lock_dir"; fail 'record start.lock owner'; }
+    lock=$lock_dir
+    drop_guard || fail 'release start.guard'
+}
+# Change start.lock only while it is still this run's: after this process exits, a rerun may reclaim and
+# replace it while a detached prover of this run still finishes.
+own_lock() { [ -n "$lock" ] && [ "$(cat -- "$lock/owner" 2>/dev/null)" = "$lock_owner" ]; }
+release_lock() {
+    take_guard || { printf '%s: start.guard is held; start.lock kept\n' "${0##*/}" >&2; return 1; }
+    ! own_lock || { rm -f -- "$lock/owner"; rmdir -- "$lock"; }
+    lock=
+    drop_guard
+}
 shell_ready() {
     procs=$(herdr pane process-info --pane "$1") || return 1
     printf '%s\n' "$procs" | jq -e '.result.process_info | .shell_pid > 0 and .foreground_process_group_id == .shell_pid' >/dev/null
 }
-step_line() { step=$1; printf 'herdr-lead: step %s: %s\n' "$step" "$2"; }
+# Keep a step log in the state directory once it exists; earlier lines wait in memory.
+note() {
+    line="$(date -u +%H:%M:%SZ 2>/dev/null) $1"
+    if [ -n "$log_file" ]; then printf '%s\n' "$line" >>"$log_file"; else log_buf="$log_buf$line
+"; fi
+}
+say() { printf 'herdr-lead: %s\n' "$1"; note "$1"; }
+step_line() { step=$1; say "step $1: $2"; }
+latest_handover() {
+    log=$(ledger --json log "$root" --limit 0) || return 1
+    printf '%s\n' "$log" | jq -ser '[.[] | select(.kind == "handover") | .id] | max // 0'
+}
+
+# Find the agent in PANE and require the root's lead: NAME and SESSION when given. Returns 1 when PANE holds no agent.
+lead_in_pane() {
+    found_name= found_session=
+    agents=$(herdr agent list) || fail 'read agent list'
+    printf '%s\n' "$agents" | jq -e '.result.agents | type == "array"' >/dev/null || fail 'read agent list'
+    found=$(printf '%s\n' "$agents" | jq -c --arg pane "$1" '[.result.agents[] | select(.pane_id == $pane)] | first // empty')
+    [ -n "$found" ] || return 1
+    found_name=$(printf '%s\n' "$found" | jq -r '.name // ""')
+    found_session=$(printf '%s\n' "$found" | jq -r '.agent_session.value // ""')
+    if { [ -n "$2" ] && [ "$found_name" != "$2" ]; } || { [ -n "$3" ] && [ "$found_session" != "$3" ]; }; then
+        fail "$1 runs ${found_name:-an unnamed agent} (session ${found_session:-unknown}), not the lead of root $root; nothing was sent to it"
+    fi
+}
+# Stop the root's lead in PANE and wait for the root's lease to expire. The pane may be reused by
+# another agent, so the identity is rechecked right before each key sequence.
+stop_pane() {
+    if lead_in_pane "$1" "$2" "$3"; then
+        stop_name=${found_name:-unnamed} stop_session=${3:-$found_session}
+        herdr agent wait "$1" --until idle --timeout 120000 >/dev/null 2>&1 ||
+            say "$stop_name is not idle after 120 s; stopping it anyway"
+        if lead_in_pane "$1" "$2" "$stop_session"; then
+            say "stop $stop_name in $1"
+            herdr pane send-keys "$1" esc ctrl+c ctrl+c >/dev/null || fail 'send stop keys'
+            stop_start=$(date +%s) again=
+            while lead_in_pane "$1" "$2" "$stop_session"; do
+                elapsed=$(($(date +%s) - stop_start))
+                [ "$elapsed" -lt 120 ] || fail "$stop_name still runs in $1 after 120 s"
+                if [ "$elapsed" -ge 45 ] && [ -z "$again" ]; then
+                    again=1
+                    herdr pane send-keys "$1" ctrl+c ctrl+c >/dev/null || fail 'send stop keys'
+                fi
+                sleep 3
+            done
+        fi
+    fi
+    deadline=$(($(date +%s) + 30))
+    until shell_ready "$1"; do
+        [ "$(date +%s)" -lt "$deadline" ] || fail "$1 is not at its shell prompt"
+        sleep 1
+    done
+    deadline=$(($(date +%s) + 120))
+    while :; do
+        read_lease || fail 'read predecessor lease'
+        [ "$lease" = live ] || break
+        [ "$(date +%s)" -lt "$deadline" ] || fail 'predecessor lease is still live after 120 s'
+        sleep 3
+    done
+    say "$1 is at its shell prompt and the lease of $root is free"
+}
+# Read the open root: its lead name orch-SLUG, recorded pane and host.
+read_root() {
+    campaign=$(ledger --json campaign "$root") || fail 'read root campaign'
+    slug=$(printf '%s\n' "$campaign" | jq -er --argjson root "$root" \
+        '.root | select(.id == $root and .role == "orchestrator" and .status == "open") | .name | select(type == "string" and length > 0)') || fail 'ROOT is not an open root orchestrator'
+    slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -c 'a-z0-9_-' '-' | cut -c 1-27)
+    agent=orch-$slug
+    recorded=$(printf '%s\n' "$campaign" | jq -r '.root.pane_id // ""') || fail 'read recorded lead pane'
+    root_host=$(printf '%s\n' "$campaign" | jq -r '.root.host // ""') || fail 'read root host'
+}
+# Pane ids and agent names belong to one host's Herdr server. The ledger names a root's host as it
+# saw the adopting caller ('' on the ledger host), so compare with how it sees this caller.
+same_host() {
+    glance=$(ledger --json glance) || fail 'read caller host'
+    caller_host=$(printf '%s\n' "$glance" | jq -er '.caller_host | strings') || fail 'read caller host'
+    [ "$root_host" = "$caller_host" ] ||
+        fail "root $root was adopted on ${root_host:-the ledger host}, not this host (${caller_host:-the ledger host})"
+}
+# Validate the target pane. Before a move's stop, the predecessor pane KEEP may still hold the old lead.
+check_target() {
+    agents=$(herdr agent list) || fail 'read agent list'
+    printf '%s\n' "$agents" | jq -e --arg name "$agent" --arg pane "$pane" --arg old "$old" --arg keep "$1" \
+        '.result.agents | type == "array" and all(.[]; .pane_id == $keep or (.name != $name and .pane_id != $pane and ($old == "" or .pane_id != $old)))' >/dev/null || fail 'agent name or target/predecessor pane is occupied'
+    info=$(herdr pane get "$pane") || fail 'read target pane'
+    workspace=$(printf '%s\n' "$info" | jq -er '.result.pane.workspace_id') || fail 'workspace missing'
+    tab=$(printf '%s\n' "$info" | jq -er '.result.pane.tab_id') || fail 'tab missing'
+    identifier "$workspace" && identifier "$tab" || fail 'invalid pane location'
+    # A same-pane move checks the shell and host after the stop.
+    [ "$pane" != "$1" ] || return 0
+    shell_ready "$pane" || fail 'target pane is not at its shell prompt'
+    # Compare the actual target shell's host, rather than inherited pane context.
+    marker=herdr-lead-host-$$-$(date +%s)
+    herdr pane run "$pane" " printf '%s:%s\\n' '$marker' \"\$(uname -n)\"" >/dev/null || fail 'read target host'
+    herdr pane wait-output "$pane" --match "$marker:$host" --timeout 15000 >/dev/null || fail 'target is not on this host'
+}
 
 [ $# -ge 2 ] || die "$usage"
 command=$1 root=$2
 shift 2
 number "$root" || die 'ROOT must be a positive task id'
 command -v jq >/dev/null 2>&1 || die 'jq is required'
+if [ "$command" = stop ]; then
+    pane=${1:-} step=1 session=
+    identifier "$pane" || die "$usage"
+    if [ $# -eq 3 ] && [ "$2" = --session ] && [ -n "$3" ]; then session=$3
+    elif [ $# -ne 1 ]; then die "$usage"; fi
+    host=$(uname -n) || fail 'read local host'
+    read_root
+    same_host
+    [ "$recorded" = "$pane" ] || fail "$pane is not the recorded pane of root $root"
+    # A hub is named by whoever started it; herdr-hub move passes the session it captured instead.
+    if [ -n "$session" ]; then stop_pane "$pane" '' "$session"; else stop_pane "$pane" "$agent" ''; fi
+    exit 0
+fi
 if [ "$command" = check ]; then
     [ $# -eq 0 ] || die "$usage"
     if ! gen=$(latest_gen) || ! read_lease; then
@@ -62,19 +225,25 @@ if [ "$command" = check ]; then
     fi
     printf 'stale\n'; exit 1
 fi
-[ "$command" = start ] && [ $# -ge 1 ] || die "$usage"
+case $command in start | move) ;; *) die "$usage" ;; esac
+[ $# -ge 1 ] || die "$usage"
 pane=$1
 shift
 identifier "$pane" || die 'invalid PANE'
-worktree= lane=opus-high resume= account= predecessor= prompt_file=
+worktree= lane=opus-high resume= account= predecessor= prompt_file= no_handover=
 while [ $# -gt 0 ]; do
+    if [ "$command" = move ] && [ "$1" = --no-handover ]; then
+        no_handover=1
+        shift
+        continue
+    fi
     [ $# -ge 2 ] && [ -n "$2" ] || die "$usage"
     case $1 in
         --worktree) worktree=$2 ;;
         --lane) lane=$2 ;;
         --resume) resume=$2 ;;
         --account) account=$2 ;;
-        --predecessor-pane) predecessor=$2 ;;
+        --predecessor-pane) [ "$command" = start ] || die "$usage"; predecessor=$2 ;;
         --prompt-file) prompt_file=$2 ;;
         *) die "$usage" ;;
     esac
@@ -100,29 +269,35 @@ if [ -n "$prompt_file" ]; then
     case $prompt_file in *'
 '*) die '--prompt-file path must be a single line' ;; esac
 fi
-campaign=$(ledger --json campaign "$root") || fail 'read root campaign'
-slug=$(printf '%s\n' "$campaign" | jq -er --argjson root "$root" \
-    '.root | select(.id == $root and .role == "orchestrator" and .status == "open") | .name | select(type == "string" and length > 0)') || fail 'ROOT is not an open root orchestrator'
-slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -c 'a-z0-9_-' '-' | cut -c 1-27)
-agent=orch-$slug
+host=$(uname -n) || fail 'read local host'
+read_root
+if [ "$command" = move ]; then
+    predecessor=$recorded old=$recorded
+    identifier "$predecessor" || fail 'root has no recorded lead pane to move from'
+    same_host
+    lead_in_pane "$predecessor" "$agent" '' || [ -n "$no_handover" ] ||
+        fail "no agent in $predecessor to write the handover; pass --no-handover"
+    old_session=$found_session
+    # Every destination check that can run now runs before the old session is touched.
+    check_target "$predecessor"
+    if [ -z "$no_handover" ]; then
+        old_agent=$agent
+        before=$(latest_handover) || fail 'read latest handover'
+        say "move: ask $old_agent for a handover"
+        ask="herdr-lead is moving root $root to a new session. Finish or back out of your current step and start nothing new. Then run: taskr handover --as $root --note '<done work with evidence; each live lane and its expected next event; proof gaps; Session timers to re-arm: each CronCreate job or background loop you armed, with its schedule and full prompt or command>'. Reply HANDOVER-DONE. This session is stopped afterwards."
+        ask_out=$(herdr agent prompt "$old_agent" "$ask" --wait --timeout 300000 2>&1) || fail "handover prompt: $ask_out"
+        after=$(latest_handover) || fail 'read latest handover'
+        [ "$after" -gt "$before" ] || fail "$old_agent recorded no handover; nothing was stopped"
+        say "move: handover event $after recorded"
+    fi
+    stop_pane "$predecessor" "$agent" "$old_session"
+fi
 old=$predecessor
 if [ -z "$old" ]; then
-    old=$(printf '%s\n' "$campaign" | jq -r '.root.pane_id // ""') || fail 'read recorded lead pane'
+    old=$recorded
     [ "$old" != "$pane" ] || old=
 fi
-agents=$(herdr agent list) || fail 'read agent list'
-printf '%s\n' "$agents" | jq -e --arg name "$agent" --arg pane "$pane" --arg old "$old" \
-    '.result.agents | type == "array" and all(.[]; .name != $name and .pane_id != $pane and ($old == "" or .pane_id != $old))' >/dev/null || fail 'agent name or target/predecessor pane is occupied'
-info=$(herdr pane get "$pane") || fail 'read target pane'
-workspace=$(printf '%s\n' "$info" | jq -er '.result.pane.workspace_id') || fail 'workspace missing'
-tab=$(printf '%s\n' "$info" | jq -er '.result.pane.tab_id') || fail 'tab missing'
-identifier "$workspace" && identifier "$tab" || fail 'invalid pane location'
-shell_ready "$pane" || fail 'target pane is not at its shell prompt'
-# Compare the actual target shell's host, rather than inherited pane context.
-marker=herdr-lead-host-$$-$(date +%s)
-host=$(uname -n) || fail 'read local host'
-herdr pane run "$pane" " printf '%s:%s\\n' '$marker' \"\$(uname -n)\"" >/dev/null || fail 'read target host'
-herdr pane wait-output "$pane" --match "$marker:$host" --timeout 15000 >/dev/null || fail 'target is not on this host'
+check_target ''
 
 step_line 2 'predecessor stopped and lease free'
 [ -z "$predecessor" ] || shell_ready "$predecessor" || fail 'predecessor is not at its shell prompt'
@@ -149,8 +324,10 @@ state_dir=$HOME/.local/state/herdr-orch/lead-push/$root
 umask 077
 mkdir -p -- "$state_dir" || fail 'create state directory'
 chmod 0700 "$state_dir" || fail 'protect state directory'
-mkdir -- "$state_dir/start.lock" || fail 'another start needs reconciliation'
-lock=$state_dir/start.lock
+log_file=$state_dir/lead-start-$$.log
+printf '%s' "$log_buf" >>"$log_file" || fail 'write start log'
+say "start log $log_file"
+take_lock
 # Recheck after taking the lock; another helper could have completed step 8.
 read_lease && [ "$lease" = free ] || fail 'lease changed before adopt'
 tmp=$(mktemp "$state_dir/.handover.XXXXXX") || fail 'create handover temporary file'
@@ -183,7 +360,9 @@ set -- --model "$model" --effort "$effort" --dangerously-skip-permissions \
 latest=$(latest_gen) || fail 'read generation before agent start'
 [ "$latest" = "$gen" ] || fail 'generation conflict before agent start'
 lease=unknown
-if ! herdr agent start "$agent" --kind claude --pane "$pane" --timeout 90000 -- "$@" >/dev/null; then
+# A blocked start (agent_not_ready) is the expected development-channel dialog; keep its stderr for failures.
+if ! start_err=$(herdr agent start "$agent" --kind claude --pane "$pane" --timeout 90000 -- "$@" 2>&1 >/dev/null); then
+    note "agent start: $start_err"
     screen=$(herdr pane read "$pane" --source visible --lines 40) || fail 'read failed start dialog'
     screen=$(printf '%s\n' "$screen" | jq -Rrs '(try fromjson catch .)
         | if type == "string" then .
@@ -192,14 +371,15 @@ if ! herdr agent start "$agent" --kind claude --pane "$pane" --timeout 90000 -- 
           else error("missing visible lines") end | gsub("[\u2500-\u257f]"; " ") | gsub("\\s+"; " ")') || fail 'normalize failed start dialog'
     case $screen in
         *'Loading development channels'*'1. I am using this for local development'*'Enter to confirm'*) ;;
-        *) fail 'agent start failed without development-channel dialog' ;;
+        *) fail "agent start failed without development-channel dialog: $start_err" ;;
     esac
     herdr pane send-keys "$pane" Enter >/dev/null || fail 'answer development-channel dialog'
-    herdr agent wait "$agent" --until idle --timeout 90000 >/dev/null || fail 'agent did not become idle'
+    say 'answered the development-channel dialog'
+    idle_err=$(herdr agent wait "$agent" --until idle --timeout 90000 2>&1 >/dev/null) || fail "agent did not become idle: $idle_err"
 fi
 
 step_line 7 'tell the lead its generation and handover'
-prompt="You are the lead of root $root. herdr-lead adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence. Read the handover at $handover. A \"lead push check\" event will arrive: record it and ack it."
+prompt="You are the lead of root $root. herdr-lead adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence. Read the handover at $handover. A \"lead push check\" event will arrive: record it and ack it. Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note."
 if [ -n "$prompt_file" ]; then
     prompt="$prompt Then read $prompt_file and follow it."
 fi
@@ -225,7 +405,8 @@ if ! prompt_out=$(herdr agent prompt "$agent" "$prompt" --wait --until working -
                     *) fail 'lead prompt not submitted (inspect before retry)' ;;
                 esac
                 herdr pane send-keys "$pane" Enter >/dev/null || fail 'lead prompt not submitted (inspect before retry)'
-                if herdr agent wait "$agent" --until working --timeout 10000 >/dev/null; then
+                say "prompt stalled; Enter retry $attempt"
+                if herdr agent wait "$agent" --until working --timeout 10000 >/dev/null 2>&1; then
                     working=1
                     break
                 fi
@@ -253,6 +434,12 @@ number "$check_launch" || fail 'invalid check launch id'
 out=$(TASKR_TASK=$check_task TASKR_LAUNCH=$check_launch taskr --json ready "lead push check $gen" --report "$mcp_config") || fail 'send check event (inspect before retry)'
 event=$(printf '%s\n' "$out" | jq -er '.event_id') || fail 'check event not committed (queued or unknown; inspect before retry)'
 number "$event" || fail 'invalid check event id'
+# A successor drains older pushed events first; each new ack extends the wait, up to 30 min.
+inbox=$(ledger --json inbox --as "$root") || fail 'read inbox backlog'
+acked=$(printf '%s\n' "$inbox" | jq -er '.acked_event_id // 0') || fail 'read inbox backlog'
+backlog=$(printf '%s\n' "$inbox" | jq -er --argjson event "$event" '[.events[]? | select(.id < $event)] | length') || fail 'read inbox backlog'
+say "check event $event waits behind $backlog unacked events"
+cap=$(($(date +%s) + 1800))
 while :; do
     latest=$(latest_gen) || fail 'read generation during live check'
     [ "$latest" = "$gen" ] || fail 'generation conflict during live check'
@@ -264,9 +451,16 @@ while :; do
         && printf '%s\n' "$inbox" | jq -e --argjson event "$event" '.acked_event_id | type == "number" and . >= $event' >/dev/null; then
         break
     fi
-    [ "$(date +%s)" -lt "$deadline" ] || fail 'check event was not received and acked within 240 s'
+    now_acked=$(printf '%s\n' "$inbox" | jq -er '.acked_event_id // 0') || fail 'read check ack'
+    if [ "$now_acked" -gt "$acked" ]; then
+        acked=$now_acked
+        later=$(($(date +%s) + 240))
+        [ "$later" -le "$cap" ] || later=$cap
+        [ "$later" -le "$deadline" ] || deadline=$later
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] || fail "check event was not received and acked within 240 s (acked through $acked; backlog $backlog)"
     sleep 3
 done
 out=$(ledger --json close "$check_task" --outcome accepted) || fail 'close check task (inspect before retry)'
 printf '%s\n' "$out" | jq -e --argjson task "$check_task" '.task_id == $task and .queued != true' >/dev/null || fail 'check task close not confirmed'
-printf 'herdr-lead: %s live at %s (event %s received and acked)\n' "$root" "$gen" "$event"
+say "$root live at $gen (event $event received and acked)"
