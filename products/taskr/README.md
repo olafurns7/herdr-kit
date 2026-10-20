@@ -52,7 +52,7 @@ taskr version with the required assets. This needs authenticated `gh` or `curl`
 plus `jq`; a pinned public download needs no `jq`. Binary users need no Node or Turbo.
 
 ```sh
-export TASKR_VERSION=taskr/v0.25.1   # or a newer taskr/vX.Y.Z
+export TASKR_VERSION=taskr/v0.26.0   # or a newer taskr/vX.Y.Z
 curl -fsSL -o taskr-install.sh \
   "https://github.com/olafurns7/herdr-kit/releases/download/$TASKR_VERSION/install.sh" &&
   test -s taskr-install.sh &&
