@@ -254,12 +254,12 @@ pub fn release(db: &mut Connection, as_id: i64, session: Option<i64>, fence: i64
     })
 }
 
-/// The caller task's lease and whether it is live. A read.
+/// The caller task's lease and whether it is live. Roots may read from any admitted host.
 pub fn show(db: &Connection, as_id: i64) -> Result<Value> {
     let t = if as_id == 0 {
         env_worker(db)?.0
     } else {
-        worker::resolve(db, as_id)?
+        worker::resolve_consumer_show(db, as_id)?
     };
     view(db, &t)
 }

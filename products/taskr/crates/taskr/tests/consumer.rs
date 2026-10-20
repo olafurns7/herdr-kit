@@ -1263,6 +1263,164 @@ fn start_hub(h: &Harness) -> (Hub, String, Env, std::path::PathBuf) {
 
 #[cfg(feature = "contract")]
 #[test]
+fn rpc_root_show_crosses_hosts_without_relaxing_other_guards() {
+    let h = Harness::new();
+    let (_hub, _, client, _) = start_hub(&h);
+    let r = id(
+        &h.ok(&client, &["new", "remote", "--role", "orchestrator"]),
+        "task_id",
+    );
+    let (code, _, err) = run(&h, &client, &["adopt", &r, "--pane", "w1:p7"]);
+    assert_eq!(code, Some(0), "{err}");
+    let g = err.trim_end().rsplit_once("event ").unwrap().1;
+    let w = id(
+        &h.ok(
+            &client,
+            &["new", "child", "--role", "implementer", "--parent", &r],
+        ),
+        "task_id",
+    );
+    let l = id(
+        &h.ok(
+            &client,
+            &[
+                "launch",
+                &w,
+                "--provider",
+                "claude",
+                "--model",
+                "test",
+                "--effort",
+                "medium",
+            ],
+        ),
+        "launch_id",
+    );
+    let show = ["consumer", "show", "--as", &r];
+    std::fs::write(h.home.join("whois-host"), "host-b").unwrap();
+    let before = snapshot(&h);
+    let free = h.ok(&client, &show);
+    assert_eq!(free["live"], false, "{free}");
+    assert!(
+        free["holder"].is_null() && free["session_gen"].is_null(),
+        "{free}"
+    );
+    assert_eq!(snapshot(&h), before, "show wrote");
+    std::fs::remove_file(h.home.join("whois-host")).unwrap();
+    let taken = h.ok(
+        &client,
+        &[
+            "consumer",
+            "take",
+            "--as",
+            &r,
+            "--session",
+            g,
+            "--holder",
+            "root-adapter",
+            "--ttl",
+            "600000",
+        ],
+    );
+    std::fs::write(h.home.join("whois-host"), "host-b").unwrap();
+    let before = snapshot(&h);
+    let live = h.ok(&client, &show);
+    assert_eq!(live, taken);
+    assert_eq!(live["live"], true, "{live}");
+    assert_eq!(live["holder"], "root-adapter", "{live}");
+    assert_eq!(live["session_gen"], g.parse::<i64>().unwrap(), "{live}");
+    assert_eq!(snapshot(&h), before, "show wrote");
+
+    // Every other root command still rejects the authenticated foreign caller.
+    for args in [
+        vec![
+            "consumer",
+            "take",
+            "--as",
+            &r,
+            "--session",
+            g,
+            "--holder",
+            "other",
+            "--ttl",
+            "5000",
+            "--force",
+        ],
+        vec![
+            "consumer",
+            "renew",
+            "--as",
+            &r,
+            "--session",
+            g,
+            "--fence",
+            "1",
+            "--ttl",
+            "5000",
+        ],
+        vec![
+            "consumer",
+            "release",
+            "--as",
+            &r,
+            "--session",
+            g,
+            "--fence",
+            "1",
+        ],
+        vec!["inbox", "--as", &r],
+        vec!["ack", g, "--as", &r],
+        vec!["wait", "--as", &r, "--timeout", "0"],
+    ] {
+        let out = rejected(&h, &client, &args, 6);
+        assert!(
+            out.contains("is on host-a, caller is host-b"),
+            "{args:?}: {out}"
+        );
+    }
+
+    // Show retains worker host checks and all root identity restrictions.
+    let mut worker = client.clone();
+    worker.extend([
+        ("TASKR_TASK".into(), w.clone()),
+        ("TASKR_LAUNCH".into(), l.clone()),
+    ]);
+    let out = rejected(&h, &worker, &["consumer", "show"], 6);
+    assert!(
+        out.contains("launch is on host-a, caller is host-b"),
+        "{out}"
+    );
+    let out = rejected(&h, &worker, &show, 6);
+    assert!(out.contains("different task than TASKR_TASK"), "{out}");
+    let mut launched = client.clone();
+    launched.push(("TASKR_LAUNCH".into(), l.clone()));
+    let out = rejected(&h, &launched, &show, 6);
+    assert!(out.contains("TASKR_LAUNCH is set"), "{out}");
+    let out = rejected(&h, &client, &["consumer", "show", "--as", &w], 6);
+    assert!(out.contains("has parent"), "{out}");
+    for (column, value, message) in [
+        ("status", "'planned'", "is planned, not launched"),
+        ("current_launch_id", l.as_str(), "has launch"),
+    ] {
+        h.conn()
+            .execute(
+                &format!("update tasks set {column}={value} where id=?"),
+                [&r],
+            )
+            .unwrap();
+        let out = rejected(&h, &client, &show, 6);
+        assert!(out.contains(message), "{out}");
+        h.conn()
+            .execute(
+                "update tasks set status='open',current_launch_id=null where id=?",
+                [&r],
+            )
+            .unwrap();
+    }
+}
+
+#[cfg(feature = "contract")]
+#[test]
 fn rpc_leases_are_host_bound_stored_by_key_and_never_queued() {
     let h = Harness::new();
     let (_hub, url, client, server) = start_hub(&h);
