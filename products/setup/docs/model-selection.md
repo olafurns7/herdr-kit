@@ -12,3 +12,11 @@ for escalation. Keep operator-specific bans, account mappings, quota policy
 and model preferences in the private table and the herdr-fleet skill's private
 `~/.agents/skills/herdr-fleet/local.md` (never committed).
 Review must remain independent of implementation.
+
+These OpenCode lanes are for simple, bounded tasks with an exact validation
+gate: read-only gathering, source-grounded digests, mechanical edits, lint or
+format fixes, and doc copy. Prefer `minimax-free`, then `glm-free`; use paid
+`glm-flash` when both free lanes fail or are unavailable. Free lanes may read
+and edit private repository code within these limits. Never use these lanes
+for critical work, review or approval, a recommendation or adjudication,
+diagnosis, or a write path without an exact validation gate.

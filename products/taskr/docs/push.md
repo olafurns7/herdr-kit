@@ -46,7 +46,8 @@ Push prerequisites depend on the lane:
 - Claude: the launcher creates a private mode-0600 MCP config, supplies the
   development-channel flag and confirms its startup dialog. Keep the config
   until the worker exits, then remove it by its printed literal path.
-- pi: set `HERDR_PUSH_PI_EXTENSION` to the absolute path of
+- OpenCode: `--push` is not supported; use normal pane prompts for its lanes.
+- Legacy private pi lanes: set `HERDR_PUSH_PI_EXTENSION` to the absolute path of
   `products/taskr/adapters/pi/taskr-push.ts`; the launcher adds `--extension`.
 - Codex: set `HERDR_PUSH_CODEX_BIN` to the real CLI's absolute path and include
   `taskr start` in the brief. The launcher creates a sidecar tab after startup;

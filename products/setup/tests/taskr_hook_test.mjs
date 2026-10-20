@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TaskrHook } from "../opencode/plugins/taskr-hook.js";
+import opencodePlugin, { TaskrHook } from "../opencode/plugins/taskr-hook.js";
 
 const savedEnv = Object.fromEntries(["HOME", "PATH", "TASKR_LAUNCH", "TASKR_RECORD_DIR"].map((key) => [key, process.env[key]]));
 const root = await mkdtemp(join(tmpdir(), "taskr-hook-test-"));
@@ -49,6 +49,9 @@ process.stdin.on("end", () => {
   process.env.TASKR_RECORD_DIR = records;
   delete process.env.TASKR_LAUNCH;
   assert.deepEqual(TaskrHook(), {});
+  assert.equal(opencodePlugin.id, "taskr.opencode");
+  assert.equal(opencodePlugin.server, TaskrHook);
+  assert.equal(await opencodePlugin.setup({}), undefined);
 
   process.env.TASKR_LAUNCH = "test-launch";
   const hooks = TaskrHook();
@@ -80,6 +83,51 @@ process.stdin.on("end", () => {
   await delay(100);
   await assert.rejects(readFile(join(records, "chat.message.json"), "utf8"), { code: "ENOENT" });
   await assert.rejects(readFile(join(records, "session.created.json"), "utf8"), { code: "ENOENT" });
+
+  // Exercise the V2 entrypoint, including payload translation and cleanup.
+  for (const [source, target, reason] of [
+    ["session.created", "session.created"],
+    ["session.execution.succeeded", "session.idle"],
+    ["session.execution.failed", "session.error"],
+    ["session.execution.interrupted", "session.idle", "user"],
+    ["session.execution.interrupted", null, "superseded"],
+    ["session.status", null],
+  ]) {
+    const event = { id: "v2-event", type: source, data: { sessionID: "v2-session", reason, error: { code: "fixture" } } };
+    for (const type of ["chat.message", "session.created", "session.idle", "session.error"]) {
+      await rm(join(records, `${type}.json`), { force: true });
+    }
+    let subscriptionSignal;
+    let v2Prompt;
+    const cleanup = await opencodePlugin.setup({
+      session: { hook: async (name, callback) => {
+        assert.equal(name, "prompt");
+        v2Prompt = callback;
+      } },
+      event: { subscribe: async function* ({ signal }) {
+        subscriptionSignal = signal;
+        yield event;
+        await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      } },
+    });
+    v2Prompt({ sessionID: "v2-session", prompt: { text: "First taskr got 42." } });
+    assert.deepEqual(JSON.parse((await recordFor(records, "chat.message")).input), {
+      input: { sessionID: "v2-session" },
+      output: { parts: [{ type: "text", text: "First taskr got 42." }] },
+    });
+    if (target) {
+      const record = await recordFor(records, target);
+      assert.deepEqual(record.args, ["hook", "opencode", target]);
+      assert.equal(record.input, JSON.stringify({ ...event, type: target, properties: event.data }));
+    } else {
+      for (const type of ["session.created", "session.idle", "session.error", "session.status"]) {
+        await assert.rejects(readFile(join(records, `${type}.json`), "utf8"), { code: "ENOENT" });
+      }
+    }
+    assert.equal(subscriptionSignal.aborted, false);
+    cleanup();
+    assert.equal(subscriptionSignal.aborted, true);
+  }
 
   await writeFile(join(bin, "taskr"), "#!/bin/sh\nexec sleep 2\n", { mode: 0o755 });
   const calls = [

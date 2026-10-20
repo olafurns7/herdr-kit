@@ -78,7 +78,9 @@ new_case() {
     home=$case_dir/home
     mcp_config=$home/.local/state/herdr-orch/lane-push/taskr-mcp-2468.json
     work=$case_dir/work
-    mkdir -p "$home" "$work"
+    mkdir -p "$home/.opencode/bin" "$work"
+    printf '%s\n' '#!/bin/sh' '[ "$1" = --version ] || exit 99' 'echo synthetic-opencode' >"$home/.opencode/bin/opencode"
+    chmod 0755 "$home/.opencode/bin/opencode"
     work=$(CDPATH= cd "$work" && pwd -P)
     ws=wA
     tcwd=$work
@@ -180,12 +182,70 @@ expect_calls "$(tab_calls rev-cart)" \
     "$(tail_calls rev-cart reviewer wA:p7 wA:t7 codex gpt-6.1-sol medium "$setup" \
         "$(codex_flags gpt-6.1-sol medium "\"$tcwd\"={trust_level=\"trusted\"}")")"
 
-new_case 'pi lane (GLM) runs pi directly'
-run_launch sh "$launch_sh" glm glm-inventory "$brief" "$report" 42
+# Public cheap lanes use OpenCode directly, including with Codator installed.
+opencode_setup() {
+    config=$(jq -cn --arg model "$1" '{model:$model,default_agent:"build",agents:{build:{model:$model}}}')
+    printf '%s' "$setup${2-} && opencode() { '$home/.opencode/bin/opencode' \"\$@\"; } && export OPENCODE_CONFIG_CONTENT='$config'"
+}
+for lane_model in minimax-free:minimax-m3.1-flash-free glm-free:glm-5.3-flash-free glm-flash:glm-5.3-flash; do
+    for lane_prefix in glm gather; do
+        role=implementer
+        [ "$lane_prefix" != gather ] || role=researcher
+        new_case "${lane_model%%:*} launches $lane_prefix- through OpenCode" "$role"
+        mkdir -p "$home/.local/bin"
+        printf '%s\n' '#!/bin/sh' 'exit 99' >"$home/.local/bin/codator"
+        chmod 0755 "$home/.local/bin/codator"
+        run_launch sh "$launch_sh" "${lane_model%%:*}" "$lane_prefix-inventory" "$brief" "$report" 42
+        expect_rc 0
+        expect_calls "$(tab_calls "$lane_prefix-inventory")" \
+            "$(tail_calls "$lane_prefix-inventory" "$role" wA:p7 wA:t7 opencode "opencode/${lane_model#*:}" high \
+                "$(opencode_setup "opencode/${lane_model#*:}" "$forward")" '|--standalone|--auto')"
+        [ ! -e "$home/.config/opencode/opencode.json" ] || fail 'global OpenCode config written'
+        : >"$case_dir/calls"
+        run_launch sh "$launch_sh" --check "${lane_model%%:*}"
+        expect_rc 0
+        expect_out "${lane_model%%:*}: ok"
+        expect_no_calls
+    done
+done
+
+new_case 'OpenCode free lane with a given pane'
+run_launch sh "$launch_sh" glm-free glm-inventory "$brief" "$report" 42 wA:p3
 expect_rc 0
-expect_calls "$(tab_calls glm-inventory)" \
-    "$(tail_calls glm-inventory implementer wA:p7 wA:t7 pi glm-5.3-flash high " unset -f pi 2>/dev/null;$setup" \
-        '|--provider|opencode|--model|glm-5.3-flash|--thinking|high|--approve')"
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3'
+grep -q -F '|--kind|opencode|--pane|wA:p3|--timeout|90000|--|--standalone|--auto' "$case_dir/calls" || fail 'wrong OpenCode argv'
+grep -q -F 'opencode/glm-5.3-flash-free' "$case_dir/calls" || fail 'free model missing'
+
+new_case 'OpenCode absent on PATH and in its install directory fails before any call'
+rm "$home/.opencode/bin/opencode"
+run_launch sh "$launch_sh" glm-free glm-inventory "$brief" "$report" 42
+expect_rc 2
+expect_err 'missing CLI: opencode'
+expect_no_calls
+run_launch sh "$launch_sh" --check glm-free
+expect_rc 1
+expect_out 'glm-free: missing CLI: opencode'
+expect_no_calls
+
+new_case 'OpenCode uses PATH ahead of the install fallback and quotes its executable'
+mkdir -p "$work/bin with 'quote"
+cp "$home/.opencode/bin/opencode" "$work/bin with 'quote/opencode"
+run_launch PATH="$work/bin with 'quote:$stub_dir:/usr/bin:/bin" sh "$launch_sh" glm-free glm-inventory "$brief" "$report" 42
+expect_rc 0
+pane_setup=$(sed -n 's/^herdr|pane|run|wA:p7|\( .*\)$/\1/p' "$case_dir/calls" | head -n 1)
+for sh_cmd in 'bash --noprofile --norc -c' 'zsh -f -c'; do
+    command -v "${sh_cmd%% *}" >/dev/null || continue
+    got=$($sh_cmd "$pane_setup; opencode --version; $env_check")
+    want='synthetic-opencode
+herdr-launch-env=2468/3579/worker/3579'
+    [ "$got" = "$want" ] || fail "${sh_cmd%% *}: executable/config setup failed: $got"
+done
+
+# Private pi tables retain compatibility; no public lane selects pi.
+private_pi_lane() {
+    mkdir -p "$home/.config/herdr-fleet"
+    printf '%s\n' '{"glm":{"kind":"pi","model":"glm-5.3-flash","effort":"high","prefixes":["glm"]}}' >"$home/.config/herdr-fleet/lanes.json"
+}
 
 new_case 'Haiku gather launches as a researcher' researcher
 run_launch sh "$launch_sh" haiku-gather gather-x "$brief" "$report" 42
@@ -193,13 +253,6 @@ expect_rc 0
 expect_calls "$(tab_calls gather-x)" \
     "$(tail_calls gather-x researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$claude_setup" \
         '|--model|claude-haiku-5-5|--effort|medium|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}}')"
-
-new_case 'GLM gather launches as a researcher' researcher
-run_launch sh "$launch_sh" glm-gather gather-x "$brief" "$report" 42
-expect_rc 0
-expect_calls "$(tab_calls gather-x)" \
-    "$(tail_calls gather-x researcher wA:p7 wA:t7 pi glm-5.3-flash high " unset -f pi 2>/dev/null;$setup" \
-        '|--provider|opencode|--model|glm-5.3-flash|--thinking|high|--approve')"
 
 new_case 'Luna gather launches as a researcher' researcher
 run_launch sh "$launch_sh" luna-gather gather-x "$brief" "$report" 42
@@ -270,6 +323,7 @@ got=$(bash --noprofile --norc -c "claude() { :; }; readonly -f claude; $pane_set
 # A reused pane shell may still define the old bwrap pi() wrapper; the pi
 # setup must drop it so the pi executable is reached directly, in bash and zsh.
 new_case 'pi setup in a shell with the old bwrap pi() reaches pi without bwrap'
+private_pi_lane
 run_launch sh "$launch_sh" glm glm-inventory "$brief" "$report" 42
 expect_rc 0
 pane_setup=$(sed -n 's/^herdr|pane|run|wA:p7|\( .*\)$/\1/p' "$case_dir/calls" | head -n 1)
@@ -288,7 +342,7 @@ done
 
 # Owner decision, 2026-10-07 (later): no lane carries a sandbox setting, a
 # permission profile, an approval policy, or bwrap, in its argv or its setup.
-for lane_name in opus-medium:impl-yolo sol-high:impl-yolo terra-medium:impl-yolo glm:glm-yolo; do
+for lane_name in opus-medium:impl-yolo sol-high:impl-yolo terra-medium:impl-yolo glm-flash:glm-yolo; do
     new_case "no sandbox in the ${lane_name%%:*} lane"
     run_launch sh "$launch_sh" "${lane_name%%:*}" "${lane_name#*:}" "$brief" "$report" 42
     expect_rc 0
@@ -562,13 +616,13 @@ check_refused() {
 }
 for pair in fable-high:impl-x fable-xhigh:rev-x fable-high:arch-x sonnet-high:rev-x \
     sonnet-high:arch-x sonnet-high:orch-x sonnet-medium:impl-x astra-medium:impl-x \
-    astra-high:mech-x astra-medium:glm-x glm:impl-x opus-medium:glm-x opus-max:impl-x \
+    astra-high:mech-x astra-medium:glm-x glm-flash:impl-x opus-medium:glm-x opus-max:impl-x \
     opus-max:arch-x sol-medium:impl-x terra-medium:rev-x opus-medium:orch-x opus-xhigh:impl-x \
     opus-xhigh:rs-x opus-high:arch-x opus-medium:mech-x terra-medium:mech-x \
     haiku-gather:impl-x haiku-gather:mech-x haiku-gather:rs-x haiku-gather:rev-x \
     haiku-gather:arch-x haiku-gather:glm-x haiku-gather:orch-x \
     luna-gather:impl-x luna-gather:mech-x luna-gather:rs-x luna-gather:rev-x \
-    luna-gather:arch-x luna-gather:glm-x luna-gather:orch-x glm-gather:rs-x; do
+    luna-gather:arch-x luna-gather:glm-x luna-gather:orch-x glm-free:rs-x minimax-free:rev-x minimax-free:orch-x glm-free:arch-x glm-flash:rev-x; do
     check_refused "${pair%%:*}" "${pair#*:}" "$brief" "$report" 42
     expect_err 'does not launch as'
 done
@@ -611,8 +665,21 @@ expect_rc 2
 expect_err 'usage: herdr-launch --lanes'
 expect_no_calls
 
+for cheap_lane in minimax-free glm-free glm-flash; do
+    new_case "OpenCode --push for $cheap_lane refuses before any call"
+    run_launch sh "$launch_sh" --push "$cheap_lane" glm-inventory "$brief" "$report" 42
+    expect_rc 2
+    expect_err '--push is not supported for opencode; use pane prompts'
+    expect_no_calls
+    run_launch sh "$launch_sh" --push "$cheap_lane" glm-inventory "$brief" "$report" 42 wA:p3
+    expect_rc 2
+    expect_err '--push is not supported for opencode; use pane prompts'
+    expect_no_calls
+done
+
 # --push: each client's adapter, validated before any call.
 new_case 'pi --push loads the push extension'
+private_pi_lane
 ext=$work/taskr-push.ts
 : >"$ext"
 run_launch HERDR_PUSH_PI_EXTENSION="$ext" sh "$launch_sh" --push glm glm-inventory "$brief" "$report" 42
@@ -623,12 +690,14 @@ expect_calls "$(tab_calls glm-inventory)" \
         "|--provider|opencode|--model|glm-5.3-flash|--thinking|high|--approve|--extension|$ext")"
 
 new_case 'pi --push without HERDR_PUSH_PI_EXTENSION dies before any call'
+private_pi_lane
 run_launch sh "$launch_sh" --push glm glm-inventory "$brief" "$report" 42
 expect_rc 2
 expect_err 'HERDR_PUSH_PI_EXTENSION'
 expect_no_calls
 
 new_case 'pi --push with a missing extension file dies before any call'
+private_pi_lane
 run_launch HERDR_PUSH_PI_EXTENSION="$work/missing.ts" sh "$launch_sh" --push glm glm-inventory "$brief" "$report" 42
 expect_rc 2
 expect_err 'HERDR_PUSH_PI_EXTENSION'
@@ -834,6 +903,7 @@ check_bad_bin 'that is not executable' "$root"
 check_bad_bin "with a quote" "$root/it's"
 
 new_case '--push with PANE is accepted'
+private_pi_lane
 ext=$work/taskr-push.ts
 : >"$ext"
 run_launch HERDR_PUSH_PI_EXTENSION="$ext" sh "$launch_sh" --push glm glm-inventory "$brief" "$report" 42 wA:p3
@@ -888,6 +958,9 @@ $listing"
 expect_no_calls
 
 for bad_table in '{}' '[]' \
+    '{"custom":{"kind":"opencode","model":"missing-provider","effort":"high","prefixes":["glm"]}}' \
+    '{"custom":{"kind":"opencode","model":"opencode/a/b","effort":"high","prefixes":["glm"]}}' \
+    '{"custom":{"kind":"claude","model":"opencode/synthetic","effort":"high","prefixes":["impl"]}}' \
     '{"custom":{"kind":"shell","model":"safe","effort":"high","prefixes":["impl"]}}' \
     '{"custom":{"kind":"claude","model":"$(touch injected)","effort":"high","prefixes":["impl"]}}' \
     '{"custom":{"kind":"claude","model":"safe","effort":"wrong","prefixes":["impl"]}}' \
@@ -931,16 +1004,16 @@ expect_no_calls
 
 new_case '--check reports each requested lane and hides version output'
 mkdir -p "$work/bin"
-for cli in claude codex pi; do
+for cli in claude codex opencode; do
     printf '%s\n' '#!/bin/sh' '[ "$1" = --version ] || exit 99' 'echo synthetic-version-text' >"$work/bin/$cli"
     chmod 0755 "$work/bin/$cli"
 done
 check_path=$work/bin:$stub_dir:/usr/bin:/bin
-run_launch PATH="$check_path" sh "$launch_sh" --check opus-medium sol-high glm
+run_launch PATH="$check_path" sh "$launch_sh" --check opus-medium sol-high glm-flash
 expect_rc 0
 expect_out 'opus-medium: ok
 sol-high: ok
-glm: ok'
+glm-flash: ok'
 expect_no_calls
 run_launch PATH="$check_path" sh "$launch_sh" --check
 expect_rc 0
@@ -969,23 +1042,22 @@ expect_rc 1
 expect_out 'sol-high: Codator codex --version failed'
 expect_no_calls
 
-new_case '--push --check requires and exercises Codex and pi prerequisites'
+new_case '--push --check checks Codex prerequisites and refuses OpenCode'
 mkdir -p "$work/bin"
-for cli in codex pi; do
+for cli in codex opencode; do
     printf '%s\n' '#!/bin/sh' 'exit 0' >"$work/bin/$cli"
     chmod 0755 "$work/bin/$cli"
 done
 check_path=$work/bin:$stub_dir:/usr/bin:/bin
-run_launch PATH="$check_path" sh "$launch_sh" --push --check sol-high glm
+run_launch PATH="$check_path" sh "$launch_sh" --push --check sol-high glm-flash
 expect_rc 1
 expect_out 'sol-high: missing absolute HERDR_PUSH_CODEX_BIN
-glm: missing HERDR_PUSH_PI_EXTENSION'
+glm-flash: --push is not supported for opencode; use pane prompts'
 expect_no_calls
-: >"$work/extension.ts"
-run_launch PATH="$check_path" HERDR_PUSH_CODEX_BIN="$work/bin/codex" HERDR_PUSH_PI_EXTENSION="$work/extension.ts" sh "$launch_sh" --push --check sol-high glm
-expect_rc 0
+run_launch PATH="$check_path" HERDR_PUSH_CODEX_BIN="$work/bin/codex" sh "$launch_sh" --push --check sol-high glm-flash
+expect_rc 1
 expect_out 'sol-high: ok
-glm: ok'
+glm-flash: --push is not supported for opencode; use pane prompts'
 expect_no_calls
 run_launch PATH="$check_path" HERDR_PUSH_CODEX_BIN="$work/absent" sh "$launch_sh" --push --check sol-high
 expect_rc 1

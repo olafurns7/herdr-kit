@@ -38,26 +38,37 @@
       "rev"
     ]
   },
-  "glm": {
-    "kind": "pi",
-    "model": "glm-5.3-flash",
+  "minimax-free": {
+    "kind": "opencode",
+    "model": "opencode/minimax-m3.1-flash-free",
     "effort": "high",
     "prefixes": [
-      "glm"
+      "glm",
+      "gather"
+    ]
+  },
+  "glm-free": {
+    "kind": "opencode",
+    "model": "opencode/glm-5.3-flash-free",
+    "effort": "high",
+    "prefixes": [
+      "glm",
+      "gather"
+    ]
+  },
+  "glm-flash": {
+    "kind": "opencode",
+    "model": "opencode/glm-5.3-flash",
+    "effort": "high",
+    "prefixes": [
+      "glm",
+      "gather"
     ]
   },
   "haiku-gather": {
     "kind": "claude",
     "model": "claude-haiku-5-5",
     "effort": "medium",
-    "prefixes": [
-      "gather"
-    ]
-  },
-  "glm-gather": {
-    "kind": "pi",
-    "model": "glm-5.3-flash",
-    "effort": "high",
     "prefixes": [
       "gather"
     ]

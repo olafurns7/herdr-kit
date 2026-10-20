@@ -1,6 +1,6 @@
 ---
 name: herdr-orchestration
-description: "Delegate work inside Herdr (HERDR_ENV=1): the agent hierarchy, which model runs which lane, launch commands for Claude, Codex, and pi workers, task layout, briefs, the taskr task ledger, waits, teardown, and recovery. Load this skill when orchestrating or sub-orchestrating, before delegating, reviewing, or starting an agent inside Herdr. The upstream `herdr` skill owns CLI syntax."
+description: "Delegate work inside Herdr (HERDR_ENV=1): the agent hierarchy, which model runs which lane, launch commands for Claude, Codex, and OpenCode workers, task layout, briefs, the taskr task ledger, waits, teardown, and recovery. Load this skill when orchestrating or sub-orchestrating, before delegating, reviewing, or starting an agent inside Herdr. The upstream `herdr` skill owns CLI syntax."
 ---
 
 # Herdr orchestration policy

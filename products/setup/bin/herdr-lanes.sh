@@ -31,8 +31,10 @@ lane_table_load() {
             (del(.deny) | length > 0 and all(to_entries[];
             (.key | test("^[a-z][a-z0-9-]*$")) and
             (.value | type == "object" and
-                (.kind | IN("claude", "codex", "pi")) and
-                (.model | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) and
+                (.kind | IN("claude", "codex", "pi", "opencode")) and
+                (if .kind == "opencode" then
+                    .model | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+                 else .model | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$") end) and
                 (.effort | IN("low", "medium", "high", "xhigh", "max", "ultra")) and
                 ((.provider // (if .kind == "pi" then "opencode" else .kind end)) |
                     type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) and
