@@ -900,7 +900,8 @@ exec /bin/cp "$@"
         lost_hooks[harness] = {event:sum('moshi-hook' in hook.get('command','') for group in groups for hook in group.get('hooks',[])) for event,groups in before['hooks'].items()}
         lost_hooks[harness] = {event:n for event,n in lost_hooks[harness].items() if n}
         assert 'moshi-hook' not in (h / dest).read_text()
-    assert lost_keys == {'claude':['agentPushNotifEnabled','alwaysThinkingEnabled','autoCompactWindow','enabledPlugins','extraKnownMarketplaces','model','permissions','statusLine'],'codex':[]}
+    assert lost_keys == {'claude':['agentPushNotifEnabled','alwaysThinkingEnabled','autoCompactWindow','enabledPlugins','extraKnownMarketplaces','model','statusLine'],'codex':[]}
+    assert json.loads((h / '.claude/settings.json').read_text())['permissions']['defaultMode'] == 'bypassPermissions'
     assert lost_hooks == {'claude':{'Notification':1,'PermissionRequest':1,'PostToolUse':2,'PreToolUse':2,'SessionEnd':1,'SessionStart':1,'Stop':1,'UserPromptSubmit':1},'codex':{'PermissionRequest':1,'SessionStart':1,'Stop':1,'UserPromptSubmit':1}}
     for dest in instruction_paths:
         assert (h / dest).read_bytes() == instruction_base, dest

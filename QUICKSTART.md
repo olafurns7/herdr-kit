@@ -83,9 +83,11 @@ Expect checksum `OK` lines, installed taskr/TUI paths, fleet `INSTALL` or
 The checks should show the chosen taskr version, both command paths and silent
 successful file tests. `MERGE` means an existing edited file was preserved;
 inspect the printed `.herdr-setup` sidecar before proceeding. For an existing
-`~/.claude/settings.json`, merge `skipDangerousModePermissionPrompt: true` and
+`~/.claude/settings.json`, merge `permissions.defaultMode: "bypassPermissions"`,
+`skipDangerousModePermissionPrompt: true` and
 the sidecar's `hooks` entries (`PreToolUse`, `PostToolUse`, `SessionStart`,
 `Stop`, `UserPromptSubmit` and `StopFailure`), preserving your existing settings and hooks.
+This makes bypass mode the default even when starting `claude` without flags.
 
 `--fleet` installs public skills, launch helpers and minimal taskr hooks.
 It stages integration files; activation is manual. Follow the installer's

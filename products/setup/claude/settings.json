@@ -78,5 +78,8 @@
       }
     ]
   },
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
   "skipDangerousModePermissionPrompt": true
 }
