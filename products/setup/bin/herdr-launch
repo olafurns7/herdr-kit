@@ -32,6 +32,10 @@ herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 2
 # Codex: --dangerously-bypass-approvals-and-sandbox; both
 #   checkouts are trusted projects.
 # pi: no approval prompts of its own; --approve trusts project files.
+# OpenCode v2: --auto approves non-denied permissions; --standalone keeps the
+# pane model/config and hook environment off the shared background server.
+# The root TUI has no model/effort flags; OPENCODE_CONFIG_CONTENT selects the
+# model for this process only. Lane effort is recorded but ignored.
 start_agent() {
     case $kind in
         claude) set -- --model "$model" --effort "$effort" --dangerously-skip-permissions \
@@ -40,6 +44,7 @@ start_agent() {
         codex) set -- -m "$model" -c "model_reasoning_effort=\"$effort\"" \
             --dangerously-bypass-approvals-and-sandbox \
             -c "projects={$codex_trust}" --dangerously-bypass-hook-trust ;;
+        opencode) set -- --standalone --auto ;;
         pi) set -- --provider "$provider" --model "$model" --thinking "$effort" --approve
             [ -z "$push" ] || set -- "$@" --extension "$HERDR_PUSH_PI_EXTENSION" ;;
     esac
@@ -98,6 +103,13 @@ json_num() {
         && printf '%s\n' "$json_val"
 }
 
+# OpenCode's installer may leave its bin directory off PATH.
+resolve_cli() {
+    cli=$(command -v "$kind") && return 0
+    [ "$kind" = opencode ] && [ -x "$HOME/.opencode/bin/opencode" ] || return 1
+    cli=$HOME/.opencode/bin/opencode
+}
+
 # Preflight never calls herdr or taskr, and hides harness version output.
 check_lanes() {
     lane_table_load || return 2
@@ -108,11 +120,13 @@ check_lanes() {
         if ! lane_info "$checked_lane" 2>/dev/null; then
             reason=$(printf '%s\n' "$lane_data" | jq -r --arg lane "$checked_lane" '
                 if has($lane) then "denied: " + (.[$lane].denied | join(", ")) else "unknown lane" end')
-        elif ! command -v "$kind" >/dev/null 2>&1; then
+        elif [ -n "$push" ] && [ "$kind" = opencode ]; then
+            reason='--push is not supported for opencode; use pane prompts'
+        elif ! resolve_cli; then
             reason="missing CLI: $kind"
-        elif ! "$kind" --version >/dev/null 2>&1; then
+        elif ! "$cli" --version >/dev/null 2>&1; then
             reason="$kind --version failed"
-        elif [ "$kind" != pi ] && [ -x "$HOME/.local/bin/codator" ] &&
+        elif { [ "$kind" = claude ] || [ "$kind" = codex ]; } && [ -x "$HOME/.local/bin/codator" ] &&
             ! "$HOME/.local/bin/codator" "$kind" --version >/dev/null 2>&1; then
             reason="Codator $kind --version failed"
         elif [ -n "$push" ]; then
@@ -229,6 +243,7 @@ case ${6+set} in
 esac
 if [ -n "$push" ]; then
     case $kind in
+        opencode) die '--push is not supported for opencode; use pane prompts' ;;
         pi)
             [ -f "${HERDR_PUSH_PI_EXTENSION-}" ] \
                 || die "--push for pi needs HERDR_PUSH_PI_EXTENSION naming taskr's adapters/pi/taskr-push.ts"
@@ -245,6 +260,14 @@ if [ -n "$push" ]; then
                 || die "--push for codex needs 'taskr start' in the brief: the push sidecar waits for the launch's thread and home registration"
             ;;
     esac
+fi
+
+# Fail before creating a tab or a task when OpenCode is absent.
+if [ "$kind" = opencode ]; then
+    resolve_cli || die 'missing CLI: opencode (also checked ~/.opencode/bin/opencode)'
+    opencode_cli=$(jq -nr --arg path "$cli" '$path | @sh') || exit 2
+    opencode_config=$(jq -cn --arg model "$model" \
+        '{model:$model,default_agent:"build",agents:{build:{model:$model}}}' | jq -Rr @sh) || exit 2
 fi
 
 # Compact output is what the parsers below read.
@@ -317,6 +340,9 @@ setup=" export FLEET_ROLE=worker TASKR_TASK=$task TASKR_LAUNCH=$launch"
 [ "$kind" != claude ] || setup="$setup CLAUDE_CODE_SANDBOXED=1"
 if [ -x "$HOME/.local/bin/codator" ]; then
     setup="$setup && codex() { \"\$HOME/.local/bin/codator\" codex \"\$@\"; } && claude() { \"\$HOME/.local/bin/codator\" claude \"\$@\"; }"
+fi
+if [ "$kind" = opencode ]; then
+    setup="$setup && opencode() { $opencode_cli \"\$@\"; } && export OPENCODE_CONFIG_CONTENT=$opencode_config"
 fi
 setup="$setup && herdr_launch_ok=$launch"
 herdr pane run "$pane" "$setup" >/dev/null || step_fail '4 (herdr pane run export)'

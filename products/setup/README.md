@@ -114,9 +114,24 @@ expressions; any match refuses resolution and is marked by `--lanes`. Optional
 `deny.except` maps known prefixes to objects with the same regex fields. A denial is
 exempt only when every prefix of the lane has a matching exception for that field.
 Exceptions have no effect without a matching deny rule. Anchor patterns with `^` and `$`
-for exact matches. A lane's optional `provider` defaults to `opencode` for pi and its
-kind otherwise; pi passes it to its CLI. Keep operator policy in the private table; the
-public deny list is empty.
+for exact matches. An OpenCode lane uses a qualified `provider/model` model;
+its `provider` is the model prefix, and an explicit value must match. Keep operator policy in
+the private table; the public deny list is empty.
+
+The public OpenCode lanes are `minimax-free` (`opencode/minimax-m3.1-flash-free`),
+`glm-free` (`opencode/glm-5.3-flash-free`), and `glm-flash` (`opencode/glm-5.3-flash`).
+All accept `glm-` and `gather-` names. These OpenCode lanes are for simple,
+bounded tasks with an exact validation gate: read-only gathering, source-grounded digests, mechanical edits, lint or
+format fixes, and doc copy. Prefer `minimax-free`, then `glm-free`; use paid
+`glm-flash` when both free lanes fail or are unavailable. Free lanes may read
+and edit private repository code within these limits. Never use these lanes
+for critical work, review or approval, a recommendation or adjudication,
+diagnosis, or a write path without an exact validation gate.
+
+`herdr-launch` runs OpenCode directly, resolving PATH or `~/.opencode/bin/opencode`.
+With v2.1.1 it uses `--standalone --auto` and process-local `OPENCODE_CONFIG_CONTENT`
+to select the model and build agent without writing global config. Effort is
+recorded but ignored; `--push` is refused for OpenCode.
 
 Claude's synchronous PreToolUse hook denies `Agent`, `Task`, and `Workflow` when
 `HERDR_ENV=1`, pointing to `herdr-launch`. Codex has no equivalent hook surface for

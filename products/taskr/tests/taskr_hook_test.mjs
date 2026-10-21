@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TaskrHook } from "../adapters/opencode/taskr-hook.js";
+import opencodePlugin, { TaskrHook } from "../adapters/opencode/taskr-hook.js";
 import piHook from "../adapters/pi/taskr-hook.ts";
 
 const savedEnv = Object.fromEntries(["HOME", "PATH", "TASKR_LAUNCH", "TASKR_RECORD_DIR"].map((key) => [key, process.env[key]]));
@@ -50,6 +50,9 @@ process.stdin.on("end", () => {
   process.env.TASKR_RECORD_DIR = records;
   delete process.env.TASKR_LAUNCH;
   assert.deepEqual(TaskrHook(), {});
+  assert.equal(opencodePlugin.id, "taskr.opencode");
+  assert.equal(opencodePlugin.server, TaskrHook);
+  assert.equal(await opencodePlugin.setup({}), undefined);
   const handlers = new Map();
   const pi = { on: (event, handler) => handlers.set(event, handler) };
   piHook(pi);
@@ -129,6 +132,58 @@ process.stdin.on("end", () => {
   await rm(join(records, "agent_settled.json"));
   assert.doesNotThrow(() => handlers.get("agent_settled")({}, badCtx));
   assert.deepEqual(JSON.parse((await recordFor(records, "agent_settled")).input), { type: "agent_settled" });
+
+  let subscribedAfterFailure = false;
+  assert.equal(await opencodePlugin.setup({
+    session: { hook: async () => { throw new Error("registration failed"); } },
+    event: { subscribe: () => { subscribedAfterFailure = true; } },
+  }), undefined);
+  assert.equal(subscribedAfterFailure, false);
+
+  // Exercise the V2 entrypoint, including payload translation and cleanup.
+  for (const [source, target, reason] of [
+    ["session.created", "session.created"],
+    ["session.execution.succeeded", "session.idle"],
+    ["session.execution.failed", "session.error"],
+    ["session.execution.interrupted", "session.idle", "user"],
+    ["session.execution.interrupted", null, "superseded"],
+    ["session.status", null],
+  ]) {
+    const event = { id: "v2-event", type: source, data: { sessionID: "v2-session", reason, error: { code: "fixture" } } };
+    for (const type of ["chat.message", "session.created", "session.idle", "session.error"]) {
+      await rm(join(records, `${type}.json`), { force: true });
+    }
+    let subscriptionSignal;
+    let v2Prompt;
+    const cleanup = await opencodePlugin.setup({
+      session: { hook: async (name, callback) => {
+        assert.equal(name, "prompt");
+        v2Prompt = callback;
+      } },
+      event: { subscribe: async function* ({ signal }) {
+        subscriptionSignal = signal;
+        yield event;
+        await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      } },
+    });
+    v2Prompt({ sessionID: "v2-session", prompt: { text: "First taskr got 42." } });
+    assert.deepEqual(JSON.parse((await recordFor(records, "chat.message")).input), {
+      input: { sessionID: "v2-session" },
+      output: { parts: [{ type: "text", text: "First taskr got 42." }] },
+    });
+    if (target) {
+      const record = await recordFor(records, target);
+      assert.deepEqual(record.args, ["hook", "opencode", target]);
+      assert.equal(record.input, JSON.stringify({ ...event, type: target, properties: event.data }));
+    } else {
+      for (const type of ["session.created", "session.idle", "session.error", "session.status"]) {
+        await assert.rejects(readFile(join(records, `${type}.json`), "utf8"), { code: "ENOENT" });
+      }
+    }
+    assert.equal(subscriptionSignal.aborted, false);
+    cleanup();
+    assert.equal(subscriptionSignal.aborted, true);
+  }
 
   await writeFile(join(bin, "taskr"), "#!/bin/sh\nexec sleep 2\n", { mode: 0o755 });
   const calls = [

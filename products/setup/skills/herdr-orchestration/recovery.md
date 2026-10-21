@@ -95,11 +95,11 @@ herdr agent start rev-<slug> --kind claude --pane "$helper_pane_id" --timeout 90
   --resume "$claude_sid"
 ```
 
-A pi lane resumes with its configured provider, model, effort, and saved session:
+An OpenCode lane resumes its saved session with `herdr-launch`'s process-local model config:
 
 ```bash
-# Clear a pi() bwrap wrapper left in a reused shell by the earlier sandbox rule.
-herdr pane run "$helper_pane_id" ' unset -f pi 2>/dev/null'
-herdr agent start glm-<slug> --kind pi --pane "$helper_pane_id" --timeout 90000 -- \
-  --provider opencode --model glm-5.3-flash --thinking high --approve --session "$pi_sid"
+# Use the recorded lane's model in place of this example.
+herdr pane run "$helper_pane_id" ' export PATH="$PATH:$HOME/.opencode/bin" OPENCODE_CONFIG_CONTENT='\''{"model":"opencode/minimax-m3.1-flash-free","default_agent":"build","agents":{"build":{"model":"opencode/minimax-m3.1-flash-free"}}}'\'' '
+herdr agent start glm-<slug> --kind opencode --pane "$helper_pane_id" --timeout 90000 -- \
+  --standalone --auto --session "$opencode_sid"
 ```

@@ -31,8 +31,10 @@ lane_table_load() {
             (del(.deny) | length > 0 and all(to_entries[];
             (.key | test("^[a-z][a-z0-9-]*$")) and
             (.value | type == "object" and
-                (.kind | IN("claude", "codex", "pi")) and
-                (.model | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) and
+                (.kind | IN("claude", "codex", "pi", "opencode")) and
+                (if .kind == "opencode" then
+                    .model | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+                 else .model | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$") end) and
                 (.effort | IN("low", "medium", "high", "xhigh", "max", "ultra")) and
                 ((.provider // (if .kind == "pi" then "opencode" else .kind end)) |
                     type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) and
@@ -40,7 +42,12 @@ lane_table_load() {
                     all(.[]; prefix))))
         )) then . else error("invalid lane table") end
         | (.deny // {}) as $rules | del(.deny)
-        | map_values(.provider //= (if .kind == "pi" then "opencode" else .kind end)
+        | map_values((if .kind == "opencode" then
+                (.model | split("/")[0]) as $provider
+                | if has("provider") and .provider != $provider then
+                    error("opencode provider must match model prefix: " + $provider)
+                  else .provider = $provider end
+            else .provider //= (if .kind == "pi" then "opencode" else .kind end) end)
             | .denied = denied($rules))
     ' "$lane_table") || { printf '%s\n' 'invalid lane table' >&2; return 1; }
 }
