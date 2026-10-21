@@ -95,9 +95,7 @@ herdr agent start rev-<slug> --kind claude --pane "$helper_pane_id" --timeout 90
   --resume "$claude_sid"
 ```
 
-An OpenCode lane resumes with its configured model and saved session. Restore the
-same process-local model config as `herdr-launch`; effort is recorded but ignored.
-The root v2.1.1 TUI accepts `--session`, `--standalone`, and `--auto`:
+An OpenCode lane resumes its saved session with `herdr-launch`'s process-local model config:
 
 ```bash
 # Use the recorded lane's model in place of this example.
