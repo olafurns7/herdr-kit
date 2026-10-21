@@ -47,7 +47,7 @@ taskr daemon, as in [step 7](#7-verify-end-to-end).
 
 Pin a published `taskr/vX.Y.Z` release from the
 [releases page](https://github.com/olafurns7/herdr-kit/releases). Set
-`TASKR_VERSION=taskr/v0.25.1` in the download command below.
+`TASKR_VERSION=taskr/v0.26.0` in the download command below.
 See [install.md](docs/install.md#2-install) for accepted version forms.
 Without a pin, the installer enumerates paginated releases, excludes drafts,
 prereleases and other products, then selects the highest stable taskr version
@@ -61,7 +61,7 @@ Do not pipe it into `sh`: a partial download could run before the failure
 shows.
 
 ```sh
-export TASKR_VERSION=taskr/v0.25.1   # or a newer taskr/vX.Y.Z from the step above
+export TASKR_VERSION=taskr/v0.26.0   # or a newer taskr/vX.Y.Z from the step above
 curl -fsSL -o taskr-install.sh \
   "https://github.com/olafurns7/herdr-kit/releases/download/$TASKR_VERSION/install.sh" &&
   test -s taskr-install.sh &&
@@ -80,7 +80,7 @@ plugin.tar.gz: OK
 INSTALL ~/.agents/skills/taskr/SKILL.md        (one line per file)
 INSTALL ~/.claude/skills/taskr -> ../../.agents/skills/taskr
 installed ~/.local/bin/taskr-tui
-installed ~/.local/bin/taskr (j1 {"version":"v0.25.1","ok":true})
+installed ~/.local/bin/taskr (j1 {"version":"v0.26.0","ok":true})
 INSTALL ~/.local/share/taskr/plugin/…          (one line per file)
 plugin staged: ~/.local/share/taskr/plugin (activate with herdr plugin link)
 MANUAL: find the herdr-radar settings directory: …
@@ -115,7 +115,7 @@ export PATH="$HOME/.local/bin:$PATH"
 command -v taskr; command -v taskr-tui; taskr version
 ```
 
-Expect both paths under `~/.local/bin` and `j1 {"version":"v0.25.1","ok":true}`.
+Expect both paths under `~/.local/bin` and `j1 {"version":"v0.26.0","ok":true}`.
 To keep it, add the `export` line to your shell profile (`~/.bashrc`,
 `~/.zshrc`; on macOS usually `~/.zprofile`). Herdr's plugin looks for
 `~/.local/bin/taskr`, or in `TASKR_INSTALL_DIR` when Herdr has it in its

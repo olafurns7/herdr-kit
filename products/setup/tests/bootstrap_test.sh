@@ -34,7 +34,7 @@ printf '%s\n' unrelated >"$root/missing/github-source/other.txt"
 tar -czf "$root/good.tar.gz" -C "$root/fixture" github-source
 tar -czf "$root/missing.tar.gz" -C "$root/missing" github-source
 printf '%s\n' corrupt >"$root/corrupt.tar.gz"
-printf '%s\n' api repos/olafurns7/herdr-kit/tarball/taskr/v0.25.1 >"$root/expected-gh-argv"
+printf '%s\n' api repos/olafurns7/herdr-kit/tarball/taskr/v0.26.0 >"$root/expected-gh-argv"
 
 count=0
 new_case() {

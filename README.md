@@ -16,8 +16,8 @@ Install taskr CLI/TUI and its canonical skill from an exact product release.
 From a herdr-kit checkout:
 
 ```sh
-TASKR_VERSION=taskr/v0.25.1 sh products/taskr/install.sh
-TASKR_VERSION=taskr/v0.25.1 sh products/taskr/install.sh --fleet
+TASKR_VERSION=taskr/v0.26.0 sh products/taskr/install.sh
+TASKR_VERSION=taskr/v0.26.0 sh products/taskr/install.sh --fleet
 ```
 
 `--fleet` adds public orchestration/fleet skills, configured launch helpers,

@@ -12,7 +12,7 @@ bootstrap_dir=$(mktemp -d "${TMPDIR:-/tmp}/herdr-setup-bootstrap.XXXXXX")
 trap 'rm -rf "${bootstrap_dir:?}"' 0
 trap 'exit 1' 1 2 3 15
 
-tag=${TASKR_VERSION:-taskr/v0.25.1}
+tag=${TASKR_VERSION:-taskr/v0.26.0}
 tag=${tag#taskr/}; tag=${tag#v}
 printf '%s\n' "$tag" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || {
     printf '%s\n' 'ERROR: invalid TASKR_VERSION' >&2; exit 2;
