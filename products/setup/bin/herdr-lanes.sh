@@ -42,7 +42,12 @@ lane_table_load() {
                     all(.[]; prefix))))
         )) then . else error("invalid lane table") end
         | (.deny // {}) as $rules | del(.deny)
-        | map_values(.provider //= (if .kind == "pi" then "opencode" else .kind end)
+        | map_values((if .kind == "opencode" then
+                (.model | split("/")[0]) as $provider
+                | if has("provider") and .provider != $provider then
+                    error("opencode provider must match model prefix: " + $provider)
+                  else .provider = $provider end
+            else .provider //= (if .kind == "pi" then "opencode" else .kind end) end)
             | .denied = denied($rules))
     ' "$lane_table") || { printf '%s\n' 'invalid lane table' >&2; return 1; }
 }

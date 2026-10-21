@@ -133,6 +133,13 @@ process.stdin.on("end", () => {
   assert.doesNotThrow(() => handlers.get("agent_settled")({}, badCtx));
   assert.deepEqual(JSON.parse((await recordFor(records, "agent_settled")).input), { type: "agent_settled" });
 
+  let subscribedAfterFailure = false;
+  assert.equal(await opencodePlugin.setup({
+    session: { hook: async () => { throw new Error("registration failed"); } },
+    event: { subscribe: () => { subscribedAfterFailure = true; } },
+  }), undefined);
+  assert.equal(subscribedAfterFailure, false);
+
   // Exercise the V2 entrypoint, including payload translation and cleanup.
   for (const [source, target, reason] of [
     ["session.created", "session.created"],

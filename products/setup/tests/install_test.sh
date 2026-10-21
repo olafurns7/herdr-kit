@@ -883,6 +883,8 @@ exec /bin/cp "$@"
         '.claude/settings.json','.codex/hooks.json','.local/bin/herdr-launch','.local/bin/herdr-lead',
         '.agents/skills/herdr-fleet/SKILL.md',
     }
+    if baseline('products/setup/opencode/plugins/taskr-hook.js') != (setup / 'opencode/plugins/taskr-hook.js').read_bytes():
+        expected_updates.add('.config/opencode/plugins/taskr-hook.js')
     for dest, source in old_files.items():
         if dest.startswith('.agents/skills/herdr-orchestration/') and baseline('products/setup/'+source) != (setup / source).read_bytes():
             expected_updates.add(dest)

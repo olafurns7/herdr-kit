@@ -6,8 +6,11 @@ model rules below apply to every table.
 `herdr-launch`, `herdr-lead` and `herdr-hub` resolve the optional private table at
 `~/.config/herdr-fleet/lanes.json`, else the checkout's `products/setup/lanes.json` when run from
 source, else `~/.local/share/herdr-setup/lanes.json`. A private table replaces all defaults.
-Each lane has `kind` (`claude`, `codex`, or `opencode`), `model`, `effort` (`low` to `ultra`), optional `provider`
-(default the kind), and allowed `prefixes` (`impl`, `mech`, `rs`, `rev`, `arch`, `glm`, `orch`, `gather`).
+Each lane has `kind` (`claude`, `codex`, `opencode`, or legacy private `pi`), `model`,
+`effort` (`low` to `ultra`), optional `provider`, and allowed `prefixes`
+(`impl`, `mech`, `rs`, `rev`, `arch`, `glm`, `orch`, `gather`). OpenCode's provider is
+the model prefix; an explicit value must match. Other kinds default to the kind,
+except legacy `pi`, which defaults to `opencode`.
 The helpers validate the table and build argv without evaluating text. Unknown lanes fail
 before any control-plane call. `herdr-launch --lanes` lists resolved lanes, prefixes
 and the table path without launching.

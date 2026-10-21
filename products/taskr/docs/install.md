@@ -200,7 +200,7 @@ the taskr release you installed, after approval, copy the adapter for the harnes
 use. These commands stop if a destination already exists; inspect and merge an existing
 adapter instead of overwriting it.
 
-OpenCode:
+OpenCode (v2, or v1 >= 1.18.29):
 ```sh
 mkdir -p "$HOME/.config/opencode/plugins" &&
   test ! -e "$HOME/.config/opencode/plugins/taskr-hook.js" &&
@@ -209,6 +209,7 @@ mkdir -p "$HOME/.config/opencode/plugins" &&
 ```
 The plugin forwards session.created/session.idle/session.error objects to `taskr hook
 opencode EVENT`; chat.message sends `{"input": input, "output": output}`.
+On v2, execution succeeded/interrupted maps to session.idle (except superseded interruptions); failed maps to session.error.
 
 pi:
 ```sh

@@ -84,6 +84,13 @@ process.stdin.on("end", () => {
   await assert.rejects(readFile(join(records, "chat.message.json"), "utf8"), { code: "ENOENT" });
   await assert.rejects(readFile(join(records, "session.created.json"), "utf8"), { code: "ENOENT" });
 
+  let subscribedAfterFailure = false;
+  assert.equal(await opencodePlugin.setup({
+    session: { hook: async () => { throw new Error("registration failed"); } },
+    event: { subscribe: () => { subscribedAfterFailure = true; } },
+  }), undefined);
+  assert.equal(subscribedAfterFailure, false);
+
   // Exercise the V2 entrypoint, including payload translation and cleanup.
   for (const [source, target, reason] of [
     ["session.created", "session.created"],

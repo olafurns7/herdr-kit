@@ -115,7 +115,7 @@ expressions; any match refuses resolution and is marked by `--lanes`. Optional
 exempt only when every prefix of the lane has a matching exception for that field.
 Exceptions have no effect without a matching deny rule. Anchor patterns with `^` and `$`
 for exact matches. An OpenCode lane uses a qualified `provider/model` model;
-its optional `provider` metadata defaults to its kind. Keep operator policy in
+its `provider` is the model prefix, and an explicit value must match. Keep operator policy in
 the private table; the public deny list is empty.
 
 The public OpenCode lanes are `minimax-free` (`opencode/minimax-m3.1-flash-free`),

@@ -1083,6 +1083,39 @@ for field in model provider kind; do
     expect_no_calls
 done
 
+for explicit_provider in false true; do
+    new_case 'OpenCode provider deny uses the model prefix'
+    mkdir -p "$home/.config/herdr-fleet"
+    jq -n --argjson explicit "$explicit_provider" '{deny:{provider:["^opencode-go$"]},
+        custom:{kind:"opencode",model:"opencode-go/x",effort:"high",prefixes:["glm"]}}
+        | if $explicit then .custom.provider = "opencode-go" else . end' >"$home/.config/herdr-fleet/lanes.json"
+    run_launch sh "$launch_sh" custom glm-cart "$brief" "$report" 42
+    expect_rc 2
+    expect_err 'lane custom denied: provider'
+    expect_no_calls
+    run_launch sh "$launch_sh" --lanes
+    expect_rc 0
+    printf '%s\n' "$out" | grep -q 'denied: provider' || fail 'denied OpenCode lane not marked'
+    expect_no_calls
+    run_launch sh "$launch_sh" --check custom
+    expect_rc 1
+    expect_out 'custom: denied: provider'
+    expect_no_calls
+done
+
+new_case 'OpenCode rejects a provider that differs from the model prefix'
+mkdir -p "$home/.config/herdr-fleet"
+printf '%s\n' '{"custom":{"kind":"opencode","provider":"opencode","model":"opencode-go/x","effort":"high","prefixes":["glm"]}}' >"$home/.config/herdr-fleet/lanes.json"
+run_launch sh "$launch_sh" custom glm-cart "$brief" "$report" 42
+expect_rc 2
+expect_err 'opencode provider must match model prefix: opencode-go'
+expect_no_calls
+run_launch sh "$launch_sh" --lanes
+expect_rc 2
+expect_err 'opencode provider must match model prefix: opencode-go'
+expect_out ''
+expect_no_calls
+
 new_case 'nonmatching deny preserves a private pi provider argv'
 mkdir -p "$home/.config/herdr-fleet"
 printf '%s\n' '{"deny":{"model":["^other$"]},"custom":{"kind":"pi","provider":"synthetic-provider","model":"synthetic-model","effort":"high","prefixes":["impl"]}}' >"$home/.config/herdr-fleet/lanes.json"
