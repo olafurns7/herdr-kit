@@ -43,6 +43,7 @@ Unknown or malformed lanes fail before registration or agent startup.
 `--practices` and `--verification` add the optional skill packs. `--slotr`,
 `--notifications` (public Moshi hook fragments), and `--radar` (the external
 pinned plugin) are separate opt-ins; missing optional tools do not block the core.
+The hub (`FLEET_ROLE=hub`) keeps Moshi notifications; leads and helpers (`FLEET_ROLE=worker`) stay quiet.
 Launch helpers forward Codex and Claude through an existing `~/.local/bin/codator`; they
 never install it or read its accounts. For a resume, preserve the recorded account and native session.
 Do not bypass an account manager's refusal or inspect credential files.

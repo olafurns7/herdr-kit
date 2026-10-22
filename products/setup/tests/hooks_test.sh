@@ -17,6 +17,22 @@ for harness in claude codex; do
 done
 python3 - "$root/claude/settings.json" "$work/home" <<'PY'
 import json, os, re, subprocess, sys
+from pathlib import Path
+
+moshi = Path(sys.argv[2]) / '.local/bin/moshi-hook'
+moshi.write_text('#!/bin/sh\nprintf "moshi:%s\\n" "$1"\n')
+moshi.chmod(0o755)
+for harness in ('claude', 'codex'):
+    notifications = Path(sys.argv[1]).parent.parent / harness / 'notifications.json'
+    for groups in json.loads(notifications.read_text())['hooks'].values():
+        for group in groups:
+            for hook in group['hooks']:
+                for role in ('hub', 'worker'):
+                    env = {'HOME': sys.argv[2], 'PATH': os.environ['PATH'], 'FLEET_ROLE': role}
+                    result = subprocess.run(['sh', '-c', hook['command']], env=env, text=True, capture_output=True)
+                    assert result.returncode == 0 and result.stderr == '', (harness, role, result)
+                    assert result.stdout == (f'moshi:{harness}-hook\n' if role == 'hub' else ''), result
+
 groups = json.load(open(sys.argv[1]))['hooks']['PreToolUse']
 for tool in ('Agent', 'Task', 'Workflow', 'Bash', 'TaskCreate', 'Read'):
     matching = [g for g in groups if re.search(g['matcher'], tool)]
