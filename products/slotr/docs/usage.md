@@ -152,7 +152,9 @@ security policy.
 
 ## Exit codes
 
-- Normal workload exit codes are relayed.
+- Normal workload exit codes are relayed, and the client ends with
+  `slotr: PASS RUN` or `slotr: FAIL RUN: exit N` on stderr.
+- A run killed at its `MemoryMax` returns 137.
 - A signal returns 128 + the signal number.
 - 2 means a CLI, config, platform, or manager failure.
   The flock guard also uses 2 for a protected target or uncertain policy/syntax.

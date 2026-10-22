@@ -373,7 +373,8 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(json.loads(p1.read_text())['literal'], ['$LITERAL', 'with spaces'])
         flags = json.loads((self.runtime / 'launches').read_text().splitlines()[0])
         for flag in ('--collect', '--wait', '--pipe', '--expand-environment=no', '--property=KillMode=control-group',
-                     '--property=Restart=no', '--property=MemoryAccounting=yes', '--property=OOMScoreAdjust=500', '--property=OOMPolicy=kill'):
+                     '--property=Restart=no', '--property=MemoryAccounting=yes', '--property=OOMScoreAdjust=500', '--property=OOMPolicy=continue',
+                     '--property=MemoryMax=7680M', '--property=MemorySwapMax=0M'):
             self.assertIn(flag, flags)
         self.assertNotIn('private-test-value', (self.runtime / 'slotr/state.json').read_text())
 
@@ -508,10 +509,82 @@ class AdmissionTest(unittest.TestCase):
     def test_reclaim_gone_unit_and_normal_exit(self):
         result = self.invoke('run', '--kind', 'dev-stack', '--', sys.executable, '-c', 'import sys; sys.exit(17)')
         self.assertEqual(result.returncode, 17, result.stderr)
+        self.assertIn('slotr: FAIL slotr-runtime-1: exit 17', result.stderr)
+        # systemd-run --wait may report success for a failed unit it already collected.
+        stub = (self.bin / 'systemd-run').read_text()
+        (self.bin / 'systemd-run').write_text(stub.replace('os.execv(cmd[0], cmd)', "__import__('subprocess').run(cmd); sys.exit(0)"))
+        result = self.invoke('run', '--kind', 'dev-stack', '--', 'sh', '-c', 'exit 3')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn('slotr: FAIL slotr-runtime-2: exit 3', result.stderr)
+        result = self.invoke('run', '--kind', 'dev-stack', '--', 'true')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('slotr: PASS slotr-runtime-3', result.stderr)
+        (self.bin / 'systemd-run').write_text(stub)
+        self.assertEqual(list((self.runtime / 'slotr').glob('exit-*')), [])
+
+        for label, body in (
+            ('pre-supervisor error', "os.environ['SLOTR_CONFIG']=str(root/'missing-config'); __import__('subprocess').run(cmd); sys.exit(0)"),
+            ('missing status', 'sys.exit(0)'),
+            *[(f'invalid status {value}', "__import__('subprocess').run(cmd); (root/'slotr'/('exit-'+unit+'-'+cmd[3]+'.json')).write_text(%r); sys.exit(0)" % value)
+              for value in ('invalid', '-1', '256')],
+        ):
+            with self.subTest(label=label):
+                (self.bin / 'systemd-run').write_text(stub.replace('os.execv(cmd[0], cmd)', body))
+                result = self.invoke('run', '--', 'true')
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('slotr: FAIL', result.stderr)
+
+        # Reuse a run name after state loss, including an old supervisor writing late.
+        for late in (False, True):
+            with self.subTest(stale_status=True, late=late):
+                state_path = self.runtime / 'slotr/state.json'
+                state_path.unlink()
+                capture = "(root/'old-invocation').write_text(cmd[3]); os.execv(cmd[0], cmd)"
+                (self.bin / 'systemd-run').write_text(stub.replace('os.execv(cmd[0], cmd)', capture))
+                result = self.invoke('run', '--', 'true')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                old = self.runtime / ('slotr/exit-slotr-runtime-1-' + (self.runtime / 'old-invocation').read_text() + '.json')
+                legacy = self.runtime / 'slotr/exit-slotr-runtime-1.json'
+                state_path.unlink()
+                if late:
+                    body = "__import__('subprocess').run(cmd); pathlib.Path(%r).write_text('0\\n'); sys.exit(0)" % str(old)
+                else:
+                    old.write_text('0\n')
+                    legacy.write_text('0\n')
+                    body = 'os.execv(cmd[0], cmd)'
+                (self.bin / 'systemd-run').write_text(stub.replace('os.execv(cmd[0], cmd)', body))
+                result = self.invoke('run', '--', 'sh', '-c', 'kill -KILL "$PPID"; exit 3')
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('slotr: FAIL', result.stderr)
+                self.assertEqual(old.read_text(), '0\n')
+                old.unlink()
+                legacy.unlink(missing_ok=True)
+
+        (self.bin / 'systemd-run').write_text(stub)
+        result = self.invoke('run', '--cost', '0', '--', 'true')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        flags = json.loads((self.runtime / 'launches').read_text().splitlines()[-1])
+        self.assertIn('--property=MemoryMax=7680M', flags)
+        config = self.root / 'config/slotr/config.toml'
+        original = config.read_text()
+        for override, expected in (('', 2), ('memory_max_mib = 512\n', 0)):
+            with self.subTest(zero_pool_default=True, override=override):
+                config.write_text(original.replace('default_cost_mib = 7680', 'default_cost_mib = 0\n' + override))
+                launches = (self.runtime / 'launches').read_text()
+                result = self.invoke('run', '--cost', '0', '--', 'true')
+                self.assertEqual(result.returncode, expected, result.stderr)
+                if expected:
+                    self.assertIn('positive memory ceiling', result.stderr)
+                    self.assertEqual((self.runtime / 'launches').read_text(), launches)
+                else:
+                    flags = json.loads((self.runtime / 'launches').read_text().splitlines()[-1])
+                    self.assertIn('--property=MemoryMax=512M', flags)
+        config.write_text(original)
+        next_admission = json.loads((self.runtime / 'slotr/state.json').read_text())['admit_seq'] + 1
         _, output = self.start('after')
         h = self.admitted('after', output)
         self.assertEqual(h['slot'], 0)
-        self.assertEqual(h['admit_seq'], 2)
+        self.assertEqual(h['admit_seq'], next_admission)
         state = json.loads((self.runtime / 'slotr/state.json').read_text())
         self.assertEqual(len(state['holders']), 1)
 

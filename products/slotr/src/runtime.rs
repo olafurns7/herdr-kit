@@ -42,6 +42,15 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
     } else {
         args.cost.unwrap_or(pool.default_cost_mib)
     };
+    let memory_max = match (pool.memory_max_mib, cost) {
+        (0, 0) => pool.default_cost_mib,
+        (0, cost) => cost,
+        (mib, _) => mib,
+    };
+    ensure!(
+        memory_max > 0,
+        "run requires a positive memory ceiling: set memory_max_mib or default_cost_mib"
+    );
     if pool.memory_gated
         && let Some(total) = stats::read().total_mib
     {
@@ -201,8 +210,13 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
 
             if let Some(holder) = holder {
                 let _legacy_file = legacy_file;
-                let (rc, collision) = launch(&holder, &args.cmd, cfg)?;
+                let (rc, collision) = launch(&holder, &args.cmd, cfg, memory_max)?;
                 if !collision {
+                    if rc == 0 {
+                        eprintln!("slotr: PASS {}", holder.run);
+                    } else {
+                        eprintln!("slotr: FAIL {}: exit {rc}", holder.run);
+                    }
                     return Ok(rc);
                 }
                 state::transaction(|s| {
@@ -250,7 +264,16 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
     }
     result
 }
-fn launch(h: &Holder, cmd: &[String], cfg: &Config) -> Result<(i32, bool)> {
+fn launch(h: &Holder, cmd: &[String], cfg: &Config, memory_max: u64) -> Result<(i32, bool)> {
+    let mut nonce = [0u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut nonce)?;
+    let invocation: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    let exit_file = crate::supervisor::exit_path(&h.run, &invocation);
+    match std::fs::remove_file(&exit_file) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     let mut command = Command::new(stats::setting("SYSTEMD_RUN", "systemd-run"));
     command.args([
         "--user",
@@ -266,13 +289,17 @@ fn launch(h: &Holder, cmd: &[String], cfg: &Config) -> Result<(i32, bool)> {
         "--expand-environment=no",
     ]);
     command.arg(format!("--working-directory={}", h.request.cwd));
+    let pool = &cfg.pools[&h.request.pool];
     for prop in [
         "KillMode=control-group".into(),
         format!("TimeoutStopSec={}", cfg.watchdog.term_grace_seconds + 5.0),
         "Restart=no".into(),
         "MemoryAccounting=yes".into(),
         "OOMScoreAdjust=500".into(),
-        "OOMPolicy=kill".into(),
+        // An OOM kill ends the payload alone; the supervisor reports it.
+        "OOMPolicy=continue".into(),
+        format!("MemoryMax={memory_max}M"),
+        format!("MemorySwapMax={}M", pool.memory_swap_max_mib),
     ] {
         command.arg(format!("--property={prop}"));
     }
@@ -292,6 +319,7 @@ fn launch(h: &Holder, cmd: &[String], cfg: &Config) -> Result<(i32, bool)> {
         .arg(std::env::current_exe()?)
         .arg("_supervise")
         .arg(&h.run)
+        .arg(&invocation)
         .arg("--")
         .args(cmd)
         .stderr(Stdio::piped());
@@ -376,11 +404,25 @@ fn launch(h: &Holder, cmd: &[String], cfg: &Config) -> Result<(i32, bool)> {
         && (error.contains("already exists")
             || error.contains("unit exists")
             || error.contains("already loaded"));
+    let recorded = crate::files::read_to_string(&exit_file)
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok())
+        .filter(|code| (0..=255).contains(code));
+    let _ = std::fs::remove_file(&exit_file);
+    let rc = match recorded {
+        Some(code) => code,
+        // Missing current-invocation status never proves the payload succeeded.
+        None if status.success() => {
+            eprintln!("slotr: {} recorded no exit status", h.run);
+            1
+        }
+        None => manager::code(status),
+    };
     Ok((
         if manager::cancelled() != 0 {
             128 + manager::cancelled()
         } else {
-            manager::code(status)
+            rc
         },
         collision,
     ))

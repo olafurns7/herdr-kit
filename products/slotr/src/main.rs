@@ -76,6 +76,7 @@ enum Command {
     #[command(name = "_supervise", hide = true)]
     Supervise {
         run: String,
+        invocation: String,
         #[arg(last = true, required = true)]
         cmd: Vec<String>,
     },
@@ -153,7 +154,11 @@ fn execute(cli: Cli) -> Result<i32> {
     {
         match cli.command {
             Command::Run(args) => runtime::run(args, &cfg),
-            Command::Supervise { run, cmd } => supervisor::supervise(&run, &cmd, &cfg),
+            Command::Supervise {
+                run,
+                invocation,
+                cmd,
+            } => supervisor::supervise(&run, &invocation, &cmd, &cfg),
             Command::Stop { run, reason } => runtime::stop(&run, reason.as_deref()),
             Command::Priority { command } => policy::command(command, &cfg),
             Command::Touch { run } => {
