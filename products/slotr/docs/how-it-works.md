@@ -138,8 +138,19 @@ Direct native calls and deliberate namespace substitution can bypass it.
 ## Units
 
 Each admitted command runs in a transient systemd user service with its own
-supervisor. Units use `OOMScoreAdjust=500`, `OOMPolicy=kill`,
+supervisor. Units use `OOMScoreAdjust=500`, `OOMPolicy=continue`,
 `KillMode=control-group`, memory accounting, no restart, and a bounded stop.
+`MemoryMax` is the pool's `memory_max_mib` or the run's admission cost, and
+`MemorySwapMax` is the pool's `memory_swap_max_mib`, so a runaway run is
+OOM-killed alone inside its own unit. The supervisor survives that kill and
+reports the payload's signal exit (137).
+
+The supervisor writes the payload's exit code to `exit-RUN.json` beside the
+runtime state, and the client exits with that code. `systemd-run --wait` can
+report success for a failed unit that systemd has already collected, so its
+own status is only a fallback. A started run that recorded no code never
+passes: the client exits with systemd-run's failure code or 1. The last stderr line is
+`slotr: PASS RUN` or `slotr: FAIL RUN: exit N`.
 systemd-run receives only valid environment variable names via
 `--setenv=NAME`, keeping values off its command line.
 

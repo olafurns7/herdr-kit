@@ -203,6 +203,11 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
                 let _legacy_file = legacy_file;
                 let (rc, collision) = launch(&holder, &args.cmd, cfg)?;
                 if !collision {
+                    if rc == 0 {
+                        eprintln!("slotr: PASS {}", holder.run);
+                    } else {
+                        eprintln!("slotr: FAIL {}: exit {rc}", holder.run);
+                    }
                     return Ok(rc);
                 }
                 state::transaction(|s| {
@@ -266,13 +271,25 @@ fn launch(h: &Holder, cmd: &[String], cfg: &Config) -> Result<(i32, bool)> {
         "--expand-environment=no",
     ]);
     command.arg(format!("--working-directory={}", h.request.cwd));
+    let pool = &cfg.pools[&h.request.pool];
+    let memory_max = match pool.memory_max_mib {
+        0 => h.request.cost_mib,
+        mib => mib,
+    };
     for prop in [
         "KillMode=control-group".into(),
         format!("TimeoutStopSec={}", cfg.watchdog.term_grace_seconds + 5.0),
         "Restart=no".into(),
         "MemoryAccounting=yes".into(),
         "OOMScoreAdjust=500".into(),
-        "OOMPolicy=kill".into(),
+        // An OOM kill ends the payload alone; the supervisor reports it.
+        "OOMPolicy=continue".into(),
+        if memory_max == 0 {
+            "MemoryMax=infinity".into()
+        } else {
+            format!("MemoryMax={memory_max}M")
+        },
+        format!("MemorySwapMax={}M", pool.memory_swap_max_mib),
     ] {
         command.arg(format!("--property={prop}"));
     }
@@ -376,11 +393,25 @@ fn launch(h: &Holder, cmd: &[String], cfg: &Config) -> Result<(i32, bool)> {
         && (error.contains("already exists")
             || error.contains("unit exists")
             || error.contains("already loaded"));
+    let exit_file = crate::supervisor::exit_path(&h.run);
+    let recorded = crate::files::read_to_string(&exit_file)
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok());
+    let _ = std::fs::remove_file(&exit_file);
+    let rc = match recorded {
+        Some(code) => code,
+        // A started supervisor always records its code; a missing one is not a pass.
+        None if started && status.success() => {
+            eprintln!("slotr: {} recorded no exit status", h.run);
+            1
+        }
+        None => manager::code(status),
+    };
     Ok((
         if manager::cancelled() != 0 {
             128 + manager::cancelled()
         } else {
-            manager::code(status)
+            rc
         },
         collision,
     ))

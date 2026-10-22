@@ -6,6 +6,8 @@ evictable = true
 default_cost_mib = 7680
 max_lease = "4h" # "0" disables the lease cap
 campaign_cap = 1 # 0 disables the cap
+memory_max_mib = 0 # per-run MemoryMax; 0 uses the run's admission cost
+memory_swap_max_mib = 0 # per-run MemorySwapMax
 # Optional tables (absent by default):
 # [pools.default.ports]
 # base = 31000

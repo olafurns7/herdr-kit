@@ -70,6 +70,8 @@ These tables match `config.example.toml`. Durations use the suffixes `s`,
 | `default_cost_mib` | `7680` | Estimated anonymous memory cost per request |
 | `max_lease` | `"4h"` | Lease default and upper bound; `"0"` has no cap |
 | `campaign_cap` | `1` | Slots per campaign when another campaign waits; 0 disables |
+| `memory_max_mib` | `0` | Each run's `MemoryMax`; 0 uses the run's admission cost (kind, `--cost` or `default_cost_mib`). A run over it is OOM-killed alone |
+| `memory_swap_max_mib` | `0` | Each run's `MemorySwapMax`; 0 keeps runs out of swap so the memory ceiling holds |
 | `ports.base` | absent | Optional first block's starting port, at least 1024 |
 | `ports.stride` | absent | Optional block width; example 32 |
 | `ports.probe` | absent | Optional first N ports to bind-probe; example 7 |

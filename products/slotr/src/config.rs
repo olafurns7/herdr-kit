@@ -104,6 +104,8 @@ pub struct Pool {
     pub default_cost_mib: u64,
     pub max_lease: String,
     pub campaign_cap: u32,
+    pub memory_max_mib: u64,
+    pub memory_swap_max_mib: u64,
     pub ports: Option<Ports>,
     pub legacy_lock: Option<Legacy>,
     #[serde(default)]

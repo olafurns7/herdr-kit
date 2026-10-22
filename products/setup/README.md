@@ -152,6 +152,26 @@ URL. Flags are mutually exclusive; invalid URLs are refused. Local ledgers,
 hub roles, and legacy hub URLs require manual reconciliation before changing
 roles. Apply the printed service/daemon steps yourself.
 
+## Memory isolation
+
+slotr caps each run unit with `MemoryMax` and `OOMPolicy=continue`, so a
+runaway run is killed alone (slotr's [configuration](../slotr/docs/configuration.md),
+`memory_max_mib`). The Herdr user service hosts every agent pane, so one
+kernel OOM kill there must not stop the whole service. The installer does
+not change that unit; add a drop-in yourself and restart Herdr from a
+terminal outside any agent session:
+
+```ini
+# ~/.config/systemd/user/herdr.service.d/oom.conf
+[Service]
+OOMPolicy=continue
+```
+
+Leave `ManagedOOMMemoryPressure=` and `ManagedOOMSwap=` unset on this unit:
+on a service without child cgroups, systemd-oomd would kill all of Herdr.
+systemd-oomd honours `ManagedOOMPreference=` only for root-owned cgroups, so
+it cannot shield a user service; the per-run `MemoryMax` is the guard.
+
 ## Validation
 
 From the repository root:
