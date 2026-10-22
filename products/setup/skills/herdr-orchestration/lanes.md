@@ -1,6 +1,7 @@
 # Lane selection
 
-Load before choosing or resuming a lane. Lane tables hold model assignments; the
+Load before choosing or resuming a lane, or before splitting work into small
+verified tasks (Loop verification, below). Lane tables hold model assignments; the
 model rules below apply to every table.
 
 `herdr-launch`, `herdr-lead` and `herdr-hub` resolve the optional private table at
@@ -62,3 +63,12 @@ current authorized lane settings. Stop if those cannot be established.
 
 Reviewers work independently of implementers. The brief defines scope, validation,
 escalation, and publication authority; a lane name grants none of those rights.
+
+## Loop verification
+
+For velocity, a lead or sub-orchestrator splits work into small gated tasks, runs fast implementers in parallel, and has one verifier review the work of several.
+
+- **Small task:** one concern, about 150 changed lines or fewer, files disjoint from its siblings (siblings may share a task worktree only on disjoint files). Its brief carries an exact Validation gate from checks the repository already has: an existing end-to-end, eval or QA check, extended where needed (red before, green after), or typecheck, lint or build plus recorded runtime proof. Never a new standalone unit, component, helper, tooling or change-detector test. No usable gate means it is not a small task.
+- **Lanes** (the resolved table and the operator overlay decide): fast implementers on the cheapest allowed implementation lanes, such as `sonnet-high` or `terra-medium`, and the OpenCode free lanes only for simple tasks with an exact gate. One verifier per 3-5 tasks on `opus-medium` or `sol-medium` (`rev-`), always the other provider: a verifier never verifies its own model. Money, security, the critical turn path, architecture, diagnosis, and anything without an exact gate stay on strong implementers (`opus-high`, `sol-high`).
+- **Loop:** the implementer changes, runs its Validation, commits, and reports `ready` with the head and gate output. The verifier reads the diff against the brief, reruns the Validation, rejects any new standalone test, and returns READY or a FIX list with `file:line`. The same implementer fixes; the verifier reviews only the delta. After 3 loops without READY, reassign to a strong implementer.
+- **Fold:** a verifier READY lets the lead fold the task into its PR or stack. PR gates are unchanged: a head gate, a full review at the PR head by a provider other than the implementer's (a verifier READY counts when it covered the full PR diff), and the publish rules in `SKILL.md`. Keep the queue full: start the next task as one turns READY and close finished lanes at once.

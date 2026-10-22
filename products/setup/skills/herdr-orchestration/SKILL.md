@@ -26,9 +26,9 @@ Load each file at the step that names it, not up front. Each says at its top whe
 
 | File | Load before |
 | --- | --- |
-| `lanes.md` | choosing a configured lane or effort, a quota fallback, or a resume |
+| `lanes.md` | choosing a configured lane or effort, a quota fallback, or a resume; splitting work into small verified tasks (loop verification) |
 | `launch.md` | a recurring watch or poll (`herdr-loop`); opening the hub workspace; creating a campaign or task worktree or workspace; starting a campaign lead; reusing or rearranging an existing tab or pane; a manual launch, or recovery after `herdr-launch` is missing or failed |
-| `workflow.md` | registering a campaign root or changing its plan; splitting work into small verified tasks (loop verification); writing an orchestrator, sub-orchestrator, or code-reviewer brief; settled waits on a reviewer; a head gate; work without a ledger; a stalled, blocked, or odd-looking agent |
+| `workflow.md` | registering a campaign root or changing its plan; writing an orchestrator, sub-orchestrator, or code-reviewer brief; settled waits on a reviewer; a head gate; work without a ledger; a stalled, blocked, or odd-looking agent |
 | `owner.md` | (hub or campaign lead) asking the owner anything or handing the owner an action, each milestone, parking a campaign, going idle on unattended work, answering "what happened" |
 | `teardown.md` | stopping an owned worker, closing a tab or workspace, after a reboot or crash |
 | `recovery.md` | any resume or prompt to a restored pane; your own session restarted; the taskr server unreachable |

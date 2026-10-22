@@ -1,21 +1,12 @@
 # Workflow: ledger, brief variants, reviews, and results
 
-Load when: registering a campaign root or changing its plan; splitting work into small verified tasks; writing an orchestrator, sub-orchestrator, or code-reviewer brief; at settled waits on a reviewer; running a head gate; working without a ledger; when a prompt stalls or an agent is blocked or its status looks wrong. Part of herdr-orchestration; `SKILL.md` is the core (brief header, universal brief rules, wait command).
+Load when: registering a campaign root or changing its plan; writing an orchestrator, sub-orchestrator, or code-reviewer brief; at settled waits on a reviewer; running a head gate; working without a ledger; when a prompt stalls or an agent is blocked or its status looks wrong. Part of herdr-orchestration; `SKILL.md` is the core (brief header, universal brief rules, wait command).
 
 ## Goal, plan, and documents
 
 Record the campaign's goal when you register its root task: `taskr new <campaign> --role orchestrator --brief <goal file>`, or later `taskr doc set <root> goal --file <path>`. The goal is the owner's request in the owner's own words, with the acceptance. Do not paraphrase it. `taskr handover` and `taskr adopt` show it first.
 
 The plan doc is a taskr document: `taskr doc set <root> plan --file <path>`. It holds intent only: the approach, the slices, and their order. Sequence independently verifiable slices; name each slice's check and partition shared scope into disjoint lane coverage with no gaps. Record it again when the plan changes. Put the next step in `taskr next` and a ruling in `taskr decide`, never in the plan. A spec or an issue text that several lanes share is a named document: `taskr doc set <root> plan --name <name> --file <path>`. taskr reads goals, plans, briefs, and prompt files on the host that runs the command (reports on the lane's host), and captures their text and handovers when the command that names them runs, so `taskr doc get` keeps them after teardown. `taskr doc set`, `taskr doc backfill`, and `taskr new --brief` work from client hosts without copying files to the server; `new --brief` and `prompt --file` require a file that exists on the command's host.
-
-## Loop verification
-
-For velocity, a lead or sub-orchestrator splits work into small gated tasks, runs fast implementers in parallel, and has one verifier review the work of several.
-
-- **Small task:** one concern, about 150 changed lines or fewer, files disjoint from its siblings (siblings may share a task worktree only on disjoint files). Its brief carries an exact Validation gate from checks the repository already has: an existing end-to-end, eval or QA check, extended where needed (red before, green after), or typecheck, lint or build plus recorded runtime proof. Never a new standalone unit, component, helper, tooling or change-detector test. No usable gate means it is not a small task.
-- **Lanes** (`lanes.md` and the operator overlay decide): fast implementers on the cheapest allowed implementation lanes, such as `sonnet-high` or `terra-medium`, and the OpenCode free lanes only for simple tasks with an exact gate. One verifier per 3-5 tasks on `opus-medium` or `sol-medium` (`rev-`), always the other provider: a verifier never verifies its own model. Money, security, the critical turn path, architecture, diagnosis, and anything without an exact gate stay on strong implementers (`opus-high`, `sol-high`).
-- **Loop:** the implementer changes, runs its Validation, commits, and reports `ready` with the head and gate output. The verifier reads the diff against the brief, reruns the Validation, rejects any new standalone test, and returns READY or a FIX list with `file:line`. The same implementer fixes; the verifier reviews only the delta. After 3 loops without READY, reassign to a strong implementer.
-- **Fold:** a verifier READY lets the lead fold the task into its PR or stack. PR gates are unchanged: a head gate, a full review at the PR head by a provider other than the implementer's (a verifier READY counts when it covered the full PR diff), and the publish rules in `SKILL.md`. Keep the queue full: start the next task as one turns READY and close finished lanes at once.
 
 ## Waits and recurring checks
 
