@@ -238,17 +238,17 @@ fn lease_action(
     }
     action
 }
-pub fn exit_path(run: &str) -> std::path::PathBuf {
-    state::root().join(format!("exit-{run}.json"))
+pub fn exit_path(run: &str, invocation: &str) -> std::path::PathBuf {
+    state::root().join(format!("exit-{run}-{invocation}.json"))
 }
-pub fn supervise(run: &str, cmd: &[String], cfg: &Config) -> Result<i32> {
+pub fn supervise(run: &str, invocation: &str, cmd: &[String], cfg: &Config) -> Result<i32> {
     let result = supervise_child(run, cmd, cfg);
     // systemd-run --wait can report success for a failed unit that is already
     // collected, so the client reads the code from this file instead.
     let code = result
         .as_ref()
         .map_or(crate::ExitCode::Invalid.value(), |code| *code);
-    if let Err(error) = state::atomic_json(&exit_path(run), &code) {
+    if let Err(error) = state::atomic_json(&exit_path(run, invocation), &code) {
         eprintln!("slotr: exit status for {run}: {error:#}");
     }
     result

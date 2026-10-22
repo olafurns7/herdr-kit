@@ -169,8 +169,12 @@ OOMPolicy=continue
 
 Leave `ManagedOOMMemoryPressure=` and `ManagedOOMSwap=` unset on this unit:
 on a service without child cgroups, systemd-oomd would kill all of Herdr.
-systemd-oomd honours `ManagedOOMPreference=` only for root-owned cgroups, so
-it cannot shield a user service; the per-run `MemoryMax` is the guard.
+For swap selection, systemd-oomd honours `ManagedOOMPreference=` only for
+root-owned cgroups. For memory-pressure selection, it also honours a
+descendant's preference when its cgroup owner matches the monitored ancestor's
+owner ([systemd v255 resource-control docs](https://github.com/systemd/systemd/blob/v255/man/systemd.resource-control.xml)).
+These preferences do not protect a unit when an ancestor cgroup is killed;
+the per-run `MemoryMax` limits remain necessary.
 
 ## Validation
 
