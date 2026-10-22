@@ -146,7 +146,7 @@ import json, os, signal, sys, time
 from pathlib import Path
 case = Path(os.environ['CASE'])
 (case / 'cdl').write_text(json.dumps({'args':sys.argv[1:], 'task':os.getenv('TASKR_TASK'),
-    'launch':os.getenv('TASKR_LAUNCH'), 'pid':os.getpid(), 'cwd':os.getcwd(), 'umask':os.umask(0)}))
+    'launch':os.getenv('TASKR_LAUNCH'), 'role':os.getenv('FLEET_ROLE'), 'pid':os.getpid(), 'cwd':os.getcwd(), 'umask':os.umask(0)}))
 mode = os.environ.get('MODE', '')
 # Claude's channel flag is variadic: an untagged value after it is rejected at startup.
 flag = sys.argv.index('--dangerously-load-development-channels')
@@ -233,7 +233,7 @@ else: sys.exit(98)
         actual = json.loads((work / 'cdl').read_text())
         assert actual == dict(args=['--model','example-opus','--effort','high','--mcp-config',str(config),
                                    '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
-                              task=None, launch=None, pid=process.pid, cwd=str(work), umask=0o002), actual
+                              task=None, launch=None, role='hub', pid=process.pid, cwd=str(work), umask=0o002), actual
         assert json.loads(config.read_text()) == {'mcpServers':{'taskr':{'command':'taskr',
                 'args':['mcp','--channel','--as','42','--session','7']}}}
         assert config.stat().st_mode & 0o777 == 0o600
@@ -262,6 +262,8 @@ else: sys.exit(98)
     success(c, ('--resume','id with spaces',"quote'arg"))
     assert not (c[0] / 'agent-list').exists()
     assert c[3].splitlines()[1:] == ['To make this the hub: taskr set 42 hub=on']
+    c = run('hub overrides inherited worker role', location={'FLEET_ROLE':'worker'})
+    success(c)
     c = run('new root created then adopted', args=('--new','example-hub','--lane','opus-high'))
     success(c, new=True)
     c = run('existing hub ref suppresses suggestion', mode='hub-on')

@@ -384,6 +384,7 @@ printf 'ROOT=%s GEN=%s mcp_config=%s prover_log=%s\n' "$root" "$gen" "$mcp_confi
 [ "$hub_ref" = on ] || printf 'To make this the hub: taskr set %s hub=on\n' "$root"
 prompt="You are the hub root $root. herdr-hub adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence. Read the handover at $handover. A \"hub push check $gen\" event will arrive: record it and ack it. Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note."
 unset TASKR_TASK TASKR_LAUNCH
+export FLEET_ROLE=hub
 step=6
 umask "$old_umask"
 exec "$herdr_bin_dir/cdl" --model "$model" --effort "$effort" --mcp-config "$mcp_config" \
