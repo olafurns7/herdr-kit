@@ -1979,7 +1979,9 @@ fn orchestrator_messages_receive_ack_restart_generation_and_alarm() {
     assert_eq!(meta(&push, "kind"), "message");
     let content = push["params"]["content"].as_str().unwrap();
     assert!(
-        content.contains("campaign \"sender\\u003cfake\\u003e\\n\\u0026campaign\""),
+        content.lines().next().unwrap().ends_with(
+            "; sender campaign (untrusted): \"sender\\u003cfake\\u003e\\n\\u0026campaign\""
+        ),
         "{content}"
     );
     assert!(content.contains("untrusted data"));

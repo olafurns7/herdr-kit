@@ -389,7 +389,7 @@ fn the_worker_binding_comes_from_the_launch_and_codex_sees_only_it() {
     assert_eq!(
         lines[0],
         format!(
-            "taskr event {e} (kind note) from task 1: delivery attempt {a}, consumer fence 1. taskr delivery received {a}; then taskr ack {e} --as {w} --fence 1"
+            "taskr event {e} (kind note) from task 1: delivery attempt {a}, consumer fence 1. taskr delivery received {a}; taskr inbox; ack after handling: taskr ack {e} --as {w} --fence 1"
         )
     );
     assert!(
@@ -757,7 +757,7 @@ fn a_root_binding_is_the_operators_and_an_adopt_stops_it() {
     let a = attempt_of(m);
     assert_eq!(m.lines().count(), 2, "{m}");
     assert!(m.contains(&format!(
-        "taskr delivery received {a} --as {r} --session {generation}; then taskr ack {e} --as {r} --session {generation} --fence 1"
+        "taskr delivery received {a} --as {r} --session {generation}; taskr inbox --as {r}; ack after handling: taskr ack {e} --as {r} --session {generation} --fence 1"
     )), "{m}");
     until("the submitted stamp", Duration::from_secs(10), || {
         attempts(&h, &e) == [format!("{a}|codex-queue|submitted")]

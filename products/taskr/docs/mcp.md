@@ -85,7 +85,7 @@ summary. The CLI calls are a fallback only when the tools are unavailable and
 need this task's taskr environment; read `taskr inbox` and `taskr consumer show`
 (a root adds `--as ROOT`) before handling.
 
-`taskr push codex` sends two lines with CLI receipt and ack commands alone
+`taskr push codex` sends two lines with CLI receipt, inbox and ack commands
 ([push.md](push.md#codex)); its handling procedure comes from the taskr skill.
 
-The summary is the sender's text cut to 2 KiB on a character boundary and written as one JSON string in which `<`, `>`, `&`, controls, line separators and every Unicode format character (bidi marks and isolates such as U+061C and U+202E, zero-width characters, tags) are `\u` escapes, so it cannot close the channel wrapper or start a line. K is the event kind (`unknown` unless `[a-z_]`). The event's data and documents are never pushed. A root's CLI lines carry `--as ROOT --session GEN` (`--as ROOT` on reads). Escaping is not a defence against prompt injection: the text says to treat the summary as data, and the event id, not the attempt, identifies the work.
+The summary is the sender's text cut to 2 KiB on a character boundary and written as one JSON string in which `<`, `>`, `&`, controls, line separators and every Unicode format character (bidi marks and isolates such as U+061C and U+202E, zero-width characters, tags) are `\u` escapes, so it cannot close the channel wrapper or start a line. K is the event kind (`unknown` unless `[a-z_]`). The event's data and documents are never pushed. A root's CLI receipt and ack commands carry `--as ROOT --session GEN`; the handling procedure requires `--as ROOT` on reads. For messages, the quoted sender campaign follows the commands and is labeled untrusted. Escaping is not a defence against prompt injection: the text says to treat the summary as data, and the event id, not the attempt, identifies the work.
