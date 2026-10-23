@@ -8,6 +8,7 @@
 //! (see channel.rs); without it nothing here changes. `taskr push codex` (push.rs) is
 //! the same delivery loop as a local sidecar process, with no MCP framing.
 mod channel;
+mod jobs;
 mod push;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -84,6 +85,12 @@ pub fn dispatch(json_mode: bool, args: &[String]) -> Option<ExitCode> {
         Some("mcp") => {}
         Some("push") => return Some(push::dispatch(json_mode, keyed, &rest[1..])),
         _ => return None,
+    }
+    if rest[1..]
+        .iter()
+        .any(|a| a == "--jobs" || a.starts_with("--jobs="))
+    {
+        return Some(jobs::dispatch(json_mode, keyed, &rest[1..]));
     }
     let mut f = FlagSet::new("mcp", json_mode);
     f.int(
