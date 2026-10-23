@@ -1,0 +1,193 @@
+# Inbox fencing: bounded safety package (draft, execution pending)
+
+This checks a small TLA+ model with TLC and replays selected paths through the
+real taskr CLI and SQLite. It is not a proof of the Rust implementation. The
+source/action map is `manifest.json`; its source pin is
+`71d4146fdbe99a67c0c698877478bc7c796cc360`. No successful execution is recorded yet.
+
+## Run
+
+Prerequisites: Python 3.11+ with SQLite, a working Java runtime, an existing
+`tla2tools.jar`, a taskr binary built from the mapped source **with the `contract`
+feature**, and Cargo/Rust plus cached locked dependencies for offline mutation
+builds. The driver installs and downloads nothing. The supplied binary's source
+provenance is a caller assertion; its SHA-256 is recorded, not inferred from its
+version string. Java and the jar are identified by SHA-256 and Java version in
+each receipt. TLC must implement the standard `tlc2.TLC` CLI, exhaustive BFS,
+exit 12 for an invariant violation, and the English result protocol documented
+in [TLC's output implementation](https://github.com/tlaplus/tlaplus/blob/master/tlatools/org.lamport.tlatools/src/tlc2/output/MP.java)
+and [exit status implementation](https://github.com/tlaplus/tlaplus/blob/master/tlatools/org.lamport.tlatools/src/tlc2/output/EC.java).
+No jar version or unexecuted source pin is represented as a previously tested tool.
+
+Use an independent disposable source copy outside the editing checkout. Its
+covered files must match the manifest. Put the source commit (above), followed
+by a newline, in `.inbox-proof-disposable` at that copy's root. Do not use a
+shared worktree, symlinks, or hardlinked covered files. That marker explicitly
+allows three temporary mutations and offline builds in the copy. Do not edit
+the copy concurrently. For example, after provisioning tools and the source copy:
+
+```sh
+python3 products/taskr/verification/inbox/verify.py \
+  --taskr /tmp/inbox-tools/taskr-contract \
+  --tlc-jar /tmp/inbox-tools/tla2tools.jar \
+  --java /tmp/inbox-tools/java \
+  --cargo /tmp/inbox-tools/cargo \
+  --mutation-source /tmp/inbox-source \
+  --out /tmp/inbox-evidence
+```
+
+All example paths and identities are synthetic. Paths must exist except `--out`,
+which must be fresh and outside the editing checkout. Add `--doctor` for read-only
+source/tool/source-copy checks and `java -version`; proof cases remain unrun in
+that mode. Doctor names missing prerequisites in `result.json`, including a
+missing disposable copy. It cannot establish that offline build dependencies
+are cached until a build is attempted. A default taskr build blocks the expiry
+case because it deliberately ignores `TASKR_FROZEN_NOW`.
+
+Full verification returns 0 only if **every** case passes, 1 for a failed check,
+and 2 for blocked prerequisites, source drift, timeout, or incomplete coverage.
+There is no model-only success mode. Missing `--mutation-source` leaves real
+mutation cases blocked even if model and baseline CLI cases pass. Source drift
+prevents model and CLI execution; verify mode never refreshes hashes. Do not
+use `python -O` or `PYTHONOPTIMIZE`; the driver rejects disabled assertions.
+
+## Policy, bounds, and atomicity
+
+The named policy is `ASK_ONLY`: one open local root consumes the fixed inbox
+`got`, `ready`, `ask` with `--for ask`, no `--from`. The ask is required work;
+got is store-coalescible and ready is deliberately excluded by this policy.
+A compliant consumer handles an ask before calling ack. The implementation
+cannot establish that external handling happened; `Handle` is an explicit
+environment assumption. Never apply this policy's promise to an arbitrary
+filter or to a consumer that acks work without handling it.
+
+The bounds are two consumers (each initially plain and able to take a fenced
+lease), three pre-existing ordered events, three acquisitions/fences, two
+identity generations (0 and 1), and three clock values (0, 1, 2). A lease lasts
+two abstract time units; deadline equality is expired. Renewal extends the
+deadline from the current time. All bounds are in the model, not a search-depth
+cutoff. TLC completes the reachable graph; no fairness or liveness is claimed.
+
+Lease authority is evaluated at the transactional guard's linearization point.
+Time advances between modeled transactions. This does not prove that a real
+transaction's final wall-clock commit timestamp precedes lease expiry: the
+clock can advance during SQL execution. Callers retain their own pinned claims;
+this is not isolation from a malicious caller that obtains a current capability.
+The holder label itself is not checked by `holding`; fence, binding and host are.
+
+`Take`, `Renew`, `Release`, `Offer`, and `Ack` each correspond to a single store
+transaction (`BEGIN IMMEDIATE` through commit). Offer and the CLI filter ack
+are separate actions and can interleave with takeover, expiry, and adopt.
+`Handle` and `Crash` are outside SQLite; crash discards only the caller's local
+offered-event observation, leaving the persisted pending event intact. Replay
+can offer a pending event again, including to a successor. `Tick` abstracts
+the wall clock; `Adopt` abstracts the atomic generation change. Ghost `takes`
+tracks acquisition identity independently of the mutable fence; otherwise NC2
+could reuse a fence and fool the property that is supposed to detect reuse.
+
+Properties:
+
+- `AckAuthority`: a committed ack used a live, unexpired, current-generation
+  capability from the current acquisition, or a plain caller with no live lease.
+- `RequiredHandled`: advancing the cursor never crosses an unhandled ask under
+  `ASK_ONLY`. It does not forbid intentional skips of non-required events.
+- `CursorShape` and `TypeOK`: a pending event is the next event and all modeled
+  values remain within their bounds.
+
+Forced takeover of an unexpired lease is legal and normally increments the
+fence. Physical delivery may repeat. The model does not assert exactly-once
+handling, exactly-once external effects, or eventual progress.
+
+## Exact cases and negative controls
+
+| Case ID | Required result |
+| --- | --- |
+| `SYNC` | Covered source and verification hashes match the maintained manifest |
+| `DOCTOR` | Existing Java, jar containing `tlc2.TLC`, and taskr executable identified |
+| `MODEL-BASELINE` | Complete BFS, nontrivial counts, all four invariants hold |
+| `MODEL-NC1` | Removing fence equality yields `AckAuthority` counterexample |
+| `MODEL-NC2` | Removing repeat forced-take fence increment yields `AckAuthority` counterexample |
+| `MODEL-NC3` | Coalescing a required ask yields `RequiredHandled` counterexample |
+| `REACH-*` | A real multi-state trace violates deliberately false `WitnessNever` |
+| `CLI-STALE` | Live takeover increments fence; old ack rejected without cursor/lease writes; successor replays and commits |
+| `CLI-REQUIRED` | Excluded ready skipped; required ask remains pending and replays until explicitly handled and acked |
+| `CLI-EXPIRY` | Ack at the exact lease deadline rejected without cursor/lease writes |
+| `CLI-GENERATION` | Ack with old adopt generation rejected without cursor/lease writes |
+| `RUST-NC1`, `RUST-NC2` | Real stale consumer ack commits after live takeover in independently mutated code |
+| `RUST-NC3` | Real filtered wait loses the unhandled required ask in independently mutated code |
+
+The twelve `REACH-*` suffixes are `forcedTakeover`, `fencedAck`, `plainAck`,
+`replay`, `expiryReject`, `generationReject`, `staleReject`, `filterAck`,
+`coalesce`, `crash`, `renew`, and `release`. Witness runs retain the real safety
+invariants: another violation does not satisfy a reachability check. They prevent
+an impossible action or a disabled path from silently passing as coverage.
+
+NC1 story: consumer A takes, receives and handles an ask; B force-takes the live
+lease; A's old capability commits. NC2 has the same story, but takeover reuses
+the fence instead of removing equality. NC3 story: a filtered offer classifies
+the required ask as coalescible and advances the watermark without handling it.
+TLC supplies the actual shortest BFS traces; these stories are expectations,
+not claims that traces have already run. The CLI reproductions are fixed
+supported transaction schedules, not an automatic translation of arbitrary TLC
+traces. NC1/NC2 replay may also skip an excluded ready first; this is independent
+of their fence defect. The CLI replay does not manufacture database rows: it
+creates a root, worker, launch record, ready and ask through taskr. A synthetic
+`handled.json` records the external handling boundary; SQLite is read-only to
+the harness. `taskr launch` records metadata and starts no process.
+
+Each Rust mutation is applied alone to its named source anchor, built using
+`cargo build --offline --locked -p taskr --features contract` into the evidence
+directory, and restored in `finally`. NC2 keeps fence 1 on initial acquisition
+and removes increment on later forced takes; initial fence 0 would fail CLI
+validation before reaching the target bug. No failed build, parse error, wrong
+invariant, missing trace, or timeout counts as a negative control.
+
+## Evidence, cleanup, and limits
+
+`result.json` persists pass/fail/blocked for every exact case. `commands.json`
+records argv, working directory, exit, elapsed time and log hash. Each model
+case retains its copied model/config and stdout trace. `manifest.json`,
+`package-hashes.json` and `evidence-hashes.json` bind inputs and retained evidence;
+the inventory excludes rebuildable Cargo output and TLC state caches. Java,
+jar, supplied taskr and built mutants have binary hashes in receipts. Tool
+output and non-vacuous state counts are required, not merely exit 0.
+
+Every CLI fixture gets a fresh HOME, TASKR_DB, temporary directory and an allowlisted
+environment. A failing synthetic `herdr` executable and absent scratch socket
+prevent reaching the real Herdr daemon. There is no network service or live
+ledger dependency. Child commands have bounded timeouts; timeout/interrupt kills
+their owned process group, including compiler children. Evidence, fixture
+ledgers and build output remain for inspection after commands exit. Remove only
+the chosen evidence directory and disposable source copy when finished. A hard
+kill or host crash can interrupt source restoration: discard that disposable
+copy, never copy its mutated files back to the editing checkout.
+
+Unmodeled/unimplemented cases: dynamic append schedules, arbitrary event kinds,
+PR/hint/receipt coalescing beyond `got`, `--from`, plain wait advisory markers,
+task closure, worker relaunch (root generation is modeled instead), host changes,
+integer overflow, ack-already idempotency, delivery-attempt receipts, dispatch,
+filesystem writers, cross-host transport, native MCP, and future workflow/result
+controllers. Baseline CLI has deterministic expiry and root-generation replay;
+model crash/replay and renew/release do not have separate CLI replay cases.
+This package certifies none of these omissions. No automatic full-system
+acceptance, release, publication, or repository gate integration is provided.
+
+## Maintenance
+
+On any source-sync failure, stop using old proof results. Read the changed code,
+all writers of cursor/lease/generation state, and the action map. Decide whether
+the verification drifted or the code has a bug; do not weaken a property to bless
+an unexplained implementation failure. Update model transitions when atomicity
+or policy changes, update CLI fixtures and mutation anchors, then manually update
+covered hashes and source commit in the manifest. Do not mark execution confirmed
+or move `last_successful_source_commit` until the complete suite and all negative
+controls pass on the new source. This draft has that field null.
+
+After editing verifier/model/config, maintain `verification_files` hashes too.
+Run driver self-checks with `python3 -m unittest discover -s
+products/taskr/verification/inbox -p 'test_*.py'`, then follow the full command
+above. Tests of the receipt parser are not formal or implementation proof.
+Read every TLC result as a shortest story in code terms; compare its atomic
+steps to the real transaction schedule. The pinned pstack `/statechart` guidance
+can help human review, but is not installed, copied, or invoked by this package.
+The model, driver and documentation here are original project files.

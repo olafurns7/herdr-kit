@@ -1,0 +1,216 @@
+{
+  "actions": {
+    "Ack": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/inbox.rs:4-47",
+        "products/taskr/crates/taskr/src/write/inbox.rs:245-268",
+        "products/taskr/crates/taskr/src/write/inbox.rs:289-311"
+      ],
+      "mapping": "One store transaction per ack. CLI nonmatch ack after offer is a separate transaction. Pending match advances watermark; required asks have external handling precondition. Already-acked idempotency omitted."
+    },
+    "Adopt": {
+      "code": [
+        "products/taskr/crates/taskr/src/write/handover.rs:74-143",
+        "products/taskr/crates/taskr-core/src/store/delivery.rs:14-20"
+      ],
+      "mapping": "Atomic adopt event changes root generation. Event ids abstracted to 0 and 1; host and open status fixed."
+    },
+    "Crash": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/inbox.rs:198-205"
+      ],
+      "mapping": "Environment failure loses local response but not committed pending_event_id; a later offer can replay. No dispatch or external-effect recovery claim."
+    },
+    "Guard": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:52-61",
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:94-146",
+        "products/taskr/crates/taskr-core/src/store/delivery.rs:14-61",
+        "products/taskr/crates/taskr-core/src/store/worker.rs:12-86"
+      ],
+      "mapping": "Same task and host assumed; claimGen is pinned root session. Plain calls allowed only with no live lease; fenced calls require live binding and equality."
+    },
+    "Handle": {
+      "code": [
+        "products/taskr/crates/taskr/src/write/inbox.rs:253-259"
+      ],
+      "mapping": "Explicit caller assumption outside store: returned required work handled before explicit ack. No implementation claim that the store validates handling."
+    },
+    "Init": {
+      "code": [
+        "products/taskr/schema.sql:1-42",
+        "products/taskr/crates/taskr-core/src/schema.rs:37-50"
+      ],
+      "mapping": "One open root; cursor and pending default empty; absent lease represented by holder=0, fence=0. Static inbox is a fixture assumption."
+    },
+    "Offer": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/inbox.rs:90-106",
+        "products/taskr/crates/taskr-core/src/store/inbox.rs:169-207"
+      ],
+      "mapping": "One transaction: guard, lowest id after cursor, got coalesces and clears pending; otherwise offer/replay pending. Local response observation is a ghost of return value."
+    },
+    "RejectAck": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/inbox.rs:19",
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:94-146",
+        "products/taskr/crates/taskr-core/src/store/mod.rs:94-99"
+      ],
+      "mapping": "Guard rejection rolls back transaction with no cursor or lease write. Witness state is observer-only."
+    },
+    "Release": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:245-255"
+      ],
+      "mapping": "One transaction: holding before clearing holder; counter and cursor preserved."
+    },
+    "Renew": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:226-242"
+      ],
+      "mapping": "One transaction: identify and holding before setting expiry to current time plus TTL."
+    },
+    "Take": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:179-223"
+      ],
+      "mapping": "One transaction: identify, live refusal unless force, fence increment, binding and expiry write. Advisory wait marker fixed absent. Forced live takeover legal."
+    },
+    "Tick": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:52-54",
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:173-175",
+        "products/taskr/crates/taskr-core/src/lib.rs:156-166"
+      ],
+      "mapping": "Abstract wall-clock passage; exclusive expiry. CLI expiry replay requires contract-feature frozen clock."
+    },
+    "TransactionBoundary": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/mod.rs:94-99"
+      ],
+      "mapping": "BEGIN IMMEDIATE; closure then commit; errors roll back. Channel/composite loops are not atomic."
+    }
+  },
+  "assumptions": [
+    "Lease validity is checked at transaction guard linearization, not final wall-clock commit time.",
+    "Time advances between atomic modeled transactions; real in-transaction clock passage is not proved.",
+    "One open local root, same admitted host; malicious capability sharing is excluded.",
+    "A compliant caller handles required asks before ack; store cannot enforce external handling."
+  ],
+  "bounds": {
+    "abstract_ttl": 2,
+    "clock": [
+      0,
+      1,
+      2
+    ],
+    "consumers": 2,
+    "fixed_events": [
+      "got",
+      "ready",
+      "ask"
+    ],
+    "generations": [
+      0,
+      1
+    ],
+    "max_acquisitions": 3,
+    "max_fence": 3
+  },
+  "delivery_policy": {
+    "coalescible": [
+      "got"
+    ],
+    "filter_excluded": [
+      "ready"
+    ],
+    "from_filter": false,
+    "handler_assumption": "Required ask handled before ack; not enforced by store.",
+    "name": "ASK_ONLY",
+    "required": [
+      "ask"
+    ]
+  },
+  "format": 1,
+  "last_successful_source_commit": null,
+  "negative_controls": {
+    "NC1": {
+      "expected_invariant": "AckAuthority",
+      "mutation": "Remove fence equality guard",
+      "real_anchor": "products/taskr/crates/taskr-core/src/store/consumer.rs:125",
+      "real_replay": "RUST-NC1"
+    },
+    "NC2": {
+      "expected_invariant": "AckAuthority",
+      "mutation": "Keep first fence 1; omit later forced-take increment",
+      "real_anchor": "products/taskr/crates/taskr-core/src/store/consumer.rs:212",
+      "real_replay": "RUST-NC2"
+    },
+    "NC3": {
+      "expected_invariant": "RequiredHandled",
+      "mutation": "Treat required ask as coalescible when filtered",
+      "real_anchor": "products/taskr/crates/taskr-core/src/store/inbox.rs:99",
+      "real_replay": "RUST-NC3"
+    }
+  },
+  "proof_limits": [
+    "Bounded model safety only; no liveness or exactly-once handling guarantee.",
+    "Supplied taskr binary source provenance is caller-asserted, not inferred.",
+    "Fixed supported real CLI schedules, not automatic arbitrary counterexample translation.",
+    "No proof of dispatch, filesystem writers, native MCP or cross-host delivery.",
+    "See README.md for all omitted paths and maintenance rules."
+  ],
+  "properties": {
+    "AckAuthority": "No stale-acquisition, expired, old-generation fenced ack commit; plain only without live lease.",
+    "CursorShape": "Pending is absent or immediately follows cursor.",
+    "RequiredHandled": "Cursor cannot cross an unhandled ask under ASK_ONLY.",
+    "TypeOK": "All modeled state is within finite bounds."
+  },
+  "source_commit": "71d4146fdbe99a67c0c698877478bc7c796cc360",
+  "source_files": {
+    "Cargo.lock": "71255a7f95d492984b3240911e513ee35d80a72b2a9d53a02de4fcbf60f3b0bb",
+    "Cargo.toml": "4a71713910d85d573d4884e75190ce4ff46455b3066369f658ffc263d090b865",
+    "products/taskr/crates/taskr-core/Cargo.toml": "86f1f4b1df6fef228440562ad7bc07b268b3e45941877d94e2dc4f5e99182748",
+    "products/taskr/crates/taskr-core/src/lib.rs": "cc2173abb756741e3047a30e2e0e3d2f30c48f10a7982f671c84597f3c1d4cc1",
+    "products/taskr/crates/taskr-core/src/schema.rs": "334a35223f872647a13219220f861894d4d12523b30e65fb0f4a0670bae2b983",
+    "products/taskr/crates/taskr-core/src/store/consumer.rs": "9ccf7c542cf4bb95ba3da3d3f5fafdd5bcd06ec049462f232027bda3369c48d2",
+    "products/taskr/crates/taskr-core/src/store/delivery.rs": "03fcd28906d41c9864df02c400dd3f03c8abed642e0924236afd32778fe9b3ed",
+    "products/taskr/crates/taskr-core/src/store/inbox.rs": "9a13b946fd4f47ebea21865c67b883a7af47a41daada51ee80d14a26db243e1f",
+    "products/taskr/crates/taskr-core/src/store/mod.rs": "8ead58d6c5d2db2f876b4acf576e32a0d74d53c042ead18c484121a01683f3b9",
+    "products/taskr/crates/taskr-core/src/store/orch.rs": "df2e56b7a56c96219a4e75b2283742aed44d372987d88df6c52ac2fc2fceb86c",
+    "products/taskr/crates/taskr-core/src/store/worker.rs": "fdfce6b5bae6d809a095dc190db1a17ab78e0333bb48ffc591229cd901064621",
+    "products/taskr/crates/taskr/Cargo.toml": "09d15eda6a59f98ec007b1bc845484ecb85abde7b2cf167dd87ae8920e22911a",
+    "products/taskr/crates/taskr/src/write/handover.rs": "2caf2a084a939875488bce8ca938d8b88709a2523fe9d8e2800756946bf42c92",
+    "products/taskr/crates/taskr/src/write/inbox.rs": "9058b8b07f09dd2f5a8772b0475990edf2a6cd946e6e06eda6b0a1131c1b48d8",
+    "products/taskr/crates/taskr/src/write/mod.rs": "f4e24d8de920399aec46ff13b5318b17b287e816c2b1394dd6a04e9d3a73d9bb",
+    "products/taskr/crates/taskr/tests/consumer.rs": "5d3aa4e383e6ffb9f8e46c58dd423721d924817a9252af3a0baefa68ef179734",
+    "products/taskr/crates/taskr/tests/hook/support.rs": "2f9c6e9382f5c4bb7c2b460944239e75f85d1d42352a3c156cadeeeef7945638",
+    "products/taskr/schema.sql": "7a05b404a2c901a21c7bcc35867eb196d403ecec51d5d1bec58c8fae41911355",
+    "rust-toolchain.toml": "d0396bf4ee19fe73ba0cb427f6f0a95c0669e352bd7c92610bfa0578953bdf84"
+  },
+  "status": "draft-execution-pending",
+  "tool_identity": {
+    "engine": "TLA+ TLC, tlc2.TLC, exhaustive BFS, one worker, seed 1",
+    "identity_evidence": "Each run pins SHA-256 of Java, TLC jar, supplied taskr and built mutants; Java -version and command receipts retained.",
+    "last_successful_tool_hashes": null,
+    "prerequisites": [
+      "Python >=3.11 with sqlite3",
+      "Java",
+      "caller-supplied tla2tools.jar",
+      "contract-feature taskr",
+      "Cargo/Rust with offline locked dependencies"
+    ],
+    "protocol": {
+      "language": "English TLC result/trace/statistics",
+      "safety_exit": 12,
+      "success_exit": 0
+    }
+  },
+  "verification_files": {
+    "Inbox.cfg": "629e507b4663c9bfc0b0d1667f13d236e494d216b30d46b09255740206f2911c",
+    "Inbox.tla": "45c5ae539adcf474deafea775756c393203ebe269a04c6cb3815f0fd5d76497e",
+    "README.md": "86eaefed20625b7a0a33b6addfab3a28657a849e3cc48e870f5134a9af629158",
+    "test_verify.py": "06707f539020c583a57ebde03b6cc72fc33935342d69f9b9ebffe428bb68baf9",
+    "verify.py": "0899e91aacef3402f1f6499668643c2955e0009da1f035586da1cc6fd0e517c5"
+  }
+}
