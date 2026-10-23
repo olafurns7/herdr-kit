@@ -493,7 +493,9 @@ pub(crate) fn run(
                     return Ok((status, out, err));
                 }
                 // Give active writers time to refill small platform socket buffers.
-                Ok(None) if out.len() + err.len() > before => thread::sleep(Duration::from_millis(1)),
+                Ok(None) if out.len() + err.len() > before => {
+                    thread::sleep(Duration::from_millis(1))
+                }
                 Ok(None) => thread::sleep(Duration::from_millis(10)),
                 Err(_) => {
                     let _ = child.kill();
