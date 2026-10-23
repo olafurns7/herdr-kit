@@ -50,7 +50,7 @@ pub const CONSUMER_LEASES: &str = "create table if not exists consumer_leases (
 ";
 pub const SCHEMA_VERSION: i64 = 5;
 #[cfg(test)]
-const SCHEMA_HASH: &str = "53186dc40613849698221be9594dab076daed8d2a69c016928cb53f938d5e197";
+const SCHEMA_HASH: &str = "10ecd56b181caada141e9f6918a9f33590b4bd6888d78ffb8aebde1b647e0682";
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let mut db = connect(path, rusqlite::OpenFlags::default())?;

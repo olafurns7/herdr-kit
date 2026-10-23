@@ -841,3 +841,34 @@ fn malformed_local_json_and_unknown_flags_do_not_create_work() {
         0
     );
 }
+
+#[test]
+fn reused_lane_cannot_move_to_another_active_run_after_submission() {
+    let w = Work::new();
+    w.configure();
+    let id = w.queued(w.contract(false));
+    let run = w.claim(&id, "owns-lane");
+    w.execute(&run["assignments"][0]);
+    let mut second = w.contract(false);
+    second["checkout"]["cwd"] = json!(
+        w.h.home
+            .canonicalize()
+            .unwrap()
+            .join("isolated")
+            .to_str()
+            .unwrap()
+    );
+    let id = w.queued(second);
+    w.reject(
+        "claim",
+        &id,
+        json!({"expected_revision":1,"key":"steal-settled-lane"}),
+        6,
+    );
+    assert_eq!(
+        w.h.conn()
+            .query_row("select count(*) from work_runs", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}

@@ -108,8 +108,8 @@ fn reserve_tx(db: &Connection, r: &Run, c: &Contract, stage: Stage) -> Result<Va
         return Err(reject("lane is no longer in campaign"));
     }
     let busy: bool = db.query_row(
-        "select exists(select 1 from work_assignments where lane_id=? and state!='settled')",
-        [t.id],
+        "select exists(select 1 from work_assignments a join work_runs r on r.id=a.run_id where a.lane_id=? and (a.state!='settled' or r.state='active' and a.run_id!=?))",
+        params![t.id,r.id],
         |r| r.get(0),
     )?;
     if busy {
