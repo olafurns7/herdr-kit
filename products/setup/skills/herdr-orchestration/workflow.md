@@ -1,6 +1,6 @@
 # Workflow: ledger, brief variants, reviews, and results
 
-Load when: registering a campaign root or changing its plan; writing an orchestrator, sub-orchestrator, or code-reviewer brief; at settled waits on a reviewer; running a head gate; working without a ledger; when a prompt stalls or an agent is blocked or its status looks wrong. Part of herdr-orchestration; `SKILL.md` is the core (brief header, universal brief rules, wait command).
+Load when: registering a campaign root or changing its plan; configuring durable local loops; writing an orchestrator, sub-orchestrator, or code-reviewer brief; at settled waits on a reviewer; running a head gate; working without a ledger; when a prompt stalls or an agent is blocked or its status looks wrong. Part of herdr-orchestration; `SKILL.md` is the core (brief header, universal brief rules, wait command).
 
 ## Goal, plan, and documents
 
@@ -62,7 +62,7 @@ At normal settled waits for a reviewer, including the first wait after you adopt
 
 ## Submitting and collecting
 
-Submit briefs and handle results as taskr's `references/orchestrator.md` specifies; report files are the durable result. `herdr-launch` submits the first brief with `taskr prompt --file`.
+Submit manual briefs/results as taskr's `references/orchestrator.md` specifies; report files are durable. For explicitly enabled durable loops, taskr's [work reference](https://github.com/olafurns7/herdr-kit/blob/main/products/taskr/references/work.md) owns the canonical contract/queue example, stage roles, quiet notices and recovery. Lead/hub approves unassigned work; the local controller claims and launches under installed lane policy. Do not relay routine submitted/ready/done/rework at every level. `herdr-launch` still submits ordinary first briefs with `taskr prompt --file`.
 
 ## Messages between roots
 

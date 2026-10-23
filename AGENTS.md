@@ -19,7 +19,9 @@ start with [QUICKSTART.md](QUICKSTART.md). Keep each task within its brief.
   need review at the new head. Publishing still needs the task's authorization.
   There is no hosted CI by design; pushing does not run the gate.
 - Leaf checks: `cargo fmt --all --check` (whole tree, cheap), `git diff --check`
-  and `sh products/setup/tests/privacy_check.sh`. No commit hook runs checks.
+  and `sh products/setup/tests/privacy_check.sh`, plus parser-only checks below
+  for changed Python/shell files. No commit hook runs checks. These grant no
+  build, suite, runtime or full-gate authority.
 - Head gate: `sh tools/gate.sh` under slotr with `--kind build`. The gate
   installs the locked npm dependencies itself, so the install step is `true`.
 
@@ -77,6 +79,20 @@ Follow the brief's validation scope; a worker runs the leaf checks and leaves
 the gate to the lead, which runs it at a head that contains the worker's commit.
 Report the checked commit and commands.
 Focused checks and source inspection do not prove runtime or release behavior.
+
+For changed Python files (including extensionless scripts), parse their source
+without importing or executing them; pass the exact changed paths:
+
+```sh
+python3 -B -c 'import ast,pathlib,sys; [ast.parse(pathlib.Path(p).read_text(encoding="utf-8"), filename=p) for p in sys.argv[1:]]' changed.py
+```
+
+For changed shell files, use the shebang's interpreter in syntax-only mode:
+`sh -n changed.sh`, `bash -n changed.bash`, or `zsh -n changed.zsh` as applicable,
+including extensionless scripts. A missing interpreter is a named blocked check,
+not permission to install it or substitute a different dialect. Parser checks
+catch malformed source; they do not establish behavior. The parent owns suites
+and the full gate at a pinned snapshot containing the leaf commit.
 
 ## Privacy and upstream text
 
