@@ -99,10 +99,7 @@ fn reserve_tx(db: &Connection, r: &Run, c: &Contract, stage: Stage) -> Result<Va
     let task_id = if let Some(id) = l.task {
         id
     } else {
-        let role = match stage {
-            Stage::Executor => "implementer",
-            _ => "code-reviewer",
-        };
+        let role = stage.ledger_role();
         db.execute("insert into tasks(parent_id,name,role,status,cwd,created_at,updated_at) values(?,?,?,'planned',?,?,?)", params![r.root,format!("work-{}-{}-{}",r.work,stage.name(),r.round),role,c.checkout.cwd,now(),now()])?;
         db.last_insert_rowid()
     };

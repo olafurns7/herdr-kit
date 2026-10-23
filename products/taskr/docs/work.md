@@ -85,7 +85,9 @@ Dependencies pin work IDs and semantic revisions in the same campaign.
 Lane task IDs are optional. With null/omitted task IDs, claim/reserve creates a
 fresh campaign child lane and an existing launch record transactionally. Optional
 reused tasks must belong to the campaign and have no live assignment elsewhere.
-`name` pins the approved lane choice. Provider/model/effort are immutable
+`name` pins the approved launcher lane choice, independently of ledger roles.
+Executor tasks use the ledger role `implementer`; reviewer/adjudicator tasks use
+`reviewer`. Optional reused tasks must match that role. Provider/model/effort are immutable
 snapshots. Reviewer and adjudicator need independent tasks and distinct
 models. The later launcher must validate these choices against
 its actual lane policy before dispatch. This API is not a model-policy bypass.

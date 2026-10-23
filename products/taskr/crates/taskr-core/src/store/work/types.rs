@@ -120,6 +120,12 @@ pub enum Stage {
     Adjudicator,
 }
 impl Stage {
+    pub(super) fn ledger_role(self) -> &'static str {
+        match self {
+            Self::Executor => "implementer",
+            Self::Reviewer | Self::Adjudicator => "reviewer",
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Executor => "executor",

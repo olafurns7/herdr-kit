@@ -25,8 +25,8 @@ impl Work {
                 .to_string()
         };
         let executor = make("executor", "implementer");
-        let reviewer = make("reviewer", "code-reviewer");
-        let adjudicator = make("adjudicator", "code-reviewer");
+        let reviewer = make("reviewer", "reviewer");
+        let adjudicator = make("adjudicator", "reviewer");
         Self {
             h,
             root,
@@ -600,6 +600,8 @@ fn unassigned_contract_creates_fresh_lanes_at_reservation_only() {
     let rid = run["run_id"].to_string();
     w.review(&rid, &exec, "clear");
     assert_eq!(count(), before + 2);
+    let generated_role: String = w.h.conn().query_row("select t.role from tasks t join work_assignments a on a.lane_id=t.id where a.run_id=? and a.stage='reviewer'", [run["run_id"].as_i64().unwrap()], |r| r.get(0)).unwrap();
+    assert_eq!(generated_role, "reviewer");
     assert_eq!(w.call("advance", Some(&rid), None)["action"], "accepted");
 }
 

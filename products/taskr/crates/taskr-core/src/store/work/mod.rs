@@ -171,21 +171,7 @@ fn validate_contract(
         if root(db, t.id)? != campaign || t.parent.is_none() {
             return Err(reject("lane belongs to another campaign"));
         }
-        let role_ok = match stage {
-            Stage::Executor => !matches!(
-                t.role.as_str(),
-                "reviewer"
-                    | "code-reviewer"
-                    | "code-validator"
-                    | "gate"
-                    | "orchestrator"
-                    | "sub-orchestrator"
-            ),
-            _ => matches!(
-                t.role.as_str(),
-                "reviewer" | "code-reviewer" | "code-validator"
-            ),
-        };
+        let role_ok = t.role == stage.ledger_role();
         if !role_ok {
             return Err(reject("lane role does not match assignment stage"));
         }
