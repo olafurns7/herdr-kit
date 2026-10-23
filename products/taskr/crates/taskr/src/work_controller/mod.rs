@@ -9,6 +9,7 @@ pub(crate) use scheduler::Scheduler;
 mod tests;
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -54,8 +55,25 @@ fn scan_rows<'a>(v: &'a Value, key: &str) -> Result<(&'a Vec<Value>, bool)> {
 }
 fn state_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| failure("HOME is not set"))?;
-    let dir = PathBuf::from(home).join(".local/state/taskr/work-controller");
+    let db = std::env::var("TASKR_DB").ok();
+    let dir = state_path(
+        Path::new(&home),
+        db.as_deref(),
+        &std::env::current_dir().map_err(failure)?,
+    )?;
     private_dir(&dir)?;
+    Ok(dir)
+}
+fn state_path(home: &Path, db: Option<&str>, cwd: &Path) -> Result<PathBuf> {
+    let mut dir = home.join(".local/state/taskr/work-controller");
+    if let Some(db) = db.filter(|s| !s.is_empty()) {
+        let normalized = store::orch::absolute(
+            cwd.to_str()
+                .ok_or_else(|| failure("non UTF-8 controller cwd"))?,
+            db,
+        );
+        dir.push(format!("db-{:x}", Sha256::digest(normalized.as_bytes())));
+    }
     Ok(dir)
 }
 fn private_dir(path: &Path) -> Result<()> {

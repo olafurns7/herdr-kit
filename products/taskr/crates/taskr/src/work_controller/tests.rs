@@ -172,7 +172,7 @@ impl driver::Backend for Fake {
             return Err(failure("Herdr unavailable; no server start"));
         }
         Ok(match args {
-            ["worktree", "list"] => {
+            ["worktree", "list", "--workspace", "w1"] => {
                 json!({"worktrees":[{"path":self.scratch.0,"open_workspace_id":"w1"}]})
             }
             ["pane", "list", ..] => json!({"panes":[{"pane_id":"w1:p1"}]}),
@@ -611,4 +611,56 @@ fn cancelled_unidentified_start_never_recovers_a_prompt_or_restarts() {
         || c == "change:claim"
         || c == "change:bind"
         || c.starts_with("command:prompt")));
+}
+#[test]
+fn checkout_verification_selects_configured_workspace_explicitly() {
+    let b = Fake::new();
+    driver::drive(&b, 3).unwrap();
+    let calls = b.calls.borrow();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c == "herdr:worktree list --workspace w1")
+    );
+    assert!(!calls.iter().any(|c| c == "herdr:worktree list"));
+}
+#[test]
+fn explicit_databases_isolate_same_root_launch_locks_and_stale_receipts() {
+    let home = Scratch::new();
+    let default = home.0.join(".local/state/taskr/work-controller");
+    assert_eq!(state_path(&home.0, None, &home.0).unwrap(), default);
+    assert_eq!(state_path(&home.0, Some(""), &home.0).unwrap(), default);
+    let first = state_path(&home.0, Some("ledger-a.sqlite"), &home.0).unwrap();
+    let second = state_path(&home.0, Some("ledger-b.sqlite"), &home.0).unwrap();
+    assert_ne!(first, second);
+    assert_ne!(first, default);
+    assert_eq!(
+        first,
+        state_path(&home.0, Some("nested/../ledger-a.sqlite"), &home.0).unwrap()
+    );
+    assert_eq!(
+        first,
+        state_path(
+            &home.0,
+            Some(home.0.join("ledger-a.sqlite").to_str().unwrap()),
+            &home.0
+        )
+        .unwrap()
+    );
+    let namespace = first.file_name().unwrap().to_str().unwrap();
+    assert_eq!(namespace.len(), 67);
+    assert!(
+        namespace
+            .strip_prefix("db-")
+            .unwrap()
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
+    );
+    private_dir(&first.join("3/launch-11")).unwrap();
+    private_dir(&second.join("3/launch-11")).unwrap();
+    fs::write(first.join("3/launch-11/shell-exit"), "0\n").unwrap();
+    assert!(!second.join("3/launch-11/shell-exit").exists());
+    let _first_lock = lock(&first.join("campaign-3.lock")).unwrap().unwrap();
+    let _second_lock = lock(&second.join("campaign-3.lock")).unwrap().unwrap();
+    assert!(lock(&first.join("campaign-3.lock")).unwrap().is_none());
 }

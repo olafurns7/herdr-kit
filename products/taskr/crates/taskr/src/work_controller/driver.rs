@@ -165,7 +165,7 @@ fn canonical(path: &str) -> Result<PathBuf> {
     fs::canonicalize(path).map_err(failure)
 }
 fn verify_workspace(b: &impl Backend, workspace: &str, cwd: &str) -> Result<()> {
-    let rows = b.herdr(&["worktree", "list"])?;
+    let rows = b.herdr(&["worktree", "list", "--workspace", workspace])?;
     let target = canonical(cwd)?;
     let matches = array(&rows, "worktrees")?
         .iter()

@@ -1253,11 +1253,16 @@ grep -F 'unset TASKR_DB && export PATH=' "$case_dir/calls" >/dev/null || fail 'r
 
 new_case 'reserved scratch ledger and selected candidate CLI propagate to the shell'
 reserved_snapshot
-run_launch env TASKR_DB="$case_dir/scratch.sqlite" TASKR_WORK_EXECUTABLE="$stub_dir/taskr" \
+# A distinct symlinked candidate proves both CLI selection and physical PATH propagation.
+mkdir -p "$case_dir/candidate-bin"
+ln -s "$stub_dir/taskr" "$case_dir/candidate-bin/taskr"
+ln -s "$case_dir/candidate-bin" "$case_dir/candidate-alias"
+candidate_bin=$(CDPATH= cd -- "$case_dir/candidate-bin" && pwd -P)
+run_launch env TASKR_DB="$case_dir/scratch.sqlite" TASKR_WORK_EXECUTABLE="$case_dir/candidate-alias/taskr" \
     sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
 expect_rc 0
 grep -F "export TASKR_DB='$case_dir/scratch.sqlite'" "$case_dir/calls" >/dev/null || fail 'scratch ledger missing from reserved child environment'
-grep -F "export PATH='$stub_dir:" "$case_dir/calls" >/dev/null || fail 'candidate CLI directory missing from reserved child PATH'
+grep -F "export PATH='$candidate_bin:" "$case_dir/calls" >/dev/null || fail 'candidate CLI directory missing from reserved child PATH'
 
 for field in task_id launch_id round pane cwd model effort; do
     new_case "reserved mismatch $field fails before agent start"

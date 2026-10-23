@@ -62,6 +62,12 @@ directory containing the candidate `taskr` and `herdr-launch`, prepended to PATH
 an absolute scratch `TASKR_DB`, is the supported staged-proof injection. No other
 environment is copied from the controller into a reused pane, and no global config is
 changed. Default client routing still uses the user's existing server configuration.
+Explicit nonempty `TASKR_DB` also namespaces all controller locks and artifacts by
+SHA-256 of its lexically normalized absolute path. The directory contains only that
+digest, so separate scratch ledgers with identical root/launch IDs cannot share locks
+or stale receipts. With no override, the existing shared-ledger state path is retained.
+Workspace validation always selects the configured workspace explicitly, independent
+of the daemon's inherited pane context.
 
 `source` obtains the approved typed inputs through fresh RPC, then observes the actual
 local clean Git HEAD and tree. Ignored build artifacts are excluded; tracked and
