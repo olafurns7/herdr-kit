@@ -314,6 +314,210 @@ fn original_binding_can_restart_and_repeatedly_read_a_stale_generation_handle() 
     );
 }
 #[test]
+fn live_adapter_reads_old_handles_after_generation_change_without_new_effects() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        process::{Child, ChildStdin, Stdio},
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+    struct Live {
+        child: Child,
+        input: ChildStdin,
+        replies: mpsc::Receiver<String>,
+        reader: Option<thread::JoinHandle<()>>,
+    }
+    impl Live {
+        fn call(&mut self, value: Value) -> Value {
+            writeln!(self.input, "{value}").unwrap();
+            self.input.flush().unwrap();
+            let line = self
+                .replies
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "MCP response deadline: {e}; child={:?}",
+                        self.child.try_wait()
+                    )
+                });
+            serde_json::from_str(&line).unwrap()
+        }
+    }
+    impl Drop for Live {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            if let Some(reader) = self.reader.take() {
+                let _ = reader.join();
+            }
+        }
+    }
+    let h = Harness::new();
+    let root = root(&h);
+    let work = h.ok(
+        &[],
+        &[
+            "jobs",
+            "add",
+            "--as",
+            &root.to_string(),
+            "--generation",
+            "0",
+            "--binding",
+            BINDING,
+            "--data",
+            &json!({"key":"one","campaign":root,"title":"synthetic job"}).to_string(),
+        ],
+    )["work_id"]
+        .as_i64()
+        .unwrap();
+    let ask=h.ok(&[],&["ask","--owner","--as",&root.to_string(),"--question",&json!({"question":"Synthetic choice?","options":[{"label":"Proceed"},{"label":"Hold"}]}).to_string()])["ask_id"].as_i64().unwrap();
+    h.ok(
+        &[],
+        &[
+            "jobs",
+            "allow-ask",
+            "--as",
+            &root.to_string(),
+            "--generation",
+            "0",
+            "--binding",
+            BINDING,
+            "--data",
+            &json!({"ask":ask}).to_string(),
+        ],
+    );
+    let mut child = h
+        .command(&[])
+        .args([
+            "mcp",
+            "--jobs",
+            "--as",
+            &root.to_string(),
+            "--session",
+            "0",
+            "--binding",
+            BINDING,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let input = child.stdin.take().unwrap();
+    let output = child.stdout.take().unwrap();
+    let (tx, replies) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        for line in BufReader::new(output).lines() {
+            match line {
+                Ok(line) => {
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    let mut live = Live {
+        child,
+        input,
+        replies,
+        reader: Some(reader),
+    };
+    let created = live.call(request(
+        1,
+        "tools/call",
+        json!({"name":"work_await","arguments":{"work":work,"revision":1}}),
+        true,
+        false,
+    ));
+    let id = created["result"]["taskId"].as_str().unwrap().to_string();
+    let owner = live.call(request(
+        2,
+        "tools/call",
+        json!({"name":"owner_input","arguments":{"ask":ask}}),
+        true,
+        true,
+    ));
+    let owner = owner["result"]["taskId"].as_str().unwrap().to_string();
+    let deadline: String = h
+        .conn()
+        .query_row(
+            "select deadline from jobs_routes where operation_id=?",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    h.conn()
+        .execute(
+            "insert into events(task_id,kind,created_at) values(?,'adopt','t')",
+            [root],
+        )
+        .unwrap();
+    assert!(live.child.try_wait().unwrap().is_none());
+    let first = live.call(request(3, "tasks/get", json!({"taskId":id}), true, false));
+    assert_eq!(
+        first["result"]["result"]["structuredContent"]["outcome"],
+        "released_to_channel"
+    );
+    assert_eq!(first["result"]["routeState"], "released");
+    for seq in 4..7 {
+        assert_eq!(
+            live.call(request(seq, "tasks/get", json!({"taskId":id}), true, false))["result"],
+            first["result"]
+        );
+    }
+    assert_eq!(
+        h.conn()
+            .query_row(
+                "select deadline from jobs_routes where operation_id=?",
+                [&id],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        deadline
+    );
+    for (seq, name, args) in [
+        (
+            7,
+            "work_add",
+            json!({"key":"refused","campaign":root,"title":"refused"}),
+        ),
+        (8, "work_await", json!({"work":work,"revision":1})),
+        (9, "result_receipt", json!({"handle":id,"result":1})),
+    ] {
+        assert!(
+            live.call(request(
+                seq,
+                "tools/call",
+                json!({"name":name,"arguments":args}),
+                true,
+                false
+            ))["error"]
+                .is_object()
+        );
+    }
+    assert!(live.call(request(10,"tasks/update",json!({"taskId":owner,"inputResponses":{"owner_choice":{"action":"accept","content":{"choice":"Proceed"}}}}),true,true))["error"].is_object());
+    assert!(live.child.try_wait().unwrap().is_none());
+    assert_eq!(
+        h.count("select count(*) from jobs_operations where root_id=?", root),
+        2
+    );
+    assert_eq!(
+        h.count("select count(*) from work_items where root_id=?", root),
+        1
+    );
+    assert_eq!(
+        h.count(
+            "select count(*) from events where id=? and answered_by is null",
+            ask
+        ),
+        1
+    );
+}
+#[test]
 fn opted_in_owner_task_roundtrips_typed_reply_and_records_native_answer_once() {
     let h = Harness::new();
     let root = root(&h);
