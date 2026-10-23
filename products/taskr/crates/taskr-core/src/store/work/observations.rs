@@ -1,7 +1,8 @@
 use super::*;
 
 pub fn configuration(db: &Connection, campaign: i64) -> Result<Value> {
-    let row:Option<(bool,u32,u32,Option<String>,Option<String>,bool)>=db.query_row("select enabled,max_active,max_review_pending,workspace,host,no_slotr from work_campaigns where root_id=?",[campaign],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
+    type ConfigurationRow = (bool, u32, u32, Option<String>, Option<String>, bool);
+    let row:Option<ConfigurationRow>=db.query_row("select enabled,max_active,max_review_pending,workspace,host,no_slotr from work_campaigns where root_id=?",[campaign],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
     let (enabled, max_active, max_review_pending, workspace, host, no_slotr) =
         row.unwrap_or((false, 1, 1, None, None, false));
     Ok(

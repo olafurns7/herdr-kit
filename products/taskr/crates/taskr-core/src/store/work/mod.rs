@@ -154,13 +154,12 @@ fn validate_contract(
     {
         return Err(usage("review requires an independent lane and model"));
     }
-    if let Some(a) = &c.adjudicator {
-        if a.task.is_some() && (a.task == c.executor.task || a.task == c.reviewer.task)
+    if let Some(a) = &c.adjudicator
+        && (a.task.is_some() && (a.task == c.executor.task || a.task == c.reviewer.task)
             || a.model == c.executor.model
-            || a.model == c.reviewer.model
-        {
-            return Err(usage("adjudication requires a distinct lane and model"));
-        }
+            || a.model == c.reviewer.model)
+    {
+        return Err(usage("adjudication requires a distinct lane and model"));
     }
     for (stage, lane) in [
         (Stage::Executor, Some(&c.executor)),
