@@ -22,7 +22,9 @@ before another tick. Only the campaign or existing designated hub can add,
 revise, cancel or configure its work. Other controller mutations require the
 campaign itself. Workers submit only as current `TASKR_TASK`/`TASKR_LAUNCH`.
 
-Campaigns start disabled. Configure before claiming:
+Campaigns start disabled. `list` returns configuration, parked state and current
+root generation along with work, so the controller can refresh its authority.
+Configure before claiming:
 
 ```sh
 taskr work configure 42 --as 42 --generation 0 \

@@ -359,7 +359,17 @@ pub fn list(db: &Connection, campaign: i64) -> Result<Value> {
         .into_iter()
         .map(|id| show(db, id))
         .collect::<Result<Vec<_>>>()?;
-    Ok(json!({"campaign":campaign,"work":rows}))
+    let config: Option<(bool, u32, u32)> = db
+        .query_row(
+            "select enabled,max_active,max_review_pending from work_campaigns where root_id=?",
+            [campaign],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let (enabled, max_active, max_review_pending) = config.unwrap_or((false, 1, 1));
+    Ok(
+        json!({"campaign":campaign,"generation":delivery::generation(db,campaign)?,"parked":parked(db,campaign)?,"configuration":{"enabled":enabled,"max_active":max_active,"max_review_pending":max_review_pending},"work":rows}),
+    )
 }
 pub fn show(db: &Connection, id: i64) -> Result<Value> {
     let w = item(db, id)?;
