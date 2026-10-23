@@ -188,6 +188,12 @@ pub fn new(db: &mut Connection, fs: &FlagSet) -> Result<Value> {
 pub fn launch(db: &mut Connection, id: i64, fs: &FlagSet) -> Result<Value> {
     transaction(db, |tx| {
         let t = open_task(tx, id)?;
+        let work_owned: bool = tx.query_row("select exists(select 1 from work_assignments where launch_id=? and state in ('reserved','starting','running','uncertain'))", [t.launch], |r| r.get(0))?;
+        if work_owned {
+            return Err(reject(
+                "live work-owned launch cannot be replaced; reconcile first",
+            ));
+        }
         if t.parent.is_none() {
             return Err(reject(format!(
                 "task {id} is a root task; launch records a lane, so give it a task created with --parent"

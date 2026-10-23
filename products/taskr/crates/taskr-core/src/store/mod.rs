@@ -15,6 +15,7 @@ pub mod message;
 pub mod orch;
 pub mod plan;
 pub mod tmp;
+pub mod work;
 pub mod worker;
 
 #[derive(Debug)]

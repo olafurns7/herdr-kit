@@ -133,6 +133,9 @@ pub fn unreceived(
         let Some(sender) = sender else {
             return Ok(json!({"alarmed":false}));
         };
+        if sender == to.id {
+            return Ok(json!({"alarmed":false}));
+        }
         let (count, received): (i64, bool) = tx.query_row("select count(*),coalesce(max(received_at is not null),0) from delivery_attempts where event_id=? and task_id=? and session_gen is ?", params![event_id,to.id,session], |r|Ok((r.get(0)?,r.get(1)?)))?;
         if count < 3 || received || to.acked >= event_id {
             return Ok(json!({"alarmed":false}));

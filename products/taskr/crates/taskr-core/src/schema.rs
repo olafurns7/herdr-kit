@@ -4,7 +4,7 @@ use std::path::Path;
 pub const SCHEMA: &str = include_str!("../../../schema.sql");
 pub const SEARCH_TRIGGER: &str = include_str!("search-trigger.sql");
 pub const SEARCH_REBUILD: &str = include_str!("search-rebuild.sql");
-/// Rust-only tables (v2: `taskr after`, v3: `taskr delivery`, v4: `taskr consumer`); schema.sql
+/// Rust-only tables (v2: `taskr after`, v3: `taskr delivery`, v4: `taskr consumer`, v5: `taskr work`); schema.sql
 /// stays the frozen Go schema.
 pub const SUBSCRIPTIONS: &str = "create table if not exists subscriptions (
   id             integer primary key,
@@ -48,7 +48,7 @@ pub const CONSUMER_LEASES: &str = "create table if not exists consumer_leases (
   check (holder is null or (launch_id is null) != (session_gen is null))
 );
 ";
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 #[cfg(test)]
 const SCHEMA_HASH: &str = "53186dc40613849698221be9594dab076daed8d2a69c016928cb53f938d5e197";
 
@@ -84,6 +84,7 @@ pub fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
     tx.execute_batch(SUBSCRIPTIONS)?;
     tx.execute_batch(DELIVERY_ATTEMPTS)?;
     tx.execute_batch(CONSUMER_LEASES)?;
+    tx.execute_batch(crate::store::work::DDL)?;
     for (table, column, kind) in [
         ("tasks", "waiting_until", "text"),
         ("launches", "workspace_id", "text"),
@@ -346,7 +347,7 @@ mod tests {
         };
         // A hub child of a daemon not yet restarted (open_migrated) migrates it once.
         let db = crate::db::open_migrated(&path).unwrap();
-        assert_eq!(shape(&db), (4, "4/5".into(), 1, None, 1));
+        assert_eq!(shape(&db), (SCHEMA_VERSION, "4/5".into(), 1, None, 1));
         // A held lease binds exactly one of launch_id and session_gen; a released one may keep its binding.
         db.execute(
             "insert into launches(id,task_id,recorded_at) values(1,1,'t')",
@@ -368,7 +369,7 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             shape(&db),
-            (4, "4/5".into(), 1, Some("1/7/-/0/e".into()), 0)
+            (SCHEMA_VERSION, "4/5".into(), 1, Some("1/7/-/0/e".into()), 0)
         );
         // Damaged search reruns the migration; the lease row and its fence survive unchanged.
         db.execute_batch("drop trigger search_events_insert")
@@ -377,7 +378,7 @@ mod tests {
         let db = open(&path).unwrap();
         assert_eq!(
             shape(&db),
-            (4, "4/5".into(), 1, Some("1/7/-/0/e".into()), 1)
+            (SCHEMA_VERSION, "4/5".into(), 1, Some("1/7/-/0/e".into()), 1)
         );
         assert!(search_intact(&db).unwrap());
         drop(db);
