@@ -46,14 +46,19 @@ poll is only presentation. An unreceipted route has a server-time 90-second leas
 renewed only by polls from its original live binding, and requests five-second
 polling. Expiry, release, cancellation or a generation change preserves fallback
 intent. One compatible accepted self-notice is emitted when a result exists.
+While the root is parked, the released route retains pending fallback intent;
+no new notice or sent marker is created. Unpark and reconciliation offer it once.
+A matching explicit receipt can retire pending fallback before it is offered.
+An already offered notice and its inbox cursor remain unchanged.
 An unfinished released await returns `released_to_channel`; its late result
 still falls back. A late poll or repeat await cannot recreate the native route.
 
 Reconcile before jobs startup and at most five seconds apart in the authoritative
 service using `store::jobs::reconcile` or `taskr jobs reconcile`. With the service
 running and maintenance scheduled within that interval, fallback is due within
-95 seconds after the last successful renewal. Service downtime extends this
-bound. Stdio also requests maintenance every five seconds while idle; daemon
+95 seconds after the last successful renewal for an unparked root. Parking defers
+the offer until unpark/reconciliation; service downtime also extends this bound.
+Stdio also requests maintenance every five seconds while idle; daemon
 maintenance is required for recovery after the adapter exits.
 
 ## CLI and recovery

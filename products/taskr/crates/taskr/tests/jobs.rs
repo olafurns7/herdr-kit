@@ -85,18 +85,42 @@ impl Jobs {
     }
     fn accepted(&self, work: i64) -> i64 {
         let mut db = self.h.conn();
+        db.pragma_update(None, "foreign_keys", true).unwrap();
         store::transaction(&mut db,|tx|{
             // Seed a domain-accepted result; these tests exercise the routing hook,
             // while work-domain tests own execution/review acceptance provenance.
-            tx.execute("insert into work_results(launch_id,digest,payload,created_at) values(?,'synthetic','{\"kind\":\"execution\",\"report\":\"fixture\"}',?)",params![work,store::now()])?;
+            tx.execute("insert into tasks(parent_id,name,role,created_at,updated_at) values(?,'synthetic-executor','implementer',?,?)",params![self.root,store::now(),store::now()])?;
+            let lane=tx.last_insert_rowid();
+            tx.execute("insert into launches(task_id,recorded_at) values(?,?)",params![lane,store::now()])?;
+            let launch=tx.last_insert_rowid();
+            tx.execute("update tasks set current_launch_id=? where id=?",params![launch,lane])?;
+            tx.execute("insert into work_runs(work_id,revision,root_id,generation,claim_key,claim_input,dependencies,action,state,created_at) values(?,1,?,?,?,'{}','[]','accepted','accepted',?)",params![work,self.root,store::delivery::generation(tx,self.root)?,format!("fixture-{work}"),store::now()])?;
+            let run=tx.last_insert_rowid();
+            let stop=store::event(tx,store::Event{task:lane,launch:Some(launch),kind:"work_process_stopped",summary:"synthetic routing fixture",data:Some(json!({"origin":"controller"})),..store::Event::default()})?;
+            tx.execute("insert into work_assignments(launch_id,run_id,stage,round,lane_id,state,process_state,stop_event,lane_snapshot) values(?,?,'executor',0,?,'settled','stopped',?,'{}')",params![launch,run,lane,stop])?;
+            tx.execute("insert into work_results(launch_id,digest,payload,created_at) values(?,'synthetic','{\"kind\":\"execution\",\"report\":\"fixture\"}',?)",params![launch,store::now()])?;
             let result=tx.last_insert_rowid();
-            tx.execute("insert into work_acceptances(work_id,revision,run_id,result_id,dependencies,created_at) values(?,1,?,?, '[]',?)",params![work,work,result,store::now()])?;
-            api::accepted(tx,self.root,work,1,work,result)?;
+            tx.execute("insert into work_acceptances(work_id,revision,run_id,result_id,dependencies,created_at) values(?,1,?,?, '[]',?)",params![work,run,result,store::now()])?;
+            tx.execute("update work_items set state='done',current_run=? where id=?",params![run,work])?;
+            api::accepted(tx,self.root,work,1,run,result)?;
+            assert_eq!(tx.query_row("select count(*) from pragma_foreign_key_check",[],|r|r.get::<_,i64>(0))?,0);
             Ok(result)
         }).unwrap()
     }
     fn notices(&self) -> i64 {
         self.h.count("select count(*) from events where recipient_task_id=? and kind='message' and json_extract(data,'$.notice.reason')='accepted'",self.root)
+    }
+    fn park(&self, parked: bool) {
+        store::event(
+            &self.h.conn(),
+            store::Event {
+                task: self.root,
+                kind: "ref",
+                data: Some(json!({"key":"glance.state","value":if parked {"parked"}else{""}})),
+                ..store::Event::default()
+            },
+        )
+        .unwrap();
     }
     fn ask(&self) -> i64 {
         self.h.ok(&[],&["ask","--owner","--as",&self.root.to_string(),"--question",&json!({"question":"Synthetic approval?","options":[{"label":"Proceed"},{"label":"Hold"}]}).to_string()])["ask_id"].as_i64().unwrap()
@@ -108,6 +132,80 @@ impl Jobs {
             o["taskId"].as_str().unwrap().into(),
             p["version"].as_str().unwrap().into(),
         )
+    }
+}
+#[test]
+fn explicit_receipt_retires_parked_pending_fallback_before_or_after_unpark() {
+    for unpark_first in [false, true] {
+        let j = Jobs::new();
+        let w = j.work();
+        let id = j.pending(w);
+        let result = j.accepted(w);
+        j.park(true);
+        j.call("release", json!({"handle":id}));
+        assert_eq!(j.notices(), 0);
+        assert_eq!(
+            j.h.conn()
+                .query_row("select fallback_sent from jobs_routes", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        if unpark_first {
+            j.park(false);
+        }
+        for _ in 0..2 {
+            j.call("receipt", json!({"handle":id,"result":result}));
+        }
+        j.park(false);
+        for _ in 0..3 {
+            j.call("reconcile", json!({}));
+        }
+        assert_eq!(j.notices(), 0);
+        assert_eq!(
+            j.h.conn()
+                .query_row("select state,fallback_sent from jobs_routes", [], |r| Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?
+                )))
+                .unwrap(),
+            ("receipted".into(), 0)
+        );
+    }
+}
+#[test]
+fn parked_cli_release_before_or_after_result_offers_once_only_after_unpark() {
+    for result_first in [false, true] {
+        let j = Jobs::new();
+        let w = j.work();
+        let id = j.pending(w);
+        j.park(true);
+        if result_first {
+            j.accepted(w);
+        }
+        let terminal = j.call("release", json!({"handle":id}));
+        if !result_first {
+            j.accepted(w);
+        }
+        for _ in 0..2 {
+            j.call("reconcile", json!({}));
+        }
+        assert_eq!(j.notices(), 0);
+        assert_eq!(
+            j.h.conn()
+                .query_row("select state,fallback_sent from jobs_routes", [], |r| Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?
+                )))
+                .unwrap(),
+            ("released".into(), 0)
+        );
+        j.park(false);
+        for _ in 0..3 {
+            j.call("reconcile", json!({}));
+        }
+        assert_eq!(j.notices(), 1);
+        assert_eq!(j.call("poll", json!({"handle":id})), terminal);
     }
 }
 #[test]

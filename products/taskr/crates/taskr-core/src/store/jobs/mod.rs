@@ -332,7 +332,6 @@ pub fn release(db: &mut Connection, s: &Session, id: &str, cancel: bool) -> Resu
 pub fn receipt(db: &mut Connection, s: &Session, input: Receipt) -> Result<Value> {
     transaction(db, |tx| {
         auth(tx, s)?;
-        routes::reconcile_tx(tx)?;
         let o = operation(tx, &input.handle)?;
         require_bound(s, &o)?;
         let result: Option<i64> = tx
@@ -348,10 +347,12 @@ pub fn receipt(db: &mut Connection, s: &Session, input: Receipt) -> Result<Value
                 "receipt must name this operation's stable work result",
             ));
         }
+        // Explicit handling retires pending fallback before reconciliation can offer it.
         tx.execute(
             "update jobs_routes set state='receipted' where operation_id=?",
             [&input.handle],
         )?;
+        routes::reconcile_tx(tx)?;
         Ok(json!({"ok":true,"handle":input.handle,"result":input.result}))
     })
 }

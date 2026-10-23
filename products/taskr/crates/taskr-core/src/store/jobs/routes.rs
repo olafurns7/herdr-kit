@@ -103,6 +103,10 @@ fn fallback(db: &Connection, id: &str) -> Result<()> {
     };
     let o = operation(db, id)?;
     if !offered(db, &o, result)? {
+        let parked:bool=db.query_row("select coalesce((select json_extract(data,'$.value') from events where task_id=? and kind='ref' and json_extract(data,'$.key')='glance.state' order by id desc limit 1)='parked',0)",[o.root],|r|r.get(0))?;
+        if parked {
+            return Ok(());
+        }
         let generation = consumer::push_generation(db, &task(db, o.root)?)?;
         let text = format!("work {}: accepted", o.reference);
         event(
