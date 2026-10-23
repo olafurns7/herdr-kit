@@ -28,8 +28,8 @@ Configure before claiming:
 
 ```sh
 taskr work configure 42 --as 42 --generation 0 \
-  --enabled on --max-active 2 --max-review-pending 1
-# Equivalent JSON: {"enabled":true,"max_active":2,"max_review_pending":1}
+  --enabled on --workspace w1 --max-active 2 --max-review-pending 1
+# Equivalent JSON: {"enabled":true,"max_active":2,"max_review_pending":1,"workspace":"w1","no_slotr":false}
 taskr work add --as 42 --generation 0 \
   --data '{"campaign":42,"title":"A backlog item"}'
 taskr work list 42
@@ -70,7 +70,7 @@ An example contract (replace IDs, digests and client checkout identity):
   "profile": {
     "id": "unit", "version": 1,
     "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-    "checks": [{"id": "unit", "kind": "cases", "argv": ["checker", "--json"], "timeout_ms": 60000, "cases": ["required-case"]}]
+    "checks": [{"id": "unit", "kind": "cases", "argv": ["checker", "--json"], "timeout_ms": 60000, "cases": ["required-case"], "admission": "heavy", "receipt_file": "cases.json"}]
   }
 }
 ```
@@ -79,7 +79,8 @@ Compute the canonical checkout path on its client with `pwd -P`. The server
 validates canonical absolute lexical shape and admits the named host through
 existing host freshness rules; it cannot resolve paths on another host.
 Source commit/tree are lowercase 40- or 64-digit object IDs; input/profile and
-artifact digests are lowercase SHA-256. Scope paths are relative without `..`.
+artifact digests are lowercase SHA-256. Compute profile/input hashes with the
+canonical helpers below; arbitrary digest labels are rejected. Scope paths are relative without `..`.
 Dependencies pin work IDs and semantic revisions in the same campaign.
 
 Lane task IDs are optional. With null/omitted task IDs, claim/reserve creates a
@@ -106,7 +107,12 @@ checks have approved argv (1..128 arguments) and timeout (1..3600000 ms).
 | claim | work | expected_revision, key; returns run_id and executor assignment/launch_id |
 | reserve | run | stage: executor/reviewer/adjudicator; returns assignment |
 | bind | launch | workspace, tab, pane, dispatch_key |
-| started | launch | derives start proof from hook session or got/start receipt |
+| started | launch | derives launch receipt; optional {pane,native_session,observed_at} explicitly binds native identity |
+| stopped | launch | {pane,native_session,foreground:{pid,command},agent_absent,observed_at} |
+| block | work | {reason}; identical named condition is a no-op |
+| campaigns | none | enabled campaign snapshots on authenticated caller host only |
+| inputs | work | canonical profile/dependency/input/checkout snapshot |
+| hash | none | {profile,dependencies:[{work,revision,input_digest}]} -> canonical digests |
 | uncertain | launch | reason |
 | reconcile | launch | optional stopped_event; empty object derives recorded start |
 | submit | launch | launch-bound typed submission below; returns immutable result_id/digest |
@@ -134,15 +140,36 @@ competing claim cannot create another run/writer. A failed claim rolls back all
 its rows. Claims reserve only; bind durably records dispatch intent and mirrors
 pane/tab/workspace onto the lane and launch before any external start.
 
-Assignments move reserved → starting → running → settled, or uncertain.
-A starting/uncertain assignment is never restarted automatically. Without hooks,
-`taskr start` or a matching `got` receipt proves the reserved launch started.
-`recover` derives missing start transitions. `reconcile` refuses an unproven stop.
-Stop evidence must be a launch-bound `work_process_stopped` ledger event with
-`data.origin="controller"` and `data.run=RUN`. No CLI verb here produces this
-receipt; the later controller must record it after observing actual process exit.
-Until that producer exists, uncertain dispatches require escalation and keep the
-writer reservation. Hook Stop/idle hints do not prove process exit.
+Result settlement and process state are separate. Assignments retain `state`
+(reserved/starting/running/settled), with independent `process_state`
+(reserved/starting/running/uncertain/stopped), `native_session`, `stop_event`,
+`identity_observation` and `stopped` receipt data. A result never proves process
+exit. A starting/uncertain process is never automatically restarted.
+
+`started` can derive a launch-bound got/start or hook receipt. A receipt alone
+never invents a native identity. Model stages must have either a hook session
+or an explicit root `started --data {pane,native_session,observed_at}` observation
+before stop can be recorded. Pane must equal immutable dispatch; any existing
+native identity must match. Gate shell stages have null native_session.
+
+`stopped` is root/host/generation authorized. Its JSON includes exact bound pane
+and native session, `agent_absent:true`, foreground `{pid,command}` identifying a
+positive PID and a known shell (sh/bash/zsh/fish/dash/ksh/nu), plus a fresh RFC3339
+observed_at (within 60 seconds, not before launch or in the future). Changed native
+identity, mismatched pane and worker authority are refused. Identical stop replay
+is idempotent; conflicting observations cannot replace the immutable receipt.
+The controller must obtain these observations from real teardown; the store does
+not run or inspect Herdr itself.
+
+A normal stop preserves the active run and its checkout through gate/review.
+`reconcile {stopped_event}` acknowledges that recorded receipt without abandoning
+work, including after acceptance. Explicit `abandon:true` requires a current
+active run and all dispatched processes stopped; it returns work to backlog and
+releases the checkout. Cancel also releases only after every dispatched process
+is stopped. Undispatched reservations, including uncertainty without dispatch,
+can be cancelled without pretending an OS process existed. Accepted work cannot
+be abandoned or reverted by late reconciliation. Live work lanes cannot be
+closed or their launches replaced until process stop/cancellation reconciliation.
 
 ## Submission and acceptance
 
@@ -171,19 +198,45 @@ process. Completed dependents keep their receipts and show recheck required.
 Acceptance revalidates pinned dependencies in the transaction and emits one
 immutable receipt for the work revision. Repeated advance cannot duplicate it.
 
-**Runner boundary:** required checks always return `action:"check"`, with the
-pinned profile and exact execution source. There is no proof-submit or mark-pass
-CLI. `validate_proof(profile, source, run, revision, checker_launch, proof)` checks
-exact binding/source/profile/argv/exit/case sets, but is only
-structural validation; it does not attest execution. The next runner slice must
-supply gate-origin attestation before proof-bearing work can ever be accepted.
-An empty profile may accept after independent review/required adjudication.
+Advance orders execution → executor stop → deterministic gate proof → gate stop
+→ independent review → reviewer stop → optional adjudication → all needed stops
+→ acceptance. `action:"stop"` identifies its `launch_id`. Empty profiles still
+require process-stop safety and independent review. Gate failure uses the same
+total max_rework budget as review failure; it never reserves a reviewer first.
+
+A gate reservation uses `stage:"gate"` and creates a fresh lane/launch with ledger
+role gate and fixed provider/model/effort shell/none/none. Only its current,
+running, launch-bound worker identity can submit `{kind:"proof",result:...}`.
+Root/executor/reviewer JSON cannot mark a check passed. Proof results contain
+source, profile_digest, exact dependency acceptance receipts, host, runner_version,
+environment name/value records and `checks`. Each check records run/revision,
+source/profile/checker launch, approved check ID/argv, nullable exit/signal,
+timed_out, nullable error, admission evidence, stdout/stderr hashes/byte counts/
+truncation, exact cases and artifact hashes. Receipt-backed checks require an
+artifact named `receipt` with the captured receipt SHA-256.
+
+Nonzero/null exit, signal, timeout, parse/missing receipt error, missing/extra/
+duplicate/skipped/failed cases or wrong admission cannot pass. A failed record
+is stored immutably so the stopped gate can enter bounded rework; identity drift
+(source/profile/dependencies/argv/launch) is rejected. The later runner owns real
+execution/attestation, clean Git verification before/after, receipt capture,
+admission and process cleanup; the store enforces its assigned writer boundary.
+
+Per-check admission is `direct` (default) or `heavy`. Proof evidence is
+`{method:"direct"|"slotr"|"host_exception",ticket:null|string,reason:null|string}`.
+Heavy requires a slotr ticket, or an explicitly configured campaign `no_slotr`
+host exception with a reason. That exception is off by default. A nonempty case
+set requires `receipt_file`, a relative path up to 256 bytes without empty/dot/
+parent components. The runner resolves it only inside its own attempt directory.
 
 Work audit events have no inbox recipient. Actionable notices use compatible
 self-addressed `message` events with typed `notice` data and the current push
 generation (or null). Parked roots get audit only. Self-notice exhaustion never
-alarms a fictitious sender. After typed submission, routine work-bound ready/done
-stay in history without waking an enabled campaign; asks/failures retain routes.
+alarms a fictitious sender. Routine work-bound ready/done, including before submit, stay in history without
+waking an enabled live campaign; asks/failures retain routes. Submitted and
+bounded rework are audit-only. Acceptance and actionable exceptions retain notices.
+Root-initiated add/revise/queue/cancel do not send self-notices; hub-to-other-root
+writes still notify. `block` emits at most one notice per unchanged reason.
 Existing offered events/cursors are not suppressed or advanced by this feature.
 Legacy lanes retain their launch and report behavior.
 
@@ -212,3 +265,37 @@ independent legacy lanes are not detected; the launcher must reconcile these
 before execution. This is a durable coordination fence, not process fencing
 or filesystem isolation. Missed notices do not lose work: recover/list/advance
 read the ledger directly.
+
+## Canonical identity algorithms
+
+Use `work hash --data '{"profile":...,"dependencies":[]}'`, or the public
+`profile_digest`, `input_digest` and `canonical_json` Rust helpers. Profile inputs
+are deserialized as typed Profile (all defaults and null optional fields become
+explicit). Objects sort keys lexicographically; arrays retain declared order;
+serialization is compact UTF-8 serde JSON, without whitespace or Go HTML escaping.
+Digests are lowercase SHA-256 of these exact bytes:
+
+- Profile: `{"algorithm":"taskr-work-profile-v1","profile":<typed Profile excluding digest>}`.
+- Input: `{"algorithm":"taskr-work-input-v1","profile":<same content>,"dependencies":[{work,revision,input_digest},...]}`. Dependencies sort by positive work ID and cannot repeat. Their input digests come from the pinned immutable dependency contract revisions.
+
+Commit/tree do not enter input_digest. They independently identify the actual
+committed source; changing profile, pinned dependency revision or dependency input
+changes the input digest. `work inputs WORK` returns all canonical inputs and
+current dependency acceptance receipts. The controller-owned local `work source`
+command uses this authoritative RPC snapshot and actual clean Git source on the
+calling host; client-host daemons must never open a separate authority DB.
+`work campaigns` similarly returns only enabled root snapshots for the current
+authenticated host, with root ID, generation, host/configuration and work. These
+reads are fresh over RPC and do not impersonate a worker.
+
+Add accepts optional `key`. The same authenticated root/key and canonical typed
+Add input return the same work ID, including after process restart. A changed
+input with the key is rejected transactionally. Omitting key retains ordinary
+CLI creation behavior; the native adapter requires a key itself.
+
+Recovery limits: revising an active contract rejects new bind/started operations
+for its old semantic run; explicit stop/cancel/abandon still reconciles old owned
+processes. A reused legacy launch without a work stop receipt has no safe takeover
+path; use a fresh optional lane. Checkouts are compared by exact authenticated
+host/path strings; filesystem/symlink aliases and independent legacy OS writers
+still need launcher reconciliation. A ledger fence does not stop OS writes.

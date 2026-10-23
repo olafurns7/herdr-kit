@@ -1,10 +1,16 @@
 //! Durable, launch-bound work. No operation here starts a process or grants publication authority.
 use super::*;
 use sha2::{Digest, Sha256};
+mod hashes;
 mod lifecycle;
+mod observations;
+mod proofs;
 mod results;
+use proofs::*;
 mod types;
+pub use hashes::*;
 pub use lifecycle::*;
+pub use observations::*;
 pub use results::*;
 pub use types::*;
 #[cfg(test)]
@@ -178,12 +184,24 @@ fn validate_contract(
     }
     token(&c.profile.id, "profile ID")?;
     hash(&c.profile.digest, &[64])?;
+    if profile_digest(&c.profile)? != c.profile.digest {
+        return Err(reject("profile digest drift"));
+    }
+    if input_digest(&c.profile, &dependency_inputs(db, c)?)? != c.base.input_digest {
+        return Err(reject("contract input digest drift"));
+    }
     if c.profile.version == 0 || c.profile.checks.len() > 64 {
         return Err(usage("invalid proof profile version/check count"));
     }
     unique(c.profile.checks.iter().map(|c| c.id.as_str()), "check ID")?;
     for check in &c.profile.checks {
         token(&check.kind, "proof kind")?;
+        if let Some(path) = &check.receipt_file {
+            receipt_path(path)?;
+        }
+        if !check.cases.is_empty() && check.receipt_file.is_none() {
+            return Err(usage("case checks require a relative JSON receipt file"));
+        }
         if check.argv.is_empty()
             || check.argv.len() > 128
             || check.timeout_ms == 0
@@ -256,24 +274,64 @@ pub fn configure(
     }
     transaction(db, |tx| {
         authority(tx, a, campaign, true)?;
-        tx.execute("insert into work_campaigns(root_id,enabled,max_active,max_review_pending) values(?,?,?,?) on conflict(root_id) do update set enabled=excluded.enabled,max_active=excluded.max_active,max_review_pending=excluded.max_review_pending",params![campaign,input.enabled,input.max_active,input.max_review_pending])?;
+        if input.enabled && input.workspace.is_none() {
+            return Err(usage("enabled work campaign requires workspace"));
+        }
+        if let Some(ws) = &input.workspace {
+            location_id(ws)?;
+        }
+        let host = machine_name(task(tx, campaign)?.machine.as_deref());
+        tx.execute("insert into work_campaigns(root_id,enabled,max_active,max_review_pending,workspace,host,no_slotr) values(?,?,?,?,?,?,?) on conflict(root_id) do update set enabled=excluded.enabled,max_active=excluded.max_active,max_review_pending=excluded.max_review_pending,workspace=excluded.workspace,host=excluded.host,no_slotr=excluded.no_slotr",params![campaign,input.enabled,input.max_active,input.max_review_pending,input.workspace,host,input.no_slotr])?;
         audit(tx, campaign, "configured", None, None, None, false)?;
-        Ok(json!({"ok":true,"campaign":campaign,"configuration":input}))
+        Ok(json!({"ok":true,"campaign":campaign,"host":host,"configuration":input}))
     })
 }
 pub fn add(db: &mut Connection, a: Authority, input: Add) -> Result<Value> {
     encoded(&input)?;
     text(&input.title, 512, "title")?;
+    if let Some(key) = &input.key {
+        token(key, "creation key")?;
+    }
     transaction(db, |tx| {
         authority(tx, a, input.campaign, true)?;
+        let canonical = canonical_json(&input)?;
+        if let Some(key) = &input.key {
+            let old: Option<(String, i64)> = tx
+                .query_row(
+                    "select input,work_id from work_creations where root_id=? and creation_key=?",
+                    params![a.root, key],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            if let Some((prior, id)) = old {
+                if prior != canonical {
+                    return Err(reject("creation key reused with different input"));
+                }
+                return show(tx, id);
+            }
+        }
         if let Some(c) = &input.contract {
             validate_contract(tx, input.campaign, None, c)?;
         }
         let creator = json!({"root":a.root,"generation":a.generation,"host":machine_name(caller_machine().as_deref())});
         tx.execute("insert into work_items(root_id,title,priority,revision,state,creator,created_at) values(?,?,?,1,'backlog',?,?)",params![input.campaign,input.title,input.priority,encoded(&creator)?,now()])?;
         let id = tx.last_insert_rowid();
+        if let Some(key) = &input.key {
+            tx.execute(
+                "insert into work_creations(root_id,creation_key,input,work_id) values(?,?,?,?)",
+                params![a.root, key, canonical, id],
+            )?;
+        }
         tx.execute("insert into work_revisions(work_id,revision,contract,creator,created_at) values(?,1,?,?,?)",params![id,input.contract.as_ref().map(encoded).transpose()?,encoded(&creator)?,now()])?;
-        audit(tx, input.campaign, "added", Some(id), None, None, true)?;
+        audit(
+            tx,
+            input.campaign,
+            "added",
+            Some(id),
+            None,
+            None,
+            a.root != input.campaign,
+        )?;
         show(tx, id)
     })
 }
@@ -307,7 +365,15 @@ pub fn revise(db: &mut Connection, a: Authority, id: i64, input: Revise) -> Resu
             }
         }
         tx.execute("update work_items set title=coalesce(?,title),priority=coalesce(?,priority) where id=?",params![input.title,input.priority,id])?;
-        audit(tx, w.root, "revised", Some(id), w.run, None, true)?;
+        audit(
+            tx,
+            w.root,
+            "revised",
+            Some(id),
+            w.run,
+            None,
+            a.root != w.root,
+        )?;
         show(tx, id)
     })
 }
@@ -330,7 +396,7 @@ pub fn queue(db: &mut Connection, a: Authority, id: i64, input: Revision) -> Res
             "update work_items set state='queued',current_run=null,reason=null where id=?",
             [id],
         )?;
-        audit(tx, w.root, "queued", Some(id), None, None, true)?;
+        audit(tx, w.root, "queued", Some(id), None, None, a.root != w.root)?;
         show(tx, id)
     })
 }
@@ -345,16 +411,8 @@ pub fn list(db: &Connection, campaign: i64) -> Result<Value> {
         .into_iter()
         .map(|id| show(db, id))
         .collect::<Result<Vec<_>>>()?;
-    let config: Option<(bool, u32, u32)> = db
-        .query_row(
-            "select enabled,max_active,max_review_pending from work_campaigns where root_id=?",
-            [campaign],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()?;
-    let (enabled, max_active, max_review_pending) = config.unwrap_or((false, 1, 1));
     Ok(
-        json!({"campaign":campaign,"generation":delivery::generation(db,campaign)?,"parked":parked(db,campaign)?,"configuration":{"enabled":enabled,"max_active":max_active,"max_review_pending":max_review_pending},"work":rows}),
+        json!({"campaign":campaign,"host":machine_name(task(db,campaign)?.machine.as_deref()),"generation":delivery::generation(db,campaign)?,"parked":parked(db,campaign)?,"configuration":configuration(db,campaign)?,"work":rows}),
     )
 }
 pub fn show(db: &Connection, id: i64) -> Result<Value> {

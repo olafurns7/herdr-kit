@@ -86,6 +86,21 @@ pub fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
     tx.execute_batch(CONSUMER_LEASES)?;
     tx.execute_batch(crate::store::work::DDL)?;
     for (table, column, kind) in [
+        ("work_campaigns", "workspace", "text"),
+        ("work_campaigns", "host", "text"),
+        ("work_campaigns", "no_slotr", "integer not null default 0"),
+        (
+            "work_assignments",
+            "process_state",
+            "text not null default 'reserved'",
+        ),
+        ("work_assignments", "native_session", "text"),
+        ("work_assignments", "identity_observation", "text"),
+        (
+            "work_assignments",
+            "stop_event",
+            "integer references events(id)",
+        ),
         ("tasks", "waiting_until", "text"),
         ("launches", "workspace_id", "text"),
         ("launches", "tab_id", "text"),

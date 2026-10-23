@@ -28,8 +28,21 @@ pub(super) fn current_run(db: &Connection, id: i64) -> Result<(Run, Item, Contra
 }
 pub(super) fn assignment(db: &Connection, launch: i64) -> Result<Value> {
     let (run,stage,round,lane,state,snapshot,dispatch,proof):(i64,String,u32,i64,String,String,Option<String>,Option<String>)=db.query_row("select run_id,stage,round,lane_id,state,lane_snapshot,dispatch,start_proof from work_assignments where launch_id=?",[launch],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional()?.ok_or_else(||reject("work assignment does not exist"))?;
+    let (process_state,native_session,stop_event):(String,Option<String>,Option<i64>)=db.query_row("select process_state,native_session,stop_event from work_assignments where launch_id=?",[launch],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+    let identity: Option<String> = db.query_row(
+        "select identity_observation from work_assignments where launch_id=?",
+        [launch],
+        |r| r.get(0),
+    )?;
+    let stop: Option<String> = stop_event
+        .map(|e| {
+            db.query_row("select data from events where id=?", [e], |r| {
+                r.get::<_, String>(0)
+            })
+        })
+        .transpose()?;
     Ok(
-        json!({"launch_id":launch,"run_id":run,"stage":stage,"round":round,"task_id":lane,"state":state,"lane":serde_json::from_str::<Value>(&snapshot)?,"dispatch":dispatch.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,"start_proof":proof.map(|s|serde_json::from_str::<Value>(&s)).transpose()?}),
+        json!({"identity_observation":identity.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,"stopped":stop.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,"process_state":process_state,"native_session":native_session,"stop_event":stop_event,"launch_id":launch,"run_id":run,"stage":stage,"round":round,"task_id":lane,"state":state,"lane":serde_json::from_str::<Value>(&snapshot)?,"dispatch":dispatch.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,"start_proof":proof.map(|s|serde_json::from_str::<Value>(&s)).transpose()?}),
     )
 }
 pub(super) fn run_output(db: &Connection, id: i64) -> Result<Value> {
@@ -66,13 +79,20 @@ pub(super) fn run_output(db: &Connection, id: i64) -> Result<Value> {
         json!({"ok":true,"work_id":r.work,"revision":r.revision,"run_id":id,"round":r.round,"state":r.state,"action":r.action,"assignments":assignments,"results":results,"acceptance_id":acceptance}),
     )
 }
-fn lane(c: &Contract, stage: Stage) -> Result<&Lane> {
+fn lane(c: &Contract, stage: Stage) -> Result<Lane> {
     Ok(match stage {
-        Stage::Executor => &c.executor,
-        Stage::Reviewer => &c.reviewer,
+        Stage::Gate => Lane {
+            task: None,
+            name: "gate".into(),
+            provider: "shell".into(),
+            model: "none".into(),
+            effort: "none".into(),
+        },
+        Stage::Executor => c.executor.clone(),
+        Stage::Reviewer => c.reviewer.clone(),
         Stage::Adjudicator => c
             .adjudicator
-            .as_ref()
+            .clone()
             .ok_or_else(|| reject("no adjudicator configured; escalate"))?,
     })
 }
@@ -89,13 +109,27 @@ fn reserve_tx(db: &Connection, r: &Run, c: &Contract, stage: Stage) -> Result<Va
     }
     let allowed = match stage {
         Stage::Executor => matches!(r.action.as_str(), "reserve" | "rework"),
+        Stage::Gate => r.action == "check",
         Stage::Reviewer => r.action == "review",
         Stage::Adjudicator => r.action == "adjudicate",
     };
     if !allowed {
         return Err(reject("stage not authorized by durable advance action"));
     }
+    if c.checkout.host != machine_name(caller_machine().as_deref()) {
+        return Err(reject("checkout/campaign host mismatch"));
+    }
     let l = lane(c, stage)?;
+    let live: bool = db.query_row(
+        "select exists(select 1 from work_assignments where run_id=? and process_state!='stopped')",
+        [r.id],
+        |r| r.get(0),
+    )?;
+    if live {
+        return Err(reject(
+            "previous stage process must stop before reservation",
+        ));
+    }
     let task_id = if let Some(id) = l.task {
         id
     } else {
@@ -108,7 +142,7 @@ fn reserve_tx(db: &Connection, r: &Run, c: &Contract, stage: Stage) -> Result<Va
         return Err(reject("lane is no longer in campaign"));
     }
     let busy: bool = db.query_row(
-        "select exists(select 1 from work_assignments a join work_runs r on r.id=a.run_id where a.lane_id=? and (a.state!='settled' or r.state='active' and a.run_id!=?))",
+        "select exists(select 1 from work_assignments a join work_runs r on r.id=a.run_id where a.lane_id=? and (a.process_state!='stopped' or r.state='active' and a.run_id!=?))",
         params![t.id,r.id],
         |r| r.get(0),
     )?;
@@ -117,7 +151,7 @@ fn reserve_tx(db: &Connection, r: &Run, c: &Contract, stage: Stage) -> Result<Va
     }
     if let Some(old) = t.launch {
         let settled: bool = db.query_row(
-            "select exists(select 1 from work_assignments where launch_id=? and state='settled')",
+            "select exists(select 1 from work_assignments where launch_id=? and process_state='stopped')",
             [old],
             |r| r.get(0),
         )?;
@@ -132,7 +166,7 @@ fn reserve_tx(db: &Connection, r: &Run, c: &Contract, stage: Stage) -> Result<Va
     let launch = db.last_insert_rowid();
     delete_receipts(db, t.id)?;
     db.execute("update tasks set current_launch_id=?,status='open',cwd=?,machine=?,pane_id=null,tab_id=null,workspace_id=null,updated_at=? where id=?",params![launch,c.checkout.cwd,host,now(),t.id])?;
-    db.execute("insert into work_assignments(launch_id,run_id,stage,round,lane_id,state,lane_snapshot) values(?,?,?,?,?,'reserved',?)",params![launch,r.id,stage.name(),r.round,t.id,encoded(l)?])?;
+    db.execute("insert into work_assignments(launch_id,run_id,stage,round,lane_id,state,lane_snapshot) values(?,?,?,?,?,'reserved',?)",params![launch,r.id,stage.name(),r.round,t.id,encoded(&l)?])?;
     audit(
         db,
         r.root,
@@ -186,6 +220,12 @@ pub fn claim(db: &mut Connection, a: Authority, id: i64, input: Claim) -> Result
             return Err(reject("work is not queued"));
         }
         let c = contract(tx, &w)?;
+        let config = configuration(tx, w.root)?;
+        if config["host"] != c.checkout.host
+            || machine_name(task(tx, w.root)?.machine.as_deref()) != c.checkout.host
+        {
+            return Err(reject("checkout/campaign host mismatch"));
+        }
         validate_contract(tx, w.root, Some(id), &c)?;
         let deps = dependencies(tx, &c)?;
         let reserved: bool = tx.query_row(
@@ -242,6 +282,13 @@ pub fn bind(db: &mut Connection, a: Authority, launch: i64, input: Bind) -> Resu
         let run = ass["run_id"].as_i64().unwrap();
         let (r, _, _) = current_run(tx, run)?;
         authority(tx, a, r.root, false)?;
+        bound_host(tx, launch)?;
+        let config = configuration(tx, r.root)?;
+        if config["workspace"] != input.workspace {
+            return Err(reject(
+                "dispatch workspace differs from campaign configuration",
+            ));
+        }
         let tid = ass["task_id"].as_i64().unwrap();
         if task(tx, tid)?.launch != Some(launch) {
             return Err(reject("assignment launch replaced"));
@@ -256,7 +303,7 @@ pub fn bind(db: &mut Connection, a: Authority, launch: i64, input: Bind) -> Resu
             ));
         }
         tx.execute(
-            "update work_assignments set state='starting',dispatch=? where launch_id=?",
+            "update work_assignments set state='starting',process_state='starting',dispatch=? where launch_id=?",
             params![raw, launch],
         )?;
         tx.execute(
@@ -283,12 +330,12 @@ pub fn bind(db: &mut Connection, a: Authority, launch: i64, input: Bind) -> Resu
         assignment(tx, launch)
     })
 }
-fn start_tx(db: &Connection, launch: i64) -> Result<Value> {
+pub(super) fn start_tx(db: &Connection, launch: i64) -> Result<Value> {
     let ass = assignment(db, launch)?;
-    if ass["state"] == "running" || ass["state"] == "settled" {
+    if ass["process_state"] == "running" {
         return Ok(ass);
     }
-    if ass["state"] != "starting" {
+    if ass["process_state"] != "starting" {
         return Err(reject(
             "assignment must be starting; uncertain starts need stopped evidence",
         ));
@@ -306,9 +353,12 @@ fn start_tx(db: &Connection, launch: i64) -> Result<Value> {
         return Err(reject("no hook session or launch-bound got/start receipt"));
     };
     db.execute(
-        "update work_assignments set state='running',start_proof=? where launch_id=?",
+        "update work_assignments set state='running',process_state='running',start_proof=? where launch_id=?",
         params![encoded(&proof)?, launch],
     )?;
+    if hook {
+        db.execute("update work_assignments set native_session=(select session_ref from launches where id=?) where launch_id=?",params![launch,launch])?;
+    }
     assignment(db, launch)
 }
 pub fn started(db: &mut Connection, a: Authority, launch: i64) -> Result<Value> {
@@ -316,6 +366,7 @@ pub fn started(db: &mut Connection, a: Authority, launch: i64) -> Result<Value> 
         let ass = assignment(tx, launch)?;
         let (r, _, _) = current_run(tx, ass["run_id"].as_i64().unwrap())?;
         authority(tx, a, r.root, false)?;
+        bound_host(tx, launch)?;
         start_tx(tx, launch)
     })
 }
@@ -325,11 +376,18 @@ pub fn uncertain(db: &mut Connection, a: Authority, launch: i64, input: Reason) 
         let ass = assignment(tx, launch)?;
         let r = run_row(tx, ass["run_id"].as_i64().unwrap())?;
         authority(tx, a, r.root, false)?;
-        if ass["state"] == "settled" {
-            return Err(reject("settled assignment cannot become uncertain"));
+        if ass["process_state"] == "stopped" {
+            return Err(reject("stopped process cannot become uncertain"));
+        }
+        let old: Option<String> =
+            tx.query_row("select reason from work_items where id=?", [r.work], |r| {
+                r.get(0)
+            })?;
+        if ass["process_state"] == "uncertain" && old.as_deref() == Some(&input.reason) {
+            return assignment(tx, launch);
         }
         tx.execute(
-            "update work_assignments set state='uncertain' where launch_id=?",
+            "update work_assignments set process_state='uncertain' where launch_id=?",
             [launch],
         )?;
         tx.execute(
@@ -352,6 +410,8 @@ pub fn uncertain(db: &mut Connection, a: Authority, launch: i64, input: Reason) 
 #[serde(deny_unknown_fields)]
 pub struct Reconcile {
     pub stopped_event: Option<i64>,
+    #[serde(default)]
+    pub abandon: bool,
 }
 /// Stop receipts are produced by the later process controller, never by an executor's prose.
 /// Without such a receipt, reconciliation only derives a start from existing receipts.
@@ -366,33 +426,34 @@ pub fn reconcile(
         let r = run_row(tx, ass["run_id"].as_i64().unwrap())?;
         authority(tx, a, r.root, false)?;
         if let Some(e) = input.stopped_event {
-            let valid:bool=tx.query_row("select exists(select 1 from events where id=? and launch_id=? and task_id=? and kind='work_process_stopped' and json_extract(data,'$.run')=? and json_extract(data,'$.origin')='controller')",params![e,launch,ass["task_id"].as_i64(),r.id],|r|r.get(0))?;
-            if !valid {
+            if ass["stop_event"] != e || ass["process_state"] != "stopped" {
                 return Err(reject("unproven process stop; checkout remains reserved"));
             }
-            tx.execute(
-                "update work_assignments set state='settled' where launch_id=?",
-                [launch],
-            )?;
-            let live: bool = tx.query_row(
-                "select exists(select 1 from work_assignments where run_id=? and state!='settled')",
-                [r.id],
-                |r| r.get(0),
-            )?;
-            if !live {
-                tx.execute("delete from work_checkouts where run_id=?", [r.id])?;
-                tx.execute(
-                    "update work_runs set state='stopped',action='escalation' where id=?",
-                    [r.id],
-                )?;
-                tx.execute("update work_items set state=case when state='cancelled' then state else 'backlog' end,reason='stopped; requeue explicitly' where id=?",[r.work])?;
-            }
-        } else if ass["state"] == "starting" {
+        } else if ass["process_state"] == "starting" {
             start_tx(tx, launch)?;
-        } else if ass["state"] == "uncertain" {
+        } else if ass["process_state"] == "uncertain" {
             return Err(reject(
-                "uncertain assignment requires recorded stopped evidence",
+                "uncertain process requires an explicit stopped observation",
             ));
+        }
+        if input.abandon {
+            if r.state != "active" || item(tx, r.work)?.run != Some(r.id) {
+                return Err(reject("only the current active run can be abandoned"));
+            }
+            tx.execute("update work_assignments set process_state='stopped' where run_id=? and dispatch is null",[r.id])?;
+            if !all_stopped(tx, r.id)? {
+                return Err(reject(
+                    "abandonment requires all dispatched processes stopped",
+                ));
+            }
+            tx.execute(
+                "update work_runs set state='abandoned',action='escalation' where id=?",
+                [r.id],
+            )?;
+            tx.execute("update work_items set state=case when state='cancelled' then state else 'backlog' end,reason='run explicitly abandoned' where id=? and current_run=? and state!='done'",params![r.work,r.id])?;
+            tx.execute("delete from work_checkouts where run_id=?", [r.id])?;
+        } else {
+            release_cancelled(tx, &r)?;
         }
         audit(
             tx,
@@ -421,31 +482,28 @@ pub fn cancel(db: &mut Connection, a: Authority, id: i64, input: Reason) -> Resu
         if let Some(r) = w.run {
             // A reservation with no dispatch intent never started a process.
             tx.execute(
-                "update work_assignments set state='settled' where run_id=? and state='reserved'",
+                "update work_assignments set state='settled',process_state='stopped' where run_id=? and dispatch is null",
                 [r],
             )?;
-            let live: bool = tx.query_row(
-                "select exists(select 1 from work_assignments where run_id=? and state!='settled')",
-                [r],
-                |r| r.get(0),
-            )?;
-            if !live {
-                tx.execute("delete from work_checkouts where run_id=?", [r])?;
-                tx.execute(
-                    "update work_runs set state='cancelled',action='escalation' where id=?",
-                    [r],
-                )?;
-            }
+            release_cancelled(tx, &run_row(tx, r)?)?;
         }
         invalidate_dependents(tx, id)?;
-        audit(tx, w.root, "cancelled", Some(id), w.run, None, true)?;
+        audit(
+            tx,
+            w.root,
+            "cancelled",
+            Some(id),
+            w.run,
+            None,
+            a.root != w.root,
+        )?;
         show(tx, id)
     })
 }
 pub fn recover(db: &mut Connection, a: Authority, campaign: i64) -> Result<Value> {
     transaction(db, |tx| {
         authority(tx, a, campaign, false)?;
-        let mut s=tx.prepare("select a.launch_id from work_assignments a join work_runs r on r.id=a.run_id where r.root_id=? and a.state='starting'")?;
+        let mut s=tx.prepare("select a.launch_id from work_assignments a join work_runs r on r.id=a.run_id where r.root_id=? and a.process_state='starting'")?;
         let ids = s
             .query_map([campaign], |r| r.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;

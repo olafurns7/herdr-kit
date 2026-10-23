@@ -2,7 +2,10 @@ create table if not exists work_campaigns (
   root_id integer primary key references tasks(id),
   enabled integer not null default 0,
   max_active integer not null check(max_active between 1 and 64),
-  max_review_pending integer not null check(max_review_pending between 1 and 64)
+  max_review_pending integer not null check(max_review_pending between 1 and 64),
+  workspace text,
+  host text,
+  no_slotr integer not null default 0
 );
 create table if not exists work_items (
   id integer primary key,
@@ -54,6 +57,10 @@ create table if not exists work_assignments (
   round integer not null,
   lane_id integer not null references tasks(id),
   state text not null,
+  process_state text not null default 'reserved',
+  native_session text,
+  identity_observation text,
+  stop_event integer references events(id),
   lane_snapshot text not null,
   dispatch text,
   start_proof text,
@@ -76,4 +83,18 @@ create table if not exists work_acceptances (
   created_at text not null,
   unique(work_id,revision),
   foreign key(work_id,revision) references work_revisions(work_id,revision)
+);
+create table if not exists work_proofs (
+  result_id integer not null references work_results(id),
+  checker_launch integer not null references work_assignments(launch_id),
+  check_id text not null,
+  payload text not null,
+  primary key(checker_launch,check_id)
+);
+create table if not exists work_creations (
+  root_id integer not null references tasks(id),
+  creation_key text not null,
+  input text not null,
+  work_id integer not null references work_items(id),
+  primary key(root_id,creation_key)
 );

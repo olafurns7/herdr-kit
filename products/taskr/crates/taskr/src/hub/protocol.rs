@@ -108,9 +108,12 @@ pub(super) fn stored(argv: &[String]) -> bool {
                 .is_none_or(|s| matches!(s.as_str(), "ls" | "state")))
         && name != "message"
         && !(name == "work"
-            && args
-                .first()
-                .is_some_and(|s| matches!(s.as_str(), "list" | "show")))
+            && args.first().is_some_and(|s| {
+                matches!(
+                    s.as_str(),
+                    "list" | "show" | "campaigns" | "inputs" | "hash"
+                )
+            }))
         && !(name == "consumer" && args.first().is_none_or(|s| s == "show"))
         && !wants_help(args)
 }
@@ -159,6 +162,8 @@ pub(super) fn check_args(argv: &[String]) -> Result<(), String> {
             "enabled",
             "max-active",
             "max-review-pending",
+            "workspace",
+            "no-slotr",
             "help",
         ],
         "wait" | "ack" if fenced => &["fence", "session", "help"],
@@ -209,7 +214,7 @@ pub(super) fn check_args(argv: &[String]) -> Result<(), String> {
         if value.is_none()
             && !matches!(
                 key,
-                "planned" | "confirm" | "prompt" | "help" | "force" | "push" | "pane"
+                "planned" | "confirm" | "prompt" | "help" | "force" | "push" | "pane" | "no-slotr"
             )
         {
             iter.next();
@@ -504,7 +509,7 @@ mod tests {
     }
     #[test]
     fn work_reads_are_fresh_and_mutations_store_only_inline_json() {
-        for verb in ["list", "show"] {
+        for verb in ["list", "show", "inputs", "campaigns", "hash"] {
             assert!(!stored(&argv(&["work", verb, "1"])));
             assert!(check_args(&argv(&["work", verb, "1"])).is_ok());
         }
@@ -523,6 +528,8 @@ mod tests {
             "advance",
             "cancel",
             "recover",
+            "stopped",
+            "block",
         ] {
             assert!(stored(&argv(&["work", verb, "1"])));
         }

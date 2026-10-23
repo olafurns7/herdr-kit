@@ -4,7 +4,7 @@ fn result(db: &Connection, r: &Run, stage: &str) -> Result<Option<(i64, Submissi
     let row:Option<(i64,String)>=db.query_row("select x.id,x.payload from work_results x join work_assignments a on a.launch_id=x.launch_id where a.run_id=? and a.round=? and a.stage=?",params![r.id,r.round,stage],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
     row.map(|(id, p)| Ok((id, parse(&p)?))).transpose()
 }
-fn execution(db: &Connection, r: &Run) -> Result<(i64, Execution)> {
+pub(super) fn execution(db: &Connection, r: &Run) -> Result<(i64, Execution)> {
     match result(db, r, "executor")? {
         Some((id, Submission::Execution(e))) => Ok((id, e)),
         _ => Err(reject("execution result missing")),
@@ -52,7 +52,7 @@ pub fn submit(db: &mut Connection, launch: i64, input: Submission) -> Result<Val
                 json!({"ok":true,"result_id":id,"digest":sha,"work_id":w.id,"revision":r.revision,"run_id":r.id,"launch_id":launch,"duplicate":true}),
             );
         }
-        if r.state != "active" || ass["state"] != "running" {
+        if r.state != "active" || ass["state"] != "running" || ass["process_state"] != "running" {
             return Err(reject("only running assignments may submit"));
         }
         match &input {
@@ -89,6 +89,12 @@ pub fn submit(db: &mut Connection, launch: i64, input: Submission) -> Result<Val
                     ));
                 }
             }
+            Submission::Proof(gate) => {
+                if ass["stage"] != "gate" {
+                    return Err(reject("proof requires assigned gate runner launch"));
+                }
+                validate_gate(tx, &r, &c, launch, gate)?;
+            }
             Submission::Adjudication(adj) => {
                 if ass["stage"] != "adjudicator" {
                     return Err(reject(
@@ -118,6 +124,11 @@ pub fn submit(db: &mut Connection, launch: i64, input: Submission) -> Result<Val
             params![launch, sha, payload, now()],
         )?;
         let id = tx.last_insert_rowid();
+        if let Submission::Proof(gate) = &input {
+            for check in &gate.checks {
+                tx.execute("insert into work_proofs(result_id,checker_launch,check_id,payload) values(?,?,?,?)",params![id,launch,check.check,encoded(check)?])?;
+            }
+        }
         tx.execute(
             "update work_assignments set state='settled' where launch_id=?",
             [launch],
@@ -130,7 +141,7 @@ pub fn submit(db: &mut Connection, launch: i64, input: Submission) -> Result<Val
             Some(w.id),
             Some(r.id),
             Some(id),
-            true,
+            false,
         )?;
         Ok(
             json!({"ok":true,"result_id":id,"digest":sha,"work_id":w.id,"revision":r.revision,"run_id":r.id,"launch_id":launch}),
@@ -155,8 +166,11 @@ fn action(db: &Connection, r: &Run, name: &str, reason: Option<&str>) -> Result<
     Ok(out)
 }
 fn rework(db: &Connection, r: &Run, c: &Contract) -> Result<Value> {
+    if !all_stopped(db, r.id)? {
+        return stop_action(db, r);
+    }
     if r.round >= c.max_rework {
-        return action(db, r, "escalation", Some("rework budget exhausted"));
+        return escalate(db, r, "rework budget exhausted");
     }
     db.execute(
         "update work_runs set round=round+1,action='rework' where id=?",
@@ -166,7 +180,7 @@ fn rework(db: &Connection, r: &Run, c: &Contract) -> Result<Value> {
         "update work_items set state='active',reason='review requires rework' where id=?",
         [r.work],
     )?;
-    audit(db, r.root, "rework", Some(r.work), Some(r.id), None, true)?;
+    audit(db, r.root, "rework", Some(r.work), Some(r.id), None, false)?;
     run_output(db, r.id)
 }
 pub fn advance(db: &mut Connection, a: Authority, run: i64) -> Result<Value> {
@@ -181,17 +195,15 @@ pub fn advance(db: &mut Connection, a: Authority, run: i64) -> Result<Value> {
             return Err(reject("dependency acceptance changed"));
         }
         let blocked: bool = tx.query_row(
-            "select exists(select 1 from work_assignments where run_id=? and state='uncertain')",
+            "select exists(select 1 from work_assignments where run_id=? and process_state='uncertain')",
             [run],
             |r| r.get(0),
         )?;
         if blocked {
-            return action(
-                tx,
-                &r,
-                "escalation",
-                Some("uncertain process; reconcile before progress"),
-            );
+            let mut out = stop_action(tx, &r)?;
+            out["reason"] =
+                json!("uncertain process; explicit identity and stopped observation required");
+            return Ok(out);
         }
         if r.action == "escalation" {
             return run_output(tx, run);
@@ -199,20 +211,38 @@ pub fn advance(db: &mut Connection, a: Authority, run: i64) -> Result<Value> {
         let Some((execution_id, Submission::Execution(exec))) = result(tx, &r, "executor")? else {
             return run_output(tx, run);
         };
+        if let Some(out) = need_stop(tx, &r, "executor")? {
+            return Ok(out);
+        }
+        if !c.profile.checks.is_empty() {
+            let gate = result(tx, &r, "gate")?;
+            let Some((_, Submission::Proof(gate))) = gate else {
+                return action(tx, &r, "check", None);
+            };
+            if let Some(out) = need_stop(tx, &r, "gate")? {
+                return Ok(out);
+            }
+            let launch:i64=tx.query_row("select launch_id from work_assignments where run_id=? and round=? and stage='gate'",params![r.id,r.round],|r|r.get(0))?;
+            if !gate_passes(tx, &r, &c, launch, &gate)? {
+                return rework(tx, &r, &c);
+            }
+        }
         let Some((review_id, Submission::Review(rev))) = result(tx, &r, "reviewer")? else {
             return action(tx, &r, "review", None);
         };
         if rev.source != exec.source || rev.execution_result != execution_id {
             return Err(reject("review no longer matches execution"));
         }
+        if let Some(out) = need_stop(tx, &r, "reviewer")? {
+            return Ok(out);
+        }
         match rev.verdict {
             Verdict::Rework => return rework(tx, &r, &c),
             Verdict::Disputed if c.adjudicator.is_none() => {
-                return action(
+                return escalate(
                     tx,
                     &r,
-                    "escalation",
-                    Some("disputed findings require lead or distinct adjudicator"),
+                    "disputed findings require lead or distinct adjudicator",
                 );
             }
             _ => {}
@@ -228,16 +258,12 @@ pub fn advance(db: &mut Connection, a: Authority, run: i64) -> Result<Value> {
                 Verdict::Clear => {}
                 Verdict::Rework => return rework(tx, &r, &c),
                 Verdict::Disputed => {
-                    return action(tx, &r, "escalation", Some("adjudication unresolved"));
+                    return escalate(tx, &r, "adjudication unresolved");
                 }
             }
         }
-        // No runner attestation exists yet. Executor JSON and arbitrary PASS text cannot clear a check.
-        if !c.profile.checks.is_empty() {
-            let mut out = action(tx, &r, "check", Some("gate runner attestation required"))?;
-            out["profile"] = serde_json::to_value(&c.profile)?;
-            out["source"] = serde_json::to_value(&exec.source)?;
-            return Ok(out);
+        if !all_stopped(tx, run)? {
+            return stop_action(tx, &r);
         }
         tx.execute("insert into work_acceptances(work_id,revision,run_id,result_id,dependencies,created_at) values(?,?,?,?,?,?)",params![w.id,w.revision,run,execution_id,r.deps,now()])?;
         tx.execute(
@@ -262,7 +288,37 @@ pub fn advance(db: &mut Connection, a: Authority, run: i64) -> Result<Value> {
         run_output(tx, run)
     })
 }
-/// Routine reports go quiet only after a typed immutable result exists under an enabled campaign.
+/// Quiet all enabled live assignments, including reports before submit; urgent kinds keep routes.
 pub fn quiet(db: &Connection, launch: Option<i64>) -> Result<bool> {
-    Ok(db.query_row("select exists(select 1 from work_assignments a join work_runs r on r.id=a.run_id join work_campaigns c on c.root_id=r.root_id join work_results x on x.launch_id=a.launch_id where a.launch_id=? and c.enabled=1)",[launch],|r|r.get(0))?)
+    Ok(db.query_row("select exists(select 1 from work_assignments a join work_runs r on r.id=a.run_id join work_campaigns c on c.root_id=r.root_id where a.launch_id=? and r.state='active' and c.enabled=1)",[launch],|r|r.get(0))?)
+}
+fn need_stop(db: &Connection, r: &Run, stage: &str) -> Result<Option<Value>> {
+    let launch:Option<i64>=db.query_row("select launch_id from work_assignments where run_id=? and round=? and stage=? and process_state!='stopped'",params![r.id,r.round,stage],|r|r.get(0)).optional()?;
+    if let Some(launch) = launch {
+        let mut out = action(db, r, "stop", None)?;
+        out["launch_id"] = json!(launch);
+        return Ok(Some(out));
+    }
+    Ok(None)
+}
+fn stop_action(db: &Connection, r: &Run) -> Result<Value> {
+    let launch:i64=db.query_row("select launch_id from work_assignments where run_id=? and process_state!='stopped' order by launch_id limit 1",[r.id],|r|r.get(0))?;
+    let mut out = action(db, r, "stop", None)?;
+    out["launch_id"] = json!(launch);
+    Ok(out)
+}
+
+fn escalate(db: &Connection, r: &Run, reason: &str) -> Result<Value> {
+    if r.action != "escalation" {
+        audit(
+            db,
+            r.root,
+            "escalated",
+            Some(r.work),
+            Some(r.id),
+            None,
+            true,
+        )?;
+    }
+    action(db, r, "escalation", Some(reason))
 }

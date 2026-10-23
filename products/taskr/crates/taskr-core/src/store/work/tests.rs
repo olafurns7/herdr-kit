@@ -19,9 +19,11 @@ fn proof_requires_exact_successful_case_set_source_profile_argv_and_exit() {
             argv: vec!["checker".into()],
             timeout_ms: 1000,
             cases: vec!["one".into(), "two".into()],
+            admission: Admission::Direct,
+            receipt_file: Some("cases.json".into()),
         }],
     };
-    let good = json!({"run":1,"revision":1,"source":src(),"profile_digest":profile.digest,"check":"cases","checker_launch":2,"argv":["checker"],"exit":0,"cases":[{"id":"one","status":"passed"},{"id":"two","status":"passed"}],"artifacts":[]});
+    let good = json!({"run":1,"revision":1,"source":src(),"profile_digest":profile.digest,"check":"cases","checker_launch":2,"argv":["checker"],"exit":0,"signal":null,"error":null,"timed_out":false,"admission":{"method":"direct","ticket":null,"reason":null},"stdout":{"sha256":"e".repeat(64),"bytes":0,"truncated":false},"stderr":{"sha256":"e".repeat(64),"bytes":0,"truncated":false},"cases":[{"id":"one","status":"passed"},{"id":"two","status":"passed"}],"artifacts":[{"name":"receipt","sha256":"e".repeat(64)}]});
     validate_proof(
         &profile,
         &src(),
@@ -106,4 +108,27 @@ fn v4_migration_preserves_legacy_rows_cursors_launches_and_documents() {
             .unwrap(),
         0
     );
+}
+
+#[test]
+fn canonical_hashes_ignore_digest_label_and_input_commit_but_pin_profile_and_dependencies() {
+    let mut profile: Profile = parse(r#"{"id":"p","version":1,"digest":"","checks":[]}"#).unwrap();
+    let hash = profile_digest(&profile).unwrap();
+    profile.digest = "label-does-not-enter-the-hash".into();
+    assert_eq!(hash, profile_digest(&profile).unwrap());
+    assert_eq!(
+        canonical_json(&json!({"z":1,"a":{"b":2,"a":"þ"}})).unwrap(),
+        "{\"a\":{\"a\":\"þ\",\"b\":2},\"z\":1}"
+    );
+    let d = DependencyInput {
+        work: 1,
+        revision: 1,
+        input_digest: "a".repeat(64),
+    };
+    let empty = input_digest(&profile, &[]).unwrap();
+    let pinned = input_digest(&profile, std::slice::from_ref(&d)).unwrap();
+    assert_ne!(empty, pinned);
+    profile.version = 2;
+    assert_ne!(pinned, input_digest(&profile, &[d]).unwrap());
+    assert_ne!(hash, profile_digest(&profile).unwrap());
 }

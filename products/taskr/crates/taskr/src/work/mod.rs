@@ -23,17 +23,28 @@ const VERBS: &[&str] = &[
     "advance",
     "cancel",
     "recover",
+    "campaigns",
+    "inputs",
+    "hash",
+    "stopped",
+    "block",
 ];
 fn flags(json: bool, verb: &str) -> store::Result<FlagSet> {
     if !VERBS.contains(&verb) {
         return Err(store::usage("unknown work verb"));
     }
     let mut f = FlagSet::new("work", json);
-    if !matches!(verb, "list" | "show" | "submit") {
+    if !matches!(
+        verb,
+        "list" | "show" | "inputs" | "campaigns" | "hash" | "submit"
+    ) {
         f.int("as", 0, "campaign root")
             .int("generation", -1, "explicit current root generation");
     }
-    if !matches!(verb, "list" | "show" | "started" | "advance" | "recover") {
+    if !matches!(
+        verb,
+        "list" | "show" | "inputs" | "campaigns" | "advance" | "recover"
+    ) {
         f.string("data", "", "bounded typed JSON").string(
             "file",
             "",
@@ -43,7 +54,13 @@ fn flags(json: bool, verb: &str) -> store::Result<FlagSet> {
     if verb == "configure" {
         f.string("enabled", "off", "on or off")
             .int("max-active", 1, "1..64")
-            .int("max-review-pending", 1, "1..64");
+            .int("max-review-pending", 1, "1..64")
+            .string("workspace", "", "explicit campaign task workspace")
+            .bool(
+                "no-slotr",
+                false,
+                "explicit host heavy-check admission exception",
+            );
     }
     Ok(f)
 }
@@ -65,13 +82,13 @@ fn parse(json: bool, args: &[String]) -> store::Result<(String, FlagSet)> {
             if !seen.insert(name) {
                 return Err(store::usage(format!("repeated work flag --{name}")));
             }
-            if !arg.contains('=') && !matches!(name, "json" | "help" | "h") {
+            if !arg.contains('=') && !matches!(name, "json" | "help" | "h" | "no-slotr") {
                 i += 1;
             }
         }
         i += 1;
     }
-    let n = usize::from(verb != "add");
+    let n = usize::from(!matches!(verb.as_str(), "add" | "campaigns" | "hash"));
     f.parse(&args[1..], n, n).map_err(store::usage)?;
     if f.was_set("data") && f.was_set("file") {
         return Err(store::usage("use --data or --file, never both"));
@@ -115,7 +132,7 @@ pub(crate) fn inline_files(args: &mut Vec<String>) -> store::Result<()> {
         }
         if args[i].starts_with('-')
             && !args[i].contains('=')
-            && !matches!(name, "json" | "help" | "h")
+            && !matches!(name, "json" | "help" | "h" | "no-slotr")
         {
             i += 1;
         }
@@ -142,12 +159,15 @@ fn invoke(
     verb: &str,
     f: &FlagSet,
 ) -> store::Result<serde_json::Value> {
-    let id = if verb == "add" {
+    let id = if matches!(verb, "add" | "campaigns" | "hash") {
         0
     } else {
         store::id(&f.positional[0], "work/run/launch/campaign ID")?
     };
-    let a = if matches!(verb, "list" | "show" | "submit") {
+    let a = if matches!(
+        verb,
+        "list" | "show" | "inputs" | "campaigns" | "hash" | "submit"
+    ) {
         api::Authority {
             root: 0,
             generation: -1,
@@ -165,9 +185,15 @@ fn invoke(
     };
     match verb {
         "configure" => {
-            let has_flags = ["enabled", "max-active", "max-review-pending"]
-                .iter()
-                .any(|n| f.was_set(n));
+            let has_flags = [
+                "enabled",
+                "max-active",
+                "max-review-pending",
+                "workspace",
+                "no-slotr",
+            ]
+            .iter()
+            .any(|n| f.was_set(n));
             let input = if f.was_set("data") || f.was_set("file") {
                 if has_flags {
                     return Err(store::usage("configure: use JSON or configuration flags"));
@@ -181,6 +207,9 @@ fn invoke(
                 };
                 api::Configure {
                     enabled,
+                    workspace: (!f.get_string("workspace").is_empty())
+                        .then(|| f.get_string("workspace").to_string()),
+                    no_slotr: f.get_bool("no-slotr"),
                     max_active: u32::try_from(f.get_int("max-active"))
                         .map_err(|_| store::usage("invalid max-active"))?,
                     max_review_pending: u32::try_from(f.get_int("max-review-pending"))
@@ -190,6 +219,15 @@ fn invoke(
             api::configure(db, a, id, input)
         }
         "add" => api::add(db, a, api::parse(&raw(f)?)?),
+        "campaigns" => api::campaigns(db),
+        "inputs" => api::inputs(db, id),
+        "hash" => {
+            let mut input: api::HashInput = api::parse(&raw(f)?)?;
+            input.profile.digest = api::profile_digest(&input.profile)?;
+            Ok(
+                serde_json::json!({"profile":input.profile,"profile_digest":input.profile.digest,"input_digest":api::input_digest(&input.profile,&input.dependencies)?}),
+            )
+        }
         "list" => api::list(db, id),
         "show" => api::show(db, id),
         "revise" => api::revise(db, a, id, api::parse(&raw(f)?)?),
@@ -197,7 +235,15 @@ fn invoke(
         "claim" => api::claim(db, a, id, api::parse(&raw(f)?)?),
         "reserve" => api::reserve(db, a, id, api::parse(&raw(f)?)?),
         "bind" => api::bind(db, a, id, api::parse(&raw(f)?)?),
-        "started" => api::started(db, a, id),
+        "started" => {
+            if f.was_set("data") || f.was_set("file") {
+                api::started_observed(db, a, id, api::parse(&raw(f)?)?)
+            } else {
+                api::started(db, a, id)
+            }
+        }
+        "stopped" => api::stopped(db, a, id, api::parse(&raw(f)?)?),
+        "block" => api::block(db, a, id, api::parse(&raw(f)?)?),
         "uncertain" => api::uncertain(db, a, id, api::parse(&raw(f)?)?),
         "reconcile" => api::reconcile(db, a, id, api::parse(&raw(f)?)?),
         "submit" => api::submit(db, id, api::parse(&raw(f)?)?),

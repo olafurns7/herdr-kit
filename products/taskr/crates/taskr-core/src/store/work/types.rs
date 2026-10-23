@@ -44,6 +44,9 @@ pub struct Check {
     pub timeout_ms: u64,
     #[serde(default)]
     pub cases: Vec<String>,
+    #[serde(default)]
+    pub admission: Admission,
+    pub receipt_file: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -83,10 +86,14 @@ pub struct Configure {
     pub enabled: bool,
     pub max_active: u32,
     pub max_review_pending: u32,
+    pub workspace: Option<String>,
+    #[serde(default)]
+    pub no_slotr: bool,
 }
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Add {
+    pub key: Option<String>,
     pub campaign: i64,
     pub title: String,
     #[serde(default)]
@@ -116,6 +123,7 @@ pub struct Claim {
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     Executor,
+    Gate,
     Reviewer,
     Adjudicator,
 }
@@ -123,12 +131,14 @@ impl Stage {
     pub(super) fn ledger_role(self) -> &'static str {
         match self {
             Self::Executor => "implementer",
+            Self::Gate => "gate",
             Self::Reviewer | Self::Adjudicator => "reviewer",
         }
     }
     pub fn name(self) -> &'static str {
         match self {
             Self::Executor => "executor",
+            Self::Gate => "gate",
             Self::Reviewer => "reviewer",
             Self::Adjudicator => "adjudicator",
         }
@@ -207,6 +217,7 @@ pub enum Submission {
     Execution(Execution),
     Review(Review),
     Adjudication(Adjudication),
+    Proof(GateProof),
 }
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -224,7 +235,14 @@ pub struct Proof {
     pub check: String,
     pub checker_launch: i64,
     pub argv: Vec<String>,
-    pub exit: i32,
+    pub exit: Option<i32>,
+    pub signal: Option<i32>,
+    #[serde(default)]
+    pub timed_out: bool,
+    pub error: Option<String>,
+    pub admission: AdmissionEvidence,
+    pub stdout: OutputDigest,
+    pub stderr: OutputDigest,
     pub cases: Vec<Case>,
     pub artifacts: Vec<Artifact>,
 }
@@ -336,7 +354,12 @@ pub fn validate_proof(
         .iter()
         .find(|c| c.id == proof.check)
         .ok_or_else(|| reject("unknown check"))?;
-    if proof.argv != c.argv || proof.exit != 0 {
+    if proof.argv != c.argv
+        || proof.exit != Some(0)
+        || proof.signal.is_some()
+        || proof.timed_out
+        || proof.error.is_some()
+    {
         return Err(reject("check argv or exit failed"));
     }
     unique(proof.cases.iter().map(|c| c.id.as_str()), "case ID")?;
@@ -345,5 +368,126 @@ pub fn validate_proof(
     if actual != want || proof.cases.iter().any(|c| c.status != "passed") {
         return Err(reject("missing, extra, failed or skipped cases"));
     }
-    artifacts(&proof.artifacts)
+    artifacts(&proof.artifacts)?;
+    if c.receipt_file.is_some() && !proof.artifacts.iter().any(|a| a.name == "receipt") {
+        return Err(reject("missing receipt artifact hash"));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Admission {
+    #[default]
+    Direct,
+    Heavy,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionEvidence {
+    pub method: AdmissionMethod,
+    pub ticket: Option<String>,
+    pub reason: Option<String>,
+}
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionMethod {
+    Direct,
+    Slotr,
+    HostException,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputDigest {
+    pub sha256: String,
+    pub bytes: u64,
+    pub truncated: bool,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GateProof {
+    pub source: Source,
+    pub profile_digest: String,
+    pub dependencies: Vec<DependencyReceipt>,
+    pub host: String,
+    pub runner_version: String,
+    pub environment: Vec<EnvironmentValue>,
+    pub checks: Vec<Proof>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DependencyReceipt {
+    pub work: i64,
+    pub revision: i64,
+    pub acceptance: i64,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DependencyInput {
+    pub work: i64,
+    pub revision: i64,
+    pub input_digest: String,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentValue {
+    pub name: String,
+    pub value: String,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Started {
+    pub pane: String,
+    pub native_session: String,
+    pub observed_at: String,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Foreground {
+    pub pid: u32,
+    pub command: String,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Stopped {
+    pub pane: String,
+    pub native_session: Option<String>,
+    pub foreground: Foreground,
+    pub agent_absent: bool,
+    pub observed_at: String,
+}
+
+pub(super) fn receipt_path(path: &str) -> Result<()> {
+    if path.len() > 256
+        || path.is_empty()
+        || std::path::Path::new(path).is_absolute()
+        || path
+            .split('/')
+            .any(|p| p.is_empty() || p == "." || p == "..")
+        || path.chars().any(char::is_control)
+    {
+        return Err(usage(
+            "receipt_file must be a bounded relative path without traversal",
+        ));
+    }
+    Ok(())
+}
+pub(super) fn location_id(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value == "null"
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b":_-".contains(&b))
+    {
+        return Err(usage("invalid workspace/pane ID"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HashInput {
+    pub profile: Profile,
+    pub dependencies: Vec<DependencyInput>,
 }
