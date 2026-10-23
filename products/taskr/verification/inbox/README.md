@@ -2,18 +2,19 @@
 
 This checks a small TLA+ model with TLC and replays selected paths through the
 real taskr CLI and SQLite. It is not a proof of the Rust implementation. The
-source/action map is `manifest.json`; its source pin is
-`71d4146fdbe99a67c0c698877478bc7c796cc360`. Historical execution passed all 25
+source/action map is `manifest.json`; its inspected candidate source pin is
+`8e4b1f254c7c3d1b1967094d216790f58f616288`. Historical source `71d4146` passed all 25
 cases and six driver self-checks using package `d4c08a6` in frozen checkout
 `69f3ff9`; the independent execution review is READY. Portable receipt and tool
 hashes are recorded in the manifest's `last_execution` and `tool_identity` fields.
 
-**Current v5 source drift remains BLOCKED pending final code-sync maintenance.**
-The covered source hashes remain pinned to `71d4146`; changes in `schema.rs`,
-`store/mod.rs`, `store/orch.rs`, and `store/worker.rs` prevent verification on the
-current integration. This historical result proves nothing about v5 work-domain
-or controller behavior. The successful run used the package bytes at `d4c08a6`;
-the historical metadata and story edits recorded here were not part of that run.
+**Current integrated-source proof remains BLOCKED: execution/review are pending.**
+[Source correspondence](SYNC.md) explains every covered change from `71d4146`
+to `8e4b1f2`, why model/driver logic stays unchanged, and the repaired map anchors.
+The updated hashes identify an inspected candidate; they do not establish a pass.
+Historical execution used package bytes at `d4c08a6` and covers neither this
+integrated candidate nor the later metadata/documentation edits. No result here
+proves the v5 work-domain/controller state machines.
 
 ## Run
 
@@ -39,7 +40,7 @@ allows three temporary mutations and offline builds in the copy. Do not edit
 the copy concurrently. For example, after provisioning tools and the source copy:
 
 ```sh
-python3 products/taskr/verification/inbox/verify.py \
+python3 -B products/taskr/verification/inbox/verify.py \
   --taskr /tmp/inbox-tools/taskr-contract \
   --tlc-jar /tmp/inbox-tools/tla2tools.jar \
   --java /tmp/inbox-tools/java \
@@ -212,8 +213,9 @@ covered hashes and source commit in the manifest. Do not mark execution confirme
 or move `last_successful_source_commit` until the complete suite and all negative
 controls pass on the new source. `last_successful_source_commit` records the
 historically verified `71d4146`; keep it there while current source is blocked.
-Final maintenance after integration must review the changed code and rerun before
-advancing the covered source pin or claiming proof for a later source revision.
+A candidate covered source pin may advance after that correspondence review,
+with execution explicitly pending. Rerun before advancing the successful source
+pin or claiming proof for a later source revision.
 
 After editing verifier/model/config, maintain `verification_files` hashes too.
 Run driver self-checks with `python3 -B -m unittest discover -s

@@ -26,7 +26,7 @@
         "products/taskr/crates/taskr-core/src/store/consumer.rs:52-61",
         "products/taskr/crates/taskr-core/src/store/consumer.rs:94-146",
         "products/taskr/crates/taskr-core/src/store/delivery.rs:14-61",
-        "products/taskr/crates/taskr-core/src/store/worker.rs:12-86"
+        "products/taskr/crates/taskr-core/src/store/worker.rs:12-89"
       ],
       "mapping": "Same task and host assumed; claimGen is pinned root session. Plain calls allowed only with no live lease; fenced calls require live binding and equality."
     },
@@ -39,9 +39,10 @@
     "Init": {
       "code": [
         "products/taskr/schema.sql:1-42",
-        "products/taskr/crates/taskr-core/src/schema.rs:37-50"
+        "products/taskr/crates/taskr-core/src/schema.rs:37-50",
+        "products/taskr/crates/taskr-core/src/schema.rs:81-131"
       ],
-      "mapping": "One open root; cursor and pending default empty; absent lease represented by holder=0, fence=0. Static inbox is a fixture assumption."
+      "mapping": "Already migrated fresh ledger with one open root; cursor and pending default empty; absent lease represented by holder=0, fence=0. Static inbox from an ordinary unassigned worker is a fixture assumption. Migration preservation is not modeled; v5 work/jobs DDL leaves existing inbox/consumer definitions unchanged."
     },
     "Offer": {
       "code": [
@@ -54,7 +55,7 @@
       "code": [
         "products/taskr/crates/taskr-core/src/store/inbox.rs:19",
         "products/taskr/crates/taskr-core/src/store/consumer.rs:94-146",
-        "products/taskr/crates/taskr-core/src/store/mod.rs:94-99"
+        "products/taskr/crates/taskr-core/src/store/mod.rs:96-101"
       ],
       "mapping": "Guard rejection rolls back transaction with no cursor or lease write. Witness state is observer-only."
     },
@@ -86,7 +87,7 @@
     },
     "TransactionBoundary": {
       "code": [
-        "products/taskr/crates/taskr-core/src/store/mod.rs:94-99"
+        "products/taskr/crates/taskr-core/src/store/mod.rs:96-101"
       ],
       "mapping": "BEGIN IMMEDIATE; closure then commit; errors roll back. Channel/composite loops are not atomic."
     }
@@ -95,7 +96,8 @@
     "Lease validity is checked at transaction guard linearization, not final wall-clock commit time.",
     "Time advances between atomic modeled transactions; real in-transaction clock passage is not proved.",
     "One open local root, same admitted host; malicious capability sharing is excluded.",
-    "A compliant caller handles required asks before ack; store cannot enforce external handling."
+    "A compliant caller handles required asks before ack; store cannot enforce external handling.",
+    "Fixed pre-existing got/ready/ask from an ordinary unassigned worker; no active work-owned producer suppression or native route. Work/jobs state machines and migration preservation are excluded."
   ],
   "bounds": {
     "abstract_ttl": 2,
@@ -118,9 +120,11 @@
     "max_fence": 3
   },
   "current_integration": {
+    "execution": "unrun",
     "outcome": "blocked",
-    "reason": "Covered v5 source drift awaits final code-sync maintenance after integration; no v5 work-domain or controller proof.",
-    "source_hashes_unchanged": true
+    "reason": "Candidate correspondence inspected at the pinned source; complete parent execution and independent review remain pending. No v5 work-domain or controller proof.",
+    "review": "pending",
+    "source_commit": "8e4b1f254c7c3d1b1967094d216790f58f616288"
   },
   "delivery_policy": {
     "coalescible": [
@@ -207,19 +211,19 @@
     "RequiredHandled": "Cursor cannot cross an unhandled ask under ASK_ONLY.",
     "TypeOK": "All modeled state is within finite bounds."
   },
-  "source_commit": "71d4146fdbe99a67c0c698877478bc7c796cc360",
+  "source_commit": "8e4b1f254c7c3d1b1967094d216790f58f616288",
   "source_files": {
     "Cargo.lock": "71255a7f95d492984b3240911e513ee35d80a72b2a9d53a02de4fcbf60f3b0bb",
     "Cargo.toml": "4a71713910d85d573d4884e75190ce4ff46455b3066369f658ffc263d090b865",
     "products/taskr/crates/taskr-core/Cargo.toml": "86f1f4b1df6fef228440562ad7bc07b268b3e45941877d94e2dc4f5e99182748",
     "products/taskr/crates/taskr-core/src/lib.rs": "cc2173abb756741e3047a30e2e0e3d2f30c48f10a7982f671c84597f3c1d4cc1",
-    "products/taskr/crates/taskr-core/src/schema.rs": "334a35223f872647a13219220f861894d4d12523b30e65fb0f4a0670bae2b983",
+    "products/taskr/crates/taskr-core/src/schema.rs": "43f98ea9a7d551cf14e3bb9cb036c521c4265b098b679f8a593517e500d8df1f",
     "products/taskr/crates/taskr-core/src/store/consumer.rs": "9ccf7c542cf4bb95ba3da3d3f5fafdd5bcd06ec049462f232027bda3369c48d2",
     "products/taskr/crates/taskr-core/src/store/delivery.rs": "03fcd28906d41c9864df02c400dd3f03c8abed642e0924236afd32778fe9b3ed",
     "products/taskr/crates/taskr-core/src/store/inbox.rs": "9a13b946fd4f47ebea21865c67b883a7af47a41daada51ee80d14a26db243e1f",
-    "products/taskr/crates/taskr-core/src/store/mod.rs": "8ead58d6c5d2db2f876b4acf576e32a0d74d53c042ead18c484121a01683f3b9",
-    "products/taskr/crates/taskr-core/src/store/orch.rs": "df2e56b7a56c96219a4e75b2283742aed44d372987d88df6c52ac2fc2fceb86c",
-    "products/taskr/crates/taskr-core/src/store/worker.rs": "fdfce6b5bae6d809a095dc190db1a17ab78e0333bb48ffc591229cd901064621",
+    "products/taskr/crates/taskr-core/src/store/mod.rs": "7219fd2decafd010522190ea9f757256109a2f8b6abde09b010826ffffdf1b18",
+    "products/taskr/crates/taskr-core/src/store/orch.rs": "702ebe0a78a19481397a3a58e4fe325ed0d5df283c898fc32361e686ccb754a0",
+    "products/taskr/crates/taskr-core/src/store/worker.rs": "5090703b55fba92ac75b4c1934452ca2709efcdd2d78f995540dc0db4d5897ce",
     "products/taskr/crates/taskr/Cargo.toml": "09d15eda6a59f98ec007b1bc845484ecb85abde7b2cf167dd87ae8920e22911a",
     "products/taskr/crates/taskr/src/write/handover.rs": "2caf2a084a939875488bce8ca938d8b88709a2523fe9d8e2800756946bf42c92",
     "products/taskr/crates/taskr/src/write/inbox.rs": "9058b8b07f09dd2f5a8772b0475990edf2a6cd946e6e06eda6b0a1131c1b48d8",
@@ -229,7 +233,20 @@
     "products/taskr/schema.sql": "7a05b404a2c901a21c7bcc35867eb196d403ecec51d5d1bec58c8fae41911355",
     "rust-toolchain.toml": "d0396bf4ee19fe73ba0cb427f6f0a95c0669e352bd7c92610bfa0578953bdf84"
   },
-  "status": "verified-historical-source-only",
+  "source_maintenance": {
+    "changed_covered_files": [
+      "products/taskr/crates/taskr-core/src/schema.rs",
+      "products/taskr/crates/taskr-core/src/store/mod.rs",
+      "products/taskr/crates/taskr-core/src/store/orch.rs",
+      "products/taskr/crates/taskr-core/src/store/worker.rs"
+    ],
+    "correspondence_note": "SYNC.md",
+    "from_source_commit": "71d4146fdbe99a67c0c698877478bc7c796cc360",
+    "model_and_driver": "unchanged; fixed legacy-worker fixture excludes active work assignments and routes",
+    "to_source_commit": "8e4b1f254c7c3d1b1967094d216790f58f616288",
+    "unchanged_covered_file_count": 15
+  },
+  "status": "source-map-updated-execution-pending",
   "tool_identity": {
     "engine": "TLA+ TLC, tlc2.TLC, exhaustive BFS, one worker, seed 1",
     "identity_evidence": "Each run pins SHA-256 of Java, TLC jar, supplied taskr and built mutants; Java -version and command receipts retained.",
@@ -259,7 +276,8 @@
   "verification_files": {
     "Inbox.cfg": "629e507b4663c9bfc0b0d1667f13d236e494d216b30d46b09255740206f2911c",
     "Inbox.tla": "f220a2d373f7191b0a5c81e6a66c2b42ba96dd7f806981fee694bd3963ed5034",
-    "README.md": "c9218ea67a1cb34c94c609e68f08a6cd1c3a36f316f1432f740a60655c636366",
+    "README.md": "a9a005da51221198de833132c76bc204097641a5cf477eabeabbb606a65586ab",
+    "SYNC.md": "997ea21bafd96b6763ac51e10b8e3d6ea277f7bd795bd73672696c14e1016644",
     "test_verify.py": "dc32222fcfed29e7298bb7346b0b50455e49010ecf1871d304b169725c5fe7e0",
     "verify.py": "6eab013ef5e18af03f193d21127f422b437bd6d027f6ba354b596cc2bd1c2926"
   }

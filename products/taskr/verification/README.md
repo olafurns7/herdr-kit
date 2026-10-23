@@ -7,7 +7,7 @@ The parent runs approved checks at a pinned source and retains durable evidence.
 
 | Boundary | Driver and evidence | Coverage status |
 | --- | --- | --- |
-| Inbox consumer fencing under `ASK_ONLY` | [Package and invocation](inbox/README.md), [source/tool/receipt map](inbox/manifest.json) | Historical source `71d4146` verified: 25 cases and six self-checks; package `d4c08a6`, frozen checkout `69f3ff9`, independent execution review READY. Current v5 source drift is BLOCKED pending final maintenance. |
+| Inbox consumer fencing under `ASK_ONLY` | [Package and invocation](inbox/README.md), [source/tool/receipt map](inbox/manifest.json) | Historical source `71d4146` verified: 25 cases and six self-checks; package `d4c08a6`, frozen checkout `69f3ff9`, independent execution review READY. Candidate source map `8e4b1f2` is inspected; integrated-source proof remains UNRUN/BLOCKED pending execution and review. |
 | Durable work domain | [Command/contract docs](../docs/work.md) | Source/API guide; this index records no fresh integration or runtime proof. |
 | Local controller and deterministic gate | [Controller docs](../docs/work-controller.md) | Source/runner guide; full local-loop, actual stop/recovery, Linux admission and host rollout evidence remain separate lead-owned gates. |
 | Native jobs and optional owner input | [Jobs docs](../docs/jobs.md) | Synthetic/API behavior and actual client transport, restart/fallback and owner interaction require distinct evidence. No integrated real-client proof is asserted here. |
@@ -16,8 +16,9 @@ The inbox manifest retains exact covered source hashes, properties, assumptions,
 bounds, tool identities and portable historical receipt hashes. Its model checks
 ordering safety and its fixed CLI replays exercise selected real transactions.
 Those are different proof surfaces. It does not certify v5 work/controller code,
-dispatch, filesystem writers, native MCP or cross-host delivery. No covered hash
-or model is updated by this documentation slice.
+dispatch, filesystem writers, native MCP or cross-host delivery. The covered source
+pin is now the inspected `8e4b1f2` candidate; model logic is unchanged and the new
+source still needs execution/review. See the [correspondence note](inbox/SYNC.md).
 
 Before reusing evidence, compare all relevant source, profile, dependency,
 configuration, tool/environment and expected case inputs. Name unrun and blocked
