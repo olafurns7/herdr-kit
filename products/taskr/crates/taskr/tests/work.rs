@@ -1585,12 +1585,13 @@ fn daemon_reads_stay_thin_bounded_and_leave_detail_history_compatible() {
             .len(),
         65536
     );
+    let old_id = old.parse::<i64>().unwrap();
     assert!(
         w.h.ok(&[], &["work", "list", &w.root])["work"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item["work_id"].to_string() == old)
+            .any(|item| item["work_id"].as_i64() == Some(old_id))
     );
     for limit in ["0", "65", "-1"] {
         assert_eq!(
