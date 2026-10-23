@@ -1,11 +1,8 @@
 use super::*;
 pub(super) fn fixture() -> Connection {
-    let db = Connection::open_in_memory().unwrap();
+    let mut db = Connection::open_in_memory().unwrap();
     db.pragma_update(None, "foreign_keys", true).unwrap();
-    db.execute_batch(crate::schema::SCHEMA).unwrap();
-    db.execute_batch(crate::schema::SUBSCRIPTIONS).unwrap();
-    db.execute_batch(work::DDL).unwrap();
-    db.execute_batch(DDL).unwrap();
+    crate::schema::migrate(&mut db).unwrap();
     db.execute_batch(r#"
         insert into tasks(id,name,role,created_at,updated_at) values(1,'synthetic','orchestrator','t','t');
         insert into tasks(id,parent_id,name,role,created_at,updated_at) values(2,1,'synthetic-executor','implementer','t','t');
