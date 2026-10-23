@@ -27,6 +27,7 @@ pub(crate) fn document(id: i64, v: &Value) -> Result<String, String> {
         .iter()
         .find(|r| r["revision"] == *revision)
         .map(|r| &r["contract"])
+        .filter(|c| !c.is_null())
     {
         out.extend([
             format!("Intent: {}", text(contract, "intent")),
@@ -38,6 +39,8 @@ pub(crate) fn document(id: i64, v: &Value) -> Result<String, String> {
                 rows(&contract["profile"]["checks"]).len()
             ),
         ]);
+    } else {
+        out.push("No contract for current revision".into());
     }
     let run = rows(&v["runs"])
         .iter()
@@ -60,7 +63,7 @@ pub(crate) fn document(id: i64, v: &Value) -> Result<String, String> {
         .take(4)
     {
         out.push(format!(
-            "## {} · lane {} · launch {}\n\nResult state: {}\n\nProcess: {} · stop receipt {}",
+            "## {} · lane {} · launch {}\n\nAssignment state: {}\n\nProcess: {} · stop receipt {}",
             text(a, "stage"),
             a["task_id"],
             a["launch_id"],

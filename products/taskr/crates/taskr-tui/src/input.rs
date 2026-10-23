@@ -642,12 +642,14 @@ fn campaign_key(app: &mut App, code: KeyCode) -> Effect {
     let (g, root) = (&view.data.glance, &view.data.campaign.root);
     let (host, pane, _) = campaign::target(&view).unwrap_or_default();
     let turn = |app: &mut App, pane: usize| (app.pane, app.scroll) = (pane, 0);
+    let count = if view.data.campaign.work.is_some() {
+        campaign::PANE_COUNT
+    } else {
+        campaign::TASKS
+    };
     match code {
-        KeyCode::Tab => turn(app, (app.pane + 1) % campaign::PANE_COUNT),
-        KeyCode::BackTab => turn(
-            app,
-            (app.pane + campaign::PANE_COUNT - 1) % campaign::PANE_COUNT,
-        ),
+        KeyCode::Tab => turn(app, (app.pane.min(count - 1) + 1) % count),
+        KeyCode::BackTab => turn(app, (app.pane.min(count) + count - 1) % count),
         KeyCode::Char(n @ '1'..='6') => turn(app, n as usize - '1' as usize),
         KeyCode::Enter if app.pane == campaign::TASKS => return report(app),
         KeyCode::Enter if app.pane == 0 => return go_to(app, &host, &pane),
@@ -1570,8 +1572,18 @@ mod tests {
     fn durable_tasks_keep_legacy_unknown_and_empty_distinct() {
         let mut p = Pane::new(120, 40);
         p.app.screen = Screen::Campaign;
+        p.keys("5\t");
+        assert_eq!(p.app.pane, 0, "legacy Tab skips the hidden Tasks pane");
+        p.code(KeyCode::BackTab);
+        assert_eq!(p.app.pane, 4);
         p.keys("6");
         assert!(p.text().contains("Tasks unavailable"));
+        p.keys("\t");
+        assert_eq!(p.app.pane, 0);
+        p.keys("6");
+        p.code(KeyCode::BackTab);
+        assert_eq!(p.app.pane, 4);
+        p.keys("6");
         p.app.data.campaign.work = Some(crate::model::WorkSnapshot::default());
         let shown = p.text();
         assert!(shown.contains("No durable tasks"));
@@ -1635,6 +1647,27 @@ mod tests {
             p.code(KeyCode::BackTab);
             assert_eq!(p.app.pane, campaign::TASKS);
         }
+    }
+
+    #[test]
+    fn task_assignment_reservation_does_not_invent_a_result() {
+        let mut p = Pane::new(200, 40);
+        p.app.screen = Screen::Campaign;
+        p.app.data.campaign.work = Some(serde_json::from_value(serde_json::json!({
+            "total":1,"items":[{"work_id":7,"state":"active","assignment":{"stage":"executor","state":"reserved","process_state":"reserved"}}]
+        })).unwrap());
+        p.keys("6");
+        let text = p.text();
+        assert!(text.contains("assignment reserved"), "{text}");
+        assert!(text.contains("result pending"), "{text}");
+        assert!(!text.contains("result reserved"));
+        let assignment = p.app.data.campaign.work.as_mut().unwrap().items[0]
+            .assignment
+            .as_mut()
+            .unwrap();
+        assignment.result_id = Some(99);
+        assignment.state = "settled".into();
+        assert!(p.text().contains("result 99"));
     }
 
     #[test]

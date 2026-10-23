@@ -49,7 +49,7 @@ pub(super) fn snapshot(db: &Connection, root: i64) -> Result<Value> {
         let proof = if stale {
             "stale; recheck required"
         } else if w["required_checks"].is_null() {
-            "unavailable"
+            "no contract"
         } else if w["required_checks"] == 0 {
             "not required"
         } else if accepted && w["reason"].is_string() {
@@ -87,7 +87,7 @@ pub(in crate::read) fn counts(db: &Connection) -> Result<Option<BTreeMap<i64, Va
     }
     let grouped = rows(
         db,
-        "select root_id,count(*) as total,sum(state='backlog') as backlog,sum(state='queued') as queued,sum(state='active') as active,sum(state='verifying') as verifying,sum(state='done') as done,sum(state='cancelled') as cancelled,sum(reason is not null) as blocked from work_items group by root_id",
+        "with cleanup(work_id) as (select work_id from work_runs where state='active' union select r.work_id from work_runs r join work_checkouts c on c.run_id=r.id union select r.work_id from work_runs r join work_assignments a on a.run_id=r.id where a.process_state!='stopped') select w.root_id,count(*) as total,sum(w.state='backlog') as backlog,sum(w.state='queued') as queued,sum(w.state='active') as active,sum(w.state='verifying') as verifying,sum(w.state='done') as done,sum(w.state='cancelled') as cancelled,sum((w.state!='cancelled' and w.reason is not null) or (w.state='cancelled' and c.work_id is not null)) as blocked from work_items w left join cleanup c on c.work_id=w.id group by w.root_id",
         vec![],
     )?;
     Ok(Some(
@@ -157,7 +157,7 @@ mod tests {
         let w = &view["items"][0];
         assert_eq!(w["state"], "backlog");
         assert!(w["assignment"].is_null());
-        assert_eq!(w["proof"], "unavailable");
+        assert_eq!(w["proof"], "no contract");
         assert_eq!(counts(&db).unwrap().unwrap()[&1]["backlog"], LIMIT + 1);
         let glance = super::super::super::glance::snapshot(&db).unwrap();
         assert!(
@@ -168,6 +168,86 @@ mod tests {
                 .any(|c| c["id"] == 1 && c["work_counts"]["backlog"] == LIMIT + 1),
             "durable backlog must not disappear into quiet campaigns"
         );
+    }
+
+    #[test]
+    fn cancelled_attention_ends_only_after_process_and_checkout_cleanup() {
+        let db = db(true);
+        item(&db, 2);
+        db.execute(
+            "update work_items set state='cancelled',reason='cancelled by request' where id=2",
+            [],
+        )
+        .unwrap();
+        let blocked = || {
+            counts(&db).unwrap().unwrap()[&1]["blocked"]
+                .as_i64()
+                .unwrap()
+        };
+        let listed = || {
+            super::super::super::glance::snapshot(&db).unwrap()["campaigns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["id"] == 1)
+        };
+        assert_eq!(blocked(), 0, "a cancellation reason alone is historical");
+        assert!(!listed());
+        running(&db);
+        result(
+            &db,
+            3,
+            "gate",
+            json!({"kind":"proof","result":{"checks":[]}}),
+        );
+        db.execute(
+            "update work_items set state='cancelled',reason='cancelled during gate' where id=1",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "insert into work_checkouts(host,cwd,run_id) values('host-a','/checkout',1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(blocked(), 1);
+        assert!(listed());
+        db.execute("update work_runs set state='cancelled' where id=1", [])
+            .unwrap();
+        db.execute("delete from work_checkouts where run_id=1", [])
+            .unwrap();
+        assert_eq!(
+            blocked(),
+            1,
+            "uncertain process still needs cleanup without a checkout"
+        );
+        db.execute("update work_assignments set process_state='stopped'", [])
+            .unwrap();
+        db.execute(
+            "insert into work_checkouts(host,cwd,run_id) values('host-a','/checkout',1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            blocked(),
+            1,
+            "stopped process does not release a held checkout"
+        );
+        db.execute("delete from work_checkouts where run_id=1", [])
+            .unwrap();
+        db.execute("update work_runs set state='active' where id=1", [])
+            .unwrap();
+        assert_eq!(blocked(), 1, "active run still awaits cleanup settlement");
+        db.execute("update work_runs set state='cancelled' where id=1", [])
+            .unwrap();
+        assert_eq!(blocked(), 0);
+        assert!(
+            !listed(),
+            "fully stopped/released cancelled tasks must let the campaign become quiet"
+        );
+        db.execute("update work_items set state='done',reason='dependency changed; recheck required' where id=2", []).unwrap();
+        assert_eq!(blocked(), 1, "accepted tasks still expose recheck reasons");
+        assert!(listed());
     }
 
     #[test]

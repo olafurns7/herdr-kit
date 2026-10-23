@@ -62,6 +62,8 @@ pub enum Done {
     Refused(String),
 }
 
+const WORK_READ_LIMIT: usize = 1024 * 1024;
+
 /// What a local-mode taskr says to `--request-key`, before it reads or writes anything.
 const LOCAL_KEY: &str = "--request-key is only for client mode (a server.url without TASKR_DB)";
 
@@ -139,7 +141,11 @@ impl Job {
         let command: Vec<String> = taskr.iter().cloned().chain(args).collect();
         // One bound for the job, the keyless try included.
         let deadline = Instant::now() + client::TIMEOUT;
-        let mut out = client::run(&command, client::TIMEOUT)?;
+        let mut out = if matches!(self, Job::Work { .. }) {
+            client::run_bounded(&command, client::TIMEOUT, WORK_READ_LIMIT)?
+        } else {
+            client::run(&command, client::TIMEOUT)?
+        };
         match self {
             Job::Answer { prompt, .. } => {
                 // A local-mode taskr refuses the key before it touches the ledger, in these
@@ -294,6 +300,23 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("a scratch directory");
         dir
+    }
+
+    #[test]
+    fn work_show_refuses_oversized_output_before_json_parsing() {
+        for redirect in ["", " >&2"] {
+            let command = vec![
+                "sh".into(),
+                "-c".into(),
+                format!("head -c {} /dev/zero{redirect}", WORK_READ_LIMIT + 1),
+            ];
+            let error = Job::Work { id: 7 }.run(&command).unwrap_err();
+            assert!(error.contains("1048576 byte read limit"), "{error}");
+            assert!(
+                !error.contains("unreadable work read"),
+                "cap before parsing JSON"
+            );
+        }
     }
 
     #[test]

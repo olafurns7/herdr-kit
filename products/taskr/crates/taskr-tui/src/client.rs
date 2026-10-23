@@ -9,7 +9,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+        mpsc::{self, Receiver, Sender},
     },
     thread,
     time::{Duration, Instant},
@@ -97,7 +97,25 @@ pub fn output(command: &[String], timeout: Duration) -> Result<Vec<u8>, String> 
 
 /// Runs a command to its end. An error here means it never ran or never finished.
 pub fn run(command: &[String], timeout: Duration) -> Result<Output, String> {
+    run_with_limit(command, timeout, None)
+}
+
+/// Each pipe is capped before parsing; oversized output fails without retaining the tail.
+pub(crate) fn run_bounded(
+    command: &[String],
+    timeout: Duration,
+    limit: usize,
+) -> Result<Output, String> {
+    run_with_limit(command, timeout, Some(limit))
+}
+
+fn run_with_limit(
+    command: &[String],
+    timeout: Duration,
+    limit: Option<usize>,
+) -> Result<Output, String> {
     let (bin, args) = command.split_first().ok_or("no command")?;
+    let deadline = Instant::now() + timeout;
     let mut child = Command::new(bin)
         .args(args)
         // The view never reads or writes as a lead, whatever pane it was started in.
@@ -108,36 +126,68 @@ pub fn run(command: &[String], timeout: Duration) -> Result<Output, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cannot run {bin}: {e}"))?;
-    // Both pipes are read off this thread, so a large snapshot cannot fill one and stall
-    // the child, and a child that hangs can still be killed.
-    let read = |mut pipe: Box<dyn Read + Send>| {
+    // Drain both pipes off-thread so neither can fill and stall the child.
+    let read = |pipe: Box<dyn Read + Send>, name: &'static str| {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let mut bytes = vec![];
-            let _ = pipe.read_to_end(&mut bytes);
-            let _ = tx.send(bytes);
+            let read = pipe
+                .take(limit.map_or(u64::MAX, |n| (n as u64).saturating_add(1)))
+                .read_to_end(&mut bytes);
+            let result = read
+                .map_err(|e| format!("cannot read {name}: {e}"))
+                .and_then(|_| {
+                    if let Some(limit) = limit
+                        && bytes.len() > limit
+                    {
+                        Err(format!("{name} exceeds {limit} byte read limit"))
+                    } else {
+                        Ok(bytes)
+                    }
+                });
+            let _ = tx.send(result);
         });
         rx
     };
-    let out = read(Box::new(child.stdout.take().expect("a piped stdout")));
-    let err = read(Box::new(child.stderr.take().expect("a piped stderr")));
-    let stdout = match out.recv_timeout(timeout) {
-        Ok(bytes) => bytes,
-        Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            // The name, not the path: the line is read in the footer.
-            let name = bin.rsplit('/').next().unwrap_or(bin);
-            return Err(format!("{name} did not answer in {}s", timeout.as_secs()));
-        }
-    };
-    let status = child.wait().map_err(|e| format!("{bin}: {e}"))?;
-    let stderr = err.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
+    let out = read(
+        Box::new(child.stdout.take().expect("a piped stdout")),
+        "stdout",
+    );
+    let err = read(
+        Box::new(child.stderr.take().expect("a piped stderr")),
+        "stderr",
+    );
+    let name = bin.rsplit('/').next().unwrap_or(bin);
+    let expired = || format!("{name} did not answer in {}s", timeout.as_secs());
+    let result = (|| {
+        let stdout = out
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| expired())??;
+        let stderr = err
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| expired())??;
+        // EOF is not process exit; keep the original deadline through child cleanup.
+        let status = loop {
+            if let Some(status) = child.try_wait().map_err(|e| format!("{bin}: {e}"))? {
+                break status;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(expired());
+            }
+            thread::sleep(left.min(Duration::from_millis(10)));
+        };
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
 }
 
 /// The command that subscribes to the hub's change notifications: `taskr _events --json`,
@@ -412,6 +462,24 @@ mod tests {
 
     fn sh(script: &str) -> Vec<String> {
         vec!["sh".into(), "-c".into(), script.into()]
+    }
+
+    #[test]
+    fn bounded_reads_allow_the_exact_limit_and_reject_the_next_byte() {
+        let out = run_bounded(&sh("printf 1234"), TIMEOUT, 4).unwrap();
+        assert_eq!(out.stdout, b"1234");
+        for script in ["printf 12345", "printf 12345 >&2"] {
+            let error = run_bounded(&sh(script), TIMEOUT, 4)
+                .err()
+                .expect("oversized output");
+            assert!(error.contains("exceeds 4 byte read limit"), "{error}");
+        }
+        assert!(
+            run_bounded(&sh("exec 1>&- 2>&-; sleep 5"), Duration::from_millis(50), 4)
+                .err()
+                .expect("closed pipes still have a process deadline")
+                .contains("did not answer")
+        );
     }
 
     #[test]

@@ -412,11 +412,13 @@ frame is marked stale and keeps the last data.
    status, process state, acceptance receipt and blocked/recheck reason.
    `Enter`, `o` or `I` reads current-run source identities, check/case receipts,
    artifact hashes and review findings in the existing document pager.
-   Evidence bodies load only on request, under the client's read size/deadline
-   bounds; long text and case/finding lists are clipped with a CLI pointer.
+   Evidence bodies load only on request, with a 10-second deadline and a
+   1 MiB cap on each of stdout and stderr before JSON parsing. Oversized output
+   is an error; long text and case/finding lists are clipped with a CLI pointer.
    A typed result does not prove the process stopped, a clear source review
    does not prove runtime behavior, and done without a receipt does not prove
-   acceptance. Missing fields mean unavailable. A legacy server's Tasks pane
+   acceptance. No contract is distinct from unavailable/missing fields.
+   Assignment state and result pending/ID are shown separately. A legacy server's Tasks pane
    says unavailable when opened with `6`; an upgraded empty campaign says
    no durable tasks. No task creation or mutation is offered here.
 
@@ -429,7 +431,10 @@ summary; an outstanding blocked/recheck reason remains visible alongside it.
 Glance includes grouped `work_counts`; campaigns with unfinished unassigned
 backlog remain listed. Detail shows these counts separately from lane counts.
 Use `taskr work list ROOT` / `taskr work show WORK` for retained history. Narrow
-terminals show one campaign pane at a time; `6` and Tab always reach Tasks.
+terminals show one campaign pane at a time; `6` reaches Tasks explicitly.
+Tab skips Tasks on legacy servers. Cancelled work keeps its campaign listed
+only while a run remains active, a checkout is held, or a process needs cleanup;
+a retained cancellation reason alone does not count as blocked.
 
 `c` on the Dashboard, Asks or Fleet lists every campaign, closed ones included.
 

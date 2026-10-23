@@ -440,10 +440,11 @@ fn tasks(f: &mut Frame, app: &App, area: Rect) -> (usize, usize, usize) {
             .as_ref()
             .map(|a| {
                 format!(
-                    "{} · {} · process {} · result {} · stop {}",
+                    "{} · {} · process {} · result {} · assignment {} · stop {}",
                     w.state,
                     a.stage,
                     required(&a.process_state),
+                    a.result_id.map_or("pending".into(), |id| id.to_string()),
                     a.state,
                     a.stop_event.map_or("pending".into(), |e| e.to_string())
                 )
