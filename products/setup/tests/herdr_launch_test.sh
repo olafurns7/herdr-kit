@@ -43,6 +43,7 @@ case "$1 $2" in
     "pane run") case $3 in *:p8) [ "${STUB_PUSH_FAIL:-}" != run ] || exit 1 ;; esac ;;
     "pane read") printf '%s\n' "${STUB_SCREEN:-}" ;;
     "agent start") [ "${STUB_START_OK:-1}" = 1 ] || exit 1 ;;
+    "agent list") printf '%s\n' '{"result":{"agents":[]}}' ;;
 esac
 exit 0
 EOF
@@ -53,6 +54,7 @@ for arg in "$@"; do line="$line|$arg"; done
 printf '%s\n' "$line" >>"$STUB_CALLS"
 [ "${STUB_FAIL:-}" != "taskr $1" ] || exit 1
 case $1 in
+    --json) [ "$2 $3" = 'work list' ] || exit 1; cat "$STUB_RESERVED" ;;
     new) printf '%s\n' "${STUB_NEW:-n1 2468}" ;;
     launch) printf '%s\n' "${STUB_LAUNCH:-l1 {\"launch_id\":3579,\"status\":\"open\"}}" ;;
 esac
@@ -60,6 +62,9 @@ exit 0
 EOF
 ln -s "$(command -v jq)" "$stub_dir/jq"
 chmod 0755 "$stub_dir/herdr" "$stub_dir/taskr"
+# Reserved-mode socket preflight is isolated too; no connection to a live server.
+printf '%s\n' '#!/bin/sh' 'cat >/dev/null' 'exit "${STUB_SERVER_RC:-0}"' >"$stub_dir/python3"
+chmod 0755 "$stub_dir/python3"
 
 failures=0
 case_count=0
@@ -91,7 +96,8 @@ new_case() {
         'Acceptance: launch succeeds' 'Validation: stub calls' >"$brief"
     : >"$case_dir/calls"
     STUB_FAIL= STUB_CURRENT= STUB_TAB= STUB_PANE_WS= STUB_PANE_CWD= STUB_PANE_GET= STUB_FG= STUB_ENV_OK= STUB_NEW= STUB_LAUNCH=
-    STUB_SCREEN= STUB_START_OK= STUB_PUSH_FAIL=
+    STUB_SCREEN= STUB_START_OK= STUB_PUSH_FAIL= STUB_SERVER_RC=0
+    STUB_RESERVED=$case_dir/reserved.json
     printf '%s\n' "case: $case_name"
 }
 
@@ -104,6 +110,7 @@ run_launch() {
         STUB_PANE_CWD="$STUB_PANE_CWD" STUB_PANE_GET="$STUB_PANE_GET" STUB_FG="$STUB_FG" \
         STUB_ENV_OK="$STUB_ENV_OK" STUB_NEW="$STUB_NEW" STUB_LAUNCH="$STUB_LAUNCH" \
         STUB_SCREEN="$STUB_SCREEN" STUB_START_OK="$STUB_START_OK" STUB_PUSH_FAIL="$STUB_PUSH_FAIL" \
+        STUB_RESERVED="$STUB_RESERVED" STUB_SERVER_RC="$STUB_SERVER_RC" \
         TASKR_FORMAT=json "$@" \
         >"$case_dir/out" 2>"$case_dir/err") || run_status=$?
     out=$(cat "$case_dir/out")
@@ -1229,6 +1236,55 @@ for bad_deny in 'null' 'false' '[]' '{"model":"bad"}' '{"model":["["]}' '{"model
     expect_err 'invalid lane table'
     expect_no_calls
 done
+
+reserved_snapshot() {
+    jq -n --arg cwd "$tcwd" '{campaign:42,generation:7,parked:false,configuration:{enabled:true},work:[{revision:1,current_run:9,revisions:[{revision:1,contract:{checkout:{cwd:$cwd}}}],runs:[{run_id:9,round:1,state:"active",assignments:[{task_id:2468,launch_id:3579,round:1,state:"starting",stage:"executor",dispatch:{workspace:"wA",tab:"wA:t5",pane:"wA:p5"},lane:{name:"opus-medium",provider:"claude",model:"claude-opus-5-5",effort:"medium"}}]}]}]}' >"$STUB_RESERVED"
+}
+new_case 'reserved launch skips new and launch, preserving exports/start/prompt'
+reserved_snapshot
+run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p5'
+if grep -E '^taskr\|(new|launch)\|' "$case_dir/calls" >/dev/null; then fail 'reserved mode created another task or launch'; fi
+grep -F 'herdr|agent|start|impl-cart|' "$case_dir/calls" >/dev/null || fail 'reserved mode did not start'
+grep -F "taskr|prompt|2468|--file|$brief" "$case_dir/calls" >/dev/null || fail 'reserved brief not captured'
+grep -F 'TASKR_LAUNCH=3579 DISABLE_AUTO_UPDATE=true' "$case_dir/calls" >/dev/null || fail 'reserved identity/update environment missing'
+grep -F 'unset TASKR_DB && export PATH=' "$case_dir/calls" >/dev/null || fail 'reserved default context did not clear stale ledger override'
+
+new_case 'reserved scratch ledger and selected candidate CLI propagate to the shell'
+reserved_snapshot
+run_launch env TASKR_DB="$case_dir/scratch.sqlite" TASKR_WORK_EXECUTABLE="$stub_dir/taskr" \
+    sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+expect_rc 0
+grep -F "export TASKR_DB='$case_dir/scratch.sqlite'" "$case_dir/calls" >/dev/null || fail 'scratch ledger missing from reserved child environment'
+grep -F "export PATH='$stub_dir:" "$case_dir/calls" >/dev/null || fail 'candidate CLI directory missing from reserved child PATH'
+
+for field in task_id launch_id round pane cwd model effort; do
+    new_case "reserved mismatch $field fails before agent start"
+    reserved_snapshot
+    case $field in
+        cwd) filter='.work[0].revisions[0].contract.checkout.cwd = "/other"' ;;
+        pane) filter='.work[0].runs[0].assignments[0].dispatch.pane = "wA:p9"' ;;
+        model|effort) filter=".work[0].runs[0].assignments[0].lane.$field = \"drift\"" ;;
+        *) filter=".work[0].runs[0].assignments[0].$field = 999" ;;
+    esac
+    jq "$filter" "$STUB_RESERVED" >"$STUB_RESERVED.tmp"
+    mv "$STUB_RESERVED.tmp" "$STUB_RESERVED"
+    run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+    expect_rc 1
+    if grep -E '^herdr\|(agent\|start|pane\|run)\|' "$case_dir/calls" >/dev/null; then fail 'mismatched reserved identity reached effects'; fi
+done
+new_case 'reserved unavailable server never calls Herdr or taskr'
+reserved_snapshot
+STUB_SERVER_RC=1
+run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+expect_rc 1
+expect_no_calls
+
+new_case 'reserved requires an explicit pane'
+run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 2
+expect_no_calls
 
 printf '\n%s cases, %s failures\n' "$case_count" "$failures"
 [ "$failures" -eq 0 ]
