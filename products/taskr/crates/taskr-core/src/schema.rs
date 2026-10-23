@@ -85,6 +85,7 @@ pub fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
     tx.execute_batch(DELIVERY_ATTEMPTS)?;
     tx.execute_batch(CONSUMER_LEASES)?;
     tx.execute_batch(crate::store::work::DDL)?;
+    tx.execute_batch(crate::store::jobs::DDL)?;
     for (table, column, kind) in [
         ("work_campaigns", "workspace", "text"),
         ("work_campaigns", "host", "text"),

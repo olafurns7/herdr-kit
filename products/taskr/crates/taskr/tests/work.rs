@@ -1472,3 +1472,59 @@ fn fast_gate_submission_derives_only_its_recorded_start_before_controller_tick()
     w.review(&rid, &exec, "clear");
     assert_eq!(w.call("advance", Some(&rid), None)["action"], "accepted");
 }
+
+#[test]
+fn acceptance_uses_native_route_transactionally_even_when_parked_and_keeps_audit() {
+    for parked in [false, true] {
+        let w = Work::new();
+        w.configure();
+        let id = w.queued(w.contract(false));
+        let run = w.claim(&id, "native-route");
+        let exec = w.execute(&run["assignments"][0]);
+        let rid = run["run_id"].to_string();
+        w.review(&rid, &exec, "clear");
+        let db = w.h.conn();
+        let now = taskr_core::store::now();
+        let deadline = taskr_core::store::stamp(
+            taskr_core::store::parse_time(&now).unwrap() + time::Duration::seconds(90),
+        );
+        db.execute("insert into jobs_operations(id,root_id,generation,binding,host,kind,reference_id,revision,status,created_at,updated_at) values('native-op',?,0,'synthetic-binding-token',?,'await',?,1,'working',?,?)",params![w.root.parse::<i64>().unwrap(),taskr_core::store::local_machine(),id.parse::<i64>().unwrap(),now,now]).unwrap();
+        db.execute(
+            "insert into jobs_routes(operation_id,state,deadline) values('native-op','active',?)",
+            [deadline],
+        )
+        .unwrap();
+        if parked {
+            w.h.ok(&[], &["set", &w.root, "glance.state=parked"]);
+        }
+        assert_eq!(w.call("advance", Some(&rid), None)["action"], "accepted");
+        assert_eq!(
+            db.query_row(
+                "select result_id from jobs_routes where operation_id='native-op'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            exec["result_id"].as_i64().unwrap()
+        );
+        assert_eq!(
+            db.query_row(
+                "select status from jobs_operations where id='native-op'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "completed"
+        );
+        assert_eq!(
+            db.query_row(
+                "select count(*) from events where kind='work' and summary='accepted'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(db.query_row("select count(*) from events where kind='message' and json_extract(data,'$.notice.reason')='accepted'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+}

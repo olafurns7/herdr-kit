@@ -281,6 +281,8 @@ pub fn advance(db: &mut Connection, a: Authority, run: i64) -> Result<Value> {
         )?;
         tx.execute("delete from work_checkouts where run_id=?", [run])?;
         invalidate_dependents(tx, w.id)?;
+        let native_routed =
+            super::super::jobs::accepted(tx, r.root, w.id, w.revision, run, execution_id)?;
         audit(
             tx,
             r.root,
@@ -288,7 +290,7 @@ pub fn advance(db: &mut Connection, a: Authority, run: i64) -> Result<Value> {
             Some(w.id),
             Some(run),
             Some(execution_id),
-            true,
+            !native_routed,
         )?;
         run_output(tx, run)
     })
