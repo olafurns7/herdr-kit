@@ -472,6 +472,7 @@ pub fn route(mut json_mode: bool, raw_args: &[String]) -> Option<ExitCode> {
                 crate::read::dispatch(json_mode, args)
                     .or_else(|| crate::write::dispatch(json_mode, args))
                     .or_else(|| crate::work::dispatch(json_mode, args))
+                    .or_else(|| crate::jobs::dispatch(json_mode, args))
                     .unwrap_or_else(|| crate::cli::unknown(json_mode, cmd)),
             );
         }

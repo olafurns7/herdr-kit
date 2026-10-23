@@ -118,8 +118,8 @@ pub const COMMANDS: &[&str] = &[
     "version", "new", "launch", "close", "start", "got", "note", "ready", "ask", "done", "fail",
     "prompt", "answer", "hook", "wait", "ack", "next", "decide", "set", "handover", "adopt",
     "status", "asks", "log", "notes", "glance", "campaign", "search", "daemon", "doc", "spool",
-    "work", "message", "help", "slotr", "after", "tmp", "delivery", "consumer", "inbox", "mcp",
-    "push",
+    "work", "jobs", "message", "help", "slotr", "after", "tmp", "delivery", "consumer", "inbox",
+    "mcp", "push",
 ];
 pub fn known(name: &str) -> bool {
     name == "_dialog" || COMMANDS.contains(&name)

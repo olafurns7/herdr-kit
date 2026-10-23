@@ -27,11 +27,13 @@ fn print_stdout(args: std::fmt::Arguments<'_>) {
 mod cli;
 mod daemon;
 mod hub;
+mod jobs;
 mod mcp;
 mod net;
 mod read;
 mod tmp;
 mod work;
+mod work_controller;
 mod write;
 use taskr_core::ExitCode;
 fn run(mut args: Vec<String>) -> ExitCode {
@@ -44,6 +46,9 @@ fn run(mut args: Vec<String>) -> ExitCode {
     }
     // The MCP server and `push` are local only; their children route like any other command.
     if let Some(code) = mcp::dispatch(json, &args) {
+        return code;
+    }
+    if let Some(code) = work_controller::dispatch(json, &args) {
         return code;
     }
     if let Some(code) = write::dialog_hook(&args) {
@@ -91,6 +96,7 @@ fn run(mut args: Vec<String>) -> ExitCode {
         .or_else(|| read::dispatch(json, &args))
         .or_else(|| tmp::dispatch(json, &args))
         .or_else(|| work::dispatch(json, &args))
+        .or_else(|| jobs::dispatch(json, &args))
         .or_else(|| write::dispatch(json, &args))
     {
         return code;
