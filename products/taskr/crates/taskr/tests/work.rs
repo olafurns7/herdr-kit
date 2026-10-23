@@ -1432,3 +1432,43 @@ fn hash_command_and_store_reject_profile_input_drift() {
         );
     }
 }
+
+#[test]
+fn fast_gate_submission_derives_only_its_recorded_start_before_controller_tick() {
+    let w = Work::new();
+    w.configure();
+    let id = w.queued(w.contract(true));
+    let run = w.claim(&id, "fast-gate");
+    let exec = w.execute(&run["assignments"][0]);
+    let rid = run["run_id"].to_string();
+    w.call("advance", Some(&rid), None);
+    let gate = w.call("reserve", Some(&rid), Some(json!({"stage":"gate"})));
+    let lid = gate["launch_id"].to_string();
+    w.call("bind",Some(&lid),Some(json!({"workspace":"w1","tab":"w1:t2","pane":"w1:p2","dispatch_key":"fast-gate-dispatch"})));
+    assert_eq!(
+        w.h.output(
+            &w.env(&gate),
+            &[
+                "work",
+                "submit",
+                &lid,
+                "--data",
+                &w.proof(&run, &gate, 0).to_string()
+            ],
+            b""
+        )
+        .status
+        .code(),
+        Some(6),
+        "no matching receipt cannot start a gate"
+    );
+    w.h.ok(&w.env(&gate), &["start"]);
+    w.submit(&gate, w.proof(&run, &gate, 0));
+    let ass = w.h.ok(&[], &["work", "show", &id])["runs"][0]["assignments"][1].clone();
+    assert_eq!(ass["state"], "settled");
+    assert_eq!(ass["process_state"], "running");
+    assert!(ass["native_session"].is_null());
+    w.stop(&gate);
+    w.review(&rid, &exec, "clear");
+    assert_eq!(w.call("advance", Some(&rid), None)["action"], "accepted");
+}

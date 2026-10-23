@@ -24,7 +24,7 @@ pub fn submit(db: &mut Connection, launch: i64, input: Submission) -> Result<Val
         if current != launch {
             return Err(reject("submission must use current TASKR_LAUNCH"));
         }
-        let ass = assignment(tx, launch)?;
+        let mut ass = assignment(tx, launch)?;
         if ass["task_id"] != worker.id {
             return Err(reject("assignment worker mismatch"));
         }
@@ -51,6 +51,11 @@ pub fn submit(db: &mut Connection, launch: i64, input: Submission) -> Result<Val
             return Ok(
                 json!({"ok":true,"result_id":id,"digest":sha,"work_id":w.id,"revision":r.revision,"run_id":r.id,"launch_id":launch,"duplicate":true}),
             );
+        }
+        // A fast runner may beat the controller tick; a matching start/got proves launch start, not native identity.
+        if ass["process_state"] == "starting" {
+            start_tx(tx, launch)?;
+            ass = assignment(tx, launch)?;
         }
         if r.state != "active" || ass["state"] != "running" || ass["process_state"] != "running" {
             return Err(reject("only running assignments may submit"));
