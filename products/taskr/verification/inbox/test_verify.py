@@ -4,12 +4,54 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import verify
 
 
 class DriverChecks(unittest.TestCase):
+    def test_executable_symlink_preserves_multicall_name_and_hashes_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "rustup"
+            target.write_text("#!/bin/sh\ncase \"$0:$1:$2\" in\n"
+                              "*/cargo:build:--offline) echo cargo-dispatched ;;\n"
+                              "*) exit 64 ;;\nesac\n")
+            target.chmod(0o755)
+            shim = root / "cargo"
+            shim.symlink_to("rustup")
+            requested = verify.executable(str(shim), "cargo")
+            self.assertEqual(requested, shim.absolute())
+            self.assertEqual(verify.sha(requested), verify.sha(target))
+            run = verify.Run(root, 1)
+            code, output = run.command([requested, "build", "--offline"], root)
+            self.assertEqual((code, output), (0, "cargo-dispatched\n"))
+            target.chmod(0o644)
+            with self.assertRaises(verify.Blocked):
+                verify.executable(str(shim), "cargo")
+            target.unlink()
+            with self.assertRaises(verify.Blocked):
+                verify.executable(str(shim), "cargo")
+
+    def test_keyboard_interrupt_cleans_up_and_propagates_through_case(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = verify.Run(root, 1)
+            interruption = KeyboardInterrupt()
+            child = Mock(pid=12345)
+            child.communicate.side_effect = [interruption, ("partial output", "stderr")]
+            with patch.object(verify.subprocess, "Popen", return_value=child), \
+                    patch.object(verify.os, "killpg") as kill:
+                with self.assertRaises(KeyboardInterrupt) as caught:
+                    run.case("MODEL-NC1", lambda: run.command(["fixture"], root))
+            self.assertIs(caught.exception, interruption)
+            kill.assert_called_once_with(child.pid, verify.signal.SIGKILL)
+            self.assertEqual(child.communicate.call_count, 2)
+            self.assertEqual(len(run.commands), 1)
+            self.assertIsNone(run.commands[0]["exit"])
+            self.assertEqual((root / "command-001.log").read_text(), "partial outputstderr")
+            self.assertEqual(run.results["MODEL-NC1"]["outcome"], "blocked")
+
     def test_source_drift_is_blocked_without_rewriting_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

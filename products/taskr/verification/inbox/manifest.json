@@ -45,10 +45,10 @@
     },
     "Offer": {
       "code": [
-        "products/taskr/crates/taskr-core/src/store/inbox.rs:90-106",
+        "products/taskr/crates/taskr-core/src/store/inbox.rs:90-160",
         "products/taskr/crates/taskr-core/src/store/inbox.rs:169-207"
       ],
-      "mapping": "One transaction: guard, lowest id after cursor, got coalesces and clears pending; otherwise offer/replay pending. Local response observation is a ghost of return value."
+      "mapping": "One transaction: guard, lowest id after cursor, got coalesces and clears pending; otherwise offer/replay pending. Only the got coalescing branch is within ASK_ONLY; the remaining coalesce branches concern event kinds outside this policy. Local response observation is a ghost of return value."
     },
     "RejectAck": {
       "code": [
@@ -208,9 +208,9 @@
   },
   "verification_files": {
     "Inbox.cfg": "629e507b4663c9bfc0b0d1667f13d236e494d216b30d46b09255740206f2911c",
-    "Inbox.tla": "45c5ae539adcf474deafea775756c393203ebe269a04c6cb3815f0fd5d76497e",
-    "README.md": "86eaefed20625b7a0a33b6addfab3a28657a849e3cc48e870f5134a9af629158",
-    "test_verify.py": "06707f539020c583a57ebde03b6cc72fc33935342d69f9b9ebffe428bb68baf9",
-    "verify.py": "59fb6b5b312fcbc0ca7d78f651018b8b270042cbeac56690c3046a0154c5fb4c"
+    "Inbox.tla": "f220a2d373f7191b0a5c81e6a66c2b42ba96dd7f806981fee694bd3963ed5034",
+    "README.md": "8f5dd645a7b9fcd4ae9fd4e92d283e52dc4a920dca09f812afed9cb5ab4026fb",
+    "test_verify.py": "dc32222fcfed29e7298bb7346b0b50455e49010ecf1871d304b169725c5fe7e0",
+    "verify.py": "6eab013ef5e18af03f193d21127f422b437bd6d027f6ba354b596cc2bd1c2926"
   }
 }

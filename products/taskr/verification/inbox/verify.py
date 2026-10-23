@@ -62,14 +62,20 @@ class Run:
         entry = {"argv": argv, "cwd": str(cwd), "log": log.name}
         self.commands.append(entry)
         started = time.monotonic()
+        interruption = None
         try:
             p = subprocess.Popen(argv, cwd=cwd, env=env, text=True, start_new_session=True,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
                 output, stderr = p.communicate(timeout=timeout or self.timeout)
                 entry["exit"] = p.returncode
-            except (subprocess.TimeoutExpired, KeyboardInterrupt):
-                os.killpg(p.pid, signal.SIGKILL)
+            except (subprocess.TimeoutExpired, KeyboardInterrupt) as e:
+                if isinstance(e, KeyboardInterrupt):
+                    interruption = e
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 output, stderr = p.communicate()
                 entry["exit"] = None
                 entry["timeout_or_interrupt"] = True
@@ -81,6 +87,8 @@ class Run:
         log.write_text(output + stderr)
         entry["sha256"] = sha(log)
         write_json(self.out / "commands.json", self.commands)
+        if interruption is not None:
+            raise interruption
         return entry["exit"], output
 
     def case(self, name, fn):
@@ -125,7 +133,8 @@ def check_package(manifest, run):
 
 
 def executable(value, label):
-    path = Path(value).expanduser().resolve() if value else None
+    # Multicall shims select their command from argv[0]; keep the requested name.
+    path = Path(value).expanduser().absolute() if value else None
     if path is None or not path.is_file() or not os.access(path, os.X_OK):
         raise Blocked(f"missing {label}: supply an existing executable path")
     return path
@@ -155,7 +164,7 @@ def doctor(run, args):
     prerequisites = {}
     try:
         mutation_source(args, json.loads((HERE / "manifest.json").read_text()))
-        executable(args.cargo, "cargo for offline mutation builds")
+        prerequisites["cargo_sha256"] = sha(executable(args.cargo, "cargo for offline mutation builds"))
         prerequisites["real_mutants"] = "ready (offline dependency cache checked by build only)"
     except Blocked as e:
         prerequisites["real_mutants"] = "blocked: " + str(e)

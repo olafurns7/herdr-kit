@@ -23,7 +23,8 @@ Init == /\ cursor = 0 /\ pending = 0 /\ holder = 0 /\ fence = 0
         /\ local = [c \in Consumers |-> 0] /\ handled = {}
         /\ badAck = FALSE /\ witnessed = FALSE
 
-\* consumer.rs:52-61 live; delivery.rs:42-61 identify. One open, local root.
+\* Source ranges refer to manifest.source_commit, not the moving checkout.
+\* consumer.rs:52-61 live; delivery.rs:14-61 generation/identify. One open, local root.
 Live == holder # 0 /\ expires > clock /\ leaseGen = generation
 Guard(c) == IF claim[c] = 0 THEN ~Live
             ELSE Live /\ claimGen[c] = generation
@@ -36,7 +37,7 @@ CorrectGuard(c) == IF claim[c] = 0 THEN ~Live
                         /\ claimTake[c] = takes
 Mark(name) == witnessed' = (witnessed \/ WitnessCase = name)
 
-\* consumer.rs:187-222 take transaction. Force over a LIVE lease is legal.
+\* consumer.rs:179-223 take transaction. Force over a LIVE lease is legal.
 Take(c, force) ==
     /\ takes < MaxTakes /\ (force \/ ~Live)
     /\ LET nextFence == IF Mutation = "NC2" /\ takes > 0 /\ force
@@ -49,7 +50,7 @@ Take(c, force) ==
     /\ Mark(IF force /\ Live THEN "forcedTakeover" ELSE "take")
     /\ UNCHANGED <<cursor, pending, generation, clock, local, handled, badAck>>
 
-\* consumer.rs:233-240 renew transaction; 246-257 release transaction.
+\* consumer.rs:226-242 renew transaction; 245-255 release transaction.
 Renew(c) == /\ claim[c] > 0 /\ Guard(c) /\ expires < clock + 2
             /\ expires' = clock + 2 /\ Mark("renew")
             /\ UNCHANGED <<cursor, pending, holder, fence, leaseGen, generation,
@@ -60,7 +61,8 @@ Release(c) == /\ claim[c] > 0 /\ Guard(c) /\ holder' = 0 /\ Mark("release")
                              generation, clock, takes, claim, claimGen,
                              claimTake, local, handled, badAck>>
 
-\* inbox.rs:175-207 offer_fenced transaction; ASK_ONLY always uses filtered=true.
+\* inbox.rs:169-207 offer_fenced transaction; ASK_ONLY always uses filtered=true.
+\* coalesce at inbox.rs:90-160: only got applies here; other kinds are outside policy.
 Offer(c) ==
     /\ Guard(c) /\ cursor < Len(Kinds)
     /\ LET e == cursor + 1
@@ -80,13 +82,13 @@ Handle(c) == /\ local[c] \in Required /\ local[c] \notin handled
                             generation, clock, takes, claim, claimGen,
                             claimTake, local, badAck>>
 
-\* inbox.rs:11-45 ack transaction. Filter ack is a DIFFERENT transaction from offer
-\* (CLI write/inbox.rs:261-268,304-311). Required asks must be handled first.
+\* inbox.rs:4-47 ack transaction. Filter ack is a DIFFERENT transaction from offer
+\* (CLI write/inbox.rs:245-268,289-311). Required asks must be handled first.
 Ack(c) ==
     /\ Guard(c) /\ pending # 0 /\ local[c] = pending
     /\ (pending \notin Required \/ pending \in handled)
     /\ cursor' = pending /\ pending' = 0
-    /\ badAck' = badAck \/ ~CorrectGuard(c)
+    /\ badAck' = (badAck \/ ~CorrectGuard(c))
     /\ Mark(IF local[c] \notin Required THEN "filterAck"
             ELSE IF claim[c] = 0 THEN "plainAck" ELSE "fencedAck")
     /\ UNCHANGED <<holder, fence, leaseGen, expires, generation, clock, takes,

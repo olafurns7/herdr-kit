@@ -18,6 +18,8 @@ exit 12 for an invariant violation, and the English result protocol documented
 in [TLC's output implementation](https://github.com/tlaplus/tlaplus/blob/master/tlatools/org.lamport.tlatools/src/tlc2/output/MP.java)
 and [exit status implementation](https://github.com/tlaplus/tlaplus/blob/master/tlatools/org.lamport.tlatools/src/tlc2/output/EC.java).
 No jar version or unexecuted source pin is represented as a previously tested tool.
+Executable invocation keeps the requested path and name, including a `cargo`
+symlink to a multicall shim; validation and SHA-256 hashing follow its target.
 
 Use an independent disposable source copy outside the editing checkout. Its
 covered files must match the manifest. Put the source commit (above), followed
@@ -149,14 +151,17 @@ records argv, working directory, exit, elapsed time and log hash. Each model
 case retains its copied model/config and stdout trace. `manifest.json`,
 `package-hashes.json` and `evidence-hashes.json` bind inputs and retained evidence;
 the inventory excludes rebuildable Cargo output and TLC state caches. Java,
-jar, supplied taskr and built mutants have binary hashes in receipts. Tool
+jar, supplied taskr and built mutants have binary hashes in receipts; doctor
+also hashes the Cargo shim target when mutation prerequisites are present. Tool
 output and non-vacuous state counts are required, not merely exit 0.
 
 Every CLI fixture gets a fresh HOME, TASKR_DB, temporary directory and an allowlisted
 environment. A failing synthetic `herdr` executable and absent scratch socket
 prevent reaching the real Herdr daemon. There is no network service or live
 ledger dependency. Child commands have bounded timeouts; timeout/interrupt kills
-their owned process group, including compiler children. Evidence, fixture
+their owned process group, including compiler children. After draining child
+output, `KeyboardInterrupt` propagates through source restoration and evidence
+finalization; Ctrl-C stops the run rather than starting later cases. Evidence, fixture
 ledgers and build output remain for inspection after commands exit. Remove only
 the chosen evidence directory and disposable source copy when finished. A hard
 kill or host crash can interrupt source restoration: discard that disposable
@@ -184,7 +189,7 @@ or move `last_successful_source_commit` until the complete suite and all negativ
 controls pass on the new source. This draft has that field null.
 
 After editing verifier/model/config, maintain `verification_files` hashes too.
-Run driver self-checks with `python3 -m unittest discover -s
+Run driver self-checks with `python3 -B -m unittest discover -s
 products/taskr/verification/inbox -p 'test_*.py'`, then follow the full command
 above. Tests of the receipt parser are not formal or implementation proof.
 Read every TLC result as a shortest story in code terms; compare its atomic
