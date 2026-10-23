@@ -106,9 +106,10 @@ the assignment and retain its checkout. macOS can bypass slotr only with the exp
 campaign `no_slotr` configuration; proof records that host exception.
 
 Result settlement does not prove agent exit. Before handing off or accepting, the
-controller waits for the exact native agent to be idle, rechecks identity before exit
-keys, and observes agent absence plus interactive shell foreground. It does not confirm
-dialogs with Enter. Gate shells also require a successful actual shell exit receipt.
+controller waits for the exact native agent to be idle or done, rechecks identity and
+that ready state before exit keys, and observes agent absence plus interactive shell
+foreground. It does not confirm dialogs with Enter. Gate shells also require a
+successful actual shell exit receipt.
 Only the core's stopped/advance APIs permit handoff or final acceptance; a changed
 native identity or unknown writer remains reserved for explicit recovery. Local
 acceptance grants no merge, release or publication authority.

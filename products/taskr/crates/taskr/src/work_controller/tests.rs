@@ -357,6 +357,40 @@ fn stop_requires_owned_identity_absence_and_shell_foreground() {
     assert!(!b.calls.borrow().iter().any(|c| c.contains("Enter")));
 }
 #[test]
+fn settled_done_agent_stops_without_changing_its_ready_state() {
+    let b = Fake::new();
+    b.active("running");
+    b.native("impl-w11", "native-fixture");
+    b.agents.borrow_mut()[0]["agent_status"] = json!("done");
+    b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["state"] = json!("settled");
+    let mut a = b.current();
+    a["native_session"] = json!("native-fixture");
+    driver::stop(&b, 3, 7, "w1", b.scratch.0.to_str().unwrap(), &a).unwrap();
+    assert!(
+        b.calls.borrow().iter().any(|c| {
+            c == "herdr:agent wait impl-w11 --until idle --until done --timeout 120000"
+        })
+    );
+    assert_eq!(b.current()["process_state"], "stopped");
+    assert_eq!(b.current()["state"], "settled");
+    assert!(b.agents.borrow().is_empty());
+    assert!(!b.calls.borrow().iter().any(|c| c.contains("Enter")));
+}
+#[test]
+fn non_ready_agent_never_gets_exit_keys() {
+    for status in ["blocked", "unknown", "working"] {
+        let b = Fake::new();
+        b.active("running");
+        b.native("impl-w11", "native-fixture");
+        b.agents.borrow_mut()[0]["agent_status"] = json!(status);
+        let mut a = b.current();
+        a["native_session"] = json!("native-fixture");
+        assert!(driver::stop(&b, 3, 7, "w1", b.scratch.0.to_str().unwrap(), &a).is_err());
+        assert!(!b.calls.borrow().iter().any(|c| c.contains("send-keys")));
+        assert_eq!(b.current()["process_state"], "running");
+    }
+}
+#[test]
 fn exact_cases_reject_missing_duplicate_skipped_failed_error_and_extra() {
     let expected = vec!["a".into(), "b".into()];
     for rows in [

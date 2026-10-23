@@ -786,7 +786,7 @@ pub(super) fn stop(
         let native =
             native.ok_or_else(|| failure("cannot stop writer without bound native identity"))?;
         let n = name(a)?;
-        // Wait for the exact owned agent to become idle; any dialog remains an exception.
+        // Idle and done are ready states; any dialog remains an exception.
         if let Some(current) = agent(b, pane)? {
             if !owns_agent(&current, &n, native, pane) {
                 return Err(failure("native identity changed before stop"));
@@ -797,6 +797,8 @@ pub(super) fn stop(
                 &n,
                 "--until",
                 "idle",
+                "--until",
+                "done",
                 "--timeout",
                 "120000",
             ])?;
@@ -804,9 +806,11 @@ pub(super) fn stop(
                 let current = agent(b, pane)?.ok_or_else(|| {
                     failure("owned agent vanished during exit sequence; inspect shell")
                 })?;
-                if !owns_agent(&current, &n, native, pane) || current["agent_status"] != "idle" {
+                if !owns_agent(&current, &n, native, pane)
+                    || !matches!(current["agent_status"].as_str(), Some("idle" | "done"))
+                {
                     return Err(failure(
-                        "native identity or idle state changed before exit input",
+                        "native identity or ready state changed before exit input",
                     ));
                 }
                 same_generation(b, root, g)?;
