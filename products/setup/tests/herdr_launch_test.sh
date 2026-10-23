@@ -840,10 +840,44 @@ printf 'taskr %s task=%s launch=%s\n' "$*" "$TASKR_TASK" "$TASKR_LAUNCH" >>"$SID
 [ "$1" != log ] || printf '%s\n' 'j1 {"account":"example","native_home":"/synthetic/home","provider":"codex","t":2468}'
 EOF
 chmod 0755 "$case_dir/bin/taskr"
+# Global zshenv can replace inherited PATH even with -f; set it after startup.
+# A broken stub/loop must fail promptly and reap its own group, never poll for 30 min.
+fixture_python=$(command -v python3)
+run_sidecar() {
+    side_path=$1
+    shift
+    side_shell=$(command -v "$1") || return 127
+    shift
+    "$fixture_python" -I - "$side_path" "$case_dir/side" "$sidecar" "$home" "$side_shell" "$@" <<'SIDECAR_PY'
+import os, signal, subprocess, sys
+
+path, calls, code, home = sys.argv[1:5]
+expected = path.split(os.pathsep)[0] + '/taskr'
+prefix = ('export PATH="$1" SIDE_CALLS="$2" && hash -r && '
+          '[ "$(command -v taskr)" = "$3" ] || '
+          '{ echo "sidecar fixture: taskr is not the selected stub" >&2; exit 125; }; ')
+child = subprocess.Popen([*sys.argv[5:], prefix + code, 'sidecar-fixture', path, calls, expected],
+                         env={'HOME': home, 'PATH': path, 'SIDE_CALLS': calls},
+                         start_new_session=True)
+try:
+    try:
+        result = child.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        print('sidecar fixture: 20s deadline exceeded; cleaning owned process group', file=sys.stderr)
+        result = 124
+finally:
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    child.wait(timeout=3)
+sys.exit(result)
+SIDECAR_PY
+}
 for sh_cmd in 'sh -c' 'bash --noprofile --norc -c' 'zsh -f -c' 'dash -c'; do
     command -v "${sh_cmd%% *}" >/dev/null || continue
     : >"$case_dir/side"
-    SIDE_CALLS=$case_dir/side PATH="$case_dir/bin:$PATH" $sh_cmd "$sidecar" || fail "${sh_cmd%% *}: sidecar exited $?"
+    run_sidecar "$case_dir/bin:/usr/bin:/bin" $sh_cmd || fail "${sh_cmd%% *}: sidecar exited $?"
     want="taskr log 2468 --limit 1 task=2468 launch=3579
 taskr push codex --codex-bin $codex_bin task=2468 launch=3579"
     [ "$(cat "$case_dir/side")" = "$want" ] || fail "${sh_cmd%% *}: sidecar calls: $(cat "$case_dir/side")"
@@ -863,7 +897,7 @@ for sh_cmd in 'sh -c' 'bash --noprofile --norc -c' 'zsh -f -c' 'dash -c'; do
     command -v "${sh_cmd%% *}" >/dev/null || continue
     : >"$case_dir/side"
     side_rc=0
-    side_out=$(env -i PATH="$case_dir/tbin:/usr/bin:/bin" SIDE_CALLS="$case_dir/side" $sh_cmd "$sidecar") || side_rc=$?
+    side_out=$(run_sidecar "$case_dir/tbin:/usr/bin:/bin" $sh_cmd) || side_rc=$?
     n=${sh_cmd%% *}
     [ "$side_rc" -eq 1 ] || fail "$n: never-registered sidecar exited $side_rc"
     [ "$side_out" = 'herdr-launch: the session never ran taskr start; no push sidecar' ] || fail "$n: output: $side_out"
