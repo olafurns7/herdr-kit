@@ -11,6 +11,19 @@ withhold new drive dispatches. Only one reconciliation call runs at a time. The 
 does not prove a native delivery bound: RPC delays, downtime and actual route expiry
 and fallback behavior require measured runtime evidence.
 
+Periodic discovery reads only thin `work campaigns` root/configuration/generation
+metadata and `work dispatch ROOT` nonterminal metadata (default 32 rows, maximum 64).
+The dispatch order is retained: active/verifying before queued, then priority and ID.
+Only selected IDs receive `work show` before effects or brief generation; their
+revision, state and current run must still match the metadata snapshot. Claim keeps
+its expected-revision CAS. Generation and runner configuration reads use thin campaigns.
+The reserved launcher retains its existing full-list identity check at launch time.
+Explicit `limit`, `returned` and `truncated` fields are validated. A truncated root scan
+withholds dispatch and reports the bound; a partial work pass returns `complete_scan:false`
+and `bounded_conditions` when metadata is truncated or its local pass budget is reached.
+The daemon records those conditions in rate-limited diagnostics. A returned count is
+not represented as the total number of pending items.
+
 ```sh
 taskr work drive ROOT --once
 taskr --json work source WORK

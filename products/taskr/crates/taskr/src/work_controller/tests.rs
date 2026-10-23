@@ -32,6 +32,8 @@ struct Fake {
     crash: Cell<bool>,
     next: RefCell<Value>,
     drift: Cell<bool>,
+    pending_truncated: Cell<bool>,
+    stale_show: Cell<bool>,
 }
 impl Fake {
     fn new() -> Self {
@@ -52,6 +54,8 @@ impl Fake {
                 json!({"action":"stop","launch_id":11,"run_id":9,"round":1,"assignments":[],"results":[]}),
             ),
             drift: Cell::new(false),
+            pending_truncated: Cell::new(false),
+            stale_show: Cell::new(false),
         }
     }
     fn run() -> Value {
@@ -82,20 +86,31 @@ impl Fake {
     }
 }
 impl driver::Backend for Fake {
-    fn read(&self, verb: &str, _id: i64) -> Result<Value> {
-        self.call(format!("read:{verb}"));
-        if self.drift.get()
-            && self
-                .calls
-                .borrow()
-                .iter()
-                .filter(|c| *c == "read:list")
-                .count()
-                > 1
-        {
-            self.snapshot.borrow_mut()["generation"] = json!(8);
+    fn read(&self, verb: &str, id: i64) -> Result<Value> {
+        self.call(format!("read:{verb}:{id}"));
+        let snapshot = self.snapshot.borrow();
+        match verb {
+            "dispatch" => {
+                let work=snapshot["work"].as_array().unwrap().iter().filter(|w|matches!(w["state"].as_str(),Some("queued"|"active"|"verifying"))).map(|w|json!({"work_id":w["work_id"],"revision":w["revision"],"state":w["state"],"priority":w["priority"],"current_run":w["current_run"],"reason":w["reason"]})).collect::<Vec<_>>();
+                Ok(
+                    json!({"campaign":id,"limit":if self.pending_truncated.get(){work.len().max(1)}else{32},"returned":work.len(),"truncated":self.pending_truncated.get(),"work":work}),
+                )
+            }
+            "show" => {
+                let mut work = snapshot["work"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|w| w["work_id"] == id)
+                    .unwrap()
+                    .clone();
+                if self.stale_show.get() {
+                    work["revision"] = json!(99);
+                }
+                Ok(work)
+            }
+            _ => panic!("unexpected full/history read {verb}"),
         }
-        Ok(self.snapshot.borrow().clone())
     }
     fn change(
         &self,
@@ -111,6 +126,10 @@ impl driver::Backend for Fake {
             return Ok(json!({}));
         }
         if verb == "claim" {
+            assert_eq!(
+                data.as_ref().unwrap()["expected_revision"],
+                self.snapshot.borrow()["work"][0]["revision"]
+            );
             let mut s = self.snapshot.borrow_mut();
             let w = &mut s["work"][0];
             w["state"] = json!("active");
@@ -174,6 +193,30 @@ impl driver::Backend for Fake {
     }
     fn command(&self, args: &[String]) -> Result<Value> {
         self.call(format!("command:{}", args.join(" ")));
+        if args == ["work", "campaigns"] {
+            if self.drift.get()
+                && self
+                    .calls
+                    .borrow()
+                    .iter()
+                    .filter(|c| *c == "command:work campaigns")
+                    .count()
+                    > 1
+            {
+                self.snapshot.borrow_mut()["generation"] = json!(8);
+            }
+            let s = self.snapshot.borrow();
+            let rows = if s["configuration"]["enabled"] == true {
+                vec![
+                    json!({"campaign":s["campaign"],"host":s["host"],"generation":s["generation"],"parked":s["parked"],"configuration":s["configuration"]}),
+                ]
+            } else {
+                Vec::new()
+            };
+            return Ok(
+                json!({"limit":1000,"returned":rows.len(),"truncated":false,"campaigns":rows}),
+            );
+        }
         if args[0] == "campaign" {
             return Ok(json!({"root":{"pane_id":"w2:p1"},"lanes":[]}));
         }
@@ -204,7 +247,7 @@ fn disabled_and_historical_campaigns_do_nothing() {
     let b = Fake::new();
     b.snapshot.borrow_mut()["configuration"]["enabled"] = json!(false);
     assert_eq!(driver::drive(&b, 3).unwrap()["disabled"], true);
-    assert_eq!(&*b.calls.borrow(), &["read:list"]);
+    assert_eq!(&*b.calls.borrow(), &["command:work campaigns"]);
 }
 #[test]
 fn duplicate_ticks_never_launch_or_claim_twice() {
@@ -469,4 +512,68 @@ fn source_rejects_dirty_and_changed_commits() {
         runner::source(&dir.0, &before.input_digest).unwrap(),
         before
     );
+}
+#[test]
+fn thin_dispatch_never_reads_terminal_history() {
+    let b = Fake::new();
+    let mut history = b.snapshot.borrow()["work"][0].clone();
+    history["work_id"] = json!(99);
+    history["state"] = json!("done");
+    history["revisions"][0]["contract"] = json!("historical report body must not be parsed");
+    b.snapshot.borrow_mut()["work"]
+        .as_array_mut()
+        .unwrap()
+        .push(history);
+    driver::drive(&b, 3).unwrap();
+    let calls = b.calls.borrow();
+    assert!(calls.iter().any(|c| c == "read:dispatch:3"));
+    assert!(calls.iter().any(|c| c == "read:show:1"));
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c == "read:show:99" || c.starts_with("read:list"))
+    );
+}
+#[test]
+fn truncated_dispatch_reports_partial_coverage() {
+    let b = Fake::new();
+    b.pending_truncated.set(true);
+    let result = driver::drive(&b, 3).unwrap();
+    assert_eq!(result["complete_scan"], false);
+    assert_eq!(result["truncated"], true);
+    assert_eq!(result["returned"], 1);
+    assert_eq!(result["inspected"], 1);
+    assert!(!result["bounded_conditions"].as_array().unwrap().is_empty());
+}
+#[test]
+fn selected_revision_drift_prevents_claim_and_preserves_dispatch_order() {
+    let b = Fake::new();
+    b.stale_show.set(true);
+    let low = b.snapshot.borrow()["work"][0].clone();
+    let mut high = low.clone();
+    high["work_id"] = json!(2);
+    high["priority"] = json!(100);
+    b.snapshot.borrow_mut()["work"] = json!([high, low]);
+    let result = driver::drive(&b, 3).unwrap();
+    assert_eq!(result["stale"], 2);
+    let calls = b.calls.borrow();
+    assert!(
+        calls.iter().position(|c| c == "read:show:2").unwrap()
+            < calls.iter().position(|c| c == "read:show:1").unwrap()
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c == "change:claim" || c == "effect:start")
+    );
+}
+#[test]
+fn thin_scan_requires_explicit_consistent_counts_and_truncation() {
+    for value in [
+        json!({"work":[],"limit":32,"returned":0}),
+        json!({"work":[],"limit":32,"returned":1,"truncated":false}),
+        json!({"work":[{}],"limit":0,"returned":1,"truncated":false}),
+    ] {
+        assert!(scan_rows(&value, "work").is_err());
+    }
 }

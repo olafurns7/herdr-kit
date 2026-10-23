@@ -4,12 +4,14 @@ use std::{collections::BTreeMap, sync::Arc, thread::JoinHandle, time::Instant};
 
 fn scan(mut cli: impl FnMut(&[String]) -> Result<Value>) -> Result<Vec<i64>> {
     let value = cli(&["work".into(), "campaigns".into()])?;
-    value["campaigns"]
-        .as_array()
-        .ok_or_else(|| failure("campaigns snapshot missing"))?
-        .iter()
-        .map(|s| number(s, "campaign"))
-        .collect()
+    let (rows, truncated) = scan_rows(&value, "campaigns")?;
+    if truncated {
+        return Err(failure(format!(
+            "campaign scan bounded at {} roots; additional enabled campaigns were not observed; drive dispatch withheld",
+            value["limit"]
+        )));
+    }
+    rows.iter().map(|s| number(s, "campaign")).collect()
 }
 
 pub(crate) struct Scheduler {
@@ -51,7 +53,21 @@ impl Scheduler {
         for root in finished {
             let result = self.active.remove(&root).unwrap().join();
             match result {
-                Ok(Ok(_)) => {}
+                Ok(Ok(value)) => {
+                    if value["bounded_conditions"]
+                        .as_array()
+                        .is_some_and(|a| !a.is_empty())
+                    {
+                        log.limited(
+                            &format!("work-controller-bound-{root}"),
+                            Duration::from_secs(60),
+                            &format!(
+                                "work controller {root} bounded scan: {}",
+                                value["bounded_conditions"]
+                            ),
+                        );
+                    }
+                }
                 Ok(Err(e)) => log.limited(
                     &format!("work-controller-{root}"),
                     Duration::from_secs(60),
@@ -133,7 +149,7 @@ mod tests {
         let mut calls = Vec::new();
         let roots = scan(|args| {
             calls.push(args.join(" "));
-            Ok(json!({"campaigns":[{"campaign":7}]}))
+            Ok(json!({"limit":1000,"returned":1,"truncated":false,"campaigns":[{"campaign":7}]}))
         })
         .unwrap();
         assert_eq!(calls, ["work campaigns"]);
@@ -172,5 +188,16 @@ mod tests {
         assert!(scheduler.reconciliation.is_none() && scheduler.due <= Instant::now());
         send.send(()).unwrap();
         scheduler.scan.take().unwrap().join().unwrap().unwrap();
+    }
+    #[test]
+    fn truncated_campaign_scan_reports_a_bound_without_dispatching_roots() {
+        let error = scan(|_| {
+            Ok(json!({"limit":1,"returned":1,"truncated":true,"campaigns":[{"campaign":7}]}))
+        })
+        .unwrap_err();
+        assert!(
+            error.message.contains("bounded at 1 roots")
+                && error.message.contains("dispatch withheld")
+        );
     }
 }

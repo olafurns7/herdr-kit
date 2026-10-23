@@ -39,6 +39,19 @@ fn number(v: &Value, key: &str) -> Result<i64> {
         .filter(|n| *n > 0)
         .ok_or_else(|| failure(format!("invalid {key}")))
 }
+fn scan_rows<'a>(v: &'a Value, key: &str) -> Result<(&'a Vec<Value>, bool)> {
+    let rows = v[key]
+        .as_array()
+        .ok_or_else(|| failure(format!("missing {key} scan rows")))?;
+    let limit = number(v, "limit")? as usize;
+    let truncated = v["truncated"]
+        .as_bool()
+        .ok_or_else(|| failure("scan truncation is not explicit"))?;
+    if v["returned"].as_u64() != Some(rows.len() as u64) || rows.len() > limit {
+        return Err(failure("scan count/limit mismatch"));
+    }
+    Ok((rows, truncated))
+}
 fn state_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| failure("HOME is not set"))?;
     let dir = PathBuf::from(home).join(".local/state/taskr/work-controller");

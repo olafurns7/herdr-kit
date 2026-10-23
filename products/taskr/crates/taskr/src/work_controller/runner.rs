@@ -297,7 +297,8 @@ fn run_inner(work_id: i64, launch: i64, cancel: &AtomicBool) -> Result<Value> {
             "actual clean source differs from assigned execution",
         ));
     }
-    let snapshot = read("list", root)?;
+    let snapshot = driver::campaign_snapshot(&driver::Local, root)?
+        .ok_or_else(|| failure("campaign no longer enabled on this host"))?;
     if snapshot["configuration"]["enabled"] != true {
         return Err(failure("campaign disabled before checks"));
     }

@@ -106,7 +106,12 @@ pub(super) fn lane_matches(table: &str, lane: &api::Lane, stage: &str) -> bool {
     })
 }
 fn same_generation(b: &impl Backend, root: i64, generation: i64) -> Result<()> {
-    let s = b.read("list", root)?;
+    let Some(s) = campaign_snapshot(b, root)? else {
+        return Err(store::Error {
+            code: ExitCode::Rejected,
+            message: "campaign no longer enabled on this host".into(),
+        });
+    };
     if s["generation"] != generation
         || s["configuration"]["enabled"] != true
         || s["parked"] != false
@@ -117,6 +122,20 @@ fn same_generation(b: &impl Backend, root: i64, generation: i64) -> Result<()> {
         });
     }
     Ok(())
+}
+pub(super) fn campaign_snapshot(b: &impl Backend, root: i64) -> Result<Option<Value>> {
+    let value = b.command(&["work".into(), "campaigns".into()])?;
+    let (rows, truncated) = scan_rows(&value, "campaigns")?;
+    if let Some(row) = rows.iter().find(|s| s["campaign"] == root) {
+        return Ok(Some(row.clone()));
+    }
+    if truncated {
+        return Err(failure(format!(
+            "campaign scan bounded at {}; requested campaign not observed",
+            value["limit"]
+        )));
+    }
+    Ok(None)
 }
 fn block(b: &impl Backend, work: i64, root: i64, generation: i64, reason: &str) -> Result<Value> {
     b.change(
@@ -229,7 +248,9 @@ fn timestamp() -> String {
 }
 
 pub(super) fn drive(b: &impl Backend, root: i64) -> Result<Value> {
-    let snapshot = b.read("list", root)?;
+    let Some(snapshot) = campaign_snapshot(b, root)? else {
+        return Ok(json!({"disabled":true}));
+    };
     if snapshot["configuration"]["enabled"] != true || snapshot["parked"] != false {
         return Ok(json!({"disabled":true}));
     }
@@ -239,19 +260,38 @@ pub(super) fn drive(b: &impl Backend, root: i64) -> Result<Value> {
         .ok_or_else(|| failure("missing generation"))?;
     let workspace = field(&snapshot["configuration"], "workspace")?;
     let host = store::local_machine();
+    let pending = b.read("dispatch", root)?;
+    if pending["campaign"] != root {
+        return Err(failure("dispatch campaign identity mismatch"));
+    }
+    let (rows, truncated) = scan_rows(&pending, "work")?;
+    let mut inspected = 0usize;
+    let mut stale = 0usize;
     let budget = std::time::Instant::now();
-    for work in array(&snapshot, "work")? {
+    for candidate in rows {
         if budget.elapsed() > Duration::from_secs(4) {
             break;
         }
         if !matches!(
-            work["state"].as_str(),
+            candidate["state"].as_str(),
             Some("queued" | "active" | "verifying")
         ) {
+            return Err(failure("dispatch returned a non-pending work state"));
+        }
+        let id = number(candidate, "work_id")?;
+        let work = b.read("show", id)?;
+        inspected += 1;
+        if work["work_id"] != id || work["campaign"] != root {
+            return Err(failure("selected work identity mismatch"));
+        }
+        if work["revision"] != candidate["revision"]
+            || work["state"] != candidate["state"]
+            || work["current_run"] != candidate["current_run"]
+        {
+            stale += 1;
             continue;
         }
-        let id = number(work, "work_id")?;
-        let c = current_contract(work)?;
+        let c = current_contract(&work)?;
         if snapshot["host"] != host
             || snapshot["configuration"]["host"] != host
             || c.checkout.host != host
@@ -269,7 +309,7 @@ pub(super) fn drive(b: &impl Backend, root: i64) -> Result<Value> {
             block(b, id, root, generation, &e.message)?;
             continue;
         }
-        let result = drive_work(b, root, generation, workspace, work, &c);
+        let result = drive_work(b, root, generation, workspace, &work, &c);
         match result {
             Err(e) if e.code == ExitCode::Rejected => return Err(e),
             Err(e) => {
@@ -278,7 +318,20 @@ pub(super) fn drive(b: &impl Backend, root: i64) -> Result<Value> {
             Ok(()) => {}
         }
     }
-    Ok(json!({"campaign":root,"generation":generation,"driven":true}))
+    let mut conditions = Vec::new();
+    if truncated {
+        conditions.push(format!(
+            "dispatch snapshot bounded at {} rows; additional pending work was not observed",
+            pending["limit"]
+        ));
+    }
+    if inspected < rows.len() {
+        conditions
+            .push("local pass budget reached; returned pending rows remain uninspected".into());
+    }
+    Ok(
+        json!({"campaign":root,"generation":generation,"limit":pending["limit"],"returned":rows.len(),"inspected":inspected,"stale":stale,"truncated":truncated,"complete_scan":!truncated&&inspected==rows.len(),"bounded_conditions":conditions}),
+    )
 }
 fn drive_work(
     b: &impl Backend,
