@@ -24,6 +24,7 @@ const VERBS: &[&str] = &[
     "cancel",
     "recover",
     "campaigns",
+    "dispatch",
     "inputs",
     "hash",
     "stopped",
@@ -36,20 +37,23 @@ fn flags(json: bool, verb: &str) -> store::Result<FlagSet> {
     let mut f = FlagSet::new("work", json);
     if !matches!(
         verb,
-        "list" | "show" | "inputs" | "campaigns" | "hash" | "submit"
+        "list" | "show" | "inputs" | "campaigns" | "dispatch" | "hash" | "submit"
     ) {
         f.int("as", 0, "campaign root")
             .int("generation", -1, "explicit current root generation");
     }
     if !matches!(
         verb,
-        "list" | "show" | "inputs" | "campaigns" | "advance" | "recover"
+        "list" | "show" | "inputs" | "campaigns" | "dispatch" | "advance" | "recover"
     ) {
         f.string("data", "", "bounded typed JSON").string(
             "file",
             "",
             "UTF-8 JSON file captured on client",
         );
+    }
+    if verb == "dispatch" {
+        f.int("limit", 32, "thin nonterminal rows, 1..64");
     }
     if verb == "configure" {
         f.string("enabled", "off", "on or off")
@@ -166,7 +170,7 @@ fn invoke(
     };
     let a = if matches!(
         verb,
-        "list" | "show" | "inputs" | "campaigns" | "hash" | "submit"
+        "list" | "show" | "inputs" | "campaigns" | "dispatch" | "hash" | "submit"
     ) {
         api::Authority {
             root: 0,
@@ -220,6 +224,12 @@ fn invoke(
         }
         "add" => api::add(db, a, api::parse(&raw(f)?)?),
         "campaigns" => api::campaigns(db),
+        "dispatch" => api::dispatch(
+            db,
+            id,
+            u32::try_from(f.get_int("limit"))
+                .map_err(|_| store::usage("dispatch limit must be 1..64"))?,
+        ),
         "inputs" => api::inputs(db, id),
         "hash" => {
             let mut input: api::HashInput = api::parse(&raw(f)?)?;

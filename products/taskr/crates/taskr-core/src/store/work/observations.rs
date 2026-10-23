@@ -10,16 +10,32 @@ pub fn configuration(db: &Connection, campaign: i64) -> Result<Value> {
 }
 /// Admitted read on the authenticated caller host. Never substitutes a root/worker identity.
 pub fn campaigns(db: &Connection) -> Result<Value> {
-    let mut s=db.prepare("select t.id from work_campaigns c join tasks t on t.id=c.root_id where c.enabled=1 and t.status!='closed' and t.parent_id is null and t.current_launch_id is null and t.machine is ? order by t.id")?;
-    let ids = s
+    const LIMIT: usize = 1000;
+    let mut s=db.prepare("select t.id from work_campaigns c join tasks t on t.id=c.root_id where c.enabled=1 and t.status!='closed' and t.parent_id is null and t.current_launch_id is null and t.machine is ? order by t.id limit 1001")?;
+    let mut ids = s
         .query_map([caller_machine()], |r| r.get::<_, i64>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let rows = ids
-        .into_iter()
-        .map(|id| list(db, id))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(json!({"host":machine_name(caller_machine().as_deref()),"campaigns":rows}))
+    let truncated = ids.len() > LIMIT;
+    ids.truncate(LIMIT);
+    let rows=ids.into_iter().map(|id|Ok(json!({"campaign":id,"host":machine_name(task(db,id)?.machine.as_deref()),"generation":delivery::generation(db,id)?,"parked":parked(db,id)?,"configuration":configuration(db,id)?}))).collect::<Result<Vec<_>>>()?;
+    Ok(
+        json!({"host":machine_name(caller_machine().as_deref()),"limit":LIMIT,"returned":rows.len(),"truncated":truncated,"campaigns":rows}),
+    )
 }
+/// Thin nonterminal scan. The bound also keeps worst-case escaped reasons within the RPC envelope.
+pub fn dispatch(db: &Connection, campaign: i64, limit: u32) -> Result<Value> {
+    if !(1..=64).contains(&limit) {
+        return Err(usage("dispatch limit must be 1..64"));
+    }
+    let mut s=db.prepare("select w.id,w.revision,w.state,w.priority,w.current_run,w.reason from work_items w where w.root_id=? and (w.state in ('queued','active','verifying') or w.state='cancelled' and exists(select 1 from work_runs r where r.id=w.current_run and r.work_id=w.id and r.state='active')) order by case when w.state='queued' then 1 else 0 end,w.priority desc,w.id limit ?")?;
+    let mut rows=s.query_map(params![campaign,limit+1],|r|Ok(json!({"work_id":r.get::<_,i64>(0)?,"revision":r.get::<_,i64>(1)?,"state":r.get::<_,String>(2)?,"priority":r.get::<_,i32>(3)?,"current_run":r.get::<_,Option<i64>>(4)?,"reason":r.get::<_,Option<String>>(5)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let truncated = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    Ok(
+        json!({"campaign":campaign,"limit":limit,"returned":rows.len(),"truncated":truncated,"work":rows}),
+    )
+}
+
 pub fn block(db: &mut Connection, a: Authority, id: i64, input: Reason) -> Result<Value> {
     text(&input.reason, 4096, "block reason")?;
     transaction(db, |tx| {

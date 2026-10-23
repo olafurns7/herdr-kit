@@ -1528,3 +1528,134 @@ fn acceptance_uses_native_route_transactionally_even_when_parked_and_keeps_audit
         assert_eq!(db.query_row("select count(*) from events where kind='message' and json_extract(data,'$.notice.reason')='accepted'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     }
 }
+
+#[test]
+fn daemon_reads_stay_thin_bounded_and_leave_detail_history_compatible() {
+    let w = Work::new();
+    w.configure();
+    let old = w.queued(w.contract(false));
+    let run = w.claim(&old, "historical-report");
+    let ass = &run["assignments"][0];
+    w.running(ass);
+    let report = "x".repeat(65536);
+    let exec = w.submit(
+        ass,
+        json!({"kind":"execution","result":{"source":w.source(),"report":report,"artifacts":[]}}),
+    );
+    w.stop(ass);
+    let rid = run["run_id"].to_string();
+    w.review(&rid, &exec, "clear");
+    w.call("advance", Some(&rid), None);
+    w.add(None); // unassigned backlog is not dispatchable
+    let mut queued = Vec::new();
+    for priority in [1, 3, 2] {
+        let id = w.queued(w.contract(false));
+        w.call(
+            "revise",
+            Some(&id),
+            Some(json!({"expected_revision":1,"priority":priority})),
+        );
+        queued.push(id);
+    }
+    let campaigns = w.h.ok(&[], &["work", "campaigns"]);
+    assert!(campaigns.to_string().len() < 8192);
+    assert!(campaigns["campaigns"][0].get("work").is_none());
+    assert!(campaigns["campaigns"][0].get("configuration").is_some());
+    let thin = w.h.ok(&[], &["work", "dispatch", &w.root, "--limit", "2"]);
+    assert_eq!(thin["returned"], 2);
+    assert_eq!(thin["limit"], 2);
+    assert_eq!(thin["truncated"], true);
+    assert_eq!(thin["work"][0]["work_id"].to_string(), queued[1]);
+    assert_eq!(thin["work"][1]["work_id"].to_string(), queued[2]);
+    assert!(thin.to_string().len() < 4096);
+    assert!(thin["work"][0].get("runs").is_none());
+    w.call(
+        "cancel",
+        Some(&queued[0]),
+        Some(json!({"reason":"cancel queued fixture"})),
+    );
+    let thin = w.h.ok(&[], &["work", "dispatch", &w.root]);
+    assert_eq!(thin["returned"], 2);
+    assert_eq!(thin["truncated"], false);
+    let detail = w.h.ok(&[], &["work", "show", &old]);
+    assert_eq!(
+        detail["runs"][0]["results"][0]["payload"]["result"]["report"]
+            .as_str()
+            .unwrap()
+            .len(),
+        65536
+    );
+    assert!(
+        w.h.ok(&[], &["work", "list", &w.root])["work"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["work_id"].to_string() == old)
+    );
+    for limit in ["0", "65", "-1"] {
+        assert_eq!(
+            w.h.output(&[], &["work", "dispatch", &w.root, "--limit", limit], b"")
+                .status
+                .code(),
+            Some(2)
+        );
+    }
+}
+
+#[test]
+fn restarted_dispatch_finds_cancelled_cleanup_without_relaunching_and_omits_it_after_stop() {
+    let w = Work::new();
+    w.configure();
+    let id = w.queued(w.contract(false));
+    let run = w.claim(&id, "cancel-restart");
+    let ass = &run["assignments"][0];
+    w.running(ass);
+    w.call(
+        "cancel",
+        Some(&id),
+        Some(json!({"reason":"owner cancelled while process was live"})),
+    );
+    let queued = w.queued(w.contract(false));
+    let launches_before: i64 =
+        w.h.conn()
+            .query_row("select count(*) from launches", [], |r| r.get(0))
+            .unwrap();
+    // A new CLI process has no controller memory: only the durable projection can recover cleanup.
+    let fresh = w.h.ok(&[], &["work", "dispatch", &w.root, "--limit", "1"]);
+    assert_eq!(fresh["returned"], 1);
+    assert_eq!(fresh["truncated"], true);
+    assert_eq!(fresh["work"][0]["work_id"].to_string(), id);
+    assert_eq!(fresh["work"][0]["state"], "cancelled");
+    assert_eq!(fresh["work"][0]["current_run"], run["run_id"]);
+    assert_eq!(
+        w.h.conn()
+            .query_row("select count(*) from launches", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        launches_before
+    );
+    assert_eq!(
+        w.h.conn()
+            .query_row("select count(*) from work_checkouts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    w.stop(ass);
+    let fresh = w.h.ok(&[], &["work", "dispatch", &w.root]);
+    assert_eq!(fresh["returned"], 1);
+    assert_eq!(fresh["work"][0]["work_id"].to_string(), queued);
+    assert_eq!(w.h.ok(&[], &["work", "show", &id])["state"], "cancelled");
+    assert_eq!(
+        w.h.conn()
+            .query_row("select count(*) from work_checkouts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        w.h.conn()
+            .query_row("select count(*) from launches", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        launches_before
+    );
+}

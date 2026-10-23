@@ -23,7 +23,8 @@ revise, cancel or configure its work. Other controller mutations require the
 campaign itself. Workers submit only as current `TASKR_TASK`/`TASKR_LAUNCH`.
 
 Campaigns start disabled. `list` returns configuration, parked state and current
-root generation along with work, so the controller can refresh its authority.
+root generation along with work for detail consumers. Daemon scans use the thin
+`campaigns` and `dispatch` reads below.
 Configure before claiming:
 
 ```sh
@@ -101,7 +102,9 @@ checks have approved argv (1..128 arguments) and timeout (1..3600000 ms).
 | --- | --- | --- |
 | configure | campaign root | enabled, max_active, max_review_pending (or flags above) |
 | add | none | campaign, title, optional priority/contract; returns work_id |
-| list / show | campaign / work | read; show includes revision, runs, assignments, immutable results |
+| campaigns | none | thin enabled root/configuration/generation snapshots for authenticated host |
+| dispatch | campaign | thin nonterminal work summaries; --limit defaults 32, bounded 1..64 |
+| list / show | campaign / work | compatibility/detail reads; show includes revision, runs, assignments, immutable results |
 | revise | work | expected_revision, optional title/priority/contract |
 | queue | work | expected_revision |
 | claim | work | expected_revision, key; returns run_id and executor assignment/launch_id |
@@ -110,7 +113,6 @@ checks have approved argv (1..128 arguments) and timeout (1..3600000 ms).
 | started | launch | derives launch receipt; optional {pane,native_session,observed_at} explicitly binds native identity |
 | stopped | launch | {pane,native_session,foreground:{pid,command},agent_absent,observed_at} |
 | block | work | {reason}; identical named condition is a no-op |
-| campaigns | none | enabled campaign snapshots on authenticated caller host only |
 | inputs | work | canonical profile/dependency/input/checkout snapshot |
 | hash | none | {profile,dependencies:[{work,revision,input_digest}]} -> canonical digests |
 | uncertain | launch | reason |
@@ -284,9 +286,20 @@ changes the input digest. `work inputs WORK` returns all canonical inputs and
 current dependency acceptance receipts. The controller-owned local `work source`
 command uses this authoritative RPC snapshot and actual clean Git source on the
 calling host; client-host daemons must never open a separate authority DB.
-`work campaigns` similarly returns only enabled root snapshots for the current
-authenticated host, with root ID, generation, host/configuration and work. These
-reads are fresh over RPC and do not impersonate a worker.
+`work campaigns` returns only enabled root/configuration/generation metadata for
+the current authenticated host, without work or report/history bodies. It is
+bounded to 1000 roots and exposes `limit`, `returned` and `truncated`.
+
+`work dispatch ROOT --limit N` returns only work ID, revision, state, priority,
+current_run and reason for nonterminal dispatch/cleanup candidates. Default 32 and
+maximum 64 rows keep even worst-case escaped reasons inside the RPC envelope. The
+response includes `limit`, `returned`, `truncated` and `work`. Active/verifying
+work and cancelled items whose current run still needs process-stop/checkout
+cleanup precede queued work, then priority desc/ID asc. Cancelled state is
+preserved; the read never reserves a launch. After cancellation cleanup makes
+the run terminal, that item disappears from dispatch. The controller loads `show`
+only for selected items. Existing `list`/`show` retain detail/history compatibility;
+these reads do not impersonate workers or implement workflow transitions.
 
 Add accepts optional `key`. The same authenticated root/key and canonical typed
 Add input return the same work ID, including after process restart. A changed
