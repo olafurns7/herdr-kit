@@ -44,9 +44,11 @@ impl Priority {
             PathBuf::from(&self.file)
         }
     }
+    #[cfg(target_os = "linux")]
     pub fn level(&self, campaign: &str, task: &str) -> u32 {
         self.level_from(campaign, task, self.read().as_deref())
     }
+    #[cfg(target_os = "linux")]
     pub fn level_from(&self, campaign: &str, task: &str, bytes: Option<&[u8]>) -> u32 {
         let matches = |pattern: &str| {
             pattern
