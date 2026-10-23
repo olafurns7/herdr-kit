@@ -4,6 +4,12 @@ Work control is off by default. Only explicitly enabled campaigns on the authent
 local host are scanned by the existing resident daemon. Historical campaigns do not
 dispatch. The controller uses the ordinary taskr CLI/RPC boundary on client hosts;
 it does not open a second authority database. Agent startup runs off the observer loop.
+An off-thread `taskr --json jobs reconcile` is due immediately on startup and on a
+five-second scheduling interval, independently of campaign reads and agent starts.
+Its first confirmed result permits campaign scanning; failed or unconfirmed results
+withhold new drive dispatches. Only one reconciliation call runs at a time. The timer
+does not prove a native delivery bound: RPC delays, downtime and actual route expiry
+and fallback behavior require measured runtime evidence.
 
 ```sh
 taskr work drive ROOT --once
