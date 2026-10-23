@@ -911,16 +911,15 @@ class AdmissionTest(unittest.TestCase):
     def test_payload_receipt_identity_replaces_inherited_values(self):
         identities = []
         for _ in range(2):
-            result = self.invoke('run', '--pool', 'heavy', '--campaign', 'receipt',
-                                 '--purpose', 'test', '--', sys.executable, '-c',
+            result = self.invoke('run', '--', sys.executable, '-c',
                                  'import json,os; print(json.dumps({k:os.environ[k] for k in '
                                  '("SLOTR_RUN","SLOTR_INVOCATION","SLOTR_POOL","SLOTR_SLOT")}))',
                                  env=dict(self.env, SLOTR_RUN='inherited', SLOTR_INVOCATION='inherited'))
             self.assertEqual(result.returncode, 0, result.stderr)
             receipt = json.loads(result.stdout)
-            self.assertRegex(receipt['SLOTR_RUN'], r'^slotr-heavy-[0-9]+$')
+            self.assertRegex(receipt['SLOTR_RUN'], r'^slotr-runtime-[0-9]+$')
             self.assertRegex(receipt['SLOTR_INVOCATION'], r'^[0-9a-f]{32}$')
-            self.assertEqual(receipt['SLOTR_POOL'], 'heavy')
+            self.assertEqual(receipt['SLOTR_POOL'], 'runtime')
             self.assertTrue(receipt['SLOTR_SLOT'].isdigit())
             self.assertIn('slotr: admitted ' + receipt['SLOTR_RUN'], result.stderr)
             identities.append(receipt)
