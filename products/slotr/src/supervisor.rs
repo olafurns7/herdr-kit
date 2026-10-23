@@ -242,7 +242,7 @@ pub fn exit_path(run: &str, invocation: &str) -> std::path::PathBuf {
     state::root().join(format!("exit-{run}-{invocation}.json"))
 }
 pub fn supervise(run: &str, invocation: &str, cmd: &[String], cfg: &Config) -> Result<i32> {
-    let result = supervise_child(run, cmd, cfg);
+    let result = supervise_child(run, invocation, cmd, cfg);
     // systemd-run --wait can report success for a failed unit that is already
     // collected, so the client reads the code from this file instead.
     let code = result
@@ -253,7 +253,7 @@ pub fn supervise(run: &str, invocation: &str, cmd: &[String], cfg: &Config) -> R
     }
     result
 }
-fn supervise_child(run: &str, cmd: &[String], cfg: &Config) -> Result<i32> {
+fn supervise_child(run: &str, invocation: &str, cmd: &[String], cfg: &Config) -> Result<i32> {
     manager::signals();
     let h = state::transaction(|s| {
         let h = s
@@ -271,6 +271,7 @@ fn supervise_child(run: &str, cmd: &[String], cfg: &Config) -> Result<i32> {
     command
         .args(&cmd[1..])
         .env("SLOTR_RUN", &h.run)
+        .env("SLOTR_INVOCATION", invocation)
         .env("SLOTR_POOL", &h.request.pool)
         .env("SLOTR_SLOT", h.slot.to_string());
     if let Some(base) = h.port_base {
