@@ -91,7 +91,7 @@ impl driver::Backend for Fake {
         let snapshot = self.snapshot.borrow();
         match verb {
             "dispatch" => {
-                let work=snapshot["work"].as_array().unwrap().iter().filter(|w|matches!(w["state"].as_str(),Some("queued"|"active"|"verifying"))).map(|w|json!({"work_id":w["work_id"],"revision":w["revision"],"state":w["state"],"priority":w["priority"],"current_run":w["current_run"],"reason":w["reason"]})).collect::<Vec<_>>();
+                let work=snapshot["work"].as_array().unwrap().iter().filter(|w|matches!(w["state"].as_str(),Some("queued"|"active"|"verifying"))||w["state"]=="cancelled"&&current_run(w).is_some_and(|r|r["state"]=="active")).map(|w|json!({"work_id":w["work_id"],"revision":w["revision"],"state":w["state"],"priority":w["priority"],"current_run":w["current_run"],"reason":w["reason"]})).collect::<Vec<_>>();
                 Ok(
                     json!({"campaign":id,"limit":if self.pending_truncated.get(){work.len().max(1)}else{32},"returned":work.len(),"truncated":self.pending_truncated.get(),"work":work}),
                 )
@@ -158,6 +158,9 @@ impl driver::Backend for Fake {
             "stopped" => {
                 assert_eq!(data.as_ref().unwrap()["agent_absent"], true);
                 a["process_state"] = json!("stopped");
+            }
+            "reconcile" => {
+                assert_eq!(data.as_ref().unwrap()["abandon"], false);
             }
             _ => panic!("unexpected fake mutation {verb}"),
         }
@@ -576,4 +579,36 @@ fn thin_scan_requires_explicit_consistent_counts_and_truncation() {
     ] {
         assert!(scan_rows(&value, "work").is_err());
     }
+}
+#[test]
+fn cancelled_selected_writer_is_stopped_and_reconciled_without_any_launch() {
+    let b = Fake::new();
+    b.active("running");
+    b.native("impl-w11", "native-fixture");
+    b.snapshot.borrow_mut()["work"][0]["state"] = json!("cancelled");
+    b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
+        json!("native-fixture");
+    driver::drive(&b, 3).unwrap();
+    let calls = b.calls.borrow();
+    assert!(calls.iter().any(|c| c == "read:show:1"));
+    assert!(calls.iter().any(|c| c == "change:stopped"));
+    assert!(calls.iter().any(|c| c == "change:reconcile"));
+    assert!(!calls.iter().any(|c| matches!(
+        c.as_str(),
+        "change:claim" | "change:reserve" | "change:bind" | "change:advance" | "effect:start"
+    ) || c.starts_with("command:prompt")));
+}
+#[test]
+fn cancelled_unidentified_start_never_recovers_a_prompt_or_restarts() {
+    let b = Fake::new();
+    b.active("starting");
+    b.native("impl-w11", "native-fixture");
+    b.snapshot.borrow_mut()["work"][0]["state"] = json!("cancelled");
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["process_state"], "uncertain");
+    assert!(!b.calls.borrow().iter().any(|c| c == "effect:start"
+        || c == "change:reserve"
+        || c == "change:claim"
+        || c == "change:bind"
+        || c.starts_with("command:prompt")));
 }

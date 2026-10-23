@@ -274,7 +274,7 @@ pub(super) fn drive(b: &impl Backend, root: i64) -> Result<Value> {
         }
         if !matches!(
             candidate["state"].as_str(),
-            Some("queued" | "active" | "verifying")
+            Some("queued" | "active" | "verifying" | "cancelled")
         ) {
             return Err(failure("dispatch returned a non-pending work state"));
         }
@@ -341,6 +341,9 @@ fn drive_work(
     work: &Value,
     c: &api::Contract,
 ) -> Result<()> {
+    if work["state"] == "cancelled" {
+        return reconcile_cancelled(b, root, g, ws, work, c);
+    }
     let id = number(work, "work_id")?;
     let run = if work["state"] == "queued" {
         // Validate policy before the durable claim, so a drifted lane never creates a writer.
@@ -443,6 +446,63 @@ fn drive_work(
         Some("accepted" | "escalation" | "wait") => {}
         _ => return Err(failure("unknown durable advance action")),
     }
+    Ok(())
+}
+fn reconcile_cancelled(
+    b: &impl Backend,
+    root: i64,
+    g: i64,
+    ws: &str,
+    work: &Value,
+    c: &api::Contract,
+) -> Result<()> {
+    let run = current_run(work)
+        .ok_or_else(|| failure("cancelled work has no current run to reconcile"))?;
+    if run["state"] != "active" {
+        return Ok(());
+    }
+    let assignments = array(run, "assignments")?;
+    for a in assignments {
+        match a["process_state"].as_str() {
+            Some("stopped") => {}
+            Some("starting" | "running" | "uncertain") => {
+                // Never recover a prompt/start after cancellation; stop only a proven bound identity.
+                if a["stage"] != "gate" && a["native_session"].as_str().is_none() {
+                    uncertain(
+                        b,
+                        a,
+                        root,
+                        g,
+                        "cancelled launch has no bound native identity; explicit reconciliation required, no prompt or replacement",
+                    )?;
+                    return Ok(());
+                }
+                if let Err(e) = stop(b, root, g, ws, &c.checkout.cwd, a) {
+                    if e.code == ExitCode::Rejected {
+                        return Err(e);
+                    }
+                    uncertain(b, a, root, g, &e.message)?;
+                    return Ok(());
+                }
+            }
+            _ => {
+                return Err(failure(
+                    "cancelled run has an unsettled reservation or unknown process state; no launch permitted",
+                ));
+            }
+        }
+    }
+    let a = assignments.last().ok_or_else(|| {
+        failure("cancelled active run has no assignment for cleanup reconciliation")
+    })?;
+    same_generation(b, root, g)?;
+    b.change(
+        "reconcile",
+        number(a, "launch_id")?,
+        root,
+        g,
+        Some(json!({"stopped_event":a["stop_event"],"abandon":false})),
+    )?;
     Ok(())
 }
 fn new_pane(

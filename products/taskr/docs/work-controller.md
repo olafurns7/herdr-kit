@@ -13,6 +13,11 @@ and fallback behavior require measured runtime evidence.
 
 Periodic discovery reads only thin `work campaigns` root/configuration/generation
 metadata and `work dispatch ROOT` nonterminal metadata (default 32 rows, maximum 64).
+Cancelled items whose current run still needs stop/checkout cleanup are included too.
+Those items take a reconciliation-only path: stop an exactly bound process and use the
+core reconciliation receipt API. They never claim, reserve, start, prompt or advance
+new work. Unknown native identities and unproved gate cleanup remain uncertain with
+the checkout retained.
 The dispatch order is retained: active/verifying before queued, then priority and ID.
 Only selected IDs receive `work show` before effects or brief generation; their
 revision, state and current run must still match the metadata snapshot. Claim keeps
