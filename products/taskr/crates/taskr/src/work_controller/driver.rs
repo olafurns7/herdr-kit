@@ -544,7 +544,7 @@ fn dispatch(
     same_generation(b, root, g)?;
     b.change("bind",launch,root,g,Some(json!({"workspace":ws,"tab":tab,"pane":pane,"dispatch_key":format!("controller:{root}:{launch}")})))?;
     // Anything after bind is recovery work on this exact reservation, never another start.
-    let effect = (|| {
+    let effect: Result<()> = (|| {
         same_generation(b, root, g)?;
         if gate {
             let exit = dir.join("shell-exit");
