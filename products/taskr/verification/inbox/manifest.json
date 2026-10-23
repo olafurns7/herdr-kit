@@ -124,7 +124,7 @@
     "outcome": "blocked",
     "reason": "Candidate correspondence inspected at the pinned source; complete parent execution and independent review remain pending. No v5 work-domain or controller proof.",
     "review": "pending",
-    "source_commit": "8e4b1f254c7c3d1b1967094d216790f58f616288"
+    "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64"
   },
   "delivery_policy": {
     "coalescible": [
@@ -211,9 +211,9 @@
     "RequiredHandled": "Cursor cannot cross an unhandled ask under ASK_ONLY.",
     "TypeOK": "All modeled state is within finite bounds."
   },
-  "source_commit": "8e4b1f254c7c3d1b1967094d216790f58f616288",
+  "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
   "source_files": {
-    "Cargo.lock": "71255a7f95d492984b3240911e513ee35d80a72b2a9d53a02de4fcbf60f3b0bb",
+    "Cargo.lock": "d36a11012c88f9cee4d4fc568ec0a89787f528a670b40e4374318a2ccff04361",
     "Cargo.toml": "4a71713910d85d573d4884e75190ce4ff46455b3066369f658ffc263d090b865",
     "products/taskr/crates/taskr-core/Cargo.toml": "86f1f4b1df6fef228440562ad7bc07b268b3e45941877d94e2dc4f5e99182748",
     "products/taskr/crates/taskr-core/src/lib.rs": "cc2173abb756741e3047a30e2e0e3d2f30c48f10a7982f671c84597f3c1d4cc1",
@@ -235,16 +235,18 @@
   },
   "source_maintenance": {
     "changed_covered_files": [
+      "Cargo.lock",
       "products/taskr/crates/taskr-core/src/schema.rs",
       "products/taskr/crates/taskr-core/src/store/mod.rs",
       "products/taskr/crates/taskr-core/src/store/orch.rs",
       "products/taskr/crates/taskr-core/src/store/worker.rs"
     ],
     "correspondence_note": "SYNC.md",
+    "final_delta": "From initial 8e4b1f2 candidate: only covered Cargo.lock changes, slotr package version 0.3.1 to 0.3.2; no dependency/toolchain change. Matching slotr manifest inspected but not added to coverage; release preparation is not installation/publication.",
     "from_source_commit": "71d4146fdbe99a67c0c698877478bc7c796cc360",
     "model_and_driver": "unchanged; fixed legacy-worker fixture excludes active work assignments and routes",
-    "to_source_commit": "8e4b1f254c7c3d1b1967094d216790f58f616288",
-    "unchanged_covered_file_count": 15
+    "to_source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
+    "unchanged_covered_file_count": 14
   },
   "status": "source-map-updated-execution-pending",
   "tool_identity": {
@@ -276,8 +278,8 @@
   "verification_files": {
     "Inbox.cfg": "629e507b4663c9bfc0b0d1667f13d236e494d216b30d46b09255740206f2911c",
     "Inbox.tla": "f220a2d373f7191b0a5c81e6a66c2b42ba96dd7f806981fee694bd3963ed5034",
-    "README.md": "a9a005da51221198de833132c76bc204097641a5cf477eabeabbb606a65586ab",
-    "SYNC.md": "997ea21bafd96b6763ac51e10b8e3d6ea277f7bd795bd73672696c14e1016644",
+    "README.md": "a6116c9cb348a9f676b6b8f5b544f4b657635b2c50ed7e5a22b1686ca0c6eb73",
+    "SYNC.md": "ad7ac2f28e49c9f111ca14b8a3d1e586a33e6396a16a771e481d13397df9fefd",
     "test_verify.py": "dc32222fcfed29e7298bb7346b0b50455e49010ecf1871d304b169725c5fe7e0",
     "verify.py": "6eab013ef5e18af03f193d21127f422b437bd6d027f6ba354b596cc2bd1c2926"
   }

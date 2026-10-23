@@ -1,6 +1,6 @@
 # Integrated v5 source correspondence (execution pending)
 
-Inspected source: `8e4b1f254c7c3d1b1967094d216790f58f616288`.
+Inspected source: `a21f83afc3fe2082f3da980f1d93e6992f804f64`.
 Previous source and last successful execution: `71d4146fdbe99a67c0c698877478bc7c796cc360`.
 The new map is a reviewed-by-author candidate, not a passing integrated-source
 proof. Parent execution and independent review remain pending. Historical
@@ -9,7 +9,7 @@ proof. Parent execution and independent review remain pending. Historical
 ## Every covered change
 
 All nineteen covered file blobs were compared between those exact commits.
-Four changed; fifteen are byte-identical. This is a correspondence review,
+Five changed; fourteen are byte-identical. This is a correspondence review,
 not a checksum-only acceptance or migration/runtime test.
 
 | Changed file | Pinned source evidence | Effect within the modeled scope |
@@ -18,12 +18,13 @@ not a checksum-only acceptance or migration/runtime test.
 | `taskr-core/src/store/mod.rs` | exports at 14,19; transaction at 96–101 | Adds `jobs` and `work` module exports. `transaction` is byte-equivalent apart from its two-line shift: immediate transaction, closure, commit. Repair `TransactionBoundary`/`RejectAck` anchors; no transition split or guard move. |
 | `taskr-core/src/store/worker.rs` | identity resolution at 12–89; ready/done recipient choice at 243–252 | `resolve_inner` is unchanged. `write` now omits a ready/done recipient for an enabled live work assignment. Ask routing is unchanged. The replay's fresh legacy worker has no work assignment, so its ready still reaches the root. Fixed pre-existing `got,ready,ask` remain a valid `ASK_ONLY` input; active-work suppression is excluded. |
 | `taskr-core/src/store/orch.rs` | launch guard at 188–196; close guard at 280–288 | Refuses replacing or closing a work-owned process without reconciliation. These guards do not write inbox positions or consumer leases. The replay's ordinary fresh lane has no assignment, so launch setup still passes. Root generation/adopt behavior is unchanged; closure and relaunch remain excluded. |
+| Root `Cargo.lock` | slotr package version row; matching `products/slotr/Cargo.toml:3` | Only slotr 0.3.1 becomes 0.3.2. No dependency, checksum or toolchain change; no inbox/model transition changes. This is release preparation, not installation or publication. |
 
-Paths above are under `products/taskr/crates/`. Source commit `9f25eaf` already
+Crate paths above are under `products/taskr/crates/`. Source commit `9f25eaf` already
 precedes the inspected target and pins the observed combined v5 schema fingerprint;
 `schema.rs` is identical at those two commits. No production fingerprint is edited.
 
-The unchanged covered files are root `Cargo.toml`, `Cargo.lock` and
+The unchanged covered files are root `Cargo.toml` and
 `rust-toolchain.toml`; `products/taskr/schema.sql`; both taskr and taskr-core
 `Cargo.toml` files; taskr-core `src/lib.rs` and `src/store/{consumer,inbox,delivery}.rs`;
 taskr CLI `src/write/{mod,inbox,handover}.rs`; and
@@ -42,11 +43,18 @@ production modules contain no direct writes to `acked_event_id`,
 `pending_event_id` or `consumer_leases`; test fixtures are separate.
 
 These supporting paths were read for correspondence, not added to the nineteen
-formally covered file hashes. No proof of their work/route state machines is
+source-sync covered file hashes. No proof of their work/route state machines is
 claimed. The model assumes an initialized open local root, same host, fixed
 pre-existing events and no active work-owned producer suppression or native route.
 External handling before required ack remains a caller assumption. Lease validity
 is at the transactional guard, not a wall-clock guarantee about final commit time.
+
+The final source pin includes the inspected slotr version bump after the initial
+`8e4b1f2` correspondence candidate. All other eighteen covered blobs match that
+candidate. Supporting work/jobs DDL and `quiet` are unchanged. Later supporting
+module diffs concern jobs receipt/fallback behavior and work validation/row typing;
+they add no protected cursor/lease writer and are outside the unassigned fixture.
+Their state machines remain excluded; the slotr manifest is not added to coverage.
 
 ## Candidate changes and remaining proof
 

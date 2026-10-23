@@ -3,14 +3,14 @@
 This checks a small TLA+ model with TLC and replays selected paths through the
 real taskr CLI and SQLite. It is not a proof of the Rust implementation. The
 source/action map is `manifest.json`; its inspected candidate source pin is
-`8e4b1f254c7c3d1b1967094d216790f58f616288`. Historical source `71d4146` passed all 25
+`a21f83afc3fe2082f3da980f1d93e6992f804f64`. Historical source `71d4146` passed all 25
 cases and six driver self-checks using package `d4c08a6` in frozen checkout
 `69f3ff9`; the independent execution review is READY. Portable receipt and tool
 hashes are recorded in the manifest's `last_execution` and `tool_identity` fields.
 
 **Current integrated-source proof remains BLOCKED: execution/review are pending.**
 [Source correspondence](SYNC.md) explains every covered change from `71d4146`
-to `8e4b1f2`, why model/driver logic stays unchanged, and the repaired map anchors.
+to `a21f83a`, why model/driver logic stays unchanged, and the repaired map anchors.
 The updated hashes identify an inspected candidate; they do not establish a pass.
 Historical execution used package bytes at `d4c08a6` and covers neither this
 integrated candidate nor the later metadata/documentation edits. No result here
