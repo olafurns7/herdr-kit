@@ -1,5 +1,5 @@
 //! Level 2, one campaign: goal and plan, the lane tree, asks and decisions, docs, PRs and
-//! the log. Five panes from 100 columns; under that, one pane at a time behind a tab bar.
+//! the log. Six panes from 100 columns; under that, one pane at a time behind a tab bar.
 
 use ratatui::{
     Frame,
@@ -11,7 +11,7 @@ use ratatui::{
 use crate::{
     App, Hit,
     keys::hint,
-    model::{Campaign, Event, Lane},
+    model::{Campaign, Event, Lane, WorkItem},
     theme::Theme,
     ui::{self, age, bold, clip, hhmm, one_line, pad, sp},
 };
@@ -19,7 +19,9 @@ use crate::{
 /// A pane's content at a given width.
 type PaneLines = fn(&App, usize) -> Vec<Line<'static>>;
 
-const PANES: [&str; 5] = ["Lanes", "Asks", "Docs", "PRs", "Log"];
+pub(crate) const TASKS: usize = 5;
+pub(crate) const PANE_COUNT: usize = 6;
+const PANES: [&str; PANE_COUNT] = ["Lanes", "Asks", "Docs", "PRs", "Log", "Tasks"];
 const DOCS: usize = 2;
 
 /// One row of the lane tree; `lane` is `None` for the lead.
@@ -329,6 +331,161 @@ fn docs(app: &App, width: usize) -> Vec<Line<'static>> {
     rows.collect()
 }
 
+pub(crate) fn selected_work(app: &App) -> Option<&WorkItem> {
+    app.data.campaign.work.as_ref()?.items.get(app.scroll)
+}
+
+fn required(value: &Option<String>) -> &str {
+    value
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unavailable")
+}
+
+fn work_status(w: &WorkItem) -> String {
+    let stage = w
+        .assignment
+        .as_ref()
+        .map(|a| a.stage.as_str())
+        .unwrap_or("unassigned");
+    format!(
+        "{} · {stage} · proof {} · review {}",
+        w.state,
+        required(&w.proof),
+        required(&w.review)
+    )
+}
+
+fn tasks(f: &mut Frame, app: &App, area: Rect) -> (usize, usize, usize) {
+    let t = &app.theme;
+    let Some(work) = &app.data.campaign.work else {
+        f.render_widget(Paragraph::new("Tasks unavailable · legacy server"), area);
+        if app.pane == TASKS {
+            app.seen.borrow_mut().page = (1, 0);
+        }
+        return (0, 0, 0);
+    };
+    let [head, grid, foot] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(5),
+    ])
+    .areas(area);
+    let width = area.width as usize;
+    f.render_widget(
+        Paragraph::new(Line::from(sp(
+            format!(
+                "{} of {} tasks · priority order",
+                work.items.len(),
+                work.total
+            ),
+            t.dim,
+        ))),
+        head,
+    );
+    let total = work.items.len();
+    if app.pane == TASKS {
+        app.seen.borrow_mut().page = (1, total);
+    }
+    let at = app.scroll.min(total.saturating_sub(1));
+    let first = if app.pane == TASKS {
+        top(at, grid.height as usize)
+    } else {
+        0
+    };
+    let lines: Vec<Line> = work
+        .items
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(grid.height as usize)
+        .map(|(i, w)| {
+            let spans = if width < 80 {
+                vec![
+                    sp(format!("W{} {} ", w.work_id, w.state), t.accent),
+                    sp(w.title.clone(), t.text),
+                ]
+            } else {
+                vec![
+                    sp(
+                        format!("W{} p{} r{} ", w.work_id, w.priority, w.revision),
+                        t.accent,
+                    ),
+                    sp(format!("{} · {}", w.title, work_status(w)), t.text),
+                ]
+            };
+            let line = Line::from(ui::fit(spans, width));
+            if app.pane == TASKS && i == at {
+                line.style(t.selected())
+            } else {
+                line
+            }
+        })
+        .collect();
+    let shown = lines.len();
+    for y in 0..shown {
+        app.hit(
+            Rect {
+                y: grid.y + y as u16,
+                height: 1,
+                ..grid
+            },
+            Hit::Work(first + y),
+        );
+    }
+    f.render_widget(Paragraph::new(lines), grid);
+    if let Some(w) = work.items.get(if app.pane == TASKS { at } else { 0 }) {
+        let process = w
+            .assignment
+            .as_ref()
+            .map(|a| {
+                format!(
+                    "{} · {} · process {} · result {} · stop {}",
+                    w.state,
+                    a.stage,
+                    required(&a.process_state),
+                    a.state,
+                    a.stop_event.map_or("pending".into(), |e| e.to_string())
+                )
+            })
+            .unwrap_or_else(|| format!("{} · unassigned", w.state));
+        let receipt = w.acceptance_id.map_or("acceptance pending".into(), |id| {
+            format!("acceptance receipt {id}")
+        });
+        let lines = [
+            format!(
+                "W{} r{} · run {} · round {} · {} · {}",
+                w.work_id,
+                w.revision,
+                w.current_run.map_or("—".into(), |n| n.to_string()),
+                w.round.map_or("—".into(), |n| n.to_string()),
+                w.action.as_deref().unwrap_or("no stage action"),
+                w.title
+            ),
+            process,
+            format!("proof {}", required(&w.proof)),
+            format!("review {} · {receipt}", required(&w.review)),
+            w.reason
+                .clone()
+                .unwrap_or_else(|| "no blocked/recheck reason".into()),
+        ]
+        .into_iter()
+        .map(|s| Line::from(sp(clip(&one_line(&s), width), t.sub)))
+        .collect::<Vec<_>>();
+        f.render_widget(Paragraph::new(lines), foot);
+    } else {
+        f.render_widget(
+            Paragraph::new(if work.total == 0 {
+                "No durable tasks"
+            } else {
+                "No matching tasks in this snapshot"
+            }),
+            grid,
+        );
+    }
+    (first, shown, total)
+}
+
 /// The document `o` reads: the one under the Docs cursor, or the selected lane's latest
 /// report (the plan, then the goal, for the lead).
 pub(crate) fn doc(app: &App) -> Option<&crate::model::DocRow> {
@@ -357,12 +514,12 @@ fn first_row(app: &App, pane: usize, height: usize, total: usize) -> usize {
         return 0;
     }
     // In Docs `scroll` is the cursor, so it travels to the last row, one at a time.
-    app.seen.borrow_mut().page = if pane == DOCS {
+    app.seen.borrow_mut().page = if pane == DOCS || pane == TASKS {
         (1, total)
     } else {
         (height, total)
     };
-    if pane == DOCS {
+    if pane == DOCS || pane == TASKS {
         top(app.scroll.min(total.saturating_sub(1)), height)
     } else {
         app.scroll.min(total.saturating_sub(height))
@@ -535,10 +692,15 @@ pub(crate) fn target(app: &App) -> Option<(String, String, bool)> {
     })
 }
 
-fn hints(narrow: bool) -> Vec<(&'static str, &'static str)> {
+fn hints(narrow: bool, tasks: bool) -> Vec<(&'static str, &'static str)> {
+    let enter = if tasks {
+        hint("⏎", Some("evidence"))
+    } else {
+        hint("⏎", None)
+    };
     if narrow {
         return vec![
-            hint("⏎", None),
+            enter,
             hint("o", None),
             hint("tab", None),
             hint("h", None),
@@ -546,10 +708,14 @@ fn hints(narrow: bool) -> Vec<(&'static str, &'static str)> {
         ];
     }
     vec![
-        hint("⏎", Some("go to pane")),
+        if tasks {
+            enter
+        } else {
+            hint("⏎", Some("go to pane"))
+        },
         hint("o", None),
         hint("tab", Some("next pane")),
-        hint("1-5", None),
+        hint("1-6", None),
         hint("/", None),
         hint("h", None),
         hint("?", None),
@@ -599,7 +765,7 @@ fn wide(f: &mut Frame, app: &App) {
         ),
     ];
     ui::header(f, app, head, crumb);
-    ui::footer(f, app, foot, &hints(false));
+    ui::footer(f, app, foot, &hints(false, app.pane == TASKS));
 
     let inner = ui::pane(f, t, top, "Goal and plan", false);
     let [text, chart] =
@@ -638,10 +804,28 @@ fn wide(f: &mut Frame, app: &App) {
         &format!("[1] Lanes · {open} open · {} closed", c.lanes.len() - open),
         app.pane == 0,
     );
-    let inner = block.inner(left);
-    f.render_widget(block, left);
-    app.hit(left, Hit::Pane(0));
-    lanes(f, app, inner, false);
+    if c.work.is_some() || app.pane == TASKS {
+        let [work_area, lane_area] =
+            Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(left);
+        let inner = ui::pane(
+            f,
+            t,
+            work_area,
+            "[6] Tasks · durable work",
+            app.pane == TASKS,
+        );
+        app.hit(work_area, Hit::Pane(TASKS));
+        tasks(f, app, inner);
+        let inner = block.inner(lane_area);
+        f.render_widget(block, lane_area);
+        app.hit(lane_area, Hit::Pane(0));
+        lanes(f, app, inner, false);
+    } else {
+        let inner = block.inner(left);
+        f.render_widget(block, left);
+        app.hit(left, Hit::Pane(0));
+        lanes(f, app, inner, false);
+    }
 
     let [a, d, p, l] = Layout::vertical([
         Constraint::Length(9),
@@ -688,7 +872,7 @@ fn narrow(f: &mut Frame, app: &App) {
     ])
     .areas(area);
     ui::header(f, app, head, vec![bold(c.root.name.clone(), t.text)]);
-    ui::footer(f, app, foot, &hints(true));
+    ui::footer(f, app, foot, &hints(true, app.pane == TASKS));
 
     let (since, drifted) = drift(c);
     let facts = vec![sp(
@@ -722,6 +906,7 @@ fn narrow(f: &mut Frame, app: &App) {
 
     let (first, shown, total) = match app.pane {
         0 => lanes(f, app, body, true),
+        TASKS => tasks(f, app, body),
         n => {
             let lines = [asks, docs, prs, log][n.min(4) - 1](app, w - 2);
             let (total, h) = (lines.len(), body.height as usize);
@@ -747,10 +932,21 @@ fn narrow(f: &mut Frame, app: &App) {
         0,
         0,
         0,
+        c.work.as_ref().map_or(0, |w| w.items.len()),
     ];
     let mut bar = vec![Span::raw(" ")];
     let mut under = vec![sp("─", t.rule)];
-    for (i, name) in PANES.iter().enumerate() {
+    let count = if c.work.is_some() || app.pane == TASKS {
+        PANE_COUNT
+    } else {
+        PANE_COUNT - 1
+    };
+    let start = if w < 60 && app.pane == TASKS {
+        app.pane.saturating_sub(1)
+    } else {
+        0
+    };
+    for (i, name) in PANES.iter().enumerate().take(count).skip(start) {
         let label = if counts[i] > 0 {
             format!("{name} {}", counts[i])
         } else {
@@ -773,7 +969,7 @@ fn narrow(f: &mut Frame, app: &App) {
         } else {
             sp(label, t.sub)
         });
-        if i + 1 < PANES.len() {
+        if i + 1 < count {
             bar.push(sp(" · ", t.rule));
             under.push(sp("───", t.rule));
         }

@@ -24,6 +24,7 @@ mod keys;
 mod lists;
 mod slotr;
 mod ui;
+mod work;
 
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
@@ -146,6 +147,7 @@ pub(crate) enum Hit {
     /// A row of the glance or of the all-campaigns list.
     Row(usize),
     Lane(usize),
+    Work(usize),
     Pane(usize),
     /// A footer hint: the same as its key.
     Key(String),
@@ -247,7 +249,7 @@ pub struct App {
     pub row: usize,
     /// Roots whose rows changed since the owner last looked (the dim `•`).
     pub changed: Vec<i64>,
-    /// The focused pane of the campaign view: lanes, asks, docs, PRs, log.
+    /// The focused pane of the campaign view: lanes, asks, docs, PRs, log, tasks.
     pub pane: usize,
     /// The lane cursor, in tree order; 0 is the lead.
     pub lane: usize,
@@ -511,6 +513,10 @@ impl App {
                 // Matches lose their place in the tree: a flat list under the lead.
                 let root = v.data.campaign.root.id;
                 v.data.campaign.lanes.retain(|l| has(&l.name));
+                if let Some(work) = &mut v.data.campaign.work {
+                    work.items
+                        .retain(|w| has(&w.title) || has(&format!("W{}", w.work_id)));
+                }
                 v.data
                     .campaign
                     .lanes

@@ -39,6 +39,8 @@ pub enum Job {
     },
     /// `taskr doc get ID`: the text of a document the campaign read listed.
     Doc { row: DocRow },
+    /// `taskr work show ID`: selected work evidence, read lazily.
+    Work { id: i64 },
     /// `taskr --json slotr`: slotr's pools, read on the hub.
     Slotr,
 }
@@ -75,13 +77,17 @@ impl Job {
             Job::Park { name, .. } => format!("unpark {name}"),
             Job::Campaign { name, .. } => format!("read {name}"),
             Job::Doc { row } => format!("read {} {}", row.kind, row.id),
+            Job::Work { id } => format!("read W{id}"),
             Job::Slotr => "read slotr".into(),
         }
     }
 
     /// A read changes nothing; everything else writes or moves the owner's screen.
     pub fn reads(&self) -> bool {
-        matches!(self, Job::Campaign { .. } | Job::Doc { .. } | Job::Slotr)
+        matches!(
+            self,
+            Job::Campaign { .. } | Job::Doc { .. } | Job::Work { .. } | Job::Slotr
+        )
     }
 
     /// The taskr arguments, for the jobs taskr runs. Values follow `--`, so a text that
@@ -116,6 +122,7 @@ impl Job {
             }
             Job::Campaign { root, .. } => args(&["--json", "campaign", &root.to_string(), "--all"]),
             Job::Doc { row } => args(&["doc", "get", &row.id.to_string()]),
+            Job::Work { id } => args(&["--json", "work", "show", &id.to_string()]),
             Job::Slotr => args(&["--json", "slotr"]),
         }
     }
@@ -189,6 +196,11 @@ impl Job {
                 let slotr = serde_json::from_slice(&out.text()?)
                     .map_err(|e| format!("unreadable slotr read: {e}"))?;
                 Ok(Done::Slotr(Box::new(slotr)))
+            }
+            Job::Work { id } => {
+                let value = serde_json::from_slice(&out.text()?)
+                    .map_err(|e| format!("unreadable work read: {e}"))?;
+                crate::work::document(*id, &value).map(Done::Doc)
             }
             Job::Doc { .. } => Ok(Done::Doc(
                 String::from_utf8_lossy(&out.text()?).into_owned(),

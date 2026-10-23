@@ -96,6 +96,7 @@ fn go_json(v: &Value) -> String {
             "host",
             "pane_id",
             "lanes",
+            "work_counts",
             "lead",
             "lead_waiting",
             "last",
@@ -149,7 +150,7 @@ fn go_json(v: &Value) -> String {
         keys.iter()
             .filter_map(|k| map.get(*k).map(|v| {
                 // An ask's question is opaque data: printed whole, not through these key lists.
-                let v = if *k == "question" {
+                let v = if matches!(*k, "question" | "work_counts") {
                     taskr_core::compact_json(v).unwrap()
                 } else {
                     go_json(v)
@@ -279,8 +280,16 @@ pub(super) fn snapshot(db: &Connection) -> Result<Value> {
         }
         tasks.insert(tid, t);
     }
+    let work_counts = super::campaign::work_counts(db)?;
     let sparks = sparks(db, 0)?;
     for (&rid, r) in &mut roots {
+        if let Some(counts) = &work_counts {
+            let counts = counts.get(&rid).cloned().unwrap_or_else(|| json!({"total":0,"backlog":0,"queued":0,"active":0,"verifying":0,"done":0,"cancelled":0,"blocked":0}));
+            r.active |= ["backlog", "queued", "active", "verifying", "blocked"]
+                .iter()
+                .any(|k| n(&counts, k) > 0);
+            r.v["work_counts"] = counts;
+        }
         r.v["spark"] = json!(sparks[&rid]);
         if let Some(bytes) = store::tmp::total(db, rid)? {
             r.v["tmp_bytes"] = json!(bytes);
@@ -783,6 +792,15 @@ mod tests {
     fn glance_json_omits_activity_id() {
         let c = json!({"activity_id":7,"activity_age_ms":5,"name":"x"});
         assert_eq!(go_json(&c), r#"{"name":"x","activity_age_ms":5}"#);
+    }
+    #[test]
+    fn glance_json_preserves_work_counts_and_legacy_absence() {
+        let old = json!({"activity_age_ms":5,"name":"x"});
+        assert!(!go_json(&old).contains("work_counts"));
+        let counts = json!({"total":2,"queued":1,"blocked":1});
+        let upgraded = json!({"activity_age_ms":5,"name":"x","work_counts":counts});
+        let decoded: Value = serde_json::from_str(&go_json(&upgraded)).unwrap();
+        assert_eq!(decoded["work_counts"], counts);
     }
     #[test]
     fn owner_context_boundaries() {

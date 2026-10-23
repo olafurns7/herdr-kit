@@ -171,7 +171,7 @@ fn view(app: &mut App, code: KeyCode, ctrl: bool) -> Effect {
     let text = app.screen == Screen::Asks && full;
     let lists = app.screen.rows()
         || matches!(app.screen, Screen::AllCampaigns | Screen::Slotr)
-        || (app.screen == Screen::Campaign && app.pane == 0);
+        || (app.screen == Screen::Campaign && matches!(app.pane, 0 | campaign::TASKS));
     let half = if lists { 5 } else { (page / 2).max(1) } as isize;
     match code {
         // `q` closes before it quits.
@@ -197,6 +197,9 @@ fn view(app: &mut App, code: KeyCode, ctrl: bool) -> Effect {
         KeyCode::Char('D') => app.switch(Screen::Glance),
         KeyCode::Char('A') => app.switch(Screen::Asks),
         KeyCode::Char('F') => app.switch(Screen::Fleet),
+        KeyCode::Char('I') if app.screen == Screen::Campaign && app.pane == campaign::TASKS => {
+            return report(app);
+        }
         KeyCode::Char('I') => app.inspect(),
         KeyCode::Char(c @ ('[' | ']')) => {
             let at = app.glance_view().screen.peer().unwrap_or(0);
@@ -354,6 +357,12 @@ fn open(app: &mut App, root: i64, name: &str) -> Effect {
 
 /// `o`: read the document under the cursor, or the selected lane's report.
 fn report(app: &mut App) -> Effect {
+    if app.pane == campaign::TASKS {
+        return match campaign::selected_work(&app.view()) {
+            Some(w) => Effect::Run(Job::Work { id: w.work_id }),
+            None => say(app, "no durable task selected"),
+        };
+    }
     match campaign::doc(&app.view()) {
         Some(row) if row.captured => Effect::Run(Job::Doc { row: row.clone() }),
         Some(_) => say(
@@ -634,13 +643,23 @@ fn campaign_key(app: &mut App, code: KeyCode) -> Effect {
     let (host, pane, _) = campaign::target(&view).unwrap_or_default();
     let turn = |app: &mut App, pane: usize| (app.pane, app.scroll) = (pane, 0);
     match code {
-        KeyCode::Tab => turn(app, (app.pane + 1) % 5),
-        KeyCode::BackTab => turn(app, (app.pane + 4) % 5),
-        KeyCode::Char(n @ '1'..='5') => turn(app, n as usize - '1' as usize),
+        KeyCode::Tab => turn(app, (app.pane + 1) % campaign::PANE_COUNT),
+        KeyCode::BackTab => turn(
+            app,
+            (app.pane + campaign::PANE_COUNT - 1) % campaign::PANE_COUNT,
+        ),
+        KeyCode::Char(n @ '1'..='6') => turn(app, n as usize - '1' as usize),
+        KeyCode::Enter if app.pane == campaign::TASKS => return report(app),
         KeyCode::Enter if app.pane == 0 => return go_to(app, &host, &pane),
         // Docs: Enter reads.
         KeyCode::Enter if app.pane == 2 => return report(app),
         KeyCode::Char('o') => return report(app),
+        KeyCode::Char('y') if app.pane == campaign::TASKS => {
+            return say(
+                app,
+                "Tasks: Enter or o reads evidence; select Lanes for pane actions",
+            );
+        }
         KeyCode::Char('y') => return copy(app, &host, &pane),
         KeyCode::Char('a') => {
             let need = g
@@ -964,6 +983,19 @@ pub fn done(app: &mut App, job: &Job, result: Result<Done, String>) {
         return campaign_done(app, (*root, name.as_str(), *open, *seq), showing, result);
     }
     app.status = match (job, result) {
+        (Job::Work { id }, Ok(Done::Doc(body))) => {
+            app.data.doc = Doc {
+                id: *id,
+                kind: "Task evidence".into(),
+                name: format!("W{id}"),
+                body,
+                ..Doc::default()
+            };
+            if app.screen != Screen::Pager {
+                app.go(Screen::Pager);
+            }
+            None
+        }
         (Job::Doc { row }, Ok(Done::Doc(body))) => {
             app.data.doc = Doc {
                 id: row.id,
@@ -1073,6 +1105,42 @@ fn campaign_done(
     } else if app.data.campaign.root.id == root && (showing || wanted.is_some()) {
         // A refresh under the view: the cursor stays where it can.
         app.lane = app.lane.min(campaign.lanes.len());
+        if app.pane == campaign::TASKS {
+            let own = app.screen == Screen::Campaign;
+            let saved = app.back.iter().rposition(|b| b.screen == Screen::Campaign);
+            if let Some((cursor, filter)) = if own {
+                Some((app.scroll, app.filter.as_str()))
+            } else {
+                saved.map(|i| (app.back[i].scroll, app.back[i].filter.as_str()))
+            } {
+                let q = filter.to_lowercase();
+                let matching = |w: &&crate::model::WorkItem| {
+                    w.title.to_lowercase().contains(&q) || format!("w{}", w.work_id).contains(&q)
+                };
+                let old = app
+                    .data
+                    .campaign
+                    .work
+                    .as_ref()
+                    .map(|w| w.items.as_slice())
+                    .unwrap_or_default();
+                let new = campaign
+                    .work
+                    .as_ref()
+                    .map(|w| w.items.as_slice())
+                    .unwrap_or_default();
+                let id = old.iter().filter(matching).nth(cursor).map(|w| w.work_id);
+                let next: Vec<_> = new.iter().filter(matching).collect();
+                let at = id
+                    .and_then(|id| next.iter().position(|w| w.work_id == id))
+                    .unwrap_or(cursor.min(next.len().saturating_sub(1)));
+                if own {
+                    app.scroll = at;
+                } else if let Some(i) = saved {
+                    app.back[i].scroll = at;
+                }
+            }
+        }
         app.data.campaign = *campaign;
     } else {
         return;
@@ -1093,7 +1161,7 @@ fn hint_key(keys: &str) -> Option<KeyCode> {
         "shift-tab" => KeyCode::BackTab,
         "space" => KeyCode::Char(' '),
         "esc" => KeyCode::Esc,
-        // `j k`, `g G`: the first of the pair. `1-5` is not one key.
+        // `j k`, `g G`: the first of the pair. `1-6` is not one key.
         _ => KeyCode::Char(keys.chars().next().filter(|_| !keys.contains('-'))?),
     })
 }
@@ -1125,6 +1193,7 @@ pub fn mouse(app: &mut App, event: MouseEvent, now: Instant) -> Effect {
             let over = match hit {
                 Some(Hit::Pane(i)) => i,
                 Some(Hit::Lane(_)) => 0,
+                Some(Hit::Work(_)) => campaign::TASKS,
                 _ => app.pane,
             };
             if app.screen == Screen::Campaign && over != app.pane {
@@ -1163,6 +1232,10 @@ pub fn mouse(app: &mut App, event: MouseEvent, now: Instant) -> Effect {
                 Hit::Lane(i) => {
                     pane(app, 0);
                     app.lane = i;
+                }
+                Hit::Work(i) => {
+                    pane(app, campaign::TASKS);
+                    app.scroll = i;
                 }
                 Hit::Ask(id) => app.pick = Some(id),
                 // Chooses, and nothing more: only `y` on the review sends.
@@ -1491,6 +1564,105 @@ mod tests {
         // Esc while typing clears it too.
         p.keys("/x\x1b");
         assert!(p.app.filter.is_empty() && !p.app.typing);
+    }
+
+    #[test]
+    fn durable_tasks_keep_legacy_unknown_and_empty_distinct() {
+        let mut p = Pane::new(120, 40);
+        p.app.screen = Screen::Campaign;
+        p.keys("6");
+        assert!(p.text().contains("Tasks unavailable"));
+        p.app.data.campaign.work = Some(crate::model::WorkSnapshot::default());
+        let shown = p.text();
+        assert!(shown.contains("No durable tasks"));
+        assert!(!shown.contains("Tasks unavailable"));
+        assert_eq!(press(&mut p.app, KeyCode::Enter), Effect::None);
+        assert!(p.status().contains("no durable task selected"));
+    }
+
+    #[test]
+    fn durable_tasks_select_work_ids_and_open_evidence_at_narrow_widths() {
+        for width in [46, 120] {
+            let mut p = Pane::new(width, 40);
+            p.app.screen = Screen::Campaign;
+            p.app.data.campaign.work = Some(serde_json::from_value(serde_json::json!({
+                "total":3,"limit":100,"items":[
+                    {"work_id":701,"title":"Unassigned backlog","revision":1,"state":"backlog","proof":"pending","review":"pending"},
+                    {"work_id":702,"title":"Failed gate","revision":2,"state":"verifying","proof":"failed","review":"pending","reason":"blocked: uncertain gate process","assignment":{"task_id":22,"launch_id":33,"stage":"gate","state":"settled","process_state":"uncertain"}},
+                    {"work_id":703,"title":"Accepted work","revision":3,"state":"done","proof":"passed","review":"clear","acceptance_id":99,"reason":"dependency changed; recheck required"}
+                ]
+            })).unwrap());
+            p.keys("6");
+            assert!(p.text().contains("unassigned"));
+            assert_eq!(
+                press(&mut p.app, KeyCode::Enter),
+                Effect::Run(Job::Work { id: 701 })
+            );
+            p.keys("j");
+            let shown = p.text();
+            for value in ["proof failed", "process uncertain", "blocked: uncertain"] {
+                assert!(shown.contains(value), "{shown}");
+            }
+            assert_eq!(
+                press(&mut p.app, KeyCode::Char('I')),
+                Effect::Run(Job::Work { id: 702 })
+            );
+            let lane = p.app.lane;
+            assert_eq!(press(&mut p.app, KeyCode::Char('y')), Effect::None);
+            assert_eq!(p.app.lane, lane);
+            p.keys("G");
+            let shown = p.text();
+            for value in ["acceptance receipt 99", "recheck required"] {
+                assert!(shown.contains(value), "{shown}");
+            }
+            assert_eq!(
+                press(&mut p.app, KeyCode::Char('o')),
+                Effect::Run(Job::Work { id: 703 })
+            );
+            done(
+                &mut p.app,
+                &Job::Work { id: 703 },
+                Ok(Done::Doc("# Accepted evidence\n\nreceipt 99".into())),
+            );
+            assert_eq!(p.app.screen, Screen::Pager);
+            p.keys("h");
+            assert_eq!(
+                (p.app.screen, p.app.pane, p.app.scroll),
+                (Screen::Campaign, campaign::TASKS, 2)
+            );
+            p.keys("\t");
+            assert_eq!(p.app.pane, 0);
+            p.code(KeyCode::BackTab);
+            assert_eq!(p.app.pane, campaign::TASKS);
+        }
+    }
+
+    #[test]
+    fn work_refresh_preserves_identity_under_filter_and_pager_scroll() {
+        let mut p = Pane::new(46, 40);
+        p.app.screen = Screen::Campaign;
+        p.app.data.campaign.work = Some(serde_json::from_value(serde_json::json!({
+            "items":[{"work_id":1,"title":"other"},{"work_id":2,"title":"target A"},{"work_id":3,"title":"target B"}]
+        })).unwrap());
+        p.keys("6/target\nj");
+        assert_eq!(campaign::selected_work(&p.app.view()).unwrap().work_id, 3);
+        done(
+            &mut p.app,
+            &Job::Work { id: 3 },
+            Ok(Done::Doc("# Evidence".into())),
+        );
+        p.app.scroll = 7;
+        let job = follow(&p.app).unwrap();
+        let mut next = p.app.data.campaign.clone();
+        next.work.as_mut().unwrap().items.reverse();
+        done(&mut p.app, &job, Ok(Done::Campaign(Box::new(next))));
+        assert_eq!(p.app.scroll, 7, "refresh must not move the pager");
+        p.keys("h");
+        assert_eq!(campaign::selected_work(&p.app.view()).unwrap().work_id, 3);
+        assert_eq!(
+            press(&mut p.app, KeyCode::Enter),
+            Effect::Run(Job::Work { id: 3 })
+        );
     }
 
     #[test]

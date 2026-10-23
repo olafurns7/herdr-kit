@@ -59,7 +59,7 @@ pub(crate) const KEYS: &[Key] = &[
         "toggle Health, the hub's production report (h stays back)",
         GLANCE,
     ),
-    key("Move", "1-5", "jump", "jump to a pane", CAMPAIGN),
+    key("Move", "1-6", "jump", "jump to a pane", CAMPAIGN),
     key("Move", "wheel", "scroll", "scroll", ALL),
     key(
         "Go",
@@ -117,7 +117,13 @@ pub(crate) const KEYS: &[Key] = &[
         "park or unpark (confirms)",
         GLANCE | LIST | DETAIL | CAMPAIGN,
     ),
-    key("Act", "o", "report", "read the report or doc", CAMPAIGN),
+    key(
+        "Act",
+        "o",
+        "report",
+        "read the report, doc or selected task evidence",
+        CAMPAIGN,
+    ),
     key(
         "Act",
         "o",
