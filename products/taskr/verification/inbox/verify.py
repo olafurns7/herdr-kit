@@ -328,7 +328,7 @@ def replay(run, binary, case, mutant=None):
         assert cli.snapshot()["cursor"] == (cli.ask, None), "successor failed to commit"
     write_json(folder / "snapshot.json", cli.snapshot())
     return {"required_event": cli.ask, "excluded_event": cli.ready,
-            "database": str(cli.db.relative_to(run.out)))}
+            "database": str(cli.db.relative_to(run.out))}
 
 
 def mutation_source(args, manifest):
