@@ -1488,9 +1488,9 @@ fn acceptance_uses_native_route_transactionally_even_when_parked_and_keeps_audit
         let deadline = taskr_core::store::stamp(
             taskr_core::store::parse_time(&now).unwrap() + time::Duration::seconds(90),
         );
-        db.execute("insert into jobs_operations(id,root_id,generation,binding,host,kind,reference_id,revision,status,created_at,updated_at) values('native-op',?,0,'synthetic-binding-token',?,'await',?,1,'working',?,?)",params![w.root.parse::<i64>().unwrap(),taskr_core::store::local_machine(),id.parse::<i64>().unwrap(),now,now]).unwrap();
+        db.execute("insert into jobs_operations(id,root_id,generation,binding,host,kind,reference_id,revision,status,created_at,updated_at) values('0123456789abcdef0123456789abcdef',?,0,'synthetic-binding-token',?,'await',?,1,'working',?,?)",params![w.root.parse::<i64>().unwrap(),taskr_core::store::local_machine(),id.parse::<i64>().unwrap(),now,now]).unwrap();
         db.execute(
-            "insert into jobs_routes(operation_id,state,deadline) values('native-op','active',?)",
+            "insert into jobs_routes(operation_id,state,deadline) values('0123456789abcdef0123456789abcdef','active',?)",
             [deadline],
         )
         .unwrap();
@@ -1500,7 +1500,7 @@ fn acceptance_uses_native_route_transactionally_even_when_parked_and_keeps_audit
         assert_eq!(w.call("advance", Some(&rid), None)["action"], "accepted");
         assert_eq!(
             db.query_row(
-                "select result_id from jobs_routes where operation_id='native-op'",
+                "select result_id from jobs_routes where operation_id='0123456789abcdef0123456789abcdef'",
                 [],
                 |r| r.get::<_, i64>(0)
             )
@@ -1509,7 +1509,7 @@ fn acceptance_uses_native_route_transactionally_even_when_parked_and_keeps_audit
         );
         assert_eq!(
             db.query_row(
-                "select status from jobs_operations where id='native-op'",
+                "select status from jobs_operations where id='0123456789abcdef0123456789abcdef'",
                 [],
                 |r| r.get::<_, String>(0)
             )
