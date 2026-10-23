@@ -117,6 +117,11 @@
     "max_acquisitions": 3,
     "max_fence": 3
   },
+  "current_integration": {
+    "outcome": "blocked",
+    "reason": "Covered v5 source drift awaits final code-sync maintenance after integration; no v5 work-domain or controller proof.",
+    "source_hashes_unchanged": true
+  },
   "delivery_policy": {
     "coalescible": [
       "got"
@@ -132,7 +137,43 @@
     ]
   },
   "format": 1,
-  "last_successful_source_commit": null,
+  "last_execution": {
+    "baseline_counts": {
+      "distinct": 17340,
+      "generated": 98941,
+      "queued": 0
+    },
+    "case_count": 25,
+    "command_log_count": 83,
+    "evidence_entry_count": 176,
+    "execution_review_verdict": "READY",
+    "model_negative_control_distinct": {
+      "NC1": 393,
+      "NC2": 530,
+      "NC3": 183
+    },
+    "mutant_binary_sha256": {
+      "NC1": "8eed5f77ec58d662493962394d46da9128b740c8e71413106194b027b51982f8",
+      "NC2": "b2bf2e110701728f88065574ae49c4e71e027eda6038bb03f0035fc73bae3f66",
+      "NC3": "e2a298acfb73507f2379a20d3d88adbae88e8f1051ea91797306bc0fde9ae409"
+    },
+    "outcome": "pass",
+    "package_commit": "d4c08a6ad49b31495730eb6d30262220213b3e64",
+    "proof_checkout_commit": "69f3ff9d11df8bea44c534acbfef96e9b20d1719",
+    "receipt_sha256": {
+      "commands.json": "3b82686817277861501d868f166d7ad1bf152d929e2792d904344134086917bf",
+      "evidence-hashes.json": "dff8daf9b21ef0a5aad8546dbf99886ce9fc8760d852d9654bf27e5e3134b860",
+      "execution-review.md": "4262cf44dc533965603bdfab5602a043df757c86b3a7372d425a1e8066c5adc7",
+      "manifest.json": "229cb125d9616a5254a186ad2ff66bb1080475e46512d9975d0f90d29c97e56c",
+      "package-hashes.json": "d0ab0cf8a3304a3df22d30555f6c65f6fab6adffab10f681457aa879c0c4fc47",
+      "result.json": "b8d729565e3ecc7dfa73a32281299c578655b7203d8d34c6da7b06e9f0550993",
+      "self-checks-and-proof.log": "496f89694d8add5a622b20b258a513b54bb46a9db23d6c267a996f23e4b52c61"
+    },
+    "scope": "Historical bounded inbox model and fixed CLI replays only; later metadata/documentation edits and current integration were not executed by this receipt.",
+    "self_check_count": 6,
+    "source_commit": "71d4146fdbe99a67c0c698877478bc7c796cc360"
+  },
+  "last_successful_source_commit": "71d4146fdbe99a67c0c698877478bc7c796cc360",
   "negative_controls": {
     "NC1": {
       "expected_invariant": "AckAuthority",
@@ -188,11 +229,20 @@
     "products/taskr/schema.sql": "7a05b404a2c901a21c7bcc35867eb196d403ecec51d5d1bec58c8fae41911355",
     "rust-toolchain.toml": "d0396bf4ee19fe73ba0cb427f6f0a95c0669e352bd7c92610bfa0578953bdf84"
   },
-  "status": "draft-execution-pending",
+  "status": "verified-historical-source-only",
   "tool_identity": {
     "engine": "TLA+ TLC, tlc2.TLC, exhaustive BFS, one worker, seed 1",
     "identity_evidence": "Each run pins SHA-256 of Java, TLC jar, supplied taskr and built mutants; Java -version and command receipts retained.",
-    "last_successful_tool_hashes": null,
+    "last_successful_tool_hashes": {
+      "cargo_sha256": "ec1b9233e7f72990ecd8e62063fa7f6c3dfc2bec8e97f88bff165f9100ac696a",
+      "java_sha256": "0f642542ea1f0be6957557c0db96653ec128113bb5a4aaa7c2534d1d72ddb51f",
+      "taskr_sha256": "a194c8a00d976244fe3bd39b730b754eb772bb8de88e112bc1a98bccb4ccd2f7",
+      "tlc_jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+    },
+    "last_successful_versions": {
+      "java": "openjdk version \"21.0.13\" 2026-10-20 LTS\nOpenJDK Runtime Environment Temurin-21.0.13+9 (build 21.0.13+9-LTS)\nOpenJDK 64-Bit Server VM Temurin-21.0.13+9 (build 21.0.13+9-LTS, mixed mode, sharing)",
+      "tlc": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+    },
     "prerequisites": [
       "Python >=3.11 with sqlite3",
       "Java",
@@ -209,7 +259,7 @@
   "verification_files": {
     "Inbox.cfg": "629e507b4663c9bfc0b0d1667f13d236e494d216b30d46b09255740206f2911c",
     "Inbox.tla": "f220a2d373f7191b0a5c81e6a66c2b42ba96dd7f806981fee694bd3963ed5034",
-    "README.md": "8f5dd645a7b9fcd4ae9fd4e92d283e52dc4a920dca09f812afed9cb5ab4026fb",
+    "README.md": "c9218ea67a1cb34c94c609e68f08a6cd1c3a36f316f1432f740a60655c636366",
     "test_verify.py": "dc32222fcfed29e7298bb7346b0b50455e49010ecf1871d304b169725c5fe7e0",
     "verify.py": "6eab013ef5e18af03f193d21127f422b437bd6d027f6ba354b596cc2bd1c2926"
   }

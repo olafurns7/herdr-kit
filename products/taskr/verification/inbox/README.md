@@ -1,9 +1,19 @@
-# Inbox fencing: bounded safety package (draft, execution pending)
+# Inbox fencing: bounded safety package (historical source verified)
 
 This checks a small TLA+ model with TLC and replays selected paths through the
 real taskr CLI and SQLite. It is not a proof of the Rust implementation. The
 source/action map is `manifest.json`; its source pin is
-`71d4146fdbe99a67c0c698877478bc7c796cc360`. No successful execution is recorded yet.
+`71d4146fdbe99a67c0c698877478bc7c796cc360`. Historical execution passed all 25
+cases and six driver self-checks using package `d4c08a6` in frozen checkout
+`69f3ff9`; the independent execution review is READY. Portable receipt and tool
+hashes are recorded in the manifest's `last_execution` and `tool_identity` fields.
+
+**Current v5 source drift remains BLOCKED pending final code-sync maintenance.**
+The covered source hashes remain pinned to `71d4146`; changes in `schema.rs`,
+`store/mod.rs`, `store/orch.rs`, and `store/worker.rs` prevent verification on the
+current integration. This historical result proves nothing about v5 work-domain
+or controller behavior. The successful run used the package bytes at `d4c08a6`;
+the historical metadata and story edits recorded here were not part of that run.
 
 ## Run
 
@@ -124,15 +134,20 @@ The twelve `REACH-*` suffixes are `forcedTakeover`, `fencedAck`, `plainAck`,
 invariants: another violation does not satisfy a reachability check. They prevent
 an impossible action or a disabled path from silently passing as coverage.
 
-NC1 story: consumer A takes, receives and handles an ask; B force-takes the live
-lease; A's old capability commits. NC2 has the same story, but takeover reuses
-the fence instead of removing equality. NC3 story: a filtered offer classifies
-the required ask as coalescible and advances the watermark without handling it.
-TLC supplies the actual shortest BFS traces; these stories are expectations,
-not claims that traces have already run. The CLI reproductions are fixed
-supported transaction schedules, not an automatic translation of arbitrary TLC
-traces. NC1/NC2 replay may also skip an excluded ready first; this is independent
-of their fence defect. The CLI replay does not manufacture database rows: it
+Shortest NC1 trace: consumer A takes fence 1; got coalesces; the excluded ready
+(event 2) is offered; B force-takes the live lease with fence 2; A's stale
+filter acknowledgement advances the cursor. NC2 has the same shortest trace,
+but takeover reuses fence 1, and the ghost acquisition identity detects reuse.
+Both expose the same cursor authority defect for filter acknowledgements.
+NC3's shortest trace skips ready by filter ack, then incorrectly coalesces the
+required ask and advances the watermark without handling it. These historical
+BFS traces are retained in the receipt's `command-004.log`, `command-005.log`,
+and `command-006.log`.
+
+The CLI reproductions are fixed supported transaction schedules, not an automatic
+translation of arbitrary TLC traces. NC1/NC2 CLI replay skips ready, offers and
+handles the ask, then attempts a stale ack after takeover, exercising the same
+cursor authority defect. The CLI replay does not manufacture database rows: it
 creates a root, worker, launch record, ready and ask through taskr. A synthetic
 `handled.json` records the external handling boundary; SQLite is read-only to
 the harness. `taskr launch` records metadata and starts no process.
@@ -154,6 +169,15 @@ the inventory excludes rebuildable Cargo output and TLC state caches. Java,
 jar, supplied taskr and built mutants have binary hashes in receipts; doctor
 also hashes the Cargo shim target when mutation prerequisites are present. Tool
 output and non-vacuous state counts are required, not merely exit 0.
+
+The historical successful receipt identifies all 83 command logs and 176 retained
+evidence entries. Its result, commands, package inventory, evidence inventory and
+original manifest are pinned by SHA-256 in `last_execution.receipt_sha256`.
+`self-checks-and-proof.log` and `execution-review.md` are portable labels for the
+combined self-check/proof receipt and independent READY review, also pinned there.
+The artifacts remain externally retained; the metadata contains no machine paths,
+host identities or task IDs. Receipt hashes bind the original run, not a rerun of
+the current checkout or the later documentation/metadata edits.
 
 Every CLI fixture gets a fresh HOME, TASKR_DB, temporary directory and an allowlisted
 environment. A failing synthetic `herdr` executable and absent scratch socket
@@ -186,7 +210,10 @@ an unexplained implementation failure. Update model transitions when atomicity
 or policy changes, update CLI fixtures and mutation anchors, then manually update
 covered hashes and source commit in the manifest. Do not mark execution confirmed
 or move `last_successful_source_commit` until the complete suite and all negative
-controls pass on the new source. This draft has that field null.
+controls pass on the new source. `last_successful_source_commit` records the
+historically verified `71d4146`; keep it there while current source is blocked.
+Final maintenance after integration must review the changed code and rerun before
+advancing the covered source pin or claiming proof for a later source revision.
 
 After editing verifier/model/config, maintain `verification_files` hashes too.
 Run driver self-checks with `python3 -B -m unittest discover -s
