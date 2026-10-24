@@ -1,6 +1,7 @@
 //! Local controller entry points. All authority stays behind normal CLI/RPC operations.
 mod admission;
 mod driver;
+mod inventory;
 mod process;
 mod runner;
 mod scheduler;
@@ -219,7 +220,7 @@ pub(crate) fn dispatch(mut json: bool, args: &[String]) -> Option<ExitCode> {
         || !args.get(1).is_some_and(|s| {
             matches!(
                 s.as_str(),
-                "drive" | "run-checks" | "source" | "_bounded-check"
+                "drive" | "run-checks" | "source" | "_bounded-check" | "inspect-stop"
             )
         })
     {
@@ -228,7 +229,7 @@ pub(crate) fn dispatch(mut json: bool, args: &[String]) -> Option<ExitCode> {
     let result = (|| {
         let verb = args[1].as_str();
         let id = args.get(2).ok_or_else(|| {
-            store::usage("work drive ROOT --once | work run-checks WORK --launch LAUNCH")
+            store::usage("work drive ROOT --once | work run-checks WORK --launch LAUNCH | work inspect-stop WORK --launch LAUNCH")
         })?;
         let id = store::id(id, "work/campaign ID")?;
         match verb {
@@ -273,8 +274,13 @@ pub(crate) fn dispatch(mut json: bool, args: &[String]) -> Option<ExitCode> {
             "run-checks" if args.len() == 5 && args[3] == "--launch" => {
                 runner::run(id, store::id(&args[4], "gate launch")?)
             }
+            "inspect-stop" if args.len() == 5 && args[3] == "--launch" => Ok(driver::inspect_stop(
+                &driver::Local,
+                id,
+                store::id(&args[4], "launch")?,
+            )),
             _ => Err(store::usage(
-                "work drive ROOT --once | work run-checks WORK --launch LAUNCH",
+                "work drive ROOT --once | work run-checks WORK --launch LAUNCH | work inspect-stop WORK --launch LAUNCH",
             )),
         }
     })();

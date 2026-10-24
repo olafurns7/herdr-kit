@@ -34,6 +34,9 @@ struct Fake {
     drift: Cell<bool>,
     pending_truncated: Cell<bool>,
     stale_show: Cell<bool>,
+    scan_error: Cell<bool>,
+    scan_blocker: Cell<bool>,
+    scan_native_drift: Cell<bool>,
 }
 impl Fake {
     fn new() -> Self {
@@ -56,6 +59,9 @@ impl Fake {
             drift: Cell::new(false),
             pending_truncated: Cell::new(false),
             stale_show: Cell::new(false),
+            scan_error: Cell::new(false),
+            scan_blocker: Cell::new(false),
+            scan_native_drift: Cell::new(false),
         }
     }
     fn run() -> Value {
@@ -86,6 +92,23 @@ impl Fake {
     }
 }
 impl driver::Backend for Fake {
+    fn process_scan(&self, _cwd: &Path, shell: i32, trust: &inventory::Trust) -> Result<Value> {
+        self.call("process:scan");
+        assert_eq!(shell, 400);
+        assert_eq!(trust.root.get(&500).map(String::as_str), Some("taskr"));
+        assert_eq!(trust.shells.get(&400).map(String::as_str), Some("zsh"));
+        if self.scan_error.get() {
+            return Err(failure("synthetic incomplete OS inventory"));
+        }
+        if self.scan_native_drift.get() {
+            self.native("replacement", "replacement");
+        }
+        Ok(
+            json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":400,"session_id":400,"scanned":3,
+            "session_remaining":if self.scan_blocker.get(){vec![json!({"pid":401,"command":"synthetic-child"})]}else{vec![]},
+            "checkout_remaining":[],"exempt":[{"pid":400,"reason":"workspace-shell"},{"pid":500,"reason":"campaign-root"},{"pid":600,"reason":"observer"}]}),
+        )
+    }
     fn read(&self, verb: &str, id: i64) -> Result<Value> {
         self.call(format!("read:{verb}:{id}"));
         let snapshot = self.snapshot.borrow();
@@ -157,6 +180,11 @@ impl driver::Backend for Fake {
             }
             "stopped" => {
                 assert_eq!(data.as_ref().unwrap()["agent_absent"], true);
+                assert_eq!(
+                    data.as_ref().unwrap()["process_scan"]["method"],
+                    "local-user-session-cwd-v1"
+                );
+                assert_eq!(data.as_ref().unwrap()["process_scan"]["shell_pid"], 400);
                 a["process_state"] = json!("stopped");
             }
             "reconcile" => {
@@ -179,6 +207,9 @@ impl driver::Backend for Fake {
             ["tab", "list", ..] => json!({"tabs":[{"tab_id":"w1:t1"}]}),
             ["pane", "get", ..] => {
                 json!({"pane":{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","cwd":self.scratch.0}})
+            }
+            ["pane", "process-info", "--pane", "w2:p1"] => {
+                json!({"process_info":{"shell_pid":499,"foreground_process_group_id":500,"foreground_processes":[{"pid":500,"name":"taskr"}]}})
             }
             ["pane", "process-info", ..] => {
                 json!({"process_info":{"shell_pid":400,"foreground_process_group_id":400,"foreground_processes":[{"pid":400,"name":"zsh"}]}})
@@ -221,7 +252,9 @@ impl driver::Backend for Fake {
             );
         }
         if args[0] == "campaign" {
-            return Ok(json!({"root":{"pane_id":"w2:p1"},"lanes":[]}));
+            return Ok(
+                json!({"root":{"id":3,"host":store::local_machine(),"pane_id":"w2:p1"},"lanes":[]}),
+            );
         }
         if args[0] == "prompt" {
             self.log
@@ -388,6 +421,115 @@ fn non_ready_agent_never_gets_exit_keys() {
         assert!(driver::stop(&b, 3, 7, "w1", b.scratch.0.to_str().unwrap(), &a).is_err());
         assert!(!b.calls.borrow().iter().any(|c| c.contains("send-keys")));
         assert_eq!(b.current()["process_state"], "running");
+    }
+}
+#[test]
+fn incomplete_blocked_or_changed_process_scan_never_records_stopped() {
+    for cause in ["incomplete", "blocker", "native-drift"] {
+        let b = Fake::new();
+        b.active("running");
+        b.native("impl-w11", "native-fixture");
+        b.scan_error.set(cause == "incomplete");
+        b.scan_blocker.set(cause == "blocker");
+        b.scan_native_drift.set(cause == "native-drift");
+        let mut a = b.current();
+        a["native_session"] = json!("native-fixture");
+        let error = driver::stop(&b, 3, 7, "w1", b.scratch.0.to_str().unwrap(), &a).unwrap_err();
+        assert!(error.message.starts_with("process-stop-incomplete:"));
+        assert!(!b.calls.borrow().iter().any(|c| c == "change:stopped"));
+        assert_eq!(b.current()["process_state"], "running");
+    }
+}
+#[test]
+fn process_scan_failure_blocks_once_without_releasing_cancelled_work() {
+    let b = Fake::new();
+    b.active("running");
+    b.snapshot.borrow_mut()["work"][0]["state"] = json!("cancelled");
+    b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
+        json!("native-fixture");
+    b.native("impl-w11", "native-fixture");
+    b.scan_error.set(true);
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["process_state"], "uncertain");
+    assert_eq!(
+        b.calls
+            .borrow()
+            .iter()
+            .filter(|c| *c == "change:block")
+            .count(),
+        1
+    );
+    assert!(
+        !b.calls
+            .borrow()
+            .iter()
+            .any(|c| c == "change:stopped" || c == "change:reconcile")
+    );
+}
+#[test]
+fn inspect_stop_is_read_only_and_reports_complete_blocked_or_incomplete_scans() {
+    for cause in ["clean", "blocker", "incomplete"] {
+        let b = Fake::new();
+        b.active("running");
+        b.scan_blocker.set(cause == "blocker");
+        b.scan_error.set(cause == "incomplete");
+        let result = driver::inspect_stop(&b, 1, 11);
+        assert_eq!(result["complete"], cause != "incomplete");
+        if cause == "incomplete" {
+            assert!(result["error"].as_str().is_some());
+            assert!(result["remaining"].is_null());
+        } else {
+            assert_eq!(result["remaining"], cause == "blocker");
+        }
+        assert!(!b.calls.borrow().iter().any(|c| c.starts_with("change:")
+            || c.contains("send-keys")
+            || c.starts_with("effect:")
+            || c.starts_with("command:prompt")));
+    }
+}
+#[test]
+fn inspect_stop_uses_selected_revision_and_rejects_unassigned_launch() {
+    let b = Fake::new();
+    b.active("running");
+    b.snapshot.borrow_mut()["work"][0]["revision"] = json!(2);
+    assert_eq!(driver::inspect_stop(&b, 1, 11)["complete"], true);
+    let result = driver::inspect_stop(&b, 1, 99);
+    assert_eq!(result["complete"], false);
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap()
+            .contains("does not belong")
+    );
+}
+#[test]
+fn inspect_stop_parser_rejects_missing_or_invalid_launch_before_os_reads() {
+    for args in [
+        vec!["work", "inspect-stop", "1"],
+        vec!["work", "inspect-stop", "1", "--launch", "invalid"],
+    ] {
+        assert_eq!(
+            dispatch(
+                false,
+                &args.into_iter().map(String::from).collect::<Vec<_>>()
+            ),
+            Some(ExitCode::Usage)
+        );
+    }
+}
+#[test]
+fn generated_brief_prohibits_unmanaged_processes_and_states_scan_limits() {
+    let b = Fake::new();
+    driver::drive(&b, 3).unwrap();
+    let brief = fs::read_to_string(b.scratch.0.join("launch-11/brief.md")).unwrap();
+    for text in [
+        "never detach background jobs or create external runtimes",
+        "named managed runtime",
+        "another UID",
+        "retaining a file descriptor",
+        "Model agreement cannot certify containment",
+    ] {
+        assert!(brief.contains(text));
     }
 }
 #[test]

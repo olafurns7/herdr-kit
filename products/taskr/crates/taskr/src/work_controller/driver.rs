@@ -15,6 +15,7 @@ pub(super) trait Backend {
     fn lanes(&self) -> Result<String>;
     fn command(&self, args: &[String]) -> Result<Value>;
     fn launch(&self, args: &[String]) -> Result<()>;
+    fn process_scan(&self, cwd: &Path, shell: i32, trust: &inventory::Trust) -> Result<Value>;
     fn directory(&self, root: i64, launch: i64) -> Result<PathBuf> {
         attempt_dir(root, launch)
     }
@@ -24,6 +25,9 @@ pub(super) trait Backend {
 }
 pub(super) struct Local;
 impl Backend for Local {
+    fn process_scan(&self, cwd: &Path, shell: i32, trust: &inventory::Trust) -> Result<Value> {
+        inventory::scan(cwd, shell, trust)
+    }
     fn read(&self, v: &str, id: i64) -> Result<Value> {
         read(v, id)
     }
@@ -210,6 +214,50 @@ fn shell(b: &impl Backend, pane: &str) -> Result<Value> {
         return Err(failure("foreground command is not a supported shell"));
     }
     Ok(json!({"pid":pid,"command":name}))
+}
+fn process_trust(
+    b: &impl Backend,
+    root: i64,
+    ws: &str,
+) -> Result<(inventory::Trust, String, Value)> {
+    let campaign = b.command(&["campaign".into(), root.to_string(), "--all".into()])?;
+    if campaign["root"]["id"] != root || campaign["root"]["host"] != store::local_machine() {
+        return Err(failure("registered campaign root identity/host mismatch"));
+    }
+    let root_pane = field(&campaign["root"], "pane_id")?.to_string();
+    let info = b.herdr(&["pane", "process-info", "--pane", &root_pane])?;
+    let fg = array(&info["process_info"], "foreground_processes")?;
+    if fg.is_empty() || fg.len() > 128 {
+        return Err(failure("root foreground missing or bounded"));
+    }
+    let mut trust = inventory::Trust::default();
+    for p in fg {
+        trust.root.insert(
+            i32::try_from(number(p, "pid")?).map_err(failure)?,
+            field(p, "name")?.into(),
+        );
+    }
+    let panes = b.herdr(&["pane", "list", "--workspace", ws])?;
+    let panes = array(&panes, "panes")?;
+    if panes.len() > 128 {
+        return Err(failure("workspace pane inventory bounded"));
+    }
+    for p in panes {
+        let pane = field(p, "pane_id")?;
+        let location = b.herdr(&["pane", "get", pane])?;
+        if location["pane"]["workspace_id"] != ws || location["pane"]["pane_id"] != pane {
+            return Err(failure("workspace shell pane identity changed"));
+        }
+        if agent(b, pane)?.is_none()
+            && let Ok(s) = shell(b, pane)
+        {
+            trust.shells.insert(
+                i32::try_from(number(&s, "pid")?).map_err(failure)?,
+                field(&s, "command")?.into(),
+            );
+        }
+    }
+    Ok((trust, root_pane, info))
 }
 fn agent(b: &impl Backend, pane: &str) -> Result<Option<Value>> {
     let agents = b.herdr(&["agent", "list"])?;
@@ -422,6 +470,9 @@ fn drive_work(
                     return Err(e);
                 }
                 uncertain(b, a, root, g, &e.message)?;
+                if e.message.starts_with("process-stop-") {
+                    return Err(e);
+                }
             }
         }
         Some("check" | "review" | "adjudicate" | "rework" | "reserve") => {
@@ -482,6 +533,9 @@ fn reconcile_cancelled(
                         return Err(e);
                     }
                     uncertain(b, a, root, g, &e.message)?;
+                    if e.message.starts_with("process-stop-") {
+                        return Err(e);
+                    }
                     return Ok(());
                 }
             }
@@ -835,15 +889,114 @@ pub(super) fn stop(
         }
     }
     let foreground = shell(b, pane)?;
+    let observed_at = timestamp();
+    let process_scan = (|| -> Result<Value> {
+        let scan = scan_stop(b, root, ws, cwd, pane, &foreground)?;
+        if !array(&scan, "session_remaining")?.is_empty()
+            || !array(&scan, "checkout_remaining")?.is_empty()
+        {
+            return Err(failure(
+                "unexplained session/descendant or checkout cwd process remains",
+            ));
+        }
+        if shell(b, pane)? != foreground || agent(b, pane)?.is_some() {
+            return Err(failure("bound shell/native absence changed during scan"));
+        }
+        Ok(scan)
+    })()
+    .map_err(|e| failure(format!("process-stop-incomplete: {}", e.message)))?;
     // Foreground shell and absence are both fresh observations, not a result-settlement inference.
     same_generation(b, root, g)?;
-    if agent(b, pane)?.is_some() {
+    if shell(b, pane)? != foreground || agent(b, pane)?.is_some() {
         return Err(failure(
-            "replacement agent appeared before stopped observation",
+            "process-stop-incomplete: native absence or shell foreground changed before stopped observation",
         ));
     }
-    b.change("stopped",launch,root,g,Some(json!({"pane":pane,"native_session":native,"foreground":foreground,"agent_absent":true,"observed_at":timestamp()})))?;
+    b.change("stopped",launch,root,g,Some(json!({"pane":pane,"native_session":native,"foreground":foreground,"agent_absent":true,"process_scan":process_scan,"observed_at":observed_at})))?;
     Ok(())
+}
+fn scan_stop(
+    b: &impl Backend,
+    root: i64,
+    ws: &str,
+    cwd: &str,
+    pane: &str,
+    foreground: &Value,
+) -> Result<Value> {
+    let started = std::time::Instant::now();
+    let (trust, root_pane, root_info) = process_trust(b, root, ws)?;
+    if started.elapsed() > Duration::from_secs(30) {
+        return Err(failure("process observation deadline"));
+    }
+    let scan = b.process_scan(
+        Path::new(cwd),
+        i32::try_from(number(foreground, "pid")?).map_err(failure)?,
+        &trust,
+    )?;
+    let (fresh_trust, fresh_pane, fresh_info) = process_trust(b, root, ws)?;
+    if fresh_trust != trust
+        || fresh_pane != root_pane
+        || fresh_info != root_info
+        || shell(b, pane)? != *foreground
+        || started.elapsed() > Duration::from_secs(30)
+    {
+        return Err(failure(
+            "campaign root or workspace shell observation changed during scan",
+        ));
+    }
+    Ok(scan)
+}
+pub(super) fn inspect_stop(b: &impl Backend, work: i64, launch: i64) -> Value {
+    let observation = (|| -> Result<(Value, bool)> {
+        let item = b.read("show", work)?;
+        if item["work_id"] != work {
+            return Err(failure("diagnostic work identity mismatch"));
+        }
+        let run = array(&item, "runs")?
+            .iter()
+            .find(|run| {
+                run["assignments"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|a| a["launch_id"] == launch))
+            })
+            .ok_or_else(|| failure("launch does not belong to selected work"))?;
+        let a = assignment(run, launch)?;
+        if a["run_id"] != run["run_id"] {
+            return Err(failure("diagnostic launch run mismatch"));
+        }
+        let revision = array(&item, "revisions")?
+            .iter()
+            .find(|r| r["revision"] == run["revision"])
+            .ok_or_else(|| failure("immutable launch revision missing"))?;
+        let c: api::Contract =
+            serde_json::from_value(revision["contract"].clone()).map_err(failure)?;
+        if c.checkout.host != store::local_machine() {
+            return Err(failure("diagnostic requires local checkout host"));
+        }
+        let ws = field(&a["dispatch"], "workspace")?;
+        let pane = field(&a["dispatch"], "pane")?;
+        pane_location(b, pane, ws, &c.checkout.cwd)?;
+        let foreground = shell(b, pane)?;
+        let scan = scan_stop(
+            b,
+            number(&item, "campaign")?,
+            ws,
+            &c.checkout.cwd,
+            pane,
+            &foreground,
+        )?;
+        let remaining = !array(&scan, "session_remaining")?.is_empty()
+            || !array(&scan, "checkout_remaining")?.is_empty();
+        Ok((scan, remaining))
+    })();
+    match observation {
+        Ok((scan, remaining)) => {
+            json!({"work_id":work,"launch_id":launch,"complete":true,"remaining":remaining,"error":null,"process_scan":scan})
+        }
+        Err(e) => {
+            json!({"work_id":work,"launch_id":launch,"complete":false,"remaining":null,"error":e.message,"process_scan":null})
+        }
+    }
 }
 #[allow(clippy::too_many_arguments)] // Include the complete recorded topology in the on-disk brief.
 fn brief_text(
@@ -875,7 +1028,7 @@ fn brief_text(
         json!({"kind":"adjudication","result":{"source":"exact reviewed source below","review_result":"review result_id below","finding_ids":["disputed stable IDs"],"verdict":"clear|rework|disputed","reason":"source-grounded adjudication"}})
     };
     Ok(format!(
-        "HERDR-BRIEF role={role}\norchestrator=taskr:{root} report={}\nTask topology: workspace={ws} tab={tab} pane={pane} cwd={}\nObjective: {}\nAcceptance: {}\nOwnership: {}\nAuthority: {}\nValidation: approved deterministic profile only; controller runs checks. {}\nTask identity: work={id} revision={} run={} round={} task={task} launch={launch}\nSource/profile: {}\nResults and prior findings: {}\nResult JSON schema: {}\nProgress: write report at report=, write UTF-8 result JSON to {}, then taskr work submit {launch} --file {} && taskr ready 'work result submitted' --report {} && taskr done 'work result submitted'. Use taskr work source {id} for canonical actual source identity. Executor must commit clean owned source before submission. Reviewer/adjudicator is read-only. Never publish, launch helpers, accept yourself, change the contract or weaken checks. Missing consequential decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, then ack its event.\n",
+        "HERDR-BRIEF role={role}\norchestrator=taskr:{root} report={}\nTask topology: workspace={ws} tab={tab} pane={pane} cwd={}\nObjective: {}\nAcceptance: {}\nOwnership: {}\nAuthority: {}\nValidation: approved deterministic profile only; controller runs checks. {}\nTask identity: work={id} revision={} run={} round={} task={task} launch={launch}\nSource/profile: {}\nResults and prior findings: {}\nResult JSON schema: {}\nProcess boundary: never detach background jobs or create external runtimes. A task needing these requires a named managed runtime and stronger explicit cleanup proof; no automatic handoff under this local profile. The same-user local session/descendant/cwd scan is cooperative evidence, not a sandbox or proof about another UID, containers/remotes, a process that detaches and leaves the checkout while retaining a file descriptor, or a hostile same-user writer. Model agreement cannot certify containment.\nProgress: write report at report=, write UTF-8 result JSON to {}, then taskr work submit {launch} --file {} && taskr ready 'work result submitted' --report {} && taskr done 'work result submitted'. Use taskr work source {id} for canonical actual source identity. Executor must commit clean owned source before submission. Reviewer/adjudicator is read-only. Never publish, launch helpers, accept yourself, change the contract or weaken checks. Missing consequential decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, then ack its event.\n",
         report.display(),
         c.checkout.cwd,
         c.intent,

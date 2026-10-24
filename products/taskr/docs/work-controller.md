@@ -114,6 +114,55 @@ Only the core's stopped/advance APIs permit handoff or final acceptance; a chang
 native identity or unknown writer remains reserved for explicit recovery. Local
 acceptance grants no merge, release or publication authority.
 
+Stopped receipts also require `process_scan` with method
+`local-user-session-cwd-v1`, UID, shell PID, true POSIX session ID, scanned count,
+empty `session_remaining` and `checkout_remaining`, and exact PID/reason `exempt`
+entries. The shell PID must match the foreground observation. The local scanner
+uses `/bin/ps -U UID` for PID/PPID/PGID/tty/state/command and libc `getsid` for
+session IDs; macOS `ps sess` is not a session-ID source. It checks the shell's
+descendants, session and tty, including background process groups. Linux cwd
+reads use `/proc/PID/cwd`; macOS uses `/usr/sbin/lsof -a -u UID -d cwd -F0pcfn`
+with a strict NUL-field parser. Canonical cwd paths match the checkout itself or
+descendants using path components, so similarly named siblings do not match.
+
+Only the observer PID and its exact owned probe PIDs, freshly attested campaign
+root foreground PIDs, and observed interactive foreground shells of the selected
+workspace with no other live process in their session can be exempt. Names alone
+and arbitrary observer/root descendants never grant exemptions. Every other
+same-user process with a checkout cwd blocks handoff, including manual workers.
+The scan rechecks process inventory stability, root/shell observations and target
+native absence. Disappeared PIDs are checked with signal zero; zombie processes
+need no cwd. A missing cwd for a live non-zombie process is incomplete evidence.
+
+Each scan has a ten-second budget, at most 4096 processes, one MiB of captured
+output per probe, at most 1024 entries in each evidence array, and 1024-byte
+command/cwd fields. Unknown, partial, oversized, changed, unavailable or timed-out
+observations produce the named `process-stop-incomplete` blocked condition and
+retain the checkout fence. The scanner never kills an unexplained process.
+Probe execution/cleanup is confined to its own process group. The budget is checked
+between OS reads; this local profile assumes responsive local process/filesystem
+interfaces and does not bound a kernel call stalled on a remote filesystem.
+The surrounding root/shell observations must complete within thirty seconds;
+stopped observation time is captured before the scan rather than refreshed after it.
+
+`taskr work inspect-stop WORK --launch LAUNCH` is a read-only local diagnostic.
+It selects that launch's immutable revision checkout and recorded workspace/pane,
+then uses the same scanner and fresh root/shell checks. JSON includes `complete`,
+`remaining`, `error` and `process_scan` alongside work/launch IDs. A complete scan
+may have remaining processes; an incomplete scan returns `remaining:null` and
+an error. It sends no exit keys, writes no stopped receipt and never accepts a
+handoff. The command must run on the checkout host, outside ledger-host RPC.
+
+This observes cooperative same-user local processes. It is not a security sandbox
+or proof about another UID, containers/remotes, a process that detaches and leaves
+the checkout while retaining a file descriptor, or a hostile same-user writer.
+Automatic workers must not detach background jobs or create external runtimes.
+Tasks needing these require a named managed runtime and stronger explicit cleanup
+proof; this local profile cannot automatically hand them off. Generated worker
+briefs include these prohibitions and limits. Model agreement cannot certify
+containment. Parent-owned controlled-child proof is required on both macOS and
+Linux; parser fixtures alone do not establish OS/runtime behavior.
+
 Worker validation is limited to source/parser and repository leaf checks. Builds,
 behavioral fixtures, local loop proof, Linux admission proof, compatible installation
 and independent exact-source review are rollout gates owned by the campaign lead.

@@ -32,6 +32,7 @@ impl Capture {
     }
 }
 pub(super) struct Output {
+    pub pid: u32,
     pub exit: Option<i32>,
     pub signal: Option<i32>,
     pub timed_out: bool,
@@ -79,6 +80,7 @@ pub(super) fn run(mut cmd: Command, timeout: Duration, cancel: &AtomicBool) -> i
     nonblock(&stderr)?;
     let start = Instant::now();
     let mut out = Output {
+        pid: child.0.id(),
         exit: None,
         signal: None,
         timed_out: false,
