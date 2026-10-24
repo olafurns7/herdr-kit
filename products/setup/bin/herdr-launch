@@ -73,11 +73,12 @@ die() {
     exit 2
 }
 
-workspace= tab= pane= task= launch= push_tab= mcp_config=
+workspace= tab= pane= task= launch= push_tab= mcp_config= reserved_setup_file=
 step_fail() {
     printf 'herdr-launch: step %s failed; so far: workspace=%s task=%s launch=%s tab=%s pane=%s%s%s\n' \
         "$1" "${workspace:--}" "${task:--}" "${launch:--}" "${tab:--}" "${pane:--}" \
         "${push_tab:+ push_tab=$push_tab}" "${mcp_config:+ mcp_config=$mcp_config}" >&2
+    [ -z "$reserved_setup_file" ] || printf 'herdr-launch: setup artifact=%s; inspect before retry\n' "$reserved_setup_file" >&2
     exit 1
 }
 
@@ -424,7 +425,26 @@ if [ "$kind" = opencode ]; then
     setup="$setup && opencode() { $opencode_cli \"\$@\"; } && export OPENCODE_CONFIG_CONTENT=$opencode_config"
 fi
 setup="$setup && herdr_launch_ok=$launch"
-herdr pane run "$pane" "$setup" >/dev/null || step_fail '4 (herdr pane run export)'
+setup_command=$setup
+if [ -n "$reserved_task" ]; then
+    # Keep long inherited PATH/config text off the interactive terminal input line.
+    setup_base=$(CDPATH= cd -- "${TMPDIR:-/tmp}" && pwd -P) || step_fail '4 (private setup base unavailable)'
+    case $setup_base/ in "$cwd/"*) step_fail '4 (private setup must be outside checkout)' ;; esac
+    setup_dir=$(umask 077; mktemp -d "$setup_base/herdr-launch-setup.XXXXXX") \
+        || step_fail '4 (create private setup directory)'
+    reserved_setup_file=$setup_dir/setup.sh
+    chmod 0700 "$setup_dir" || step_fail '4 (protect setup directory)'
+    (umask 077; set -C; printf '%s\n' "$setup" >"$reserved_setup_file") \
+        || step_fail '4 (write private setup)'
+    chmod 0600 "$reserved_setup_file" || step_fail '4 (protect setup file)'
+    case $reserved_setup_file in *[[:cntrl:]]*) step_fail '4 (unsupported setup path)' ;; esac
+    setup_command=$(jq -nr --arg path "$reserved_setup_file" '". " + ($path | @sh)') \
+        || step_fail '4 (quote private setup path)'
+    [ "$(printf '%s' "$setup_command" | wc -c)" -le 512 ] \
+        || step_fail '4 (private setup invocation exceeds 512 bytes)'
+fi
+# A failed/unknown delivery retains the file; never retry the source command here.
+herdr pane run "$pane" "$setup_command" >/dev/null || step_fail '4 (herdr pane run export)'
 
 # Step 5: prove the whole setup landed. The command text holds no expanded
 # values, so only the shell's output can match.
@@ -432,6 +452,10 @@ herdr pane run "$pane" 'echo "herdr-launch-env=$TASKR_TASK/$TASKR_LAUNCH/$FLEET_
     || step_fail '5 (herdr pane run env check)'
 herdr pane wait-output "$pane" --match "herdr-launch-env=$task/$launch/worker/$launch" --timeout 15000 >/dev/null \
     || step_fail "5 (the pane shell did not echo herdr-launch-env=$task/$launch/worker/$launch)"
+if [ -n "$reserved_setup_file" ]; then
+    rm -- "$reserved_setup_file" && rmdir -- "$setup_dir" || step_fail '5 (confirmed setup cleanup)'
+    reserved_setup_file=
+fi
 
 # Step 6: start the agent with the lane's native flags. A claude --push lane
 # first writes a private, task-specific config without inspecting the cwd's
