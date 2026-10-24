@@ -190,7 +190,7 @@ A native agent disappearing and an interactive foreground shell do not establish
 that background writers stopped. The required scan has this exact shape:
 
 ```json
-{"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"deleted_cwd":0,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123]},{"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[456]}]}
+{"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"deleted_cwd":0,"privileged_cwd":0,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123]},{"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[456]}]}
 ```
 
 `session_remaining` entries are `{pid,command}`; `checkout_remaining` entries are
@@ -206,6 +206,26 @@ aliases, and appends only suffix components without empty, dot or parent entries
 The checkout root must still canonicalize. Other errors or malformed paths remain
 incomplete scans; absolute-path writers remain outside this cooperative profile.
 Missing, negative, noninteger or greater-than-scanned counts are rejected.
+
+Required `privileged_cwd` is an integer count in0..min(scanned,16), with no
+default. It audits Linux protected-cwd reads; macOS always produces0. It may
+overlap `deleted_cwd`, so their sum is not constrained. Missing, negative, null,
+noninteger, overflow or out-of-bound counts are rejected.
+
+The Linux scanner may read same-effective-UID EACCES cwds only with the existing
+noninteractive privilege, using fixed argv
+`/usr/bin/sudo -n -- /usr/bin/readlink -z -- /proc/<u32>/cwd`, never a shell or
+user-supplied command. The adapter grants no sudo permission, sudoers entry or
+credential; requiretty or missing NOPASSWD fails closed. Hosts with protected
+systemd user-session processes require that existing permission to complete a
+scan. Before execution, the scanner verifies both binaries root-owned and not
+group/world writable, and sudo setuid root. It requires exit0, empty stderr and
+one NUL-terminated path under4096 bytes, with the stable inventory pair and PID
+starttime unchanged. Already-blocking session processes need no privileged read.
+There are at most16 reads within the existing15-second scan deadline; timeout,
+unavailable permission or malformed output keeps the scan incomplete. This is a
+cwd read, never a process-name exemption or permission grant.
+
 Each array, including exempt, has at most1024 entries;
 commands/cwd strings are nonempty and at most4096 bytes. Exempt PIDs are positive
 and unique. Exemptions are a typed enum tagged by `reason`, with required bases:

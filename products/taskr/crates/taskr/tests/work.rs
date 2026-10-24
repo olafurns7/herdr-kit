@@ -7,7 +7,7 @@ use taskr_core::db::{OptionalExtension, params};
 use taskr_core::store::work as api;
 
 fn clean_process_scan() -> Value {
-    json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"deleted_cwd":0,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123]},{"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[456]}]})
+    json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"deleted_cwd":0,"privileged_cwd":0,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123]},{"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[456]}]})
 }
 
 struct Work {
@@ -1689,6 +1689,7 @@ fn stop_requires_complete_empty_bounded_process_scan_and_keeps_checkout_on_failu
         "session_id",
         "scanned",
         "deleted_cwd",
+        "privileged_cwd",
         "session_remaining",
         "checkout_remaining",
         "exempt",
@@ -1715,6 +1716,12 @@ fn stop_requires_complete_empty_bounded_process_scan_and_keeps_checkout_on_failu
         ("deleted_cwd", json!(1.5), 2),
         ("deleted_cwd", json!(4294967296_u64), 2),
         ("deleted_cwd", json!(41), 2),
+        ("privileged_cwd", json!(-1), 2),
+        ("privileged_cwd", json!(null), 2),
+        ("privileged_cwd", json!("0"), 2),
+        ("privileged_cwd", json!(1.5), 2),
+        ("privileged_cwd", json!(4294967296_u64), 2),
+        ("privileged_cwd", json!(17), 2),
         (
             "session_remaining",
             json!([{"pid":321,"command":"background writer"}]),
@@ -1772,6 +1779,10 @@ fn stop_requires_complete_empty_bounded_process_scan_and_keeps_checkout_on_failu
         bad["process_scan"][field] = value;
         w.reject("stopped", &lid, bad, code);
     }
+    let mut impossible = good.clone();
+    impossible["process_scan"]["scanned"] = json!(2);
+    impossible["process_scan"]["privileged_cwd"] = json!(3);
+    w.reject("stopped", &lid, impossible, 2);
     let db = w.h.conn();
     assert_eq!(
         db.query_row(
@@ -1799,6 +1810,7 @@ fn stop_requires_complete_empty_bounded_process_scan_and_keeps_checkout_on_failu
     );
     let mut good = good;
     good["process_scan"]["deleted_cwd"] = good["process_scan"]["scanned"].clone();
+    good["process_scan"]["privileged_cwd"] = json!(16);
     let stopped = w.call("stopped", Some(&lid), Some(good.clone()));
     assert_eq!(stopped["process_state"], "stopped");
     assert_eq!(
@@ -2180,4 +2192,30 @@ fn observe_pins_native_identity_before_prompt_without_establishing_start() {
     let rid = run["run_id"].to_string();
     w.review(&rid, &exec, "clear");
     assert_eq!(w.call("advance", Some(&rid), None)["action"], "accepted");
+}
+
+#[test]
+fn privileged_cwd_accepts_scanned_boundary_and_overlaps_deleted_count() {
+    let w = Work::new();
+    w.configure();
+    let id = w.queued(w.contract(false));
+    let run = w.claim(&id, "privileged-count-boundary");
+    let ass = &run["assignments"][0];
+    w.running(ass);
+    let lid = ass["launch_id"].to_string();
+    let mut scan = clean_process_scan();
+    scan["scanned"] = json!(2);
+    scan["deleted_cwd"] = json!(2);
+    scan["privileged_cwd"] = json!(2); // counts may overlap: no sum constraint
+    let receipt = json!({"pane":"w1:p2","native_session":format!("native-{lid}"),"foreground":{"pid":123,"command":"/bin/sh"},"agent_absent":true,"process_scan":scan,"observed_at":taskr_core::store::now()});
+    let stopped = w.call("stopped", Some(&lid), Some(receipt));
+    assert_eq!(stopped["process_state"], "stopped");
+    assert_eq!(
+        stopped["stopped"]["observation"]["process_scan"]["privileged_cwd"],
+        2
+    );
+    assert_eq!(
+        stopped["stopped"]["observation"]["process_scan"]["deleted_cwd"],
+        2
+    );
 }

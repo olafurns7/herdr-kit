@@ -196,6 +196,7 @@ fn process_scan(db: &Connection, root: i64, launch: i64, input: &Stopped) -> Res
         || scan.session_id == 0
         || !(1..=65536).contains(&scan.scanned)
         || scan.deleted_cwd > scan.scanned
+        || scan.privileged_cwd > scan.scanned.min(16)
         || scan.session_remaining.len() > 1024
         || scan.checkout_remaining.len() > 1024
         || scan.exempt.len() > 1024

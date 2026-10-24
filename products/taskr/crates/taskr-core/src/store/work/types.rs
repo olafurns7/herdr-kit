@@ -490,6 +490,7 @@ pub struct ProcessScan {
     pub session_id: u32,
     pub scanned: u32,
     pub deleted_cwd: u32,
+    pub privileged_cwd: u32,
     pub session_remaining: Vec<Foreground>,
     pub checkout_remaining: Vec<CheckoutProcess>,
     pub exempt: Vec<ProcessExemption>,
