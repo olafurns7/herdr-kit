@@ -1193,7 +1193,19 @@ fn dispatch(
     if !gate {
         write_once(
             &brief,
-            brief_text(root, work, c, run, a, ws, &tab, &pane, &report)?.as_bytes(),
+            brief_text(
+                root,
+                work,
+                c,
+                run,
+                a,
+                ws,
+                &tab,
+                &pane,
+                &report,
+                &std::env::current_exe().map_err(failure)?,
+            )?
+            .as_bytes(),
         )?;
     }
     same_generation(b, root, g)?;
@@ -1764,7 +1776,7 @@ pub(super) fn inspect_stop(b: &impl Backend, work: i64, launch: i64) -> Value {
     }
 }
 #[allow(clippy::too_many_arguments)] // Include the complete recorded topology in the on-disk brief.
-fn brief_text(
+pub(super) fn brief_text(
     root: i64,
     work: &Value,
     c: &api::Contract,
@@ -1774,7 +1786,18 @@ fn brief_text(
     tab: &str,
     pane: &str,
     report: &Path,
+    selected_cli: &Path,
 ) -> Result<String> {
+    if !selected_cli.is_absolute() {
+        return Err(failure(
+            "model brief requires the selected absolute taskr executable",
+        ));
+    }
+    let taskr = quote(
+        selected_cli
+            .to_str()
+            .ok_or_else(|| failure("non UTF-8 taskr executable"))?,
+    );
     let gate = a["stage"] == "gate";
     if gate {
         return Err(failure("shell gate does not receive a model brief"));
@@ -1793,7 +1816,7 @@ fn brief_text(
         json!({"kind":"adjudication","result":{"source":"exact reviewed source below","review_result":"review result_id below","finding_ids":["disputed stable IDs"],"verdict":"clear|rework|disputed","reason":"source-grounded adjudication"}})
     };
     Ok(format!(
-        "HERDR-BRIEF role={role}\norchestrator=taskr:{root} report={}\nTask topology: workspace={ws} tab={tab} pane={pane} cwd={}\nObjective: {}\nAcceptance: {}\nOwnership: {}\nAuthority: {}\nValidation: approved deterministic profile only; controller runs checks. {}\nTask identity: work={id} revision={} run={} round={} task={task} launch={launch}\nSource/profile: {}\nResults and prior findings: {}\nResult JSON schema: {}\nProcess boundary: never detach background jobs or create external runtimes. A task needing these requires a named managed runtime and stronger explicit cleanup proof; no automatic handoff under this local profile. The local session/descendant/cwd scan for the same effective UID is cooperative evidence, not a sandbox or proof about another effective UID, containers/remotes, any detached process with cwd outside the checkout (including absolute-path writers with no retained descriptor), or a hostile same-user writer. Cwd snapshots are not atomic: chdir after its cwd read can escape an unchanged inventory pair. Model agreement cannot certify containment.\nProgress: write report at report=, write UTF-8 result JSON to {}, then taskr work submit {launch} --file {} && taskr ready 'work result submitted' --report {} && taskr done 'work result submitted'. Use taskr work source {id} for canonical actual source identity. Executor must commit clean owned source before submission. Reviewer/adjudicator is read-only. Never publish, launch helpers, accept yourself, change the contract or weaken checks. Missing consequential decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, then ack its event.\n",
+        "HERDR-BRIEF role={role}\norchestrator=taskr:{root} report={}\nTask topology: workspace={ws} tab={tab} pane={pane} cwd={}\nObjective: {}\nAcceptance: {}\nOwnership: {}\nAuthority: {}\nValidation: approved deterministic profile only; controller runs checks. {}\nTask identity: work={id} revision={} run={} round={} task={task} launch={launch}\nSource/profile: {}\nResults and prior findings: {}\nResult JSON schema: {}\nProcess boundary: never detach background jobs or create external runtimes. A task needing these requires a named managed runtime and stronger explicit cleanup proof; no automatic handoff under this local profile. The local session/descendant/cwd scan for the same effective UID is cooperative evidence, not a sandbox or proof about another effective UID, containers/remotes, any detached process with cwd outside the checkout (including absolute-path writers with no retained descriptor), or a hostile same-user writer. Cwd snapshots are not atomic: chdir after its cwd read can escape an unchanged inventory pair. Model agreement cannot certify containment.\nLedger CLI: {taskr} (selected controller executable; use this exact quoted path for all ledger commands).\nProgress: write report at report=, write UTF-8 result JSON to {}, then {taskr} work submit {launch} --file {} && {taskr} ready 'work result submitted' --report {} && {taskr} done 'work result submitted'. Use {taskr} work source {id} for canonical actual source identity. Executor must commit clean owned source before submission. Reviewer/adjudicator is read-only. Never publish, launch helpers, accept yourself, change the contract or weaken checks. Missing consequential decision: {taskr} ask TEXT --blocking, stop dependent work, {taskr} wait --for answer, then {taskr} ack EVENT_ID --as {task}; use exactly the event ID returned by wait and its --fence FENCE when supplied. Inbox/log/status are non-consuming; only wait offers an event; never ack a raw inbox event.\n",
         report.display(),
         c.checkout.cwd,
         c.intent,

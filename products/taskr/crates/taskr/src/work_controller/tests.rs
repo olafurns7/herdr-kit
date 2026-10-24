@@ -1680,6 +1680,11 @@ fn generated_brief_prohibits_unmanaged_processes_and_states_scan_limits() {
     let b = Fake::new();
     driver::drive(&b, 3).unwrap();
     let brief = fs::read_to_string(b.scratch.0.join("launch-11/brief.md")).unwrap();
+    let exe = std::env::current_exe().unwrap();
+    assert!(brief.contains(&format!(
+        "Ledger CLI: {}",
+        driver::quote(exe.to_str().unwrap())
+    )));
     for text in [
         "never detach background jobs or create external runtimes",
         "named managed runtime",
@@ -1687,9 +1692,128 @@ fn generated_brief_prohibits_unmanaged_processes_and_states_scan_limits() {
         "absolute-path writers with no retained descriptor",
         "Cwd snapshots are not atomic",
         "Model agreement cannot certify containment",
+        "Inbox/log/status are non-consuming; only wait offers an event",
+        "never ack a raw inbox event",
     ] {
         assert!(brief.contains(text));
     }
+}
+#[test]
+fn generated_ledger_examples_use_selected_absolute_cli_under_hostile_path_with_safe_quotes() {
+    use std::os::unix::fs::PermissionsExt;
+    let b = Fake::new();
+    b.active("reserved");
+    let selected = b
+        .scratch
+        .0
+        .join("selected cli 'quote' $SYNTHETIC `not-invoked`")
+        .join("taskr");
+    let old_bin = b.scratch.0.join("old-bin");
+    let old_cli = old_bin.join("taskr");
+    fs::create_dir_all(selected.parent().unwrap()).unwrap();
+    fs::create_dir(&old_bin).unwrap();
+    fs::write(&selected, b"#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\"\n").unwrap();
+    fs::write(
+        &old_cli,
+        b"#!/bin/sh\nprintf '%s\\n' 'OLD PATH CLI' >&2\nexit 77\n",
+    )
+    .unwrap();
+    for file in [&selected, &old_cli] {
+        fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let work = b.work();
+    let contract = current_contract(&work).unwrap();
+    let run = current_run(&work).unwrap();
+    let assignment = &run["assignments"][0];
+    let report = b
+        .scratch
+        .0
+        .join("report 'literal' $SYNTHETIC `not-invoked`.md");
+    let result = report.with_file_name("result.json");
+    let brief = driver::brief_text(
+        3, &work, &contract, run, assignment, "w1", "w1:t1", "w1:p1", &report, &selected,
+    )
+    .unwrap();
+    assert!(brief.starts_with("HERDR-BRIEF role=implementer\norchestrator=taskr:3"));
+    assert!(brief.contains("task=12 launch=11"));
+    assert!(!brief.contains(old_bin.to_str().unwrap()));
+    let cli = driver::quote(selected.to_str().unwrap());
+    let cases: Vec<(String, Vec<&str>)> = vec![
+        ("work source 1".into(), vec!["work", "source", "1"]),
+        (
+            format!(
+                "work submit 11 --file {}",
+                driver::quote(result.to_str().unwrap())
+            ),
+            vec!["work", "submit", "11", "--file", result.to_str().unwrap()],
+        ),
+        (
+            format!(
+                "ready 'work result submitted' --report {}",
+                driver::quote(report.to_str().unwrap())
+            ),
+            vec![
+                "ready",
+                "work result submitted",
+                "--report",
+                report.to_str().unwrap(),
+            ],
+        ),
+        (
+            "done 'work result submitted'".into(),
+            vec!["done", "work result submitted"],
+        ),
+        (
+            "ask TEXT --blocking".into(),
+            vec!["ask", "TEXT", "--blocking"],
+        ),
+        ("wait --for answer".into(), vec!["wait", "--for", "answer"]),
+        (
+            "ack EVENT_ID --as 12".into(),
+            vec!["ack", "EVENT_ID", "--as", "12"],
+        ),
+    ];
+    for (suffix, args) in cases {
+        let command = format!("{cli} {suffix}");
+        let offset = brief
+            .find(&command)
+            .unwrap_or_else(|| panic!("selected CLI missing for {suffix}"));
+        let rendered = &brief[offset..offset + command.len()];
+        let out = Command::new("/bin/sh")
+            .args(["-c", rendered])
+            .env_clear()
+            .env("PATH", &old_bin)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{suffix}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8(out.stdout).unwrap();
+        let actual = text.lines().collect::<Vec<_>>();
+        assert_eq!(actual[0], selected.to_str().unwrap());
+        assert_eq!(&actual[1..], args.as_slice());
+    }
+    assert!(brief.contains("event ID returned by wait and its --fence FENCE when supplied"));
+    assert!(brief.contains(
+        "Inbox/log/status are non-consuming; only wait offers an event; never ack a raw inbox event"
+    ));
+    assert!(
+        driver::brief_text(
+            3,
+            &work,
+            &contract,
+            run,
+            assignment,
+            "w1",
+            "w1:t1",
+            "w1:p1",
+            &report,
+            Path::new("taskr")
+        )
+        .is_err()
+    );
 }
 #[test]
 fn exact_cases_reject_missing_duplicate_skipped_failed_error_and_extra() {
