@@ -45,6 +45,12 @@ One local file lock also prevents overlapping passes for the same campaign. Ever
 agent start uses an existing reserved task and launch. A durable dispatch binding
 precedes startup. Unknown startup or prompt delivery is reconciled from native identity,
 launch receipts and the prompt ledger; it never triggers a blind restart or resend.
+Failed reserved launcher processes retain exact bounded stdout/stderr bytes in private
+`launch.stdout` and `launch.stderr` files under that root/launch attempt directory.
+`launch-output.json` records exit, signal, timeout/cancellation and each stream's full
+byte count/hash and truncation flag. Files are exclusive mode0600 in an owned mode0700
+directory. Failure messages point to the metadata without printing captured output or
+environment. Existing evidence refuses overwrite; this adds no retry or launch effect.
 
 The controller writes a UTF-8 brief and result schema for executor, reviewer or
 adjudicator, then uses `herdr-launch --reserved TASK LAUNCH LANE NAME BRIEF REPORT ROOT PANE`.

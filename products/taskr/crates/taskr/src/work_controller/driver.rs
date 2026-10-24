@@ -155,9 +155,30 @@ impl Backend for Local {
         let out = process::run(cmd, Duration::from_secs(150), &AtomicBool::new(false))
             .map_err(failure)?;
         if out.exit != Some(0) || out.timed_out {
-            return Err(failure(
-                "reserved launcher failed; reconcile bound intent, never restart blindly",
-            ));
+            let launch = store::id(
+                args.get(2)
+                    .ok_or_else(|| failure("missing reserved launch"))?,
+                "launch",
+            )?;
+            let root = store::id(
+                args.get(7)
+                    .ok_or_else(|| failure("missing reserved root"))?,
+                "campaign",
+            )?;
+            let dir = attempt_dir(root, launch)?;
+            launch_diagnostics(&dir, &out).map_err(|e| {
+                failure(format!(
+                    "reserved launcher failed; private diagnostics incomplete at {}: {}",
+                    dir.display(),
+                    e.message
+                ))
+            })?;
+            return Err(failure(format!(
+                "reserved launcher failed (exit {:?}, deadline {}); private diagnostics {}; reconcile bound intent, never restart blindly",
+                out.exit,
+                out.timed_out,
+                dir.join("launch-output.json").display()
+            )));
         }
         Ok(())
     }
@@ -208,6 +229,70 @@ fn herdr_result(args: &[&str], out: &process::Output) -> Result<Value> {
 #[cfg(test)]
 mod observation_tests {
     use super::*;
+    #[test]
+    fn failed_launch_retains_exact_private_bytes_status_and_truncation_metadata() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let scratch = super::super::tests::Scratch::new();
+        for (name, stdout, stderr) in [
+            (
+                "normal",
+                b"synthetic\0output\xff\n".to_vec(),
+                b"adapter failed\n".to_vec(),
+            ),
+            (
+                "bounded",
+                vec![b'x'; process::LIMIT + 1],
+                vec![b'y'; process::LIMIT + 2],
+            ),
+        ] {
+            let dir = scratch.0.join(name);
+            fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+            let mut out = output(Some(1), &stdout, &stderr);
+            out.timed_out = true;
+            launch_diagnostics(&dir, &out).unwrap();
+            assert_eq!(
+                fs::read(dir.join("launch.stdout")).unwrap(),
+                out.stdout.bytes
+            );
+            assert_eq!(
+                fs::read(dir.join("launch.stderr")).unwrap(),
+                out.stderr.bytes
+            );
+            let data: Value =
+                serde_json::from_slice(&fs::read(dir.join("launch-output.json")).unwrap()).unwrap();
+            assert_eq!(data["exit"], 1);
+            assert_eq!(data["timed_out"], true);
+            assert_eq!(data["stdout"]["bytes"], stdout.len());
+            assert_eq!(data["stderr"]["bytes"], stderr.len());
+            assert_eq!(data["stdout"]["truncated"], name == "bounded");
+            assert_eq!(data["stderr"]["truncated"], name == "bounded");
+            assert_eq!(
+                data["stdout"]["sha256"],
+                format!("{:x}", Sha256::digest(&stdout))
+            );
+            for file in ["launch.stdout", "launch.stderr", "launch-output.json"] {
+                assert_eq!(
+                    fs::metadata(dir.join(file)).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+            let changed = output(Some(2), b"changed", b"changed");
+            assert!(launch_diagnostics(&dir, &changed).is_err());
+            assert_eq!(
+                fs::read(dir.join("launch.stderr")).unwrap(),
+                out.stderr.bytes
+            );
+        }
+    }
+    #[test]
+    fn failed_launch_diagnostics_refuse_nonprivate_directory_before_retaining_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = super::super::tests::Scratch::new();
+        fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o755)).unwrap();
+        let out = output(Some(1), b"synthetic private bytes", b"failure");
+        assert!(launch_diagnostics(&scratch.0, &out).is_err());
+        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
+    }
     #[test]
     fn long_gate_path_is_recorded_exactly_but_terminal_input_stays_short() {
         use std::os::unix::fs::PermissionsExt;
@@ -1025,6 +1110,25 @@ pub(super) fn write_once(path: &Path, bytes: &[u8]) -> Result<()> {
         .map_err(failure)?;
     f.write_all(bytes).map_err(failure)?;
     f.sync_all().map_err(failure)
+}
+fn launch_diagnostics(dir: &Path, out: &process::Output) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(dir).map_err(failure)?;
+    if !dir.is_absolute()
+        || !metadata.is_dir()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.mode() & 0o7777 != 0o700
+    {
+        return Err(failure(
+            "launch diagnostics require an owned private attempt directory",
+        ));
+    }
+    write_once(&dir.join("launch.stdout"), &out.stdout.bytes)?;
+    write_once(&dir.join("launch.stderr"), &out.stderr.bytes)?;
+    write_once(&dir.join("launch-output.json"), &serde_json::to_vec(&json!({
+        "version":1,"exit":out.exit,"signal":out.signal,"timed_out":out.timed_out,"cancelled":out.cancelled,
+        "stdout":out.stdout.digest(),"stderr":out.stderr.digest()
+    })).map_err(failure)?)
 }
 fn gate_input(dir: &Path, command: &str, checkout: &Path) -> Result<String> {
     let script = dir.join("gate-command.sh");
