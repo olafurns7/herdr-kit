@@ -2,6 +2,7 @@
 """Compare Rust CLI bytes and logical SQLite state with stored golden fixtures."""
 import argparse
 from collections import defaultdict
+from functools import lru_cache
 import hashlib
 import importlib
 import json
@@ -14,29 +15,63 @@ import golden
 
 ROOT = Path(__file__).resolve().parents[2]
 RUST_ONLY = ('subscriptions', 'delivery_attempts', 'consumer_leases')
+# Exact v5 allowlist: no prefix matching or projection of populated tables.
+V5_TABLES = (
+    'work_campaigns', 'work_items', 'work_revisions', 'work_runs', 'work_checkouts',
+    'work_assignments', 'work_results', 'work_acceptances', 'work_proofs', 'work_creations',
+    'jobs_operations', 'jobs_routes', 'jobs_ask_policy',
+)
+V5_DDL = tuple(ROOT / 'crates/taskr-core/src/store' / name / 'schema.sql'
+               for name in ('work', 'jobs'))
 
 
 def quote(name):
     return '"' + name.replace('"', '""') + '"'
 
 
-def logical(path, normalized=False):
-    """Include visible FTS rows and application schema, exclude implementation shadow tables."""
+@lru_cache(maxsize=1)
+def v5_schema():
+    """Use SQLite's stored SQL spelling; schema.rs's fingerprint owns DDL evolution."""
+    with sqlite3.connect(':memory:') as db:
+        for path in V5_DDL:
+            db.executescript(path.read_text())
+        schema = list(db.execute("select type,name,tbl_name,sql from sqlite_master order by type,name"))
+    if {row[1] for row in schema if row[0] == 'table'} != set(V5_TABLES):
+        raise RuntimeError('v5 projection allowlist differs from source DDL')
+    return schema
+
+
+def require_v5_schema(db, schema, required):
+    version = db.execute('pragma user_version').fetchone()[0]
+    objects = [row for row in schema if row[2] in V5_TABLES]
+    if required or version == 5 or objects:
+        if version != 5 or objects != v5_schema():
+            raise RuntimeError('migrated fixture requires version 5 and exact work/jobs schema')
+
+
+def logical(path, normalized=False, *, legacy_projection=False, require_v5=False):
+    """Full visible state by default; legacy goldens explicitly project empty extensions."""
     if not path.exists():
+        if require_v5:
+            raise RuntimeError('migrated fixture database is missing')
         return None
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
         db.execute('pragma temp_store=MEMORY')
         shadow = {row[1] for row in db.execute("pragma table_list") if row[2] == "shadow"}
         schema = list(db.execute("select type,name,tbl_name,sql from sqlite_master order by type,name"))
-        # Empty extension tables absent from the historical fixtures (schema 2: `taskr after`, schema 3:
-        # `taskr delivery`, schema 4: `taskr consumer`) are left out while empty, so a
-        # migrated ledger matches; a row written in one still shows.
-        shadow |= {name for name in RUST_ONLY if any(row[1] == name for row in schema)
-                   and not db.execute(f"select exists(select 1 from {quote(name)})").fetchone()[0]}
-        schema = [row for row in schema if row[1] not in shadow and row[2] not in shadow]
+        if legacy_projection or require_v5:
+            require_v5_schema(db, schema, require_v5)
+        # Historical v2-v4 policy, plus only the named empty v5 tables and indexes.
+        hidden = set()
+        if legacy_projection:
+            hidden = {name for name in (*RUST_ONLY, *V5_TABLES)
+                      if any(row[0] == 'table' and row[1] == name for row in schema)
+                      and not db.execute(f"select exists(select 1 from {quote(name)})").fetchone()[0]}
+        schema = [row for row in schema if row[1] not in shadow and row[2] not in shadow
+                  and not (row[0] in ('table', 'index') and row[2] in hidden)]
         tables = {}
         for name, in db.execute("select name from sqlite_master where type='table' order by name"):
-            if name in shadow:
+            if name in shadow or name in hidden:
                 continue
             columns = [row[1] for row in db.execute(f"pragma table_info({quote(name)})")]
             fields = ','.join(map(quote, columns))
@@ -186,8 +221,11 @@ def main():
                 codes = [out[0] for out in executions]
                 if any(code < 0 or code == 125 for code in codes):
                     raise RuntimeError(f'command unavailable or timed out: {i}: {fixture_name}: {codes}')
+                migrated = bool(case.get('rpc_caller')) or any(
+                    argv == ['--contract-migrate'] and code == 0 for argv, code in zip(steps, codes))
                 golden.observe([i, fixture_name, steps], {'executions': executions,
-                               'logical_db': golden.digest(logical(db, normalized=True))})
+                               'logical_db': golden.digest(logical(db, normalized=True,
+                                   legacy_projection=True, require_v5=migrated))})
                 status = 'pass'
                 family = case['family']
                 summary[family][status] += 1

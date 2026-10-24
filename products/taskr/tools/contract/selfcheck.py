@@ -37,30 +37,86 @@ with tempfile.TemporaryDirectory(prefix='taskr-contract-check-') as scratch:
     with sqlite3.connect(copy) as db:
         db.execute('create table subscriptions(id integer primary key, target text, fired_at text)')
         db.execute('create index subscriptions_open on subscriptions(target) where fired_at is null')
-    empty = contract.logical(copy)
+    empty = contract.logical(copy, legacy_projection=True)
     assert 'subscriptions' not in empty['tables'] and not any('subscriptions' in row[2] for row in empty['schema'])
     with sqlite3.connect(copy) as db:
         db.execute("insert into subscriptions(target) values ('7')")
-    assert 'subscriptions' in contract.logical(copy)['tables']
+    assert 'subscriptions' in contract.logical(copy, legacy_projection=True)['tables']
     # Schema 3's delivery attempts, likewise; the populated subscriptions stay visible.
     with sqlite3.connect(copy) as db:
         db.execute('create table delivery_attempts(id integer primary key, task_id integer, received_at text)')
         db.execute('create index delivery_attempts_task on delivery_attempts(task_id)')
-    empty = contract.logical(copy)
+    empty = contract.logical(copy, legacy_projection=True)
     assert 'delivery_attempts' not in empty['tables'] and not any('delivery_attempts' in row[2] for row in empty['schema'])
     assert 'subscriptions' in empty['tables']
     with sqlite3.connect(copy) as db:
         db.execute("insert into delivery_attempts(task_id) values (7)")
-    assert 'delivery_attempts' in contract.logical(copy)['tables']
+    assert 'delivery_attempts' in contract.logical(copy, legacy_projection=True)['tables']
     # Schema 4's consumer leases, likewise.
     with sqlite3.connect(copy) as db:
         db.execute('create table consumer_leases(task_id integer primary key, fence integer)')
-    empty = contract.logical(copy)
+    empty = contract.logical(copy, legacy_projection=True)
     assert 'consumer_leases' not in empty['tables'] and not any('consumer_leases' in row[2] for row in empty['schema'])
     assert 'delivery_attempts' in empty['tables']
     with sqlite3.connect(copy) as db:
         db.execute("insert into consumer_leases(task_id, fence) values (7, 1)")
-    assert 'consumer_leases' in contract.logical(copy)['tables']
+    assert 'consumer_leases' in contract.logical(copy, legacy_projection=True)['tables']
+    # v5 projection preserves the historical ledger, while full state retains every table.
+    v5 = directory / 'v5.db'
+    contract.clone(source, v5)
+    with sqlite3.connect(v5) as db:
+        for path in contract.V5_DDL:
+            db.executescript(path.read_text())
+        db.execute('pragma user_version=5')
+    full = contract.logical(v5)
+    assert set(contract.V5_TABLES) <= set(full['tables'])
+    assert contract.logical(v5, legacy_projection=True, require_v5=True) == contract.logical(source, legacy_projection=True)
+    # The legacy fixture itself is deliberately unmigrated; do not require v5 there.
+    try:
+        contract.logical(source, legacy_projection=True, require_v5=True)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError('successful migration accepted an unmigrated fixture')
+    with sqlite3.connect(v5) as db:
+        db.execute('create virtual table search_fts using fts5(body)')
+        db.execute("insert into search_fts(body) values ('original')")
+        db.execute("insert into meta(key,value) values('v5-negative-control','original')")
+    baseline = contract.logical(v5, legacy_projection=True)
+    mutations = (
+        "update tasks set name='v5 changed old task' where id=1",
+        "update meta set value='changed' where key='v5-negative-control'",
+        "update search_fts set body='changed' where rowid=1",
+        "insert into work_campaigns(root_id,enabled,max_active,max_review_pending) values(1,0,1,1)",
+    )
+    for index, sql in enumerate(mutations):
+        trial = directory / f'v5-row-{index}.db'
+        contract.clone(v5, trial)
+        with sqlite3.connect(trial) as db:
+            db.execute(sql)
+        changed = contract.logical(trial, legacy_projection=True)
+        assert changed != baseline, sql
+        if index == 3:
+            assert changed['tables']['work_campaigns']['rows'] == 1
+            assert any(row[2] == 'work_campaigns' for row in changed['schema'])
+    # Missing/changed tables, missing indexes and wrong versions cannot hide behind projection.
+    for index, sql in enumerate((
+        'drop table work_proofs',
+        'alter table work_items add column unexpected text',
+        'drop index work_campaign',
+        'pragma user_version=4',
+    )):
+        trial = directory / f'v5-schema-{index}.db'
+        contract.clone(v5, trial)
+        with sqlite3.connect(trial) as db:
+            db.execute(sql)
+        contract.logical(trial)  # full diagnostic state remains available
+        try:
+            contract.logical(trial, legacy_projection=True)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(f'v5 schema drift was projected away: {sql}')
     binary = Path('/usr/bin/python3').resolve()
     golden.session = golden.Session('selfcheck', True, directory, binary, binary)
     assert golden.normalize(str(directory / 'copy.db')) == '<tmp>/copy.db'
