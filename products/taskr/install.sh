@@ -201,6 +201,7 @@ products/setup/skills/herdr-practices/references/verify-existing-fix.md
 products/setup/skills/herdr-practices/references/writing.md
 products/setup/skills/herdr-verification/SKILL.md
 products/setup/skills/herdr-verification/references/feature-map.md
+products/setup/skills/herdr-verification/references/task-proof.md
 third_party/pstack/LICENSE
 third_party/pstack/PROVENANCE.md
 '
