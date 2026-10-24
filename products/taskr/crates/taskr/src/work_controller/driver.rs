@@ -226,249 +226,6 @@ fn herdr_result(args: &[&str], out: &process::Output) -> Result<Value> {
     }
     Ok(value["result"].clone())
 }
-#[cfg(test)]
-mod observation_tests {
-    use super::*;
-    #[test]
-    fn failed_launch_retains_exact_private_bytes_status_and_truncation_metadata() {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        let scratch = super::super::tests::Scratch::new();
-        for (name, stdout, stderr) in [
-            (
-                "normal",
-                b"synthetic\0output\xff\n".to_vec(),
-                b"adapter failed\n".to_vec(),
-            ),
-            (
-                "bounded",
-                vec![b'x'; process::LIMIT + 1],
-                vec![b'y'; process::LIMIT + 2],
-            ),
-        ] {
-            let dir = scratch.0.join(name);
-            fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
-            let mut out = output(Some(1), &stdout, &stderr);
-            out.timed_out = true;
-            launch_diagnostics(&dir, &out).unwrap();
-            assert_eq!(
-                fs::read(dir.join("launch.stdout")).unwrap(),
-                out.stdout.bytes
-            );
-            assert_eq!(
-                fs::read(dir.join("launch.stderr")).unwrap(),
-                out.stderr.bytes
-            );
-            let data: Value =
-                serde_json::from_slice(&fs::read(dir.join("launch-output.json")).unwrap()).unwrap();
-            assert_eq!(data["exit"], 1);
-            assert_eq!(data["timed_out"], true);
-            assert_eq!(data["stdout"]["bytes"], stdout.len());
-            assert_eq!(data["stderr"]["bytes"], stderr.len());
-            assert_eq!(data["stdout"]["truncated"], name == "bounded");
-            assert_eq!(data["stderr"]["truncated"], name == "bounded");
-            assert_eq!(
-                data["stdout"]["sha256"],
-                format!("{:x}", Sha256::digest(&stdout))
-            );
-            for file in ["launch.stdout", "launch.stderr", "launch-output.json"] {
-                assert_eq!(
-                    fs::metadata(dir.join(file)).unwrap().permissions().mode() & 0o777,
-                    0o600
-                );
-            }
-            let changed = output(Some(2), b"changed", b"changed");
-            assert!(launch_diagnostics(&dir, &changed).is_err());
-            assert_eq!(
-                fs::read(dir.join("launch.stderr")).unwrap(),
-                out.stderr.bytes
-            );
-        }
-    }
-    #[test]
-    fn failed_launch_diagnostics_refuse_nonprivate_directory_before_retaining_output() {
-        use std::os::unix::fs::PermissionsExt;
-        let scratch = super::super::tests::Scratch::new();
-        fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o755)).unwrap();
-        let out = output(Some(1), b"synthetic private bytes", b"failure");
-        assert!(launch_diagnostics(&scratch.0, &out).is_err());
-        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
-    }
-    #[test]
-    fn long_gate_path_is_recorded_exactly_but_terminal_input_stays_short() {
-        use std::os::unix::fs::PermissionsExt;
-        let scratch = super::super::tests::Scratch::new();
-        let checkout = scratch.0.join("checkout");
-        fs::create_dir(&checkout).unwrap();
-        let path = format!("/candidate/bin:{}", "/synthetic/long-path:".repeat(1000));
-        let command = format!(
-            "unset TASKR_DB && export PATH={} && export TASKR_DB='/scratch/ledger' TASKR_TASK=12 TASKR_LAUNCH=11 && '/candidate/bin/taskr' work run-checks 1 --launch 11; taskr_check_rc=$?; printf '%s\\n' \"$taskr_check_rc\" > '/scratch/shell-exit'",
-            quote(&path)
-        );
-        assert!(command.len() > 4096);
-        let input = gate_input(&scratch.0, &command, &checkout).unwrap();
-        let script = scratch.0.join("gate-command.sh");
-        assert_eq!(
-            input,
-            format!("/bin/sh {}", quote(script.to_str().unwrap()))
-        );
-        assert!(input.len() <= 512);
-        assert!(!input.contains(&path));
-        assert_eq!(
-            fs::read(&script).unwrap(),
-            format!("{command}\n").as_bytes()
-        );
-        assert_eq!(
-            fs::metadata(&script).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert!(gate_input(&scratch.0, "changed command", &checkout).is_err());
-        assert_eq!(
-            fs::read(&script).unwrap(),
-            format!("{command}\n").as_bytes()
-        );
-    }
-    #[test]
-    fn gate_script_refuses_relative_or_oversized_terminal_paths_before_writing() {
-        let scratch = super::super::tests::Scratch::new();
-        assert!(gate_input(Path::new("relative-attempt"), "command", &scratch.0).is_err());
-        let long = scratch.0.join("x".repeat(513));
-        assert!(gate_input(&long, "command", &scratch.0).is_err());
-        assert!(gate_input(&scratch.0, "command", &scratch.0).is_err());
-        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
-    }
-    fn output(exit: Option<i32>, stdout: &[u8], stderr: &[u8]) -> process::Output {
-        process::Output {
-            pid: 1,
-            exit,
-            signal: None,
-            timed_out: false,
-            cancelled: false,
-            stdout: process::Capture::from_bytes(stdout),
-            stderr: process::Capture::from_bytes(stderr),
-        }
-    }
-    #[test]
-    fn structured_herdr_rejections_stay_distinct_from_transport_and_parse_failures() {
-        for (exit, stderr, stdout, timed_out, expected) in [
-            (Some(2), "", "", false, Some(ExitCode::Rejected)),
-            (
-                Some(1),
-                r#"{"error":{"code":"agent_blocked"}}"#,
-                "",
-                false,
-                Some(ExitCode::Rejected),
-            ),
-            (
-                Some(1),
-                r#"{"error":{"code":"pane_not_found"}}"#,
-                "",
-                false,
-                Some(ExitCode::Rejected),
-            ),
-            (
-                Some(1),
-                "socket unavailable",
-                "",
-                false,
-                Some(ExitCode::Transport),
-            ),
-            (Some(0), "", "partial", false, Some(ExitCode::Transport)),
-            (Some(2), "", "", true, Some(ExitCode::Transport)),
-            (
-                Some(0),
-                "",
-                r#"{"error":{"code":"agent_blocked"}}"#,
-                false,
-                Some(ExitCode::Rejected),
-            ),
-            (Some(0), "", r#"{"result":{"agents":[]}}"#, false, None),
-        ] {
-            let mut out = output(exit, stdout.as_bytes(), stderr.as_bytes());
-            out.timed_out = timed_out;
-            assert_eq!(
-                herdr_result(&["agent", "list"], &out).err().map(|e| e.code),
-                expected
-            );
-        }
-    }
-    #[test]
-    fn exact_empty_success_is_normalized_only_for_documented_void_effects() {
-        let empty = output(Some(0), b"", b"");
-        for args in [
-            &["pane", "send-keys", "w1:p1", "esc"][..],
-            &["pane", "send-keys", "w1:p1", "ctrl+c", "ctrl+c"][..],
-            &["pane", "run", "w1:p1", "approved gate command"][..],
-            &["tab", "rename", "w1:t1", "impl-w1"][..],
-        ] {
-            assert_eq!(herdr_result(args, &empty).unwrap(), Value::Null);
-            assert!(herdr_result(args, &output(Some(0), b"\n", b"")).is_err());
-            assert!(herdr_result(args, &output(Some(0), b"malformed", b"")).is_err());
-        }
-        for args in [
-            &["agent", "list"][..],
-            &["agent", "wait", "impl-w1"][..],
-            &["pane", "get", "w1:p1"][..],
-            &["pane", "process-info", "--pane", "w1:p1"][..],
-            &["pane", "list", "--workspace", "w1"][..],
-            &["tab", "list", "--workspace", "w1"][..],
-            &["tab", "create", "--workspace", "w1"][..],
-            &["worktree", "list", "--workspace", "w1"][..],
-            &["pane", "read", "w1:p1"][..],
-            &["pane", "run"][..],
-            &["tab", "rename"][..],
-            &[][..],
-        ] {
-            assert!(herdr_result(args, &empty).is_err(), "{args:?}");
-        }
-    }
-    #[test]
-    fn void_effect_normalization_cannot_hide_failure_rejection_or_capture_bounds() {
-        let args = ["pane", "send-keys", "w1:p1", "esc"];
-        for exit in [Some(1), Some(2), Some(6), None] {
-            assert!(herdr_result(&args, &output(exit, b"", b"")).is_err());
-        }
-        for (stdout, stderr) in [
-            (
-                b"".as_slice(),
-                br#"{"error":{"code":"agent_blocked"}}"#.as_slice(),
-            ),
-            (
-                b"".as_slice(),
-                br#"{"error":{"code":"permission_denied"}}"#.as_slice(),
-            ),
-            (
-                br#"{"error":{"code":"agent_blocked"}}"#.as_slice(),
-                b"".as_slice(),
-            ),
-        ] {
-            assert_eq!(
-                herdr_result(&args, &output(Some(0), stdout, stderr))
-                    .unwrap_err()
-                    .code,
-                ExitCode::Rejected
-            );
-        }
-        assert!(herdr_result(&args, &output(Some(0), b"", b"warning")).is_err());
-        let oversized = vec![b' '; process::LIMIT + 1];
-        for (stdout, stderr) in [
-            (oversized.as_slice(), b"".as_slice()),
-            (b"".as_slice(), oversized.as_slice()),
-        ] {
-            let mut out = output(Some(0), stdout, stderr);
-            // Even if retained bytes are empty, the capture's truncation evidence survives.
-            out.stdout.bytes.clear();
-            out.stderr.bytes.clear();
-            assert!(herdr_result(&args, &out).is_err());
-        }
-        for condition in ["timeout", "cancelled", "signal"] {
-            let mut out = output(Some(0), b"", b"");
-            out.timed_out = condition == "timeout";
-            out.cancelled = condition == "cancelled";
-            out.signal = (condition == "signal").then_some(15);
-            assert!(herdr_result(&args, &out).is_err());
-        }
-    }
-}
 fn array<'a>(v: &'a Value, key: &str) -> Result<&'a Vec<Value>> {
     v[key]
         .as_array()
@@ -1840,4 +1597,247 @@ pub(super) fn brief_text(
         quote(&result.to_string_lossy()),
         quote(&report.to_string_lossy())
     ))
+}
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    #[test]
+    fn failed_launch_retains_exact_private_bytes_status_and_truncation_metadata() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let scratch = super::super::tests::Scratch::new();
+        for (name, stdout, stderr) in [
+            (
+                "normal",
+                b"synthetic\0output\xff\n".to_vec(),
+                b"adapter failed\n".to_vec(),
+            ),
+            (
+                "bounded",
+                vec![b'x'; process::LIMIT + 1],
+                vec![b'y'; process::LIMIT + 2],
+            ),
+        ] {
+            let dir = scratch.0.join(name);
+            fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+            let mut out = output(Some(1), &stdout, &stderr);
+            out.timed_out = true;
+            launch_diagnostics(&dir, &out).unwrap();
+            assert_eq!(
+                fs::read(dir.join("launch.stdout")).unwrap(),
+                out.stdout.bytes
+            );
+            assert_eq!(
+                fs::read(dir.join("launch.stderr")).unwrap(),
+                out.stderr.bytes
+            );
+            let data: Value =
+                serde_json::from_slice(&fs::read(dir.join("launch-output.json")).unwrap()).unwrap();
+            assert_eq!(data["exit"], 1);
+            assert_eq!(data["timed_out"], true);
+            assert_eq!(data["stdout"]["bytes"], stdout.len());
+            assert_eq!(data["stderr"]["bytes"], stderr.len());
+            assert_eq!(data["stdout"]["truncated"], name == "bounded");
+            assert_eq!(data["stderr"]["truncated"], name == "bounded");
+            assert_eq!(
+                data["stdout"]["sha256"],
+                format!("{:x}", Sha256::digest(&stdout))
+            );
+            for file in ["launch.stdout", "launch.stderr", "launch-output.json"] {
+                assert_eq!(
+                    fs::metadata(dir.join(file)).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+            let changed = output(Some(2), b"changed", b"changed");
+            assert!(launch_diagnostics(&dir, &changed).is_err());
+            assert_eq!(
+                fs::read(dir.join("launch.stderr")).unwrap(),
+                out.stderr.bytes
+            );
+        }
+    }
+    #[test]
+    fn failed_launch_diagnostics_refuse_nonprivate_directory_before_retaining_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = super::super::tests::Scratch::new();
+        fs::set_permissions(&scratch.0, fs::Permissions::from_mode(0o755)).unwrap();
+        let out = output(Some(1), b"synthetic private bytes", b"failure");
+        assert!(launch_diagnostics(&scratch.0, &out).is_err());
+        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
+    }
+    #[test]
+    fn long_gate_path_is_recorded_exactly_but_terminal_input_stays_short() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = super::super::tests::Scratch::new();
+        let checkout = scratch.0.join("checkout");
+        fs::create_dir(&checkout).unwrap();
+        let path = format!("/candidate/bin:{}", "/synthetic/long-path:".repeat(1000));
+        let command = format!(
+            "unset TASKR_DB && export PATH={} && export TASKR_DB='/scratch/ledger' TASKR_TASK=12 TASKR_LAUNCH=11 && '/candidate/bin/taskr' work run-checks 1 --launch 11; taskr_check_rc=$?; printf '%s\\n' \"$taskr_check_rc\" > '/scratch/shell-exit'",
+            quote(&path)
+        );
+        assert!(command.len() > 4096);
+        let input = gate_input(&scratch.0, &command, &checkout).unwrap();
+        let script = scratch.0.join("gate-command.sh");
+        assert_eq!(
+            input,
+            format!("/bin/sh {}", quote(script.to_str().unwrap()))
+        );
+        assert!(input.len() <= 512);
+        assert!(!input.contains(&path));
+        assert_eq!(
+            fs::read(&script).unwrap(),
+            format!("{command}\n").as_bytes()
+        );
+        assert_eq!(
+            fs::metadata(&script).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(gate_input(&scratch.0, "changed command", &checkout).is_err());
+        assert_eq!(
+            fs::read(&script).unwrap(),
+            format!("{command}\n").as_bytes()
+        );
+    }
+    #[test]
+    fn gate_script_refuses_relative_or_oversized_terminal_paths_before_writing() {
+        let scratch = super::super::tests::Scratch::new();
+        assert!(gate_input(Path::new("relative-attempt"), "command", &scratch.0).is_err());
+        let long = scratch.0.join("x".repeat(513));
+        assert!(gate_input(&long, "command", &scratch.0).is_err());
+        assert!(gate_input(&scratch.0, "command", &scratch.0).is_err());
+        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
+    }
+    fn output(exit: Option<i32>, stdout: &[u8], stderr: &[u8]) -> process::Output {
+        process::Output {
+            pid: 1,
+            exit,
+            signal: None,
+            timed_out: false,
+            cancelled: false,
+            stdout: process::Capture::from_bytes(stdout),
+            stderr: process::Capture::from_bytes(stderr),
+        }
+    }
+    #[test]
+    fn structured_herdr_rejections_stay_distinct_from_transport_and_parse_failures() {
+        for (exit, stderr, stdout, timed_out, expected) in [
+            (Some(2), "", "", false, Some(ExitCode::Rejected)),
+            (
+                Some(1),
+                r#"{"error":{"code":"agent_blocked"}}"#,
+                "",
+                false,
+                Some(ExitCode::Rejected),
+            ),
+            (
+                Some(1),
+                r#"{"error":{"code":"pane_not_found"}}"#,
+                "",
+                false,
+                Some(ExitCode::Rejected),
+            ),
+            (
+                Some(1),
+                "socket unavailable",
+                "",
+                false,
+                Some(ExitCode::Transport),
+            ),
+            (Some(0), "", "partial", false, Some(ExitCode::Transport)),
+            (Some(2), "", "", true, Some(ExitCode::Transport)),
+            (
+                Some(0),
+                "",
+                r#"{"error":{"code":"agent_blocked"}}"#,
+                false,
+                Some(ExitCode::Rejected),
+            ),
+            (Some(0), "", r#"{"result":{"agents":[]}}"#, false, None),
+        ] {
+            let mut out = output(exit, stdout.as_bytes(), stderr.as_bytes());
+            out.timed_out = timed_out;
+            assert_eq!(
+                herdr_result(&["agent", "list"], &out).err().map(|e| e.code),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn exact_empty_success_is_normalized_only_for_documented_void_effects() {
+        let empty = output(Some(0), b"", b"");
+        for args in [
+            &["pane", "send-keys", "w1:p1", "esc"][..],
+            &["pane", "send-keys", "w1:p1", "ctrl+c", "ctrl+c"][..],
+            &["pane", "run", "w1:p1", "approved gate command"][..],
+            &["tab", "rename", "w1:t1", "impl-w1"][..],
+        ] {
+            assert_eq!(herdr_result(args, &empty).unwrap(), Value::Null);
+            assert!(herdr_result(args, &output(Some(0), b"\n", b"")).is_err());
+            assert!(herdr_result(args, &output(Some(0), b"malformed", b"")).is_err());
+        }
+        for args in [
+            &["agent", "list"][..],
+            &["agent", "wait", "impl-w1"][..],
+            &["pane", "get", "w1:p1"][..],
+            &["pane", "process-info", "--pane", "w1:p1"][..],
+            &["pane", "list", "--workspace", "w1"][..],
+            &["tab", "list", "--workspace", "w1"][..],
+            &["tab", "create", "--workspace", "w1"][..],
+            &["worktree", "list", "--workspace", "w1"][..],
+            &["pane", "read", "w1:p1"][..],
+            &["pane", "run"][..],
+            &["tab", "rename"][..],
+            &[][..],
+        ] {
+            assert!(herdr_result(args, &empty).is_err(), "{args:?}");
+        }
+    }
+    #[test]
+    fn void_effect_normalization_cannot_hide_failure_rejection_or_capture_bounds() {
+        let args = ["pane", "send-keys", "w1:p1", "esc"];
+        for exit in [Some(1), Some(2), Some(6), None] {
+            assert!(herdr_result(&args, &output(exit, b"", b"")).is_err());
+        }
+        for (stdout, stderr) in [
+            (
+                b"".as_slice(),
+                br#"{"error":{"code":"agent_blocked"}}"#.as_slice(),
+            ),
+            (
+                b"".as_slice(),
+                br#"{"error":{"code":"permission_denied"}}"#.as_slice(),
+            ),
+            (
+                br#"{"error":{"code":"agent_blocked"}}"#.as_slice(),
+                b"".as_slice(),
+            ),
+        ] {
+            assert_eq!(
+                herdr_result(&args, &output(Some(0), stdout, stderr))
+                    .unwrap_err()
+                    .code,
+                ExitCode::Rejected
+            );
+        }
+        assert!(herdr_result(&args, &output(Some(0), b"", b"warning")).is_err());
+        let oversized = vec![b' '; process::LIMIT + 1];
+        for (stdout, stderr) in [
+            (oversized.as_slice(), b"".as_slice()),
+            (b"".as_slice(), oversized.as_slice()),
+        ] {
+            let mut out = output(Some(0), stdout, stderr);
+            // Even if retained bytes are empty, the capture's truncation evidence survives.
+            out.stdout.bytes.clear();
+            out.stderr.bytes.clear();
+            assert!(herdr_result(&args, &out).is_err());
+        }
+        for condition in ["timeout", "cancelled", "signal"] {
+            let mut out = output(Some(0), b"", b"");
+            out.timed_out = condition == "timeout";
+            out.cancelled = condition == "cancelled";
+            out.signal = (condition == "signal").then_some(15);
+            assert!(herdr_result(&args, &out).is_err());
+        }
+    }
 }
