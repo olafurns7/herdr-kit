@@ -1207,6 +1207,26 @@ fn inspect_stop_reports_privileged_uncertainty_without_ledger_or_pane_effects() 
     );
 }
 #[test]
+fn cancelled_uncertain_assignment_never_reenters_stop_even_with_bound_native() {
+    let b = Fake::new();
+    b.active("uncertain");
+    b.native("impl-w11", "native-fixture");
+    {
+        let mut s = b.snapshot.borrow_mut();
+        s["work"][0]["state"] = json!("cancelled");
+        s["work"][0]["runs"][0]["assignments"][0]["native_session"] = json!("native-fixture");
+    }
+    driver::drive(&b, 3).unwrap();
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["process_state"], "uncertain");
+    assert!(!b.calls.borrow().iter().any(|c| c.contains("send-keys")
+        || c.starts_with("herdr:agent wait")
+        || c == "process:scan"
+        || c == "change:stopped"
+        || c == "change:reconcile"
+        || c == "effect:start"));
+}
+#[test]
 fn native_absence_drift_still_requires_uncertainty_instead_of_automatic_retry() {
     let b = Fake::new();
     b.active("running");

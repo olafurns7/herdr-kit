@@ -190,6 +190,8 @@ completed evidence remains available. A pending, partial, malformed or unknown l
 withholds another helper from both drive and inspect-stop, even if no PID now needs
 the fallback. Unknown cleanup produces `process-stop-privileged-uncertain`, retains
 the checkout and marks the assignment uncertain, rather than retrying every tick.
+Cancellation also stops automatic reconciliation while any assignment is uncertain;
+a bound native ID alone does not resolve that uncertainty or authorize another stop.
 Manual reconciliation must establish exact helper identity/absence before resolving
 the latch; there is no automatic root kill or latch reset.
 

@@ -906,10 +906,17 @@ fn reconcile_cancelled(
         return Ok(());
     }
     let assignments = array(run, "assignments")?;
+    if assignments
+        .iter()
+        .any(|a| a["process_state"] == "uncertain")
+    {
+        // Cancellation does not resolve unknown helper cleanup or authorize another stop attempt.
+        return Ok(());
+    }
     for a in assignments {
         match a["process_state"].as_str() {
             Some("stopped") => {}
-            Some("starting" | "running" | "uncertain") => {
+            Some("starting" | "running") => {
                 // Never recover a prompt/start after cancellation; stop only a proven bound identity.
                 if a["stage"] != "gate" && a["native_session"].as_str().is_none() {
                     uncertain(
