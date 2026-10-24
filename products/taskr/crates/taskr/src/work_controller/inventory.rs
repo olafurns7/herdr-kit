@@ -377,6 +377,34 @@ pub(super) fn scan(checkout: &Path, shell: i32, trust: &Trust) -> Result<Value> 
     let uid = rustix::process::getuid().as_raw();
     let observer = i32::try_from(std::process::id()).map_err(failure)?;
     let checkout = fs::canonicalize(checkout).map_err(failure)?;
+    retry_pair(start, |start| {
+        scan_pair(&checkout, shell, trust, uid, observer, start)
+    })
+}
+fn retry_pair(
+    start: Instant,
+    mut pair: impl FnMut(Instant) -> Result<Option<Value>>,
+) -> Result<Value> {
+    loop {
+        deadline(start)?;
+        if let Some(scan) = pair(start)? {
+            deadline(start)?;
+            return Ok(scan);
+        }
+    }
+}
+fn stable_rows(first: &[Row], last: &[Row], probes: &BTreeSet<i32>) -> bool {
+    last.iter()
+        .all(|r| probes.contains(&r.pid) || first.contains(r))
+}
+fn scan_pair(
+    checkout: &Path,
+    shell: i32,
+    trust: &Trust,
+    uid: u32,
+    observer: i32,
+    start: Instant,
+) -> Result<Option<Value>> {
     let mut probes = BTreeSet::new();
     let first = snapshot(uid, start, &mut probes)?;
     #[cfg(target_os = "macos")]
@@ -421,25 +449,16 @@ pub(super) fn scan(checkout: &Path, shell: i32, trust: &Trust) -> Result<Value> 
     for old in &first {
         deadline(start)?;
         if !probes.contains(&old.pid) && !last.iter().any(|r| r.pid == old.pid) && alive(old.pid)? {
-            return Err(failure(
-                "process omitted from final inventory is still alive",
-            ));
+            return Ok(None);
         }
     }
-    for r in &last {
-        if probes.contains(&r.pid) {
-            continue;
-        }
-        if !first.iter().any(|old| old == r) {
-            return Err(failure("process inventory changed during scan"));
-        }
+    if !stable_rows(&first, &last, &probes) {
+        return Ok(None);
     }
     deadline(start)?;
-    let scan = evidence(
-        &last, &cwds, &checkout, shell, observer, uid, &probes, trust,
-    )?;
+    let scan = evidence(&last, &cwds, checkout, shell, observer, uid, &probes, trust)?;
     deadline(start)?;
-    Ok(scan)
+    Ok(Some(scan))
 }
 
 #[cfg(test)]
@@ -462,6 +481,55 @@ mod tests {
             command: command.into(),
             zombie: false,
         }
+    }
+    #[test]
+    fn snapshot_pair_churn_retries_with_one_budget_and_preserves_writer_coverage() {
+        let first = vec![row(10, 1, 10, "ttys1", "zsh"), row(20, 1, 20, "?", "taskr")];
+        let mut last = first.clone();
+        last.push(row(12, 1, 12, "?", "writer"));
+        let trust = Trust {
+            shells: BTreeMap::from([(10, shell("zsh", "w1:p1", 10))]),
+            ..Default::default()
+        };
+        let start = Instant::now();
+        let mut calls = 0;
+        let scan = retry_pair(start, |bound| {
+            assert_eq!(bound, start);
+            calls += 1;
+            let before = if calls == 1 { &first } else { &last };
+            if !stable_rows(before, &last, &BTreeSet::new()) {
+                return Ok(None);
+            }
+            evidence(
+                &last,
+                &BTreeMap::from([(12, PathBuf::from("/checkout/sub"))]),
+                Path::new("/checkout"),
+                10,
+                20,
+                501,
+                &BTreeSet::new(),
+                &trust,
+            )
+            .map(Some)
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(scan["checkout_remaining"][0]["pid"], 12);
+        let mut calls = 0;
+        assert!(
+            retry_pair(Instant::now() - BUDGET, |_| {
+                calls += 1;
+                Ok(Some(json!({})))
+            })
+            .is_err()
+        );
+        assert_eq!(calls, 0);
+        assert!(
+            retry_pair(Instant::now(), |_| Err(failure(
+                "synthetic permission failure"
+            )))
+            .is_err()
+        );
     }
     #[test]
     fn login_shell_normalization_preserves_exact_inventory_exemptions() {

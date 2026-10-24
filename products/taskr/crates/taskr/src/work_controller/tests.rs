@@ -39,6 +39,10 @@ struct Fake {
     scan_native_drift: Cell<bool>,
     root_host: RefCell<Value>,
     client_mode: Cell<bool>,
+    observe_reject: Cell<bool>,
+    observe_unconfirmed: Cell<bool>,
+    observe_drift: Cell<bool>,
+    block_events: Cell<usize>,
 }
 impl Fake {
     fn new() -> Self {
@@ -66,6 +70,10 @@ impl Fake {
             scan_native_drift: Cell::new(false),
             root_host: RefCell::new(json!("")),
             client_mode: Cell::new(false),
+            observe_reject: Cell::new(false),
+            observe_unconfirmed: Cell::new(false),
+            observe_drift: Cell::new(false),
+            block_events: Cell::new(0),
         }
     }
     fn run() -> Value {
@@ -156,7 +164,19 @@ impl driver::Backend for Fake {
         self.call(format!("change:{verb}"));
         assert_eq!(g, 7);
         if verb == "block" {
+            let reason = data.unwrap()["reason"].clone();
+            let mut snapshot = self.snapshot.borrow_mut();
+            if snapshot["work"][0]["reason"] != reason {
+                self.block_events.set(self.block_events.get() + 1);
+            }
+            snapshot["work"][0]["reason"] = reason;
             return Ok(json!({}));
+        }
+        if verb == "observe" && self.observe_reject.get() {
+            return Err(store::Error {
+                code: ExitCode::Rejected,
+                message: "synthetic rejected observation".into(),
+            });
         }
         if verb == "claim" {
             assert_eq!(
@@ -176,6 +196,18 @@ impl driver::Backend for Fake {
         let mut s = self.snapshot.borrow_mut();
         let a = &mut s["work"][0]["runs"][0]["assignments"][0];
         match verb {
+            "observe" => {
+                let data = data.unwrap();
+                assert_eq!(data["pane"], a["dispatch"]["pane"]);
+                assert_eq!(a["process_state"], "starting");
+                a["native_session"] = data["native_session"].clone();
+                if self.observe_drift.get() {
+                    self.native("replacement", "replacement");
+                }
+                if self.observe_unconfirmed.get() {
+                    return Ok(json!({"queued":true}));
+                }
+            }
             "bind" => {
                 a["dispatch"] = data.unwrap();
                 a["state"] = json!("starting");
@@ -267,6 +299,7 @@ impl driver::Backend for Fake {
             );
         }
         if args[0] == "prompt" {
+            assert_eq!(self.current()["native_session"], "native-fixture");
             self.log
                 .borrow_mut()
                 .push(json!({"kind":"prompt","launch_id":11,"created_at":store::now()}));
@@ -359,23 +392,56 @@ fn stale_generation_has_no_effect() {
     assert!(!b.calls.borrow().iter().any(|c| c == "effect:start"));
 }
 #[test]
-fn bound_agent_without_prompt_can_receive_exactly_one_brief() {
+fn recovery_pins_native_identity_before_exactly_one_prompt_without_starting() {
     let b = Fake::new();
     b.active("starting");
     b.native("impl-w11", "native-fixture");
     let dir = driver::Backend::directory(&b, 3, 11).unwrap();
     fs::write(dir.join("brief.md"), "HERDR-BRIEF role=implementer\n").unwrap();
     let a = b.current();
+    assert!(a["native_session"].is_null());
     driver::recover(&b, 3, 7, &json!({}), &a).unwrap();
     driver::recover(&b, 3, 7, &json!({}), &a).unwrap();
+    assert_eq!(b.current()["native_session"], "native-fixture");
+    assert_eq!(b.current()["process_state"], "starting");
+    let calls = b.calls.borrow();
+    assert_eq!(calls.iter().filter(|c| *c == "change:observe").count(), 1);
     assert_eq!(
-        b.calls
-            .borrow()
+        calls
             .iter()
             .filter(|c| c.starts_with("command:prompt"))
             .count(),
         1
     );
+    assert!(
+        calls.iter().position(|c| c == "change:observe").unwrap()
+            < calls
+                .iter()
+                .position(|c| c.starts_with("command:prompt"))
+                .unwrap()
+    );
+    assert!(!calls.iter().any(|c| c == "change:started"));
+}
+#[test]
+fn recovery_refused_unconfirmed_or_changed_native_observation_withholds_prompt() {
+    for cause in ["rejected", "unconfirmed", "changed-native"] {
+        let b = Fake::new();
+        b.active("starting");
+        b.native("impl-w11", "native-fixture");
+        b.observe_reject.set(cause == "rejected");
+        b.observe_unconfirmed.set(cause == "unconfirmed");
+        b.observe_drift.set(cause == "changed-native");
+        let dir = driver::Backend::directory(&b, 3, 11).unwrap();
+        fs::write(dir.join("brief.md"), "HERDR-BRIEF role=implementer\n").unwrap();
+        driver::recover(&b, 3, 7, &json!({}), &b.current()).unwrap();
+        assert_eq!(b.current()["process_state"], "uncertain");
+        assert!(
+            !b.calls
+                .borrow()
+                .iter()
+                .any(|c| c.starts_with("command:prompt") || c == "change:started")
+        );
+    }
 }
 #[test]
 fn changed_native_identity_never_gets_exit_keys() {
@@ -445,7 +511,11 @@ fn incomplete_blocked_or_changed_process_scan_never_records_stopped() {
         let mut a = b.current();
         a["native_session"] = json!("native-fixture");
         let error = driver::stop(&b, 3, 7, "w1", b.scratch.0.to_str().unwrap(), &a).unwrap_err();
-        assert!(error.message.starts_with("process-stop-incomplete:"));
+        assert!(error.message.starts_with(if cause == "native-drift" {
+            "process-stop-identity:"
+        } else {
+            "process-stop-incomplete:"
+        }));
         assert!(!b.calls.borrow().iter().any(|c| c == "change:stopped"));
         assert_eq!(b.current()["process_state"], "running");
     }
@@ -460,7 +530,7 @@ fn process_scan_failure_blocks_once_without_releasing_cancelled_work() {
     b.native("impl-w11", "native-fixture");
     b.scan_error.set(true);
     driver::drive(&b, 3).unwrap();
-    assert_eq!(b.current()["process_state"], "uncertain");
+    assert_eq!(b.current()["process_state"], "running");
     assert_eq!(
         b.calls
             .borrow()
@@ -474,6 +544,78 @@ fn process_scan_failure_blocks_once_without_releasing_cancelled_work() {
             .borrow()
             .iter()
             .any(|c| c == "change:stopped" || c == "change:reconcile")
+    );
+}
+#[test]
+fn incomplete_scan_then_cooperative_writer_then_clean_retries_without_uncertainty() {
+    for state in ["active", "cancelled"] {
+        let b = Fake::new();
+        b.active("running");
+        {
+            let mut snapshot = b.snapshot.borrow_mut();
+            snapshot["work"][0]["state"] = json!(state);
+            let a = &mut snapshot["work"][0]["runs"][0]["assignments"][0];
+            a["state"] = json!("settled");
+            a["native_session"] = json!("native-fixture");
+        }
+        b.native("impl-w11", "native-fixture");
+        b.scan_error.set(true);
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], "running");
+        let reason = b.snapshot.borrow()["work"][0]["reason"].clone();
+        assert_eq!(b.block_events.get(), 1);
+        b.scan_error.set(false);
+        b.scan_blocker.set(true);
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], "running");
+        assert_eq!(b.snapshot.borrow()["work"][0]["reason"], reason);
+        assert_eq!(b.block_events.get(), 1);
+        assert!(
+            !b.calls.borrow().iter().any(|c| c == "change:stopped"
+                || c == "change:reconcile"
+                || c == "change:uncertain")
+        );
+        b.scan_blocker.set(false);
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], "stopped");
+        assert_eq!(b.block_events.get(), 1);
+        assert!(
+            !b.calls
+                .borrow()
+                .iter()
+                .any(|c| c == "change:uncertain" || c == "effect:start" || c == "change:reserve")
+        );
+        if state == "cancelled" {
+            assert!(b.calls.borrow().iter().any(|c| c == "change:reconcile"));
+        }
+    }
+}
+#[test]
+fn native_absence_drift_still_requires_uncertainty_instead_of_automatic_retry() {
+    let b = Fake::new();
+    b.active("running");
+    b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["state"] = json!("settled");
+    b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
+        json!("native-fixture");
+    b.native("impl-w11", "native-fixture");
+    b.scan_native_drift.set(true);
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["process_state"], "uncertain");
+    assert!(!b.calls.borrow().iter().any(|c| c == "change:stopped"));
+    let scans = b
+        .calls
+        .borrow()
+        .iter()
+        .filter(|c| *c == "process:scan")
+        .count();
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(
+        b.calls
+            .borrow()
+            .iter()
+            .filter(|c| *c == "process:scan")
+            .count(),
+        scans
     );
 }
 #[test]

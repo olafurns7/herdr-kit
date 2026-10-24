@@ -151,9 +151,15 @@ still fail closed.
 Each OS scan has its own fifteen-second total budget, independent of the
 four-second between-items dispatch budget, at most 4096 processes, one MiB of captured
 output per probe, at most 1024 entries in each evidence array, and 1024-byte
-command/cwd fields. Unknown, partial, oversized, changed, unavailable or timed-out
+command/cwd fields. Changed snapshot pairs retry the complete inventory/cwd pair
+within that one budget; attempts do not reset the deadline or reuse partial cwd
+coverage. Unknown, partial, oversized, changed, unavailable or timed-out
 observations produce the named `process-stop-incomplete` blocked condition and
-retain the checkout fence. The scanner never kills an unexplained process.
+retain the running assignment and checkout fence. A remaining cooperative writer
+uses the same stable, idempotent block reason, so future ticks retry automatically.
+No stopped receipt is issued until the scan is complete and remaining sets empty.
+Native identity/absence or target foreground ambiguity still marks the assignment
+uncertain for explicit reconciliation. The scanner never kills an unexplained process.
 Probe execution/cleanup is confined to its own process group. The budget is checked
 between OS reads; this local profile assumes responsive local process/filesystem
 interfaces and does not bound a kernel call stalled on a remote filesystem.
@@ -195,6 +201,10 @@ a JSON acknowledgment matching launch/task/pane/native identity before prompting
 Missing/conflicting identity, rejection or unconfirmed acknowledgment withholds
 the brief and retains the reservation. Observe does not fabricate a got/start
 receipt or move a starting process to running. Legacy/manual launches are unchanged.
+Crash recovery also observes and confirms the actual exact native identity before
+its first recovery prompt, then rechecks that native agent and generation. Refused
+or unconfirmed observation marks uncertainty and withholds the brief. Existing
+pending prompt attempts are observed rather than resent.
 Model processes without identity need explicit reconciliation; they cannot use
 an anonymous stopped receipt. Gate shells retain their separate shell-exit proof.
 

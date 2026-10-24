@@ -383,7 +383,12 @@ pub(super) fn drive(b: &impl Backend, root: i64) -> Result<Value> {
         match result {
             Err(e) if e.code == ExitCode::Rejected => return Err(e),
             Err(e) => {
-                block(b, id, root, generation, &e.message)?;
+                let reason = if e.message.starts_with("process-stop-incomplete:") {
+                    "process-stop-incomplete: inventory incomplete or cooperative writer remains; checkout retained; retry next tick"
+                } else {
+                    &e.message
+                };
+                block(b, id, root, generation, reason)?;
             }
             Ok(()) => {}
         }
@@ -488,7 +493,8 @@ fn drive_work(
         Some("stop") => {
             let a = assignment(&run, number(&next, "launch_id")?)?;
             if let Err(e) = stop(b, root, g, ws, &c.checkout.cwd, a) {
-                if e.code == ExitCode::Rejected {
+                if e.code == ExitCode::Rejected || e.message.starts_with("process-stop-incomplete:")
+                {
                     return Err(e);
                 }
                 uncertain(b, a, root, g, &e.message)?;
@@ -551,7 +557,9 @@ fn reconcile_cancelled(
                     return Ok(());
                 }
                 if let Err(e) = stop(b, root, g, ws, &c.checkout.cwd, a) {
-                    if e.code == ExitCode::Rejected {
+                    if e.code == ExitCode::Rejected
+                        || e.message.starts_with("process-stop-incomplete:")
+                    {
                         return Err(e);
                     }
                     uncertain(b, a, root, g, &e.message)?;
@@ -753,7 +761,19 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
         )?;
         return Ok(());
     };
-    let native = field(&agent["agent_session"], "value")?;
+    let native = match field(&agent["agent_session"], "value") {
+        Ok(native) => native,
+        Err(e) => {
+            uncertain(
+                b,
+                a,
+                root,
+                g,
+                &format!("bound native identity unavailable: {}", e.message),
+            )?;
+            return Ok(());
+        }
+    };
     if !owns_agent(&agent, &name(a)?, native, pane)
         || a["native_session"].as_str().is_some_and(|s| s != native)
     {
@@ -782,6 +802,44 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
         let path = b.directory(root, launch)?.join("brief.md");
         if !path.is_file() {
             uncertain(b, a, root, g, "bound start has no captured brief")?;
+            return Ok(());
+        }
+        same_generation(b, root, g)?;
+        let observed = (|| -> Result<()> {
+            let pinned = b.change(
+                "observe",
+                launch,
+                root,
+                g,
+                Some(json!({"pane":pane,"native_session":native,"observed_at":timestamp()})),
+            )?;
+            if pinned["launch_id"] != launch
+                || pinned["task_id"] != task
+                || pinned["dispatch"]["pane"] != pane
+                || pinned["native_session"] != native
+            {
+                return Err(failure("recovery native observation unconfirmed"));
+            }
+            let current = agent(b, pane)?
+                .ok_or_else(|| failure("recovery native agent disappeared after observation"))?;
+            if !owns_agent(&current, &name(a)?, native, pane) {
+                return Err(failure(
+                    "recovery native identity changed after observation",
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(e) = observed {
+            uncertain(
+                b,
+                a,
+                root,
+                g,
+                &format!(
+                    "recovery native observation failed; no prompt: {}",
+                    e.message
+                ),
+            )?;
             return Ok(());
         }
         same_generation(b, root, g)?;
@@ -917,20 +975,21 @@ pub(super) fn stop(
             || !array(&scan, "checkout_remaining")?.is_empty()
         {
             return Err(failure(
-                "unexplained session/descendant or checkout cwd process remains",
+                "process-stop-incomplete: unexplained session/descendant or checkout cwd process remains",
             ));
         }
         if shell(b, pane)? != foreground || agent(b, pane)?.is_some() {
-            return Err(failure("bound shell/native absence changed during scan"));
+            return Err(failure(
+                "process-stop-identity: bound shell/native absence changed during scan",
+            ));
         }
         Ok(scan)
-    })()
-    .map_err(|e| failure(format!("process-stop-incomplete: {}", e.message)))?;
+    })()?;
     // Foreground shell and absence are both fresh observations, not a result-settlement inference.
     same_generation(b, root, g)?;
     if shell(b, pane)? != foreground || agent(b, pane)?.is_some() {
         return Err(failure(
-            "process-stop-incomplete: native absence or shell foreground changed before stopped observation",
+            "process-stop-identity: native absence or shell foreground changed before stopped observation",
         ));
     }
     b.change("stopped",launch,root,g,Some(json!({"pane":pane,"native_session":native,"foreground":foreground,"agent_absent":true,"process_scan":process_scan,"observed_at":timestamp()})))?;
@@ -946,24 +1005,37 @@ fn scan_stop(
 ) -> Result<Value> {
     let started = std::time::Instant::now();
     if agent(b, pane)?.is_some() {
-        return Err(failure("process scan requires native absence first"));
+        return Err(failure(
+            "process-stop-identity: process scan requires native absence first",
+        ));
     }
     let trust = process_trust(b, root, ws)?;
     if started.elapsed() > Duration::from_secs(30) {
-        return Err(failure("process observation deadline"));
-    }
-    let scan = b.process_scan(
-        Path::new(cwd),
-        i32::try_from(number(foreground, "pid")?).map_err(failure)?,
-        &trust,
-    )?;
-    let fresh_trust = process_trust(b, root, ws)?;
-    if !fresh_trust.same_basis(&trust)
-        || shell(b, pane)? != *foreground
-        || started.elapsed() > Duration::from_secs(30)
-    {
         return Err(failure(
-            "campaign root or workspace shell observation changed during scan",
+            "process-stop-incomplete: process observation deadline",
+        ));
+    }
+    let scan = b
+        .process_scan(
+            Path::new(cwd),
+            i32::try_from(number(foreground, "pid")?).map_err(failure)?,
+            &trust,
+        )
+        .map_err(|e| failure(format!("process-stop-incomplete: {}", e.message)))?;
+    let fresh_trust = process_trust(b, root, ws)?;
+    if shell(b, pane)? != *foreground || agent(b, pane)?.is_some() {
+        return Err(failure(
+            "process-stop-identity: bound native absence or shell foreground changed during scan",
+        ));
+    }
+    if !fresh_trust.same_basis(&trust) {
+        return Err(failure(
+            "process-stop-incomplete: campaign root or workspace shell observation changed during scan",
+        ));
+    }
+    if started.elapsed() > Duration::from_secs(30) {
+        return Err(failure(
+            "process-stop-incomplete: process observation deadline",
         ));
     }
     Ok(scan)
