@@ -108,6 +108,7 @@ new_case() {
     : >"$case_dir/calls"
     STUB_FAIL= STUB_CURRENT= STUB_TAB= STUB_PANE_WS= STUB_PANE_CWD= STUB_PANE_GET= STUB_FG= STUB_ENV_OK= STUB_NEW= STUB_LAUNCH=
     STUB_SCREEN= STUB_START_OK= STUB_PUSH_FAIL= STUB_SERVER_RC=0 STUB_NATIVE= STUB_OBSERVE=
+    STUB_INIT_RC=0 STUB_INIT_NATIVE=synthetic-native
     STUB_RESERVED=$case_dir/reserved.json
     printf '%s\n' "case: $case_name"
 }
@@ -123,6 +124,7 @@ run_launch() {
         STUB_SCREEN="$STUB_SCREEN" STUB_START_OK="$STUB_START_OK" STUB_PUSH_FAIL="$STUB_PUSH_FAIL" \
         STUB_RESERVED="$STUB_RESERVED" STUB_SERVER_RC="$STUB_SERVER_RC" \
         STUB_NATIVE="$STUB_NATIVE" STUB_OBSERVE="$STUB_OBSERVE" \
+        STUB_INIT_RC="$STUB_INIT_RC" STUB_INIT_NATIVE="$STUB_INIT_NATIVE" \
         TASKR_FORMAT=json "$@" \
         >"$case_dir/out" 2>"$case_dir/err") || run_status=$?
     out=$(cat "$case_dir/out")
@@ -1286,6 +1288,46 @@ done
 reserved_snapshot() {
     jq -n --arg cwd "$tcwd" '{campaign:42,generation:7,parked:false,configuration:{enabled:true},work:[{revision:1,current_run:9,revisions:[{revision:1,contract:{checkout:{cwd:$cwd}}}],runs:[{run_id:9,round:1,state:"active",assignments:[{task_id:2468,launch_id:3579,round:1,state:"starting",stage:"executor",dispatch:{workspace:"wA",tab:"wA:t5",pane:"wA:p5"},lane:{name:"opus-medium",provider:"claude",model:"claude-opus-5-5",effort:"medium"}}]}]}]}' >"$STUB_RESERVED"
 }
+for identity_case in success refused changed-native; do
+    new_case "reserved Codex initializer $identity_case precedes observe and work"
+    reserved_snapshot
+    jq '.work[0].runs[0].assignments[0].lane = {name:"sol-high",provider:"codex",model:"gpt-6.1-sol",effort:"high"}' \
+        "$STUB_RESERVED" >"$case_dir/updated"
+    mv "$case_dir/updated" "$STUB_RESERVED"
+    mkdir "$case_dir/launch-bin"
+    cp "$launch_sh" "$repo_dir/bin/herdr-lanes.sh" "$case_dir/launch-bin/"
+    mkdir -p "$home/.local/share/herdr-setup"
+    cp "$repo_dir/lanes.json" "$home/.local/share/herdr-setup/lanes.json"
+    cat >"$case_dir/launch-bin/herdr-codex-identity" <<'EOF'
+#!/bin/sh
+line=identity
+for arg in "$@"; do line="$line|$arg"; done
+printf '%s\n' "$line|$TASKR_WORK_EXECUTABLE" >>"$STUB_CALLS"
+[ "$STUB_INIT_RC" = 0 ] || exit "$STUB_INIT_RC"
+printf '{"native_session":"%s","provenance_path":"/synthetic/provenance.json"}\n' "$STUB_INIT_NATIVE"
+EOF
+    chmod 0755 "$case_dir/launch-bin/herdr-codex-identity"
+    case $identity_case in refused) STUB_INIT_RC=1 ;; changed-native) STUB_INIT_NATIVE=other ;; esac
+    run_launch sh "$case_dir/launch-bin/herdr-launch" --reserved 2468 3579 sol-high impl-w3579 "$brief" "$report" 42 wA:p5
+    grep -F "identity|2468|3579|42|7|impl-w3579|wA:p5|$work|$stub_dir/taskr" "$case_dir/calls" >/dev/null \
+        || fail 'Codex initializer did not receive the exact reserved context'
+    if [ "$identity_case" = success ]; then
+        expect_rc 0
+        python3 - "$case_dir/calls" <<'PY' || fail 'Codex initializer ordering'
+import sys
+rows = open(sys.argv[1]).read().splitlines()
+def index(prefix):
+    return next(i for i, row in enumerate(rows) if row.startswith(prefix))
+assert index('herdr|agent|start|') < index('identity|') < index('taskr|--json|work|observe|') < index('taskr|prompt|')
+PY
+    else
+        expect_rc 1
+        if grep -E '^taskr\|(prompt\||--json\|work\|observe\|)' "$case_dir/calls" >/dev/null; then
+            fail 'failed/mismatched initialization reached observation or work prompt'
+        fi
+    fi
+done
+
 new_case 'reserved launch skips new and launch, preserving exports/start/prompt'
 reserved_snapshot
 run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5

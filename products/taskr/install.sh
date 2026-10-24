@@ -165,6 +165,7 @@ products/setup/bin/cdl
 products/setup/claude/notifications.json
 products/setup/codex/notifications.json
 products/setup/bin/herdr-launch
+products/setup/bin/herdr-codex-identity
 products/setup/bin/herdr-loop
 products/setup/bin/herdr-worktrees
 products/setup/bin/herdr-lead

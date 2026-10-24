@@ -471,12 +471,25 @@ fi
 
 # Pin the actual native identity before a reserved worker can finish its brief.
 if [ -n "$reserved_task" ]; then
+    initialized_native=
+    if [ "$kind" = codex ]; then
+        initialized=$(TASKR_WORK_EXECUTABLE="$reserved_cli" "$herdr_bin_dir/herdr-codex-identity" \
+            "$task" "$launch" "$parent" "$reserved_generation" "$name" "$pane" "$cwd") \
+            || step_fail '6 (reserved Codex native initialization; prompt withheld)'
+        initialized_native=$(printf '%s\n' "$initialized" | jq -er '
+            select(.provenance_path | type == "string" and startswith("/")) |
+            .native_session | select(type == "string" and length > 0)') \
+            || step_fail '6 (reserved Codex initialization unconfirmed; prompt withheld)'
+    fi
     agents=$(herdr agent list) || step_fail '6 (reserved native identity lookup)'
     native=$(printf '%s\n' "$agents" | jq -er --arg pane "$pane" --arg name "$name" '
         [.result.agents[] | select(.pane_id == $pane or .name == $name)] |
         select(length == 1) | .[0] | select(.pane_id == $pane and .name == $name) |
         .agent_session.value | select(type == "string" and length > 0 and utf8bytelength <= 256 and (test("[\\x00-\\x1f\\x7f]") | not))') \
         || step_fail '6 (reserved native identity missing or conflicting; prompt withheld)'
+    [ -z "$initialized_native" ] || [ "$native" = "$initialized_native" ] \
+        || step_fail '6 (reserved Codex initialized identity changed; prompt withheld)'
+    [ "$kind" != codex ] || reserved_check || step_fail '6 (reserved decision changed before observation)'
     observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || step_fail '6 (reserved observation time)'
     observation=$(jq -cn --arg pane "$pane" --arg native "$native" --arg at "$observed_at" \
         '{pane:$pane,native_session:$native,observed_at:$at}') || step_fail '6 (reserved observation JSON)'
@@ -485,6 +498,14 @@ if [ -n "$reserved_task" ]; then
     printf '%s\n' "$observed" | jq -e --argjson launch "$launch" --argjson task "$task" --arg pane "$pane" --arg native "$native" \
         '.launch_id == $launch and .task_id == $task and .dispatch.pane == $pane and .native_session == $native' >/dev/null \
         || step_fail '6 (reserved native observation unconfirmed; prompt withheld)'
+    if [ "$kind" = codex ]; then
+        reserved_check || step_fail '6 (reserved decision changed after observation)'
+        agents=$(herdr agent list) || step_fail '6 (reserved final native lookup)'
+        printf '%s\n' "$agents" | jq -e --arg pane "$pane" --arg name "$name" --arg native "$native" '
+            [.result.agents[] | select(.pane_id == $pane or .name == $name)] |
+            length == 1 and (.[0] | .pane_id == $pane and .name == $name and .agent_session.value == $native)' >/dev/null \
+            || step_fail '6 (reserved native identity changed after observation; prompt withheld)'
+    fi
 fi
 
 # Step 7: hand over the brief.

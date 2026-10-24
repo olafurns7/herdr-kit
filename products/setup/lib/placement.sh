@@ -150,7 +150,7 @@ is_managed() {
             .config/systemd/user/taskr.service | \
             .claude/CLAUDE.md | .claude/settings.json | .claude/statusline.sh | \
             .codex/AGENTS.md | .codex/config.toml | .codex/hooks.json | \
-            .local/bin/cdx | .local/bin/cdl | .local/bin/herdr-launch | .local/bin/herdr-loop | .local/bin/herdr-worktrees | .local/bin/herdr-lead | .local/bin/herdr-hub | \
+            .local/bin/cdx | .local/bin/cdl | .local/bin/herdr-launch | .local/bin/herdr-codex-identity | .local/bin/herdr-loop | .local/bin/herdr-worktrees | .local/bin/herdr-lead | .local/bin/herdr-hub | \
             .config/opencode/plugins/taskr-hook.js | \
             .pi/agent/extensions/taskr-hook.ts | \
             .config/herdr/config.toml)

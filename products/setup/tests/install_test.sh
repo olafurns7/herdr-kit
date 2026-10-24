@@ -667,6 +667,7 @@ exec /bin/cp "$@"
         '.local/bin/cdx': setup / 'bin/cdx',
         '.local/bin/cdl': setup / 'bin/cdl',
         '.local/bin/herdr-launch': setup / 'bin/herdr-launch',
+        '.local/bin/herdr-codex-identity': setup / 'bin/herdr-codex-identity',
         '.local/bin/herdr-loop': setup / 'bin/herdr-loop',
         '.local/bin/herdr-worktrees': setup / 'bin/herdr-worktrees',
         '.local/bin/herdr-lead': setup / 'bin/herdr-lead',

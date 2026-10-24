@@ -18,7 +18,7 @@ if command -v herdr >/dev/null 2>&1; then
         printf '%s\n' 'WARN: herdr --skill produced nothing; skill not refreshed' >&2
     fi
 fi
-for asset in herdr-launch herdr-loop herdr-worktrees herdr-lead herdr-hub herdr-lanes.sh; do
+for asset in herdr-launch herdr-codex-identity herdr-loop herdr-worktrees herdr-lead herdr-hub herdr-lanes.sh; do
     place "$setup_dir/bin/$asset" "$home_dir/.local/bin/$asset" 0755
 done
 place "$setup_dir/lanes.json" "$home_dir/.local/share/herdr-setup/lanes.json"
