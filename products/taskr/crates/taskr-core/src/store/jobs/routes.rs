@@ -12,8 +12,7 @@ pub fn accepted(
     let id:Option<String>=db.query_row("select id from jobs_operations where root_id=? and kind='await' and reference_id=? and revision=?",params![root,work,revision],|r|r.get(0)).optional()?;
     let Some(id) = id else { return Ok(false) };
     attach(db, &id, run, result)?;
-    reconcile_tx(db)?;
-    fallback(db, &id)?;
+    reconcile_operation(db, &id)?;
     Ok(true)
 }
 fn offered(db: &Connection, o: &Operation, result: i64) -> Result<bool> {
@@ -129,56 +128,26 @@ fn fallback(db: &Connection, id: &str) -> Result<()> {
     )?;
     Ok(())
 }
-pub(super) fn reconcile_tx(db: &Connection) -> Result<usize> {
-    let mut stmt=db.prepare("select o.id from jobs_operations o join jobs_routes r on r.operation_id=o.id where r.state='active' or (r.state='released' and r.fallback_sent=0 and o.status!='failed')")?;
-    let ids = stmt
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut released = 0;
-    for id in ids {
-        let o = operation(db, &id)?;
-        let expired: bool = db.query_row(
-            "select state='active' and deadline<=? from jobs_routes where operation_id=?",
-            params![now(), id],
-            |r| r.get(0),
-        )?;
-        let t = task(db, o.root)?;
-        if expired
-            || delivery::generation(db, o.root)? != o.generation
-            || t.status == "closed"
-            || machine_name(t.machine.as_deref()) != o.host
-            || t.role != "orchestrator"
-        {
-            released += db.execute(
-                "update jobs_routes set state='released' where operation_id=? and state='active'",
-                [&id],
-            )?;
-            finish(
-                db,
-                &id,
-                "completed",
-                Some(tool(json!({"outcome":"released_to_channel"}))),
-            )?;
-        }
-        refresh(db, &id)?;
-        fallback(db, &id)?;
+pub(super) fn reconcile_operation(db: &Connection, id: &str) -> Result<usize> {
+    let o = operation(db, id)?;
+    let (tracked, expired): (bool, bool) = if o.kind == "await" {
+        db.query_row("select state='active' or (state='released' and fallback_sent=0 and ?!='failed'),state='active' and deadline<=? from jobs_routes where operation_id=?",params![o.status,now(),id],|r|Ok((r.get(0)?,r.get(1)?)))?
+    } else {
+        (o.status == "input_required", false)
+    };
+    if !tracked {
+        return Ok(0);
     }
-    let mut stmt = db
-        .prepare("select id from jobs_operations where kind='owner' and status='input_required'")?;
-    let owners = stmt
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for id in owners {
-        let o = operation(db, &id)?;
-        let t = task(db, o.root)?;
-        if delivery::generation(db, o.root)? != o.generation
-            || t.status == "closed"
-            || machine_name(t.machine.as_deref()) != o.host
-            || t.role != "orchestrator"
-        {
+    let t = task(db, o.root)?;
+    let ended = delivery::generation(db, o.root)? != o.generation
+        || t.status == "closed"
+        || machine_name(t.machine.as_deref()) != o.host
+        || t.role != "orchestrator";
+    if o.kind == "owner" {
+        if ended {
             finish(
                 db,
-                &id,
+                id,
                 "completed",
                 Some(tool(
                     json!({"outcome":"no_decision","ask":o.reference,"reason":"owner presentation session ended"}),
@@ -187,8 +156,52 @@ pub(super) fn reconcile_tx(db: &Connection) -> Result<usize> {
         } else {
             owner::refresh(db, &o)?;
         }
+        return Ok(0);
+    }
+    let mut released = 0;
+    if expired || ended {
+        released = db.execute(
+            "update jobs_routes set state='released' where operation_id=? and state='active'",
+            [id],
+        )?;
+        finish(
+            db,
+            id,
+            "completed",
+            Some(tool(json!({"outcome":"released_to_channel"}))),
+        )?;
+    }
+    refresh(db, id)?;
+    fallback(db, id)?;
+    Ok(released)
+}
+fn reconcile_scope(db: &Connection, session: Option<&Session>) -> Result<usize> {
+    let filter = if session.is_some() {
+        "o.root_id=? and o.generation=? and o.binding=? and o.host=? and"
+    } else {
+        ""
+    };
+    let mut stmt=db.prepare(&format!("select o.id from jobs_operations o left join jobs_routes r on r.operation_id=o.id where {filter} (r.state='active' or (r.state='released' and r.fallback_sent=0 and o.status!='failed') or (o.kind='owner' and o.status='input_required'))"))?;
+    let ids = if let Some(s) = session {
+        stmt.query_map(params![s.root, s.generation, s.binding, host()], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        stmt.query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut released = 0;
+    for id in ids {
+        released += reconcile_operation(db, &id)?;
     }
     Ok(released)
+}
+pub(super) fn reconcile_session(db: &Connection, s: &Session) -> Result<usize> {
+    reconcile_scope(db, Some(s))
+}
+pub(super) fn reconcile_tx(db: &Connection) -> Result<usize> {
+    reconcile_scope(db, None)
 }
 /// Run before jobs startup and at most five seconds apart in the authoritative service.
 /// The 95-second fallback bound excludes service downtime.

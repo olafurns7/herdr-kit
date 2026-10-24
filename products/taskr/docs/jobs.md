@@ -61,6 +61,14 @@ the offer until unpark/reconciliation; service downtime also extends this bound.
 Stdio also requests maintenance every five seconds while idle; daemon
 maintenance is required for recovery after the adapter exits.
 
+Handle poll, release/cancel, await and acceptance reconcile only the named
+authorized operation; a receipt retires only its named route. Adapter startup
+and periodic `validate` reconcile pending operations belonging to its exact
+root, host, generation and binding before dispatch. Recovery reconciles only
+the returned page for that same session. These paths do not maintain other
+sessions. The authoritative daemon's `jobs reconcile` remains global and must
+still run at startup and within the maintenance interval.
+
 ## CLI and recovery
 
 Jobs commands reuse normal taskr RPC. Supply `--as ROOT --generation GEN
@@ -75,7 +83,14 @@ taskr jobs poll --as 1 --generation 0 --binding synthetic-session \
 ```
 
 `recover` reads durable operations after a lost response; never repeat execution
-to recover a handle. `get`, `add`, `release`, `cancel`, `receipt`, `owner`, `update`
+to recover a handle. It defaults to 32 operations and accepts typed pagination
+via `--data '{"limit":64,"cursor":0}'`: limit is 1–64, cursor is a nonnegative
+SQLite rowid, and rows follow insertion order. Each response includes
+`operations`, `returned`, `limit`, `truncated`, and `next_cursor`. When truncated,
+pass the returned cursor in the next request under the same session identity;
+otherwise next_cursor is null. Status/result updates do not reorder the page.
+Only returned rows are reconciled; the one-row lookahead is not maintained.
+`get`, `add`, `release`, `cancel`, `receipt`, `owner`, `update`
 and `validate` expose the same operations used by the adapter. `reconcile` is
 server maintenance; it has no client-supplied clock or arbitrary target selector.
 

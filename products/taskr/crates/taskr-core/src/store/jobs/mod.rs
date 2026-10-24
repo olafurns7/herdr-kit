@@ -45,6 +45,20 @@ pub struct Receipt {
     pub handle: String,
     pub result: i64,
 }
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Recover {
+    pub limit: u32,
+    pub cursor: i64,
+}
+impl Default for Recover {
+    fn default() -> Self {
+        Self {
+            limit: 32,
+            cursor: 0,
+        }
+    }
+}
 
 fn auth_root(db: &Connection, s: &Session) -> Result<()> {
     if s.root <= 0
@@ -89,7 +103,7 @@ fn auth_read(db: &Connection, s: &Session) -> Result<()> {
 pub fn validate(db: &mut Connection, s: &Session) -> Result<Value> {
     transaction(db, |tx| {
         auth_read(tx, s)?;
-        routes::reconcile_tx(tx)?;
+        routes::reconcile_session(tx, s)?;
         Ok(
             json!({"ok":true,"root":s.root,"generation":s.generation,"current":delivery::generation(tx,s.root)?==s.generation}),
         )
@@ -235,7 +249,6 @@ pub fn add(db: &mut Connection, s: &Session, input: Add) -> Result<Value> {
 pub fn await_work(db: &mut Connection, s: &Session, input: Await) -> Result<Value> {
     transaction(db, |tx| {
         auth(tx, s)?;
-        routes::reconcile_tx(tx)?;
         get_work(tx, s, input.work)?;
         let exists: bool = tx.query_row(
             "select exists(select 1 from work_revisions where work_id=? and revision=?)",
@@ -259,36 +272,60 @@ pub fn await_work(db: &mut Connection, s: &Session, input: Await) -> Result<Valu
             )?;
             id
         };
-        routes::refresh(tx, &id)?;
+        routes::reconcile_operation(tx, &id)?;
         view(tx, &operation(tx, &id)?)
     })
 }
-pub fn recover(db: &mut Connection, s: &Session) -> Result<Value> {
+pub fn recover(db: &mut Connection, s: &Session, page: Recover) -> Result<Value> {
+    if !(1..=64).contains(&page.limit) || page.cursor < 0 {
+        return Err(usage(
+            "recover requires limit 1..64 and a nonnegative rowid cursor",
+        ));
+    }
     transaction(db, |tx| {
         auth_read(tx, s)?;
-        routes::reconcile_tx(tx)?;
         let mut stmt =
-            tx.prepare("select id from jobs_operations where root_id=? and generation=? and binding=? and host=? order by created_at,id")?;
-        let ids = stmt
-            .query_map(params![s.root, s.generation, s.binding, host()], |r| {
-                r.get::<_, String>(0)
-            })?
+            tx.prepare("select rowid,id from jobs_operations where root_id=? and generation=? and binding=? and host=? and rowid>? order by rowid limit ?")?;
+        let mut ids = stmt
+            .query_map(
+                params![
+                    s.root,
+                    s.generation,
+                    s.binding,
+                    host(),
+                    page.cursor,
+                    page.limit + 1
+                ],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        let truncated = ids.len() > page.limit as usize;
+        if truncated {
+            ids.pop();
+        }
+        let next_cursor = if truncated {
+            ids.last().map(|(row, _)| *row)
+        } else {
+            None
+        };
         let operations = ids
             .iter()
-            .map(|id| {
+            .map(|(_, id)| {
+                routes::reconcile_operation(tx, id)?;
                 let o = operation(tx, id)?;
                 view(tx, &o)
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(json!({"operations":operations}))
+        Ok(
+            json!({"returned":operations.len(),"limit":page.limit,"truncated":truncated,"next_cursor":next_cursor,"operations":operations}),
+        )
     })
 }
 pub fn poll(db: &mut Connection, s: &Session, id: &str) -> Result<Value> {
     transaction(db, |tx| {
         auth_root(tx, s)?;
         require_bound(s, &operation(tx, id)?)?;
-        routes::reconcile_tx(tx)?;
+        routes::reconcile_operation(tx, id)?;
         let o = operation(tx, id)?;
         if delivery::generation(tx, s.root)? == s.generation && o.kind == "await" {
             tx.execute(
@@ -296,21 +333,15 @@ pub fn poll(db: &mut Connection, s: &Session, id: &str) -> Result<Value> {
                 params![deadline(), id],
             )?;
         }
-        if o.kind == "owner" {
-            if o.status == "input_required" {
-                require_bound(s, &o)?;
-            }
-            owner::refresh(tx, &o)?;
-        }
         view(tx, &operation(tx, id)?)
     })
 }
 pub fn release(db: &mut Connection, s: &Session, id: &str, cancel: bool) -> Result<Value> {
     transaction(db, |tx| {
         auth(tx, s)?;
-        routes::reconcile_tx(tx)?;
         let o = operation(tx, id)?;
         require_bound(s, &o)?;
+        routes::reconcile_operation(tx, id)?;
         if o.kind == "await" {
             routes::release_tx(tx, id)?;
         }
@@ -352,7 +383,6 @@ pub fn receipt(db: &mut Connection, s: &Session, input: Receipt) -> Result<Value
             "update jobs_routes set state='receipted' where operation_id=?",
             [&input.handle],
         )?;
-        routes::reconcile_tx(tx)?;
         Ok(json!({"ok":true,"handle":input.handle,"result":input.result}))
     })
 }

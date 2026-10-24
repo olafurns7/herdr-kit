@@ -47,10 +47,7 @@ fn invoke(
         "get" => api::get_work(db, &s, store::work::parse::<Work>(raw)?.work),
         "add" => api::add(db, &s, store::work::parse(raw)?),
         "await" => api::await_work(db, &s, store::work::parse(raw)?),
-        "recover" => {
-            empty(raw)?;
-            api::recover(db, &s)
-        }
+        "recover" => api::recover(db, &s, store::work::parse(raw)?),
         "poll" => api::poll(db, &s, &handle()?),
         "release" => api::release(db, &s, &handle()?, false),
         "cancel" => api::release(db, &s, &handle()?, true),

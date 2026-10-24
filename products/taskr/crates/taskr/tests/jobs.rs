@@ -248,6 +248,219 @@ fn add_key_and_await_handle_are_durable_and_never_repeat_execution() {
     );
 }
 #[test]
+fn handle_effects_are_isolated_and_session_validate_precedes_global_reconciliation() {
+    let j = Jobs::new();
+    let work = j.work();
+    let id = j.pending(work);
+    let other =
+        j.h.ok(&[], &["new", "other-root", "--role", "orchestrator"])["task_id"]
+            .as_i64()
+            .unwrap();
+    let other_call = |verb: &str, data: Value| {
+        j.h.ok(
+            &[],
+            &[
+                "jobs",
+                verb,
+                "--as",
+                &other.to_string(),
+                "--generation",
+                "0",
+                "--binding",
+                "other-session-binding",
+                "--data",
+                &data.to_string(),
+            ],
+        )
+    };
+    let other_work = other_call(
+        "add",
+        json!({"key":"other","campaign":other,"title":"other work"}),
+    )["work_id"]
+        .as_i64()
+        .unwrap();
+    let other_id = other_call("await", json!({"work":other_work,"revision":1}))["taskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let ask=j.h.ok(&[],&["ask","--owner","--as",&other.to_string(),"--question",&json!({"question":"Other synthetic choice?","options":[{"label":"Proceed"},{"label":"Hold"}]}).to_string()])["ask_id"].as_i64().unwrap();
+    other_call("allow-ask", json!({"ask":ask}));
+    let owner = other_call("owner", json!({"ask":ask}))["taskId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let sibling = j.call(
+        "add",
+        json!({"key":"sibling","campaign":j.root,"title":"sibling work"}),
+    )["work_id"]
+        .as_i64()
+        .unwrap();
+    let sibling = j.pending(sibling);
+    j.h.conn().execute("update jobs_routes set deadline='2000-01-01T00:00:00.000Z' where operation_id in (?,?)",params![other_id,sibling]).unwrap();
+    j.h.conn()
+        .execute(
+            "insert into events(task_id,kind,created_at) values(?,'adopt','t')",
+            [other],
+        )
+        .unwrap();
+    let route = |id: &str| {
+        j.h.conn()
+            .query_row(
+                "select state from jobs_routes where operation_id=?",
+                [id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+    let status = || {
+        j.h.conn()
+            .query_row(
+                "select status from jobs_operations where id=?",
+                [&owner],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+    let untouched = || {
+        assert_eq!(route(&other_id), "active");
+        assert_eq!(route(&sibling), "active");
+        assert_eq!(status(), "input_required");
+    };
+    let result = j.accepted(work);
+    untouched();
+    j.call("poll", json!({"handle":id}));
+    untouched();
+    assert_eq!(j.pending(work), id);
+    untouched();
+    j.call("release", json!({"handle":id}));
+    untouched();
+    j.call("receipt", json!({"handle":id,"result":result}));
+    untouched();
+    j.call("validate", json!({}));
+    assert_eq!(route(&sibling), "released");
+    assert_eq!(route(&other_id), "active");
+    assert_eq!(status(), "input_required");
+    j.call("reconcile", json!({}));
+    assert_eq!(route(&other_id), "released");
+    assert_eq!(status(), "completed");
+    assert_eq!(
+        j.h.count(
+            "select count(*) from events where id=? and answered_by is null",
+            ask
+        ),
+        1
+    );
+}
+#[test]
+fn recover_pages_use_rowid_bounds_and_reconcile_only_returned_session_rows() {
+    let j = Jobs::new();
+    let db = j.h.conn();
+    let host = store::local_machine();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let mut expected = Vec::new();
+    for n in 0..67 {
+        db.execute("insert into work_items(root_id,title,priority,revision,state,creator,created_at) values(?,'page fixture',0,1,'backlog','{}','t')",[j.root]).unwrap();
+        let work = db.last_insert_rowid();
+        db.execute(
+            "insert into work_revisions(work_id,revision,creator,created_at) values(?,1,'{}','t')",
+            [work],
+        )
+        .unwrap();
+        let id = format!("{:032x}", 1000 - n);
+        let binding = if n == 1 {
+            "other-session-binding"
+        } else {
+            BINDING
+        };
+        db.execute("insert into jobs_operations(id,root_id,generation,binding,host,kind,reference_id,revision,status,created_at,updated_at) values(?,?,0,?,?,'await',?,1,'working','t','t')",params![id,j.root,binding,host,work]).unwrap();
+        let cursor = db.last_insert_rowid();
+        db.execute("insert into jobs_routes(operation_id,state,deadline) values(?,'active','2000-01-01T00:00:00.000Z')",[&id]).unwrap();
+        if n != 1 {
+            expected.push((cursor, id));
+        }
+    }
+    let untouched = expected[32].1.clone();
+    let first = j.h.ok(
+        &[],
+        &[
+            "jobs",
+            "recover",
+            "--as",
+            &j.root.to_string(),
+            "--generation",
+            "0",
+            "--binding",
+            BINDING,
+        ],
+    );
+    assert_eq!(first["returned"], 32);
+    assert_eq!(first["limit"], 32);
+    assert_eq!(first["truncated"], true);
+    assert_eq!(first["next_cursor"], expected[31].0);
+    assert_eq!(first["operations"][0]["taskId"], expected[0].1);
+    assert_eq!(
+        db.query_row(
+            "select state from jobs_routes where operation_id=?",
+            [&untouched],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "active"
+    );
+    let second = j.call("recover", json!({"cursor":first["next_cursor"]}));
+    assert_eq!(second["returned"], 32);
+    assert_eq!(second["truncated"], true);
+    assert_eq!(second["next_cursor"], expected[63].0);
+    let third = j.call("recover", json!({"cursor":second["next_cursor"]}));
+    assert_eq!(third["returned"], 2);
+    assert_eq!(third["truncated"], false);
+    assert_eq!(third["next_cursor"], Value::Null);
+    let ids = first["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["operations"].as_array().unwrap())
+        .chain(third["operations"].as_array().unwrap())
+        .map(|o| o["taskId"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        expected
+            .iter()
+            .map(|(_, id)| id.clone())
+            .collect::<Vec<_>>()
+    );
+    let maximum = j.call("recover", json!({"limit":64}));
+    assert_eq!(maximum["returned"], 64);
+    assert_eq!(maximum["limit"], 64);
+    assert_eq!(maximum["truncated"], true);
+    let empty = j.call("recover", json!({"cursor":expected.last().unwrap().0}));
+    assert_eq!(empty["returned"], 0);
+    assert_eq!(empty["truncated"], false);
+    assert_eq!(empty["next_cursor"], Value::Null);
+    let foreign_state:String=db.query_row("select r.state from jobs_routes r join jobs_operations o on o.id=r.operation_id where o.binding='other-session-binding'",[],|r|r.get(0)).unwrap();
+    assert_eq!(foreign_state, "active");
+    assert_eq!(
+        db.query_row("select count(*) from pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    for data in [
+        json!({"limit":0}),
+        json!({"limit":65}),
+        json!({"limit":-1}),
+        json!({"limit":"32"}),
+        json!({"cursor":-1}),
+        json!({"cursor":"1"}),
+        json!({"unknown":true}),
+    ] {
+        j.rejected("recover", data, 0, BINDING, &[], 2);
+    }
+}
+#[test]
 fn repeated_polls_receipts_and_late_cancel_keep_terminal_result_immutable() {
     let j = Jobs::new();
     let w = j.work();
