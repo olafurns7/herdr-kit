@@ -3,6 +3,7 @@ import importlib.machinery
 import importlib.util
 import json
 import fcntl
+import errno
 import os
 from pathlib import Path
 import socket
@@ -12,7 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "bin/herdr-codex-identity"
 loader = importlib.machinery.SourceFileLoader("identity", str(SOURCE))
@@ -296,6 +297,75 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(env["TASKR_DB"], self.fake.context["db"])
             self.assertEqual(os.environ["TASKR_TASK"], "998")
             self.assertEqual(os.environ["TASKR_LAUNCH"], "997")
+
+    def test_macos_bsdinfo_failure_clauses_are_pid_specific_and_bounded(self):
+        uid = os.geteuid()
+        cases = [(0, errno.ESRCH, 0, 0, 0, "gone"), (0, errno.EPERM, 0, 0, 0, "denied"),
+                 (0, errno.EACCES, 0, 0, 0, "denied"), (0, 0, 0, 0, 0, "empty-result"),
+                 (64, 0, 0, 0, 0, "size-or-query-failure"), (136, 0, 31, uid, 2, "pid-mismatch"),
+                 (136, 0, 30, uid + 1, 2, "foreign-uid"), (136, 0, 30, uid, 5, "zombie")]
+        for returned, error, reported_pid, reported_uid, status, reason in cases:
+            with self.subTest(reason=reason, error=error):
+                lib = Mock()
+                def pidinfo(pid, flavor, arg, output, size):
+                    self.assertEqual(size, 136)
+                    info = output._obj
+                    info.pid, info.uid, info.status = reported_pid, reported_uid, status
+                    m.ctypes.set_errno(error)
+                    return returned
+                lib.proc_pidinfo.side_effect = pidinfo
+                with patch.object(m.sys, "platform", "darwin"), patch.object(m.ctypes, "CDLL", return_value=lib):
+                    with self.assertRaisesRegex(RuntimeError, f"pid=30 op=proc_pidinfo class={reason}") as caught:
+                        m.Adapter.process(self.fake, 30)
+                text = str(caught.exception)
+                self.assertIn(f"bytes={returned}/136 errno={error}", text)
+                self.assertIn(f"returned_pid={reported_pid} uid={reported_uid}/{uid} status={status}", text)
+                self.assertLess(len(text), 300)
+                lib.proc_pidpath.assert_not_called()
+        # A successful library call need not overwrite errno: clear stale errno before probing.
+        lib = Mock()
+        lib.proc_pidinfo.return_value = 0
+        m.ctypes.set_errno(errno.EPERM)
+        with patch.object(m.sys, "platform", "darwin"), patch.object(m.ctypes, "CDLL", return_value=lib):
+            with self.assertRaisesRegex(RuntimeError, "class=empty-result.*errno=0"):
+                m.Adapter.process(self.fake, 30)
+
+    def test_macos_executable_probe_failure_identifies_pid_and_errno(self):
+        lib = Mock()
+        def pidinfo(pid, flavor, arg, output, size):
+            info = output._obj
+            info.pid, info.uid, info.status = pid, os.geteuid(), 2
+            return size
+        def pidpath(*args):
+            m.ctypes.set_errno(errno.ESRCH)
+            return 0
+        lib.proc_pidinfo.side_effect = pidinfo
+        lib.proc_pidpath.side_effect = pidpath
+        with patch.object(m.sys, "platform", "darwin"), patch.object(m.ctypes, "CDLL", return_value=lib):
+            with self.assertRaisesRegex(RuntimeError, f"pid=30 op=proc_pidpath bytes=0 errno={errno.ESRCH}"):
+                m.Adapter.process(self.fake, 30)
+
+    def test_disappeared_foreground_rows_are_never_silently_skipped(self):
+        self.fake.guard()
+        for failing_pid, hint in ((31, "node"), (31, "codex"), (30, "codex")):
+            with self.subTest(pid=failing_pid, hint=hint):
+                original = self.fake.herdr
+                def herdr(*args):
+                    value = original(*args)
+                    if args[:2] == ("pane", "process-info"):
+                        value["process_info"]["foreground_processes"] = [dict(pid=30, name="codex"), dict(pid=31, name=hint)]
+                    return value
+                original_process = self.fake.process
+                def process(pid):
+                    if pid == failing_pid:
+                        raise RuntimeError(f"native process identity unavailable: pid={pid} op=proc_pidinfo class=gone bytes=0/136 errno=3")
+                    return original_process(pid)
+                with patch.object(self.fake, "herdr", side_effect=herdr), patch.object(self.fake, "process", side_effect=process):
+                    with self.assertRaisesRegex(RuntimeError, f'foreground pid={failing_pid} name_hint="{hint}".*class=gone') as caught:
+                        self.fake.run_test()
+                    self.assertIn("pinned_native_pid=30", str(caught.exception))
+                self.assertEqual(self.fake.sent_count, 0)
+                self.assertFalse((self.fake.folder / "init.json").exists())
 
     def test_private_attempt_directory_lock_and_outside_checkout(self):
         self.fake.native = ID

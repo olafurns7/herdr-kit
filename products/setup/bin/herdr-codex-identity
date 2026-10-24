@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Initialize only a bound, starting Codex; stdout is one JSON identity receipt."""
 import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -188,7 +189,7 @@ class Adapter:
         return found[0], launches[0].get("session_ref")
 
     def process(self, pid):
-        require(type(pid) is int and pid > 0, "invalid foreground PID")
+        require(type(pid) is int and 0 < pid <= 2147483647, "invalid foreground PID")
         if sys.platform.startswith("linux"):
             root = Path(f"/proc/{pid}")
             require(root.stat().st_uid == os.geteuid(), "foreign foreground UID")
@@ -217,12 +218,30 @@ class Adapter:
             lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
             lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
             info = BSDInfo()
-            require(lib.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) == ctypes.sizeof(info)
-                    and info.pid == pid and info.uid == os.geteuid() and info.status != 5,
-                    "native process identity unavailable")
+            ctypes.set_errno(0)
+            returned = lib.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+            error = ctypes.get_errno()
+            reason = None
+            if returned != ctypes.sizeof(info):
+                reason = ("gone" if returned <= 0 and error == errno.ESRCH else
+                          "denied" if returned <= 0 and error in (errno.EPERM, errno.EACCES) else
+                          "empty-result" if returned == 0 and error == 0 else "size-or-query-failure")
+            elif info.pid != pid:
+                reason = "pid-mismatch"
+            elif info.uid != os.geteuid():
+                reason = "foreign-uid"
+            elif info.status == 5:
+                reason = "zombie"
+            require(reason is None, f"native process identity unavailable: pid={pid} op=proc_pidinfo class={reason} "
+                    f"bytes={returned}/{ctypes.sizeof(info)} errno={error} "
+                    f"returned_pid={info.pid} uid={info.uid}/{os.geteuid()} status={info.status}")
             start = [info.start_sec, info.start_usec]
             buf = ctypes.create_string_buffer(4096)
-            require(lib.proc_pidpath(pid, buf, len(buf)) > 0, "native executable unavailable")
+            ctypes.set_errno(0)
+            returned = lib.proc_pidpath(pid, buf, len(buf))
+            error = ctypes.get_errno()
+            require(returned > 0, f"native executable unavailable: pid={pid} op=proc_pidpath "
+                    f"bytes={returned} errno={error} uid={info.uid}/{os.geteuid()} status={info.status}")
             exe = os.fsdecode(buf.value)
             argv = self.command(["/bin/ps", "-ww", "-p", str(pid), "-o", "args="]).decode().strip()
             require(0 < len(argv.encode()) <= 65536, "invalid native argv")
@@ -260,7 +279,14 @@ class Adapter:
         require(0 < len(pids) <= 64 and len(set(pids)) == len(pids), "invalid foreground inventory")
         candidates = []
         for pid in pids:
-            process = self.process(pid)
+            try:
+                process = self.process(pid)
+            except (RuntimeError, OSError) as error:
+                row = next(p for p in info["foreground_processes"] if p["pid"] == pid)
+                hint = json.dumps(str(row.get("name", ""))[:64], ensure_ascii=True)
+                pinned = (self.basis or {}).get("process", {}).get("pid")
+                raise RuntimeError(f"foreground pid={pid} name_hint={hint} pinned_native_pid={pinned}: "
+                                   f"{str(error)[:512]}") from error
             if Path(process["exe"]).name == "codex":
                 with open(process["exe"], "rb") as f:
                     magic = f.read(4)
