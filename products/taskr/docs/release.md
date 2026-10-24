@@ -146,9 +146,11 @@ musl and darwin targets), `zig` and `cargo-zigbuild` (user-space install in
 ### Rollback
 
 Check ledger compatibility before choosing the previous release as a rollback.
-Taskr 0.27 adds schema version 5 for work and native jobs. Version 0.26 and older
-cannot open a migrated ledger. Replacing the binary alone does not undo this
-migration.
+Taskr 0.27 adds schema version 5 for work and native jobs. Earlier binaries do
+not implement those state machines. Legacy reads can remain compatible with
+the additive tables, but replacing the binary alone does not undo the migration
+or maintain new work and jobs. Validate the commands needed during a mixed-version
+rollout; a successful legacy read is not permission to downgrade active workflows.
 
 Before upgrading the authoritative ledger, take an online SQLite backup, check
 its integrity, and retain the previous binaries and release identity. Test the
