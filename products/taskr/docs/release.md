@@ -145,7 +145,25 @@ musl and darwin targets), `zig` and `cargo-zigbuild` (user-space install in
 
 ### Rollback
 
-The previous release stays the rollback. On a host:
+Check ledger compatibility before choosing the previous release as a rollback.
+Taskr 0.27 adds schema version 5 for work and native jobs. Version 0.26 and older
+cannot open a migrated ledger. Replacing the binary alone does not undo this
+migration.
+
+Before upgrading the authoritative ledger, take an online SQLite backup, check
+its integrity, and retain the previous binaries and release identity. Test the
+migration on a separate copy: existing table rows, task identities, inbox cursors,
+open asks and launch records must remain unchanged. Upgrade the ledger host
+before its clients. Account for old local CLI and MCP processes that still use
+the previous binary; installation does not replace a running process. Do not
+restart an agent or move its campaign without its task's authorization.
+
+After new writes reach schema 5, prefer a compatible forward fix. Restoring the
+old backup would discard those writes: stop new writes, preserve and reconcile
+the newer records, and validate the selected backup before a deliberate restore.
+Never restore a backup automatically after a failed health check.
+
+For a release whose ledger schema remains compatible, on a host:
 
 1. download `taskr-<os>-<arch>` from the previous release (or
    `TASKR_VERSION=taskr/vX.Y.Z sh install.sh`, replacing X.Y.Z with the previous version);
