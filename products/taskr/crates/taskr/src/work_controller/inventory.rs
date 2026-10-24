@@ -158,15 +158,16 @@ fn deadline(start: Instant) -> Result<()> {
     }
 }
 fn alive(id: i32) -> Result<bool> {
-    // SAFETY: kill with signal zero only checks the exact PID; it sends no signal.
-    if unsafe { libc::kill(id, 0) } == 0 {
-        return Ok(true);
+    if id <= 0 {
+        return Err(failure("invalid live-process PID"));
     }
-    let e = std::io::Error::last_os_error();
-    if e.raw_os_error() == Some(libc::ESRCH) {
-        Ok(false)
-    } else {
-        Err(failure(e))
+    let pid =
+        rustix::process::Pid::from_raw(id).ok_or_else(|| failure("invalid live-process PID"))?;
+    // Signal-zero check: never sends a signal to an unexplained process.
+    match rustix::process::test_kill_process(pid) {
+        Ok(()) => Ok(true),
+        Err(rustix::io::Errno::SRCH) => Ok(false),
+        Err(e) => Err(failure(e)),
     }
 }
 fn probe(args: &[&str], start: Instant, probes: &mut BTreeSet<i32>) -> Result<Vec<u8>> {
@@ -211,14 +212,18 @@ fn snapshot(uid: u32, start: Instant, probes: &mut BTreeSet<i32>) -> Result<Vec<
     let mut rows = Vec::new();
     for mut row in parse_ps(&bytes)? {
         deadline(start)?;
-        // SAFETY: getsid reads the true POSIX session, including on macOS where ps sess is zero.
-        row.session = unsafe { libc::getsid(row.pid) };
-        if row.session <= 0 {
-            if !alive(row.pid)? {
-                continue;
+        let pid = rustix::process::Pid::from_raw(row.pid)
+            .ok_or_else(|| failure("invalid inventory PID"))?;
+        // Reads the true POSIX session, including on macOS where ps sess is zero.
+        row.session = match rustix::process::getsid(Some(pid)) {
+            Ok(session) => session.as_raw_pid(),
+            Err(e) => {
+                if !alive(row.pid)? {
+                    continue;
+                }
+                return Err(failure(format!("cannot read live process session: {e}")));
             }
-            return Err(failure("cannot read live process session"));
-        }
+        };
         rows.push(row);
     }
     Ok(rows)
@@ -362,8 +367,7 @@ fn evidence(
 }
 pub(super) fn scan(checkout: &Path, shell: i32, trust: &Trust) -> Result<Value> {
     let start = Instant::now();
-    // SAFETY: getuid has no arguments or failure mode.
-    let uid = unsafe { libc::getuid() };
+    let uid = rustix::process::getuid().as_raw();
     let observer = i32::try_from(std::process::id()).map_err(failure)?;
     let checkout = fs::canonicalize(checkout).map_err(failure)?;
     let mut probes = BTreeSet::new();
@@ -517,11 +521,11 @@ mod tests {
             Path::new("/checkout with spaces")
         );
         for bad in [
-            b"p10\0czsh\0\nfcwd\0n/a",
-            b"p10\0czsh\0\nfcwd\0nrelative\0\n",
-            b"p10\0czsh\0\nfcwd\0n/a\0\np10\0czsh\0\nfcwd\0n/b\0\n",
-            b"p10\0czsh\0\np20\0ctaskr\0\nfcwd\0n/a\0\n",
-            b"p10\0czsh\0\nfcwd\0n/a\0\nxunexpected\0\n",
+            b"p10\0czsh\0\nfcwd\0n/a".as_slice(),
+            b"p10\0czsh\0\nfcwd\0nrelative\0\n".as_slice(),
+            b"p10\0czsh\0\nfcwd\0n/a\0\np10\0czsh\0\nfcwd\0n/b\0\n".as_slice(),
+            b"p10\0czsh\0\np20\0ctaskr\0\nfcwd\0n/a\0\n".as_slice(),
+            b"p10\0czsh\0\nfcwd\0n/a\0\nxunexpected\0\n".as_slice(),
         ] {
             assert!(parse_lsof(bad).is_err());
         }

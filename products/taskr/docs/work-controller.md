@@ -118,7 +118,7 @@ Stopped receipts also require `process_scan` with method
 `local-user-session-cwd-v1`, UID, shell PID, true POSIX session ID, scanned count,
 empty `session_remaining` and `checkout_remaining`, and evidence-bearing tagged
 `exempt` entries. The shell PID must match the foreground observation. The local scanner
-uses `/bin/ps -ww -U UID` for PID/PPID/PGID/tty/state/command and libc `getsid` for
+uses `/bin/ps -ww -U UID` for PID/PPID/PGID/tty/state/command and safe rustix `getsid` for
 session IDs; macOS `ps sess` is not a session-ID source. It checks the shell's
 descendants, session and tty, including background process groups. Linux cwd
 reads use `/proc/PID/cwd`; macOS uses `/usr/sbin/lsof -a -u UID -d cwd -F0pcfn`
