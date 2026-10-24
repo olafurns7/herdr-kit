@@ -15,7 +15,8 @@ def executable(path, source):
     path.chmod(0o755)
 
 with tempfile.TemporaryDirectory(prefix='herdr-hub-test.') as scratch:
-    scratch = Path(scratch)
+    # getcwd reports the physical path when TMPDIR traverses a symlink.
+    scratch = Path(scratch).resolve()
     stubs = scratch / 'stubs'
     stubs.mkdir()
     executable(stubs / 'herdr', '''#!/usr/bin/python3
@@ -191,6 +192,7 @@ else: sys.exit(98)
         def child_setup():
             os.setsid()
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+            # Deliberately differs from the gate mask: the helper must restore it.
             os.umask(0o002)
         started = time.monotonic()
         process = subprocess.Popen([shell, *(['-m'] if job_control else []), str(bindir / 'herdr-hub'), *args], env=env,
@@ -231,9 +233,10 @@ else: sys.exit(98)
                   f'A "hub push check 7" event will arrive: record it and ack it.'
                   f' Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note.')
         actual = json.loads((work / 'cdl').read_text())
-        assert actual == dict(args=['--model','example-opus','--effort','high','--mcp-config',str(config),
-                                   '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
-                              task=None, launch=None, role='hub', pid=process.pid, cwd=str(work), umask=0o002), actual
+        expected = dict(args=['--model','example-opus','--effort','high','--mcp-config',str(config),
+                              '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
+                        task=None, launch=None, role='hub', pid=process.pid, cwd=str(work), umask=0o002)
+        assert actual == expected, {'actual':actual, 'expected':expected}
         servers = {'taskr':{'command':'taskr','args':['mcp','--channel','--as','42','--session','7']}}
         if jobs:
             binding = 'herdr-hub-root-42-gen-7'

@@ -5,6 +5,8 @@ repo_dir=$(CDPATH= cd "$(dirname "$0")/.." && pwd -P)
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/herdr-lead-test.XXXXXX")
 trap 'find "$scratch" -depth -delete' 0
 trap 'exit 1' 1 2 3 15
+# Match the launcher's physical cwd even when TMPDIR traverses a symlink.
+scratch=$(CDPATH= cd -- "$scratch" && pwd -P)
 mkdir "$scratch/stubs"
 cat >"$scratch/stubs/herdr" <<'EOF'
 #!/bin/sh
@@ -192,7 +194,7 @@ run() {
         sh "$repo_dir/bin/herdr-lead" "$@" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
 }
 expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/err")"; }
-has() { grep -F -- "$2" "$case_dir/$1" >/dev/null || fail "$1 missing $2"; }
+has() { grep -F -- "$2" "$case_dir/$1" >/dev/null || fail "$1 missing $2: $(cat "$case_dir/$1")"; }
 lacks() { if grep -F -- "$2" "$case_dir/$1" >/dev/null; then fail "$1 unexpectedly contains $2"; fi; }
 start() { run start 42 wA:p1 --worktree "$work" "$@"; }
 
