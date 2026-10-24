@@ -8,6 +8,9 @@ use std::{
 const MAX: usize = 4096;
 const TEXT: usize = 1024;
 const BUDGET: Duration = Duration::from_secs(15);
+pub(super) const PRIVILEGED_UNCERTAIN: &str = "process-stop-privileged-uncertain:";
+#[cfg(any(target_os = "linux", test))]
+mod protected;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Row {
@@ -459,13 +462,37 @@ fn classified_evidence(
         "exempt":exempt.into_values().collect::<Vec<_>>()}),
     )
 }
-pub(super) fn scan(checkout: &Path, shell: i32, trust: &Trust) -> Result<Value> {
+pub(super) fn scan(
+    checkout: &Path,
+    shell: i32,
+    trust: &Trust,
+    root: i64,
+    launch: i64,
+) -> Result<Value> {
     let start = Instant::now();
     let uid = rustix::process::geteuid().as_raw();
     let observer = i32::try_from(std::process::id()).map_err(failure)?;
     let checkout = fs::canonicalize(checkout).map_err(failure)?;
+    #[cfg(target_os = "linux")]
+    let mut reader = protected::Reader::new(
+        super::driver::attempt_path(root, launch)?,
+        &checkout,
+        uid,
+        start,
+    )?;
+    #[cfg(not(target_os = "linux"))]
+    let _ = (root, launch);
     retry_pair(start, |start| {
-        scan_pair(&checkout, shell, trust, uid, observer, start)
+        scan_pair(
+            &checkout,
+            shell,
+            trust,
+            uid,
+            observer,
+            start,
+            #[cfg(target_os = "linux")]
+            &mut reader,
+        )
     })
 }
 fn retry_pair(
@@ -484,6 +511,7 @@ fn stable_rows(first: &[Row], last: &[Row], probes: &BTreeSet<i32>) -> bool {
     last.iter()
         .all(|r| probes.contains(&r.pid) || first.contains(r))
 }
+#[allow(clippy::too_many_arguments)] // One shared scan budget and privileged-read quota span snapshot retries.
 fn scan_pair(
     checkout: &Path,
     shell: i32,
@@ -491,6 +519,7 @@ fn scan_pair(
     uid: u32,
     observer: i32,
     start: Instant,
+    #[cfg(target_os = "linux")] reader: &mut protected::Reader,
 ) -> Result<Option<Value>> {
     let mut probes = BTreeSet::new();
     let first = snapshot(uid, start, &mut probes)?;
@@ -510,13 +539,29 @@ fn scan_pair(
     )?)?;
     let mut cwds = BTreeMap::new();
     let mut deleted = BTreeSet::new();
+    #[cfg(target_os = "linux")]
+    let mut privileged = BTreeSet::new();
+    #[cfg(not(target_os = "linux"))]
+    let privileged = BTreeSet::<i32>::new();
     for r in &first {
         deadline(start)?;
         if r.zombie || probes.contains(&r.pid) {
             continue;
         }
         #[cfg(target_os = "linux")]
-        let path = fs::read_link(format!("/proc/{}/cwd", r.pid)).map(Some);
+        let path = match fs::read_link(format!("/proc/{}/cwd", r.pid)) {
+            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::ACCESS.raw_os_error()) => {
+                if session_blocker(&first, shell, r, observer, &probes, trust) {
+                    return Err(failure(
+                        "session writer remains; protected cwd read withheld",
+                    ));
+                }
+                let path = reader.read(r.pid)?;
+                privileged.insert(r.pid);
+                Ok(Some(path))
+            }
+            other => other.map(Some),
+        };
         #[cfg(target_os = "macos")]
         let path: std::io::Result<Option<PathBuf>> = Ok(lsof.get(&r.pid).cloned());
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -552,11 +597,59 @@ fn scan_pair(
         return Ok(None);
     }
     deadline(start)?;
-    let scan = classified_evidence(
+    let mut scan = classified_evidence(
         &last, &cwds, checkout, shell, observer, uid, &probes, trust, &deleted,
     )?;
+    scan["privileged_cwd"] = json!(
+        last.iter()
+            .filter(|r| !r.zombie && privileged.contains(&r.pid))
+            .count()
+    );
     deadline(start)?;
     Ok(Some(scan))
+}
+#[cfg(any(target_os = "linux", test))]
+fn session_blocker(
+    rows: &[Row],
+    shell: i32,
+    row: &Row,
+    observer: i32,
+    probes: &BTreeSet<i32>,
+    trust: &Trust,
+) -> bool {
+    if row.pid == observer || probes.contains(&row.pid) || trust.root.contains_key(&row.pid) {
+        return false;
+    }
+    if trust
+        .shells
+        .get(&row.pid)
+        .is_some_and(|s| same_command(&s.command, &row.command) && s.group == row.group)
+        && row.group == row.pid
+        && tty(&row.tty)
+        && !rows
+            .iter()
+            .any(|other| other.pid != row.pid && !other.zombie && other.session == row.session)
+    {
+        return false;
+    }
+    let Some(target) = rows.iter().find(|r| r.pid == shell) else {
+        return true;
+    };
+    if row.session == target.session || tty(&target.tty) && row.tty == target.tty {
+        return true;
+    }
+    let mut parent = row.parent;
+    let mut seen = BTreeSet::new();
+    while parent > 0 && seen.insert(parent) {
+        if parent == shell {
+            return true;
+        }
+        let Some(next) = rows.iter().find(|r| r.pid == parent) else {
+            break;
+        };
+        parent = next.parent;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -587,6 +680,53 @@ fn evidence(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn protected_reads_are_withheld_for_known_session_writers_without_exempting_them() {
+        let rows = vec![
+            row(10, 1, 10, "ttys1", "zsh"),
+            row(20, 1, 20, "?", "taskr"),
+            row(12, 10, 10, "ttys1", "writer"),
+            row(13, 1, 13, "?", "protected"),
+            row(30, 1, 30, "ttys2", "taskr"),
+        ];
+        let trust = Trust {
+            shells: BTreeMap::from([(10, shell("zsh", "w1:p1", 10))]),
+            root: BTreeMap::from([(30, "taskr".into())]),
+            ..Default::default()
+        };
+        assert!(session_blocker(
+            &rows,
+            10,
+            &rows[2],
+            20,
+            &BTreeSet::new(),
+            &trust
+        ));
+        assert!(!session_blocker(
+            &rows,
+            10,
+            &rows[3],
+            20,
+            &BTreeSet::new(),
+            &trust
+        ));
+        assert!(!session_blocker(
+            &rows,
+            10,
+            &rows[1],
+            20,
+            &BTreeSet::new(),
+            &trust
+        ));
+        assert!(!session_blocker(
+            &rows,
+            10,
+            &rows[4],
+            20,
+            &BTreeSet::new(),
+            &trust
+        ));
+    }
     fn shell(command: &str, pane: &str, group: i32) -> WorkspaceShell {
         WorkspaceShell {
             command: command.into(),
@@ -667,7 +807,7 @@ mod tests {
             }
         }
         // The checkout root itself must resolve, even if a kernel cwd could be classified.
-        assert!(scan(&scratch.0.join("missing-checkout"), 10, &trust).is_err());
+        assert!(scan(&scratch.0.join("missing-checkout"), 10, &trust, 3, 11).is_err());
         // No kernel cwd record cannot be reinterpreted as a deleted directory.
         assert!(
             evidence(

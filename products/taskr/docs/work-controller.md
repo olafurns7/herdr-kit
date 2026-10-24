@@ -140,6 +140,7 @@ empty acknowledgment supplies no native identity, shell-exit or process-stop pro
 Stopped receipts also require `process_scan` with method
 `local-user-session-cwd-v1`, effective UID, shell PID, true POSIX session ID, scanned count,
 required integer `deleted_cwd` count (zero when none),
+required integer `privileged_cwd` count (macOS zero; at most16 and at most scanned),
 empty `session_remaining` and `checkout_remaining`, and evidence-bearing tagged
 `exempt` entries. The shell PID must match the foreground observation. The local scanner
 uses bounded `/bin/ps -ww -A -o uid=,ruid=,pid=,ppid=,pgid=,tty=,stat=,comm=`
@@ -165,6 +166,43 @@ blocks; deleted cwd outside is outside. It never grants a shell, root, observer 
 probe exemption. `deleted_cwd` counts those classifications for surviving live rows.
 An absent kernel record cannot establish deletion. Permission errors, ENOTDIR,
 ELOOP, parse failures and bounds remain incomplete evidence.
+
+On Linux only, exact EACCES for a snapshot PID with the same effective UID can use
+the existing noninteractive permission through fixed absolute argv:
+`/usr/bin/sudo -n -- /usr/bin/readlink -z -- /proc/NUMERIC_PID/cwd`.
+Both executables must be root-owned regular executables without group/world write;
+sudo must already be setuid root. No permission or sudoers changes are made.
+The child has an empty inherited environment and no shell. Only exit0, empty stderr
+and exactly one absolute NUL-terminated record of at most4096 bytes are accepted;
+usual canonical/deleted-cwd and field bounds then apply. Effective UID and proc stat
+starttime are checked before and after, in addition to paired inventory snapshots.
+A known session writer with EACCES blocks without an unnecessary privileged read.
+There are at most16 helper launches across all snapshot retries under the SAME15s
+scan budget. `privileged_cwd` counts successful classifications for surviving live
+rows; it can overlap `deleted_cwd`, so there is no sum constraint.
+
+This uses an exclusive, fsynced per-launch `protected-cwd/pending.json` intent under
+the existing private controller artifact root outside checkout. Private mode0700
+directories and mode0600 files are checked for owner, type and mode. Evidence retains
+the target PID/start/effective UID, fixed argv, and owned helper PID/start/argv before
+any result is trusted. Known completion/reap is recorded before clearing the latch;
+completed evidence remains available. A pending, partial, malformed or unknown latch
+withholds another helper from both drive and inspect-stop, even if no PID now needs
+the fallback. Unknown cleanup produces `process-stop-privileged-uncertain`, retains
+the checkout and marks the assignment uncertain, rather than retrying every tick.
+Manual reconciliation must establish exact helper identity/absence before resolving
+the latch; there is no automatic root kill or latch reset.
+
+The dedicated helper supervisor uses only nonblocking output and `try_wait`. On
+deadline/read uncertainty it attempts an unprivileged SIGTERM to its own unreaped
+child PID, then only a nonblocking status check; it never waits for a privileged
+child to terminate and never signals an inspected process or a broad process group.
+It does not use the ordinary check process runner's kill-and-wait cleanup. Sudo's
+policy phase itself cannot be bounded by a wrapper, so unproved termination keeps
+the latch. Ordinary denial/unavailable executables/malformed completed output are
+incomplete evidence. Hosts with protected systemd user/session or similar processes
+need this existing noninteractive sudo permission for full coverage; requiretty or
+missing permission fails closed, with no process-name exemption.
 
 Only the observer PID and its exact owned probe PIDs, freshly attested campaign
 root foreground PIDs, and observed interactive foreground shells of the selected
@@ -221,6 +259,10 @@ then uses the same scanner and fresh root/shell checks. JSON includes `complete`
 may have remaining processes; an incomplete scan returns `remaining:null` and
 an error. It sends no exit keys, writes no stopped receipt and never accepts a
 handoff. The command must run on the checkout host, outside ledger-host RPC.
+Its narrow Linux protected-read exception may create the private per-launch safety
+intent/helper/completion artifacts described above. It makes no ledger writes, sends
+no pane input and does not mutate inspected processes. Drive and diagnostics share
+the same latch and manual-reconciliation requirement.
 The legacy campaign root projection uses an empty host for a ledger-local NULL
 machine. It is normalized with core host semantics only in local ledger mode
 (including explicit scratch TASKR_DB). A client cannot reinterpret that empty

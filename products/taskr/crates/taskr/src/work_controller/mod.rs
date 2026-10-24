@@ -55,15 +55,18 @@ fn scan_rows<'a>(v: &'a Value, key: &str) -> Result<(&'a Vec<Value>, bool)> {
     Ok((rows, truncated))
 }
 fn state_dir() -> Result<PathBuf> {
+    let dir = state_location()?;
+    private_dir(&dir)?;
+    Ok(dir)
+}
+fn state_location() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| failure("HOME is not set"))?;
     let db = std::env::var("TASKR_DB").ok();
-    let dir = state_path(
+    state_path(
         Path::new(&home),
         db.as_deref(),
         &std::env::current_dir().map_err(failure)?,
-    )?;
-    private_dir(&dir)?;
-    Ok(dir)
+    )
 }
 fn state_path(home: &Path, db: Option<&str>, cwd: &Path) -> Result<PathBuf> {
     let mut dir = home.join(".local/state/taskr/work-controller");

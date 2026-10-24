@@ -15,7 +15,14 @@ pub(super) trait Backend {
     fn lanes(&self) -> Result<String>;
     fn command(&self, args: &[String]) -> Result<Value>;
     fn launch(&self, args: &[String]) -> Result<()>;
-    fn process_scan(&self, cwd: &Path, shell: i32, trust: &inventory::Trust) -> Result<Value>;
+    fn process_scan(
+        &self,
+        cwd: &Path,
+        shell: i32,
+        trust: &inventory::Trust,
+        root: i64,
+        launch: i64,
+    ) -> Result<Value>;
     fn initialize_native(&self, _root: i64, _g: i64, _cwd: &str, _a: &Value) -> Result<Value> {
         Err(store::Error {
             code: ExitCode::Rejected,
@@ -88,8 +95,15 @@ impl Backend for Local {
         }
         serde_json::from_slice(&out.stdout.bytes).map_err(failure)
     }
-    fn process_scan(&self, cwd: &Path, shell: i32, trust: &inventory::Trust) -> Result<Value> {
-        inventory::scan(cwd, shell, trust)
+    fn process_scan(
+        &self,
+        cwd: &Path,
+        shell: i32,
+        trust: &inventory::Trust,
+        root: i64,
+        launch: i64,
+    ) -> Result<Value> {
+        inventory::scan(cwd, shell, trust, root, launch)
     }
     fn read(&self, v: &str, id: i64) -> Result<Value> {
         read(v, id)
@@ -987,11 +1001,14 @@ pub(super) fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 fn attempt_dir(root: i64, launch: i64) -> Result<PathBuf> {
-    let p = state_dir()?.join(format!("{root}/launch-{launch}"));
+    let p = attempt_path(root, launch)?;
     private_dir(&p)?;
     Ok(p)
 }
-fn write_once(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn attempt_path(root: i64, launch: i64) -> Result<PathBuf> {
+    Ok(state_location()?.join(format!("{root}/launch-{launch}")))
+}
+pub(super) fn write_once(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
     let mut f = fs::OpenOptions::new()
         .write(true)
@@ -1474,7 +1491,7 @@ pub(super) fn stop(
     }
     let foreground = observation(shell(b, pane))?;
     let process_scan = (|| -> Result<Value> {
-        let scan = scan_stop(b, root, ws, cwd, pane, &foreground)?;
+        let scan = scan_stop(b, root, ws, cwd, pane, &foreground, launch)?;
         if !array(&scan, "session_remaining")?.is_empty()
             || !array(&scan, "checkout_remaining")?.is_empty()
         {
@@ -1513,6 +1530,7 @@ fn scan_stop(
     cwd: &str,
     pane: &str,
     foreground: &Value,
+    launch: i64,
 ) -> Result<Value> {
     let started = std::time::Instant::now();
     if observation(agent(b, pane))?.is_some() {
@@ -1531,8 +1549,16 @@ fn scan_stop(
             Path::new(cwd),
             i32::try_from(number(foreground, "pid")?).map_err(failure)?,
             &trust,
+            root,
+            launch,
         )
-        .map_err(|e| failure(format!("process-stop-incomplete: {}", e.message)))?;
+        .map_err(|e| {
+            if e.message.starts_with(inventory::PRIVILEGED_UNCERTAIN) {
+                e
+            } else {
+                failure(format!("process-stop-incomplete: {}", e.message))
+            }
+        })?;
     let fresh_trust = observation(process_trust(b, root, ws))?;
     if observation(shell(b, pane))? != *foreground || observation(agent(b, pane))?.is_some() {
         return Err(failure(
@@ -1589,6 +1615,7 @@ pub(super) fn inspect_stop(b: &impl Backend, work: i64, launch: i64) -> Value {
             &c.checkout.cwd,
             pane,
             &foreground,
+            launch,
         )?;
         let remaining = !array(&scan, "session_remaining")?.is_empty()
             || !array(&scan, "checkout_remaining")?.is_empty();

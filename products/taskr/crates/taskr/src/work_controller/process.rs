@@ -53,7 +53,7 @@ impl Drop for Owned {
         let _ = self.0.wait();
     }
 }
-fn nonblock(fd: &impl std::os::fd::AsFd) -> io::Result<()> {
+pub(super) fn nonblock(fd: &impl std::os::fd::AsFd) -> io::Result<()> {
     let flags = rustix::fs::fcntl_getfl(fd)?;
     rustix::fs::fcntl_setfl(fd, flags | rustix::fs::OFlags::NONBLOCK)?;
     Ok(())

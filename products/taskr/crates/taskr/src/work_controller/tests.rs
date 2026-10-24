@@ -37,6 +37,7 @@ struct Fake {
     scan_error: Cell<bool>,
     scan_blocker: Cell<bool>,
     scan_native_drift: Cell<bool>,
+    scan_privileged_unknown: Cell<bool>,
     root_host: RefCell<Value>,
     client_mode: Cell<bool>,
     observe_reject: Cell<bool>,
@@ -77,6 +78,7 @@ impl Fake {
             scan_error: Cell::new(false),
             scan_blocker: Cell::new(false),
             scan_native_drift: Cell::new(false),
+            scan_privileged_unknown: Cell::new(false),
             root_host: RefCell::new(json!("")),
             client_mode: Cell::new(false),
             observe_reject: Cell::new(false),
@@ -212,8 +214,22 @@ impl driver::Backend for Fake {
     fn client_mode(&self) -> bool {
         self.client_mode.get()
     }
-    fn process_scan(&self, _cwd: &Path, shell: i32, trust: &inventory::Trust) -> Result<Value> {
+    fn process_scan(
+        &self,
+        _cwd: &Path,
+        shell: i32,
+        trust: &inventory::Trust,
+        root: i64,
+        launch: i64,
+    ) -> Result<Value> {
         self.call("process:scan");
+        assert_eq!((root, launch), (3, 11));
+        if self.scan_privileged_unknown.get() {
+            return Err(failure(format!(
+                "{} controlled helper pid/start/argv evidence pending",
+                inventory::PRIVILEGED_UNCERTAIN
+            )));
+        }
         assert_eq!(shell, 400);
         assert_eq!(trust.root.get(&500).map(String::as_str), Some("taskr"));
         assert_eq!(
@@ -1128,6 +1144,67 @@ fn incomplete_scan_then_cooperative_writer_then_clean_retries_without_uncertaint
             assert!(b.calls.borrow().iter().any(|c| c == "change:reconcile"));
         }
     }
+}
+#[test]
+fn unknown_privileged_helper_cleanup_keeps_uncertainty_and_never_retries_automatic_scan() {
+    for state in ["active", "cancelled"] {
+        let b = Fake::new();
+        b.active("running");
+        b.native("impl-w11", "native-fixture");
+        {
+            let mut s = b.snapshot.borrow_mut();
+            s["work"][0]["state"] = json!(state);
+            let a = &mut s["work"][0]["runs"][0]["assignments"][0];
+            a["state"] = json!("settled");
+            a["native_session"] = json!("native-fixture");
+        }
+        b.scan_privileged_unknown.set(true);
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], "uncertain");
+        assert!(
+            b.work()["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with(inventory::PRIVILEGED_UNCERTAIN)
+        );
+        b.scan_privileged_unknown.set(false);
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], "uncertain");
+        assert_eq!(
+            b.calls
+                .borrow()
+                .iter()
+                .filter(|c| c.as_str() == "process:scan")
+                .count(),
+            1
+        );
+        assert!(
+            !b.calls
+                .borrow()
+                .iter()
+                .any(|c| c == "change:stopped" || c == "change:reserve" || c == "effect:start")
+        );
+    }
+}
+#[test]
+fn inspect_stop_reports_privileged_uncertainty_without_ledger_or_pane_effects() {
+    let b = Fake::new();
+    b.active("running");
+    b.scan_privileged_unknown.set(true);
+    let result = driver::inspect_stop(&b, 1, 11);
+    assert_eq!(result["complete"], false);
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap()
+            .starts_with(inventory::PRIVILEGED_UNCERTAIN)
+    );
+    assert!(
+        !b.calls
+            .borrow()
+            .iter()
+            .any(|c| c.starts_with("change:") || c.contains("send-keys") || c == "effect:start")
+    );
 }
 #[test]
 fn native_absence_drift_still_requires_uncertainty_instead_of_automatic_retry() {
