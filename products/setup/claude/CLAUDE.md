@@ -47,6 +47,8 @@ else: model lanes, launch commands, accounts, layout, briefs, and teardown.
   Do not wait for the word "Herdr" in a prompt.
 - Never start in-process subagents, forks, workflows, or native agent
   threads (Claude `Agent`/`Workflow`/`Task`; Codex `spawn_agent` roles).
+  Never make unledgered advisor/reviewer model calls, including same-model
+  Claude `advisor` calls.
   Start each helper with `herdr agent start` in its own tab in the task
   workspace, created with `--env FLEET_ROLE=worker --no-focus`: never a
   workspace or worktree per worker, and never a split of the owner's pane.
