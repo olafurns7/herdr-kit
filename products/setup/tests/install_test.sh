@@ -26,7 +26,7 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 with tempfile.TemporaryDirectory(prefix='kit-install-test.') as scratch:
-    scratch = Path(scratch)
+    scratch = Path(scratch).resolve()
     stubs = scratch / 'bin'
     stubs.mkdir()
     executable(stubs / 'herdr', '''#!/bin/sh
