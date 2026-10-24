@@ -94,6 +94,7 @@ class Adapter:
             require(bool(os.environ["TASKR_DB"]), "empty TASKR_DB")
             os.environ["TASKR_DB"] = self.context["db"]
         self.basis = None
+        self.completed_native = None
 
     def remaining(self):
         left = self.deadline - time.monotonic()
@@ -240,11 +241,15 @@ class Adapter:
         require(len(rows) == 1, "ambiguous agent registration")
         a = rows[0]
         dispatch = assignment["dispatch"]
+        # A matching durable shell receipt permits done, never a fresh pre-send check.
+        ready = a.get("agent_status") == "idle" or (
+            a.get("agent_status") == "done" and self.basis is not None
+            and expected is not None and expected == self.completed_native)
         require(a.get("agent") == "codex" and a.get("name") == self.name and a.get("pane_id") == self.pane
-                and a.get("agent_status") == "idle" and a.get("interactive_ready") is True
+                and ready and a.get("interactive_ready") is True
                 and a.get("workspace_id") == dispatch["workspace"] and a.get("tab_id") == dispatch["tab"]
                 and a.get("cwd") == str(self.cwd) and a.get("foreground_cwd") == str(self.cwd),
-                "agent not uniquely idle at reserved checkout")
+                "agent not ready at reserved checkout")
         pane = self.herdr("pane", "get", self.pane)["pane"]
         require(all(pane.get(k) == v for k, v in dict(pane_id=self.pane, tab_id=dispatch["tab"],
                     workspace_id=dispatch["workspace"], cwd=str(self.cwd), foreground_cwd=str(self.cwd)).items()),
@@ -288,7 +293,8 @@ class Adapter:
                 and all(value[k] == v for k, v in expected.items())
                 and native_id(value["CODEX_THREAD_ID"]) == native_id(value["CODEX_SESSION_ID"]),
                 "native receipt binding mismatch")
-        return value["CODEX_THREAD_ID"]
+        self.completed_native = value["CODEX_THREAD_ID"]
+        return self.completed_native
 
     def report(self, native):
         self.guard(native)
@@ -341,15 +347,16 @@ except OSError:
 ''').encode()
 
     def run(self):
-        self.guard()
         base = Path.home() / ".local/state/taskr/native-identity"
         physical = base.resolve()
         require(self.cwd != physical and self.cwd not in physical.parents, "artifacts must be outside checkout")
-        base.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        private_dir(base)
         # One attempt namespace per ledger/launch, even if generation, CLI or checkout changes.
         key = dict(db=self.context["db"], launch=self.launch)
         folder = base / hashlib.sha256(encoded(key)).hexdigest()
+        if not folder.exists() and not folder.is_symlink():
+            self.guard()
+        base.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_dir(base)
         private_dir(folder)
         lock = os.open(folder / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
         try:
@@ -362,25 +369,32 @@ except OSError:
             os.close(lock)
 
     def initialize(self, folder):
-        native = self.guard()
+        self.completed_native = None
         init_path = folder / "init.json"
-        if init_path.exists() or init_path.is_symlink():
-            init = json.loads(read_private(init_path))
-            require(init["context"] == self.context and init["basis"] == self.basis, "stale bootstrap attempt")
-        else:
-            init = dict(context=self.context, basis=self.basis, nonce=secrets.token_hex(24))
-            write_once(init_path, encoded(init))
         sent = folder / "sent.json"
         receipt = folder / "receipt.json"
+        init = None
+        if init_path.exists() or init_path.is_symlink():
+            init = json.loads(read_private(init_path))
+            require(init["context"] == self.context and (self.basis is None or init["basis"] == self.basis),
+                    "stale bootstrap attempt")
+            self.basis = init["basis"]
         method = "existing-native-metadata"
         if sent.exists() or sent.is_symlink():
+            require(init is not None, "sent shell intent has no initialization; never resend")
             require(json.loads(read_private(sent)) == dict(nonce=init["nonce"]), "invalid sent marker")
             require(read_private(folder / "probe.py") == self.script(init, folder), "bootstrap script changed")
             require(receipt.exists(), "shell delivery uncertain; matching receipt required, never resend")
             native = self.receipt(folder, init)
             self.guard(native)
             method = "native-shell-receipt"
-        elif native is None:
+        else:
+            native = self.guard()
+            if init is None:
+                require(not receipt.exists() and not receipt.is_symlink(), "orphaned shell receipt; never resend")
+                init = dict(context=self.context, basis=self.basis, nonce=secrets.token_hex(24))
+                write_once(init_path, encoded(init))
+        if method != "native-shell-receipt" and native is None:
             script = folder / "probe.py"
             content = self.script(init, folder)
             if script.exists() or script.is_symlink():
@@ -407,7 +421,8 @@ except OSError:
                 native = self.receipt(folder, init)
             finally:
                 os.close(fd)
-            self.herdr("agent", "wait", self.name, "--until", "idle", "--timeout", str(max(1, int(self.remaining() * 1000))))
+            # Default wait includes done; the receipt-bound guard still rejects blocked/working.
+            self.herdr("agent", "wait", self.name, "--timeout", str(max(1, int(self.remaining() * 1000))))
             self.guard(native)
             method = "native-shell-receipt"
         self.guard(native)

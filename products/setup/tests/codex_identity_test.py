@@ -37,6 +37,8 @@ class Fake(m.Adapter):
         self.calls = []
         self.fault = fault
         self.native = None
+        self.agent_status = "idle"
+        self.interactive_ready = True
         self.process_version = 1
         self.sent_count = 0
         self.assignment = dict(launch_id=3, task_id=2, round=0, state="starting", process_state="starting",
@@ -76,7 +78,8 @@ class Fake(m.Adapter):
     def herdr(self, *args):
         self.calls.append(args)
         if args[:2] == ("agent", "list"):
-            a = dict(name=self.name, pane_id=self.pane, agent="codex", agent_status="idle", interactive_ready=True,
+            a = dict(name=self.name, pane_id=self.pane, agent="codex", agent_status=self.agent_status,
+                     interactive_ready=self.interactive_ready,
                      workspace_id="w1", tab_id="w1:t1", cwd=str(self.cwd), foreground_cwd=str(self.cwd), terminal_id="term")
             if self.native:
                 a["agent_session"] = dict(value=self.native, agent="codex", source="herdr:codex", kind="id")
@@ -117,7 +120,6 @@ class Fake(m.Adapter):
         assert command[3] == str(self.folder / "probe.py")
 
     def run_test(self):
-        self.guard()
         return self.initialize(self.folder)
 
 
@@ -180,6 +182,97 @@ class IdentityTests(unittest.TestCase):
         result = self.fake.run_test()
         self.assertEqual(result["native_session"], ID)
         self.assertEqual(self.fake.sent_count, 0)
+
+    def completed_attempt(self, f):
+        f.guard()
+        init = dict(context=f.context, basis=f.basis, nonce="synthetic-completed-shell")
+        m.write_once(f.folder / "init.json", m.encoded(init))
+        m.write_once(f.folder / "probe.py", f.script(init, f.folder))
+        m.write_once(f.folder / "sent.json", m.encoded(dict(nonce=init["nonce"])))
+        self.write_shell_receipt(f, init)
+        f.basis = None  # A new adapter process must recover the pinned basis from disk.
+        f.completed_native = None
+        f.agent_status = "done"
+
+    def write_shell_receipt(self, f, init):
+        value = dict(version=1, nonce=init["nonce"], TASKR_TASK="2", TASKR_LAUNCH="3", HERDR_ENV="1",
+                     HERDR_PANE_ID=f.pane, CODEX_THREAD_ID=ID, CODEX_SESSION_ID=ID)
+        m.write_once(f.folder / "receipt.json", m.encoded(value))
+
+    def fake_report(self, native):
+        self.fake.guard(native)
+        self.fake.native = native
+        self.fake.guard(native)
+
+    def test_done_without_completed_receipt_cannot_initialize(self):
+        self.fake.agent_status = "done"
+        self.fake.native = ID
+        with self.assertRaisesRegex(RuntimeError, "not ready"):
+            self.fake.guard(ID)
+        with self.assertRaisesRegex(RuntimeError, "not ready"):
+            self.fake.run_test()
+        self.assertEqual(self.fake.sent_count, 0)
+        self.assertFalse((self.fake.folder / "init.json").exists())
+
+    def test_fresh_shell_done_uses_default_wait_and_checks_receipt(self):
+        original = self.fake.herdr
+        def herdr(*args):
+            if args[:2] != ("agent", "prompt"):
+                return original(*args)
+            self.fake.calls.append(args)
+            self.fake.sent_count += 1
+            init = json.loads(m.read_private(self.fake.folder / "init.json"))
+            self.write_shell_receipt(self.fake, init)
+            fd = os.open(self.fake.folder / "notify", os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                os.write(fd, b"1")
+            finally:
+                os.close(fd)
+            self.fake.agent_status = "done"
+            return {}
+        with patch.object(self.fake, "herdr", side_effect=herdr), \
+                patch.object(self.fake, "report", side_effect=self.fake_report):
+            result = self.fake.run_test()
+        self.assertEqual(result["native_session"], ID)
+        self.assertEqual(self.fake.sent_count, 1)
+        waits = [a for a in self.fake.calls if a[:2] == ("agent", "wait")]
+        self.assertEqual(len(waits), 1)
+        self.assertNotIn("--until", waits[0])
+
+    def test_done_completed_receipt_recovers_through_run_without_resend(self):
+        with patch.dict(os.environ, HOME=str(self.root / "home")):
+            base = Path.home() / ".local/state/taskr/native-identity"
+            key = dict(db=self.fake.context["db"], launch=self.fake.launch)
+            self.fake.folder = base / m.hashlib.sha256(m.encoded(key)).hexdigest()
+            self.fake.folder.mkdir(mode=0o700, parents=True)
+            base.chmod(0o700)
+            self.completed_attempt(self.fake)
+            with patch.object(self.fake, "report", side_effect=self.fake_report):
+                result = self.fake.run()
+        self.assertEqual(result["native_session"], ID)
+        self.assertEqual(self.fake.sent_count, 0)
+        self.assertFalse(any(a[:2] in (("agent", "prompt"), ("agent", "wait")) for a in self.fake.calls))
+        self.assertEqual(self.fake.assignment["process_state"], "starting")
+
+    def test_completed_receipt_does_not_relax_other_state_or_identity_guards(self):
+        changes = [lambda f: setattr(f, "agent_status", "working"), lambda f: setattr(f, "agent_status", "blocked"),
+                   lambda f: setattr(f, "agent_status", "uncertain"), lambda f: setattr(f, "interactive_ready", False),
+                   lambda f: setattr(f, "native", OTHER), lambda f: setattr(f, "process_version", 2),
+                   lambda f: f.assignment.update(process_state="uncertain"),
+                   lambda f: f.log.append(dict(kind="prompt", launch_id=3)),
+                   lambda f: f.snap.update(generation=99), lambda f: (f.folder / "receipt.json").unlink()]
+        for i, change in enumerate(changes):
+            with self.subTest(i=i):
+                root = self.root / str(i)
+                root.mkdir()
+                f = Fake(root)
+                self.completed_attempt(f)
+                change(f)
+                with patch.object(f, "report") as report:
+                    with self.assertRaises(RuntimeError):
+                        f.run_test()
+                    report.assert_not_called()
+                self.assertEqual(f.sent_count, 0)
 
     def test_uncertain_assignment_refuses_before_initialization(self):
         self.fake.assignment["process_state"] = "uncertain"
