@@ -604,7 +604,13 @@ mod tests {
             assert!(check_args(&args).is_ok());
         }
         assert!(check_args(&argv(&["jobs", "await", "--binding", "a", "--binding=b"])).is_err());
-        for verb in ["drive", "run-checks", "source", "inspect-stop", "_bounded-check"] {
+        for verb in [
+            "drive",
+            "run-checks",
+            "source",
+            "inspect-stop",
+            "_bounded-check",
+        ] {
             let args = argv(&["--json", "work", verb, "1"]);
             assert!(!stored(&args));
             assert!(!crate::net::spoolable(&args));
