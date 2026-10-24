@@ -7,7 +7,7 @@ use taskr_core::db::{OptionalExtension, params};
 use taskr_core::store::work as api;
 
 fn clean_process_scan() -> Value {
-    json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123]},{"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[456]}]})
+    json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"deleted_cwd":0,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123]},{"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[456]}]})
 }
 
 struct Work {
@@ -1688,6 +1688,7 @@ fn stop_requires_complete_empty_bounded_process_scan_and_keeps_checkout_on_failu
         "shell_pid",
         "session_id",
         "scanned",
+        "deleted_cwd",
         "session_remaining",
         "checkout_remaining",
         "exempt",
@@ -1708,6 +1709,12 @@ fn stop_requires_complete_empty_bounded_process_scan_and_keeps_checkout_on_failu
         ("session_id", json!(0), 2),
         ("scanned", json!(0), 2),
         ("scanned", json!(65537), 2),
+        ("deleted_cwd", json!(-1), 2),
+        ("deleted_cwd", json!(null), 2),
+        ("deleted_cwd", json!("0"), 2),
+        ("deleted_cwd", json!(1.5), 2),
+        ("deleted_cwd", json!(4294967296_u64), 2),
+        ("deleted_cwd", json!(41), 2),
         (
             "session_remaining",
             json!([{"pid":321,"command":"background writer"}]),
@@ -1790,6 +1797,8 @@ fn stop_requires_complete_empty_bounded_process_scan_and_keeps_checkout_on_failu
         .unwrap(),
         "running"
     );
+    let mut good = good;
+    good["process_scan"]["deleted_cwd"] = good["process_scan"]["scanned"].clone();
     let stopped = w.call("stopped", Some(&lid), Some(good.clone()));
     assert_eq!(stopped["process_state"], "stopped");
     assert_eq!(

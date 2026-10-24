@@ -190,13 +190,23 @@ A native agent disappearing and an interactive foreground shell do not establish
 that background writers stopped. The required scan has this exact shape:
 
 ```json
-{"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123]},{"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[456]}]}
+{"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"deleted_cwd":0,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123]},{"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[456]}]}
 ```
 
 `session_remaining` entries are `{pid,command}`; `checkout_remaining` entries are
 `{pid,cwd}`. Both arrays must be empty to record stop. All PID/session IDs are
 positive u32; shell_pid equals foreground.pid; uid is u32 (including root UID0).
-`scanned` is 1..65536. Each array, including exempt, has at most1024 entries;
+`scanned` is 1..65536. Required `deleted_cwd` is an integer count in
+0..scanned (bounded by65536), with no default. It records how many process cwds
+were classified from kernel paths after canonicalization returned exactly ENOENT;
+it does not exempt those processes. A deleted cwd classified inside the checkout
+still blocks, while one outside remains outside. The scanner strips Linux's
+trailing ` (deleted)` once, canonicalizes the longest existing ancestor to resolve
+aliases, and appends only suffix components without empty, dot or parent entries.
+The checkout root must still canonicalize. Other errors or malformed paths remain
+incomplete scans; absolute-path writers remain outside this cooperative profile.
+Missing, negative, noninteger or greater-than-scanned counts are rejected.
+Each array, including exempt, has at most1024 entries;
 commands/cwd strings are nonempty and at most4096 bytes. Exempt PIDs are positive
 and unique. Exemptions are a typed enum tagged by `reason`, with required bases:
 
