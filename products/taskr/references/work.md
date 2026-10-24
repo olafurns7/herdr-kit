@@ -112,5 +112,7 @@ keep the legacy channel-only config; jobs opt-in grants no `allow-ask` permissio
 Preserve the immutable generation config: a same-generation MCP server restart
 reuses its ROOT/GEN/binding and recovers handles; a helper start/move adopts a new
 generation and releases old native routes to channel fallback. Do not invent a
-new binding to recover old work. See orchestration `launch.md` for launch details
+new binding to recover old work. See the
+[orchestration launch guide](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/skills/herdr-orchestration/launch.md)
+for launch details
 and the linked native jobs guide for recovery and explicit result receipts.
