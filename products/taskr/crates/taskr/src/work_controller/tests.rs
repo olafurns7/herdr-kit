@@ -44,6 +44,9 @@ struct Fake {
     observe_drift: Cell<bool>,
     block_events: Cell<usize>,
     pane_cwd: RefCell<Option<String>>,
+    herdr_once: RefCell<Option<(String, usize)>>,
+    herdr_reject: Cell<bool>,
+    observe_transport: Cell<bool>,
 }
 impl Fake {
     fn new() -> Self {
@@ -76,6 +79,9 @@ impl Fake {
             observe_drift: Cell::new(false),
             block_events: Cell::new(0),
             pane_cwd: RefCell::new(None),
+            herdr_once: RefCell::new(None),
+            herdr_reject: Cell::new(false),
+            observe_transport: Cell::new(false),
         }
     }
     fn run() -> Value {
@@ -154,7 +160,7 @@ impl driver::Backend for Fake {
             self.native("replacement", "replacement");
         }
         Ok(
-            json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":400,"session_id":400,"scanned":3,
+            json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":400,"session_id":400,"scanned":3,"deleted_cwd":0,
             "session_remaining":if self.scan_blocker.get(){vec![json!({"pid":401,"command":"synthetic-child"})]}else{vec![]},
             "checkout_remaining":[],"exempt":[{"pid":400,"reason":"workspace-shell","pane":"w1:p1","session_id":400,"foreground_pgid":400,"session_pids":[400]},{"pid":500,"reason":"campaign-root","pane":"w2:p1","foreground_pgid":500,"foreground_pids":[500],"observed_at":store::now()},{"pid":600,"reason":"observer","observer_pid":600,"parent_chain":[600]}]}),
         )
@@ -210,6 +216,9 @@ impl driver::Backend for Fake {
                 message: "synthetic rejected observation".into(),
             });
         }
+        if verb == "observe" && self.observe_transport.replace(false) {
+            return Err(failure("one-shot observe transport outage"));
+        }
         if verb == "claim" {
             assert_eq!(
                 data.as_ref().unwrap()["expected_revision"],
@@ -259,6 +268,7 @@ impl driver::Backend for Fake {
                     "local-user-session-cwd-v1"
                 );
                 assert_eq!(data.as_ref().unwrap()["process_scan"]["shell_pid"], 400);
+                assert_eq!(data.as_ref().unwrap()["process_scan"]["deleted_cwd"], 0);
                 a["process_state"] = json!("stopped");
             }
             "reconcile" => {
@@ -270,6 +280,27 @@ impl driver::Backend for Fake {
     }
     fn herdr(&self, args: &[&str]) -> Result<Value> {
         self.call(format!("herdr:{}", args.join(" ")));
+        if let Some((key, nth)) = &*self.herdr_once.borrow() {
+            let current = format!("herdr:{}", args.join(" "));
+            if args.join(" ") == *key
+                && self
+                    .calls
+                    .borrow()
+                    .iter()
+                    .filter(|c| c.as_str() == current.as_str())
+                    .count()
+                    == *nth
+            {
+                return Err(store::Error {
+                    code: if self.herdr_reject.get() {
+                        ExitCode::Rejected
+                    } else {
+                        ExitCode::Transport
+                    },
+                    message: "one-shot Herdr observation failure".into(),
+                });
+            }
+        }
         if self.unavailable.get() {
             return Err(failure("Herdr unavailable; no server start"));
         }
@@ -455,6 +486,34 @@ fn recovery_pins_native_identity_before_exactly_one_prompt_without_starting() {
     assert!(!calls.iter().any(|c| c == "change:started"));
 }
 #[test]
+fn recovery_observe_transport_outage_retries_without_prompt_or_uncertainty() {
+    let b = Fake::new();
+    b.active("starting");
+    b.native("impl-w11", "native-fixture");
+    let dir = driver::Backend::directory(&b, 3, 11).unwrap();
+    fs::write(dir.join("brief.md"), "HERDR-BRIEF role=implementer\n").unwrap();
+    b.observe_transport.set(true);
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["process_state"], "starting");
+    assert!(
+        !b.calls
+            .borrow()
+            .iter()
+            .any(|c| c == "change:uncertain" || c.starts_with("command:prompt"))
+    );
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["native_session"], "native-fixture");
+    assert_eq!(
+        b.calls
+            .borrow()
+            .iter()
+            .filter(|c| c.starts_with("command:prompt"))
+            .count(),
+        1
+    );
+    assert!(!b.calls.borrow().iter().any(|c| c == "change:uncertain"));
+}
+#[test]
 fn recovery_refused_unconfirmed_or_changed_native_observation_withholds_prompt() {
     for cause in ["rejected", "unconfirmed", "changed-native"] {
         let b = Fake::new();
@@ -577,6 +636,65 @@ fn process_scan_failure_blocks_once_without_releasing_cancelled_work() {
             .iter()
             .any(|c| c == "change:stopped" || c == "change:reconcile")
     );
+}
+#[test]
+fn one_shot_stop_observation_outages_keep_running_then_stop_on_clean_tick() {
+    for (key, nth) in [
+        ("pane get w1:p1", 1),
+        ("agent list", 1),
+        (
+            "agent wait impl-w11 --until idle --until done --timeout 120000",
+            1,
+        ),
+        ("pane process-info --pane w1:p1", 1),
+        ("agent list", 5),
+        ("pane process-info --pane w2:p1", 1),
+        ("pane list --workspace w1", 1),
+        ("pane process-info --pane w2:p1", 2),
+        ("pane process-info --pane w1:p1", 4),
+    ] {
+        let b = Fake::new();
+        b.active("running");
+        b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["state"] = json!("settled");
+        b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
+            json!("native-fixture");
+        b.native("impl-w11", "native-fixture");
+        *b.herdr_once.borrow_mut() = Some((key.into(), nth));
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], "running", "{key}/{nth}");
+        assert!(
+            !b.calls
+                .borrow()
+                .iter()
+                .any(|c| c == "change:uncertain" || c == "change:stopped")
+        );
+        assert!(
+            b.snapshot.borrow()["work"][0]["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("process-stop-incomplete:")
+        );
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], "stopped", "{key}/{nth}");
+        assert!(!b.calls.borrow().iter().any(|c| c == "change:uncertain"));
+    }
+}
+#[test]
+fn rejected_stop_identity_observation_remains_uncertain() {
+    let b = Fake::new();
+    b.active("running");
+    b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["state"] = json!("settled");
+    b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
+        json!("native-fixture");
+    b.native("impl-w11", "native-fixture");
+    *b.herdr_once.borrow_mut() = Some((
+        "agent wait impl-w11 --until idle --until done --timeout 120000".into(),
+        1,
+    ));
+    b.herdr_reject.set(true);
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["process_state"], "uncertain");
+    assert!(!b.calls.borrow().iter().any(|c| c == "change:stopped"));
 }
 #[test]
 fn incomplete_scan_then_cooperative_writer_then_clean_retries_without_uncertainty() {
@@ -879,6 +997,7 @@ fn generated_brief_prohibits_unmanaged_processes_and_states_scan_limits() {
         "named managed runtime",
         "another effective UID",
         "absolute-path writers with no retained descriptor",
+        "Cwd snapshots are not atomic",
         "Model agreement cannot certify containment",
     ] {
         assert!(brief.contains(text));

@@ -116,6 +116,7 @@ acceptance grants no merge, release or publication authority.
 
 Stopped receipts also require `process_scan` with method
 `local-user-session-cwd-v1`, effective UID, shell PID, true POSIX session ID, scanned count,
+required integer `deleted_cwd` count (zero when none),
 empty `session_remaining` and `checkout_remaining`, and evidence-bearing tagged
 `exempt` entries. The shell PID must match the foreground observation. The local scanner
 uses bounded `/bin/ps -ww -A -o uid=,ruid=,pid=,ppid=,pgid=,tty=,stat=,comm=`
@@ -133,7 +134,14 @@ reads use `/proc/PID/cwd` for that filtered set; macOS uses
 with a strict NUL-field parser. Canonical cwd paths match the checkout itself or
 descendants using path components, so similarly named siblings do not match.
 Configured and observed cwd aliases are resolved to real paths at scan time;
-failure to resolve a required cwd is incomplete evidence.
+the checkout root itself must resolve. A kernel-reported cwd that fails with exactly
+ENOENT is conservatively classified as deleted: strip one Linux ` (deleted)` suffix,
+canonicalize its longest existing ancestor, then append the remaining raw components.
+Empty, dot and parent components are refused. Deleted cwd inside the checkout still
+blocks; deleted cwd outside is outside. It never grants a shell, root, observer or
+probe exemption. `deleted_cwd` counts those classifications for surviving live rows.
+An absent kernel record cannot establish deletion. Permission errors, ENOTDIR,
+ELOOP, parse failures and bounds remain incomplete evidence.
 
 Only the observer PID and its exact owned probe PIDs, freshly attested campaign
 root foreground PIDs, and observed interactive foreground shells of the selected
@@ -158,7 +166,8 @@ still fail closed.
 
 Each OS scan has its own fifteen-second total budget, independent of the
 four-second between-items dispatch budget, at most 4096 raw ps rows across all users,
-one MiB of captured
+including foreign-effective-UID rows before filtering. Exceeding that raw bound makes
+the scan incomplete, even if few rows belong to the observer. There is one MiB of captured
 output per probe, at most 1024 entries in each evidence array, and 1024-byte
 command/cwd fields. Changed snapshot pairs retry the complete inventory/cwd pair
 within that one budget; attempts do not reset the deadline or reuse partial cwd
@@ -169,12 +178,18 @@ uses the same stable, idempotent block reason, so future ticks retry automatical
 No stopped receipt is issued until the scan is complete and remaining sets empty.
 Native identity/absence or target foreground ambiguity still marks the assignment
 uncertain for explicit reconciliation. The scanner never kills an unexplained process.
+Transport outages and incomplete reads during stop's pane/agent/wait, foreground and
+trust observations also use the retryable block. Explicit observation/exit rejection,
+native drift, missing bound native identity and exit-dialog anomalies remain uncertain.
 Probe execution/cleanup is confined to its own process group. The budget is checked
 between OS reads; this local profile assumes responsive local process/filesystem
 interfaces and does not bound a kernel call stalled on a remote filesystem.
 The surrounding root/shell observations must complete within thirty seconds.
 Scanning starts only after native absence. Native absence and shell foreground
 are rechecked after the scan before stamping the stopped observation time.
+The two inventories do not make cwd observation atomic: a process can chdir into the
+checkout after its cwd read while retaining an identical ps row. This snapshot race
+is a limit of the cooperative profile.
 
 `taskr work inspect-stop WORK --launch LAUNCH` is a read-only local diagnostic.
 It selects that launch's immutable revision checkout and recorded workspace/pane,
@@ -212,7 +227,9 @@ the brief and retains the reservation. Observe does not fabricate a got/start
 receipt or move a starting process to running. Legacy/manual launches are unchanged.
 Crash recovery also observes and confirms the actual exact native identity before
 its first recovery prompt, then rechecks that native agent and generation. Refused
-or unconfirmed observation marks uncertainty and withholds the brief. Existing
+or unconfirmed observation marks uncertainty and withholds the brief. A transport
+failure withholds the brief and leaves the starting assignment blocked for a later
+tick; it does not fabricate a start or mark identity uncertain. Existing
 pending prompt attempts are observed rather than resent.
 Model processes without identity need explicit reconciliation; they cannot use
 an anonymous stopped receipt. Gate shells retain their separate shell-exit proof.

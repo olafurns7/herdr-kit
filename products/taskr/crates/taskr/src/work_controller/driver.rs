@@ -54,14 +54,7 @@ impl Backend for Local {
             &AtomicBool::new(false),
         )
         .map_err(failure)?;
-        if out.exit != Some(0) || out.timed_out || out.stdout.digest().truncated {
-            return Err(failure("Herdr command failed or exceeded bounds"));
-        }
-        let value: Value = serde_json::from_slice(&out.stdout.bytes).map_err(failure)?;
-        if !value["error"].is_null() {
-            return Err(failure("incompatible Herdr response"));
-        }
-        Ok(value["result"].clone())
+        herdr_result(&out)
     }
     fn lanes(&self) -> Result<String> {
         let mut cmd = Command::new("herdr-launch");
@@ -95,10 +88,114 @@ impl Backend for Local {
         Ok(())
     }
 }
+fn herdr_result(out: &process::Output) -> Result<Value> {
+    if out.timed_out || out.stdout.digest().truncated || out.stderr.digest().truncated {
+        return Err(failure("Herdr command exceeded bounds"));
+    }
+    let stderr = serde_json::from_slice::<Value>(&out.stderr.bytes).ok();
+    let code = stderr.as_ref().and_then(|v| v["error"]["code"].as_str());
+    // Use the existing Herdr adapter's structured rejection convention.
+    if out.exit == Some(2)
+        || code.is_some_and(|code| code == "agent_blocked" || code.contains("not_found"))
+    {
+        return Err(store::Error {
+            code: ExitCode::Rejected,
+            message: "Herdr rejected process observation or exit request".into(),
+        });
+    }
+    if out.exit != Some(0) {
+        return Err(failure("Herdr command failed"));
+    }
+    let value: Value = serde_json::from_slice(&out.stdout.bytes).map_err(failure)?;
+    if !value["error"].is_null() {
+        return Err(store::Error {
+            code: ExitCode::Rejected,
+            message: "Herdr returned a rejected response".into(),
+        });
+    }
+    Ok(value["result"].clone())
+}
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    #[test]
+    fn structured_herdr_rejections_stay_distinct_from_transport_and_parse_failures() {
+        for (exit, stderr, stdout, timed_out, expected) in [
+            (Some(2), "", "", false, Some(ExitCode::Rejected)),
+            (
+                Some(1),
+                r#"{"error":{"code":"agent_blocked"}}"#,
+                "",
+                false,
+                Some(ExitCode::Rejected),
+            ),
+            (
+                Some(1),
+                r#"{"error":{"code":"pane_not_found"}}"#,
+                "",
+                false,
+                Some(ExitCode::Rejected),
+            ),
+            (
+                Some(1),
+                "socket unavailable",
+                "",
+                false,
+                Some(ExitCode::Transport),
+            ),
+            (Some(0), "", "partial", false, Some(ExitCode::Transport)),
+            (Some(2), "", "", true, Some(ExitCode::Transport)),
+            (
+                Some(0),
+                "",
+                r#"{"error":{"code":"agent_blocked"}}"#,
+                false,
+                Some(ExitCode::Rejected),
+            ),
+            (Some(0), "", r#"{"result":{"agents":[]}}"#, false, None),
+        ] {
+            let mut out = process::Output {
+                pid: 1,
+                exit,
+                signal: None,
+                timed_out,
+                cancelled: false,
+                stdout: process::Capture::default(),
+                stderr: process::Capture::default(),
+            };
+            out.stdout.bytes = stdout.as_bytes().to_vec();
+            out.stderr.bytes = stderr.as_bytes().to_vec();
+            assert_eq!(herdr_result(&out).err().map(|e| e.code), expected);
+        }
+    }
+}
 fn array<'a>(v: &'a Value, key: &str) -> Result<&'a Vec<Value>> {
     v[key]
         .as_array()
         .ok_or_else(|| failure(format!("missing {key} array")))
+}
+fn identity_error(message: impl std::fmt::Display) -> store::Error {
+    failure(format!("process-stop-identity: {message}"))
+}
+fn retry_transport(e: store::Error) -> store::Error {
+    if e.code == ExitCode::Transport
+        && !e.message.starts_with("process-stop-identity:")
+        && !e.message.starts_with("process-stop-incomplete:")
+        && !e.message.starts_with("checkout-not-canonical:")
+    {
+        failure(format!("process-stop-incomplete: {}", e.message))
+    } else {
+        e
+    }
+}
+fn observation<T>(result: Result<T>) -> Result<T> {
+    result.map_err(|e| {
+        if e.code == ExitCode::Rejected {
+            identity_error(e.message)
+        } else {
+            retry_transport(e)
+        }
+    })
 }
 pub(super) fn lane_matches(table: &str, lane: &api::Lane, stage: &str) -> bool {
     let prefix = if stage == "executor" { "impl" } else { "rev" };
@@ -219,7 +316,7 @@ fn pane_location_for(
         || p["workspace_id"] != workspace
         || canonical(field(p, "cwd")?)? != canonical(cwd)?
     {
-        return Err(failure("pane location/checkout drift"));
+        return Err(identity_error("pane location/checkout drift"));
     }
     Ok(field(p, "tab_id")?.into())
 }
@@ -228,19 +325,23 @@ fn shell(b: &impl Backend, pane: &str) -> Result<Value> {
     let p = &p["process_info"];
     let pid = number(p, "shell_pid")?;
     if p["foreground_process_group_id"] != pid {
-        return Err(failure("pane foreground is not its interactive shell"));
+        return Err(identity_error(
+            "pane foreground is not its interactive shell",
+        ));
     }
     let fg = array(p, "foreground_processes")?;
     let process = fg
         .iter()
         .find(|p| p["pid"] == pid)
-        .ok_or_else(|| failure("shell foreground process missing"))?;
+        .ok_or_else(|| identity_error("shell foreground process missing"))?;
     let name = field(process, "name")?;
     if !matches!(
         Path::new(name).file_name().and_then(|p| p.to_str()),
         Some("sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "nu")
     ) {
-        return Err(failure("foreground command is not a supported shell"));
+        return Err(identity_error(
+            "foreground command is not a supported shell",
+        ));
     }
     Ok(json!({"pid":pid,"command":name}))
 }
@@ -251,13 +352,15 @@ fn process_trust(b: &impl Backend, root: i64, ws: &str) -> Result<inventory::Tru
         .ok_or_else(|| failure("registered campaign root host projection missing"))?;
     // Empty legacy projection denotes the ledger host, never a remote client's host.
     if host.is_empty() && b.client_mode() {
-        return Err(failure(
+        return Err(identity_error(
             "registered campaign root identity/host mismatch: hub-local root cannot authorize a client scan",
         ));
     }
     let host = store::machine_name((!host.is_empty()).then_some(host));
     if campaign["root"]["id"] != root || host != store::local_machine() {
-        return Err(failure("registered campaign root identity/host mismatch"));
+        return Err(identity_error(
+            "registered campaign root identity/host mismatch",
+        ));
     }
     let root_pane = field(&campaign["root"], "pane_id")?.to_string();
     let info = b.herdr(&["pane", "process-info", "--pane", &root_pane])?;
@@ -290,11 +393,14 @@ fn process_trust(b: &impl Backend, root: i64, ws: &str) -> Result<inventory::Tru
         let pane = field(p, "pane_id")?;
         let location = b.herdr(&["pane", "get", pane])?;
         if location["pane"]["workspace_id"] != ws || location["pane"]["pane_id"] != pane {
-            return Err(failure("workspace shell pane identity changed"));
+            return Err(identity_error("workspace shell pane identity changed"));
         }
-        if agent(b, pane)?.is_none()
-            && let Ok(s) = shell(b, pane)
-        {
+        if agent(b, pane)?.is_none() {
+            let s = match shell(b, pane) {
+                Ok(s) => s,
+                Err(e) if e.message.starts_with("process-stop-identity:") => continue,
+                Err(e) => return Err(e),
+            };
             trust.shells.insert(
                 i32::try_from(number(&s, "pid")?).map_err(failure)?,
                 inventory::WorkspaceShell {
@@ -315,7 +421,7 @@ fn agent(b: &impl Backend, pane: &str) -> Result<Option<Value>> {
         .cloned()
         .collect::<Vec<_>>();
     if found.len() > 1 {
-        return Err(failure("multiple native agents in bound pane"));
+        return Err(identity_error("multiple native agents in bound pane"));
     }
     Ok(found.into_iter().next())
 }
@@ -761,6 +867,15 @@ fn dispatch(
     Ok(())
 }
 pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -> Result<()> {
+    match recover_inner(b, root, g, work, a) {
+        Err(e) if e.message.starts_with("process-stop-identity:") => {
+            uncertain(b, a, root, g, &e.message)?;
+            Ok(())
+        }
+        result => result,
+    }
+}
+fn recover_inner(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -> Result<()> {
     let launch = number(a, "launch_id")?;
     let task = number(a, "task_id")?;
     let pane = field(&a["dispatch"], "pane")?;
@@ -780,7 +895,7 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
         )?;
         return Ok(());
     }
-    let Some(observed_agent) = agent(b, pane)? else {
+    let Some(observed_agent) = observation(agent(b, pane))? else {
         uncertain(
             b,
             a,
@@ -815,7 +930,8 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
         )?;
         return Ok(());
     }
-    let log = b.command(&["log".into(), task.to_string(), "--limit".into(), "0".into()])?;
+    let log =
+        observation(b.command(&["log".into(), task.to_string(), "--limit".into(), "0".into()]))?;
     if has_receipt(&log, launch) {
         b.change(
             "started",
@@ -834,13 +950,13 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
             return Ok(());
         }
         let c = current_contract(work)?;
-        start_location(
+        observation(start_location(
             b,
             pane,
             field(&a["dispatch"], "workspace")?,
             &c.checkout.cwd,
-        )?;
-        same_generation(b, root, g)?;
+        ))?;
+        same_generation(b, root, g).map_err(retry_transport)?;
         let observed = (|| -> Result<()> {
             let pinned = b.change(
                 "observe",
@@ -854,18 +970,22 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
                 || pinned["dispatch"]["pane"] != pane
                 || pinned["native_session"] != native
             {
-                return Err(failure("recovery native observation unconfirmed"));
+                return Err(identity_error("recovery native observation unconfirmed"));
             }
-            let current = agent(b, pane)?
-                .ok_or_else(|| failure("recovery native agent disappeared after observation"))?;
+            let current = observation(agent(b, pane))?.ok_or_else(|| {
+                identity_error("recovery native agent disappeared after observation")
+            })?;
             if !owns_agent(&current, &name(a)?, native, pane) {
-                return Err(failure(
+                return Err(identity_error(
                     "recovery native identity changed after observation",
                 ));
             }
             Ok(())
         })();
         if let Err(e) = observed {
+            if e.code == ExitCode::Transport && !e.message.starts_with("process-stop-identity:") {
+                return Err(retry_transport(e));
+            }
             uncertain(
                 b,
                 a,
@@ -878,13 +998,13 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
             )?;
             return Ok(());
         }
-        same_generation(b, root, g)?;
-        start_location(
+        same_generation(b, root, g).map_err(retry_transport)?;
+        observation(start_location(
             b,
             pane,
             field(&a["dispatch"], "workspace")?,
             &c.checkout.cwd,
-        )?;
+        ))?;
         b.command(&[
             "prompt".into(),
             task.to_string(),
@@ -946,16 +1066,16 @@ pub(super) fn stop(
 ) -> Result<()> {
     let launch = number(a, "launch_id")?;
     let pane = field(&a["dispatch"], "pane")?;
-    pane_location(b, pane, ws, cwd)?;
+    observation(pane_location(b, pane, ws, cwd))?;
     let native = a["native_session"].as_str();
     if a["stage"] == "gate" {
         let path = b.directory(root, launch)?.join("shell-exit");
-        if fs::read_to_string(path).map_err(failure)?.trim() != "0" {
+        if observation(fs::read_to_string(path).map_err(failure))?.trim() != "0" {
             return Err(failure(
                 "gate shell did not exit successfully; proof alone is not process exit",
             ));
         }
-        if agent(b, pane)?.is_some() {
+        if observation(agent(b, pane))?.is_some() {
             return Err(failure("gate pane holds an unexpected agent"));
         }
     } else {
@@ -963,11 +1083,11 @@ pub(super) fn stop(
             native.ok_or_else(|| failure("cannot stop writer without bound native identity"))?;
         let n = name(a)?;
         // Idle and done are ready states; any dialog remains an exception.
-        if let Some(current) = agent(b, pane)? {
+        if let Some(current) = observation(agent(b, pane))? {
             if !owns_agent(&current, &n, native, pane) {
                 return Err(failure("native identity changed before stop"));
             }
-            b.herdr(&[
+            observation(b.herdr(&[
                 "agent",
                 "wait",
                 &n,
@@ -977,9 +1097,9 @@ pub(super) fn stop(
                 "done",
                 "--timeout",
                 "120000",
-            ])?;
+            ]))?;
             for keys in [vec!["esc"], vec!["ctrl+c", "ctrl+c"]] {
-                let current = agent(b, pane)?.ok_or_else(|| {
+                let current = observation(agent(b, pane))?.ok_or_else(|| {
                     failure("owned agent vanished during exit sequence; inspect shell")
                 })?;
                 if !owns_agent(&current, &n, native, pane)
@@ -989,20 +1109,20 @@ pub(super) fn stop(
                         "native identity or ready state changed before exit input",
                     ));
                 }
-                same_generation(b, root, g)?;
+                same_generation(b, root, g).map_err(retry_transport)?;
                 let mut args = vec!["pane", "send-keys", pane];
                 args.extend(keys);
-                b.herdr(&args)?;
+                observation(b.herdr(&args))?;
             }
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while let Some(current) = agent(b, pane)? {
+        while let Some(current) = observation(agent(b, pane))? {
             if !owns_agent(&current, &n, native, pane) {
                 return Err(failure("replacement native identity appeared during stop"));
             }
             if std::time::Instant::now() >= deadline {
                 // Read the screen for evidence, but a controller never confirms an exit dialog.
-                b.herdr(&["pane", "read", pane, "--source", "visible", "--lines", "30"])?;
+                let _ = b.herdr(&["pane", "read", pane, "--source", "visible", "--lines", "30"]);
                 return Err(failure(
                     "agent still present after exit request; inspect dialog, no Enter sent",
                 ));
@@ -1010,7 +1130,7 @@ pub(super) fn stop(
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-    let foreground = shell(b, pane)?;
+    let foreground = observation(shell(b, pane))?;
     let process_scan = (|| -> Result<Value> {
         let scan = scan_stop(b, root, ws, cwd, pane, &foreground)?;
         if !array(&scan, "session_remaining")?.is_empty()
@@ -1020,7 +1140,7 @@ pub(super) fn stop(
                 "process-stop-incomplete: unexplained session/descendant or checkout cwd process remains",
             ));
         }
-        if shell(b, pane)? != foreground || agent(b, pane)?.is_some() {
+        if observation(shell(b, pane))? != foreground || observation(agent(b, pane))?.is_some() {
             return Err(failure(
                 "process-stop-identity: bound shell/native absence changed during scan",
             ));
@@ -1028,13 +1148,20 @@ pub(super) fn stop(
         Ok(scan)
     })()?;
     // Foreground shell and absence are both fresh observations, not a result-settlement inference.
-    same_generation(b, root, g)?;
-    if shell(b, pane)? != foreground || agent(b, pane)?.is_some() {
+    same_generation(b, root, g).map_err(retry_transport)?;
+    if observation(shell(b, pane))? != foreground || observation(agent(b, pane))?.is_some() {
         return Err(failure(
             "process-stop-identity: native absence or shell foreground changed before stopped observation",
         ));
     }
-    b.change("stopped",launch,root,g,Some(json!({"pane":pane,"native_session":native,"foreground":foreground,"agent_absent":true,"process_scan":process_scan,"observed_at":timestamp()})))?;
+    let stopped=b.change("stopped",launch,root,g,Some(json!({"pane":pane,"native_session":native,"foreground":foreground,"agent_absent":true,"process_scan":process_scan,"observed_at":timestamp()})));
+    if let Err(e) = &stopped
+        && e.code == ExitCode::Rejected
+    {
+        same_generation(b, root, g)?;
+        return Err(identity_error(&e.message));
+    }
+    stopped.map_err(retry_transport)?;
     Ok(())
 }
 fn scan_stop(
@@ -1046,12 +1173,12 @@ fn scan_stop(
     foreground: &Value,
 ) -> Result<Value> {
     let started = std::time::Instant::now();
-    if agent(b, pane)?.is_some() {
+    if observation(agent(b, pane))?.is_some() {
         return Err(failure(
             "process-stop-identity: process scan requires native absence first",
         ));
     }
-    let trust = process_trust(b, root, ws)?;
+    let trust = observation(process_trust(b, root, ws))?;
     if started.elapsed() > Duration::from_secs(30) {
         return Err(failure(
             "process-stop-incomplete: process observation deadline",
@@ -1064,8 +1191,8 @@ fn scan_stop(
             &trust,
         )
         .map_err(|e| failure(format!("process-stop-incomplete: {}", e.message)))?;
-    let fresh_trust = process_trust(b, root, ws)?;
-    if shell(b, pane)? != *foreground || agent(b, pane)?.is_some() {
+    let fresh_trust = observation(process_trust(b, root, ws))?;
+    if observation(shell(b, pane))? != *foreground || observation(agent(b, pane))?.is_some() {
         return Err(failure(
             "process-stop-identity: bound native absence or shell foreground changed during scan",
         ));
@@ -1164,7 +1291,7 @@ fn brief_text(
         json!({"kind":"adjudication","result":{"source":"exact reviewed source below","review_result":"review result_id below","finding_ids":["disputed stable IDs"],"verdict":"clear|rework|disputed","reason":"source-grounded adjudication"}})
     };
     Ok(format!(
-        "HERDR-BRIEF role={role}\norchestrator=taskr:{root} report={}\nTask topology: workspace={ws} tab={tab} pane={pane} cwd={}\nObjective: {}\nAcceptance: {}\nOwnership: {}\nAuthority: {}\nValidation: approved deterministic profile only; controller runs checks. {}\nTask identity: work={id} revision={} run={} round={} task={task} launch={launch}\nSource/profile: {}\nResults and prior findings: {}\nResult JSON schema: {}\nProcess boundary: never detach background jobs or create external runtimes. A task needing these requires a named managed runtime and stronger explicit cleanup proof; no automatic handoff under this local profile. The local session/descendant/cwd scan for the same effective UID is cooperative evidence, not a sandbox or proof about another effective UID, containers/remotes, any detached process with cwd outside the checkout (including absolute-path writers with no retained descriptor), or a hostile same-user writer. Model agreement cannot certify containment.\nProgress: write report at report=, write UTF-8 result JSON to {}, then taskr work submit {launch} --file {} && taskr ready 'work result submitted' --report {} && taskr done 'work result submitted'. Use taskr work source {id} for canonical actual source identity. Executor must commit clean owned source before submission. Reviewer/adjudicator is read-only. Never publish, launch helpers, accept yourself, change the contract or weaken checks. Missing consequential decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, then ack its event.\n",
+        "HERDR-BRIEF role={role}\norchestrator=taskr:{root} report={}\nTask topology: workspace={ws} tab={tab} pane={pane} cwd={}\nObjective: {}\nAcceptance: {}\nOwnership: {}\nAuthority: {}\nValidation: approved deterministic profile only; controller runs checks. {}\nTask identity: work={id} revision={} run={} round={} task={task} launch={launch}\nSource/profile: {}\nResults and prior findings: {}\nResult JSON schema: {}\nProcess boundary: never detach background jobs or create external runtimes. A task needing these requires a named managed runtime and stronger explicit cleanup proof; no automatic handoff under this local profile. The local session/descendant/cwd scan for the same effective UID is cooperative evidence, not a sandbox or proof about another effective UID, containers/remotes, any detached process with cwd outside the checkout (including absolute-path writers with no retained descriptor), or a hostile same-user writer. Cwd snapshots are not atomic: chdir after its cwd read can escape an unchanged inventory pair. Model agreement cannot certify containment.\nProgress: write report at report=, write UTF-8 result JSON to {}, then taskr work submit {launch} --file {} && taskr ready 'work result submitted' --report {} && taskr done 'work result submitted'. Use taskr work source {id} for canonical actual source identity. Executor must commit clean owned source before submission. Reviewer/adjudicator is read-only. Never publish, launch helpers, accept yourself, change the contract or weaken checks. Missing consequential decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, then ack its event.\n",
         report.display(),
         c.checkout.cwd,
         c.intent,

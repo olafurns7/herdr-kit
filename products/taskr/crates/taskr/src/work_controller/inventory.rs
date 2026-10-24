@@ -261,8 +261,67 @@ fn same_command(a: &str, b: &str) -> bool {
 fn tty(tty: &str) -> bool {
     !matches!(tty, "?" | "??" | "-")
 }
+fn invalid_cwd() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "invalid or oversized kernel cwd record",
+    )
+}
+fn enoent(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error())
+}
+fn resolve_cwd(raw: &Path, linux: bool, start: Instant) -> std::io::Result<(PathBuf, bool)> {
+    deadline(start).map_err(|e| std::io::Error::new(std::io::ErrorKind::TimedOut, e.message))?;
+    let text = raw
+        .to_str()
+        .filter(|s| !s.is_empty() && s.len() <= TEXT && !s.chars().any(char::is_control))
+        .ok_or_else(invalid_cwd)?;
+    if !raw.is_absolute() {
+        return Err(invalid_cwd());
+    }
+    match fs::canonicalize(raw) {
+        Ok(path) => return Ok((path, false)),
+        Err(e) if enoent(&e) => {}
+        Err(e) => return Err(e),
+    }
+    let mut ancestor = if linux {
+        text.strip_suffix(" (deleted)").unwrap_or(text)
+    } else {
+        text
+    }
+    .to_owned();
+    let mut suffix = Vec::new();
+    loop {
+        deadline(start)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::TimedOut, e.message))?;
+        match fs::canonicalize(&ancestor) {
+            Ok(mut path) => {
+                for component in suffix.iter().rev() {
+                    path.push(component);
+                }
+                if path.as_os_str().len() > TEXT {
+                    return Err(invalid_cwd());
+                }
+                return Ok((path, true));
+            }
+            Err(e) if enoent(&e) => {
+                let split = ancestor.rfind('/').ok_or_else(invalid_cwd)?;
+                let component = &ancestor[split + 1..];
+                if matches!(component, "" | "." | "..") {
+                    return Err(invalid_cwd());
+                }
+                suffix.push(component.to_owned());
+                ancestor.truncate(split);
+                if ancestor.is_empty() {
+                    ancestor.push('/');
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
 #[allow(clippy::too_many_arguments)] // Exact OS observations and trust inputs are independently fixture-controlled.
-fn evidence(
+fn classified_evidence(
     rows: &[Row],
     cwds: &BTreeMap<i32, PathBuf>,
     checkout: &Path,
@@ -271,6 +330,7 @@ fn evidence(
     uid: u32,
     probes: &BTreeSet<i32>,
     trust: &Trust,
+    deleted: &BTreeSet<i32>,
 ) -> Result<Value> {
     if rows.is_empty() || rows.len() > MAX {
         return Err(failure("invalid inventory size"));
@@ -314,11 +374,14 @@ fn evidence(
         .get(&shell)
         .ok_or_else(|| failure("target shell has no observed pane"))?
         .pane;
-    let mut exempt = BTreeMap::from([(
-        observer,
-        json!({"pid":observer,"reason":"observer","observer_pid":observer,"parent_chain":[observer]}),
-    )]);
+    let mut exempt = BTreeMap::new();
+    if !deleted.contains(&observer) {
+        exempt.insert(observer,json!({"pid":observer,"reason":"observer","observer_pid":observer,"parent_chain":[observer]}));
+    }
     for r in rows {
+        if deleted.contains(&r.pid) {
+            continue;
+        }
         if probes.contains(&r.pid) {
             let mut chain = vec![r.pid];
             while *chain.last().unwrap() != observer {
@@ -364,7 +427,7 @@ fn evidence(
     let mut session = Vec::new();
     let mut checkout_remaining = Vec::new();
     for r in rows {
-        if r.zombie || probes.contains(&r.pid) {
+        if r.zombie || probes.contains(&r.pid) && !deleted.contains(&r.pid) {
             continue;
         }
         if exempt.contains_key(&r.pid) {
@@ -383,12 +446,16 @@ fn evidence(
             checkout_remaining.push(json!({"pid":r.pid,"cwd":cwd}));
         }
     }
+    let deleted_cwd = rows
+        .iter()
+        .filter(|r| !r.zombie && deleted.contains(&r.pid))
+        .count();
     if session.len() > 1024 || checkout_remaining.len() > 1024 || exempt.len() > 1024 {
         return Err(failure("process evidence array bound exceeded"));
     }
     Ok(
         json!({"method":"local-user-session-cwd-v1","uid":uid,"shell_pid":shell,"session_id":target.session,
-        "scanned":rows.len(),"session_remaining":session,"checkout_remaining":checkout_remaining,
+        "scanned":rows.len(),"deleted_cwd":deleted_cwd,"session_remaining":session,"checkout_remaining":checkout_remaining,
         "exempt":exempt.into_values().collect::<Vec<_>>()}),
     )
 }
@@ -442,27 +509,36 @@ fn scan_pair(
         &mut probes,
     )?)?;
     let mut cwds = BTreeMap::new();
+    let mut deleted = BTreeSet::new();
     for r in &first {
         deadline(start)?;
         if r.zombie || probes.contains(&r.pid) {
             continue;
         }
         #[cfg(target_os = "linux")]
-        let path = fs::read_link(format!("/proc/{}/cwd", r.pid));
+        let path = fs::read_link(format!("/proc/{}/cwd", r.pid)).map(Some);
         #[cfg(target_os = "macos")]
-        let path = lsof
-            .get(&r.pid)
-            .cloned()
-            .ok_or_else(|| std::io::Error::other("missing lsof cwd"));
+        let path: std::io::Result<Option<PathBuf>> = Ok(lsof.get(&r.pid).cloned());
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let path: std::io::Result<PathBuf> =
+        let path: std::io::Result<Option<PathBuf>> =
             Err(std::io::Error::other("unsupported process inventory OS"));
-        match path.and_then(fs::canonicalize) {
-            Ok(path) if path.as_os_str().len() <= TEXT => {
-                cwds.insert(r.pid, path);
-            }
-            _ if !alive(r.pid)? => {}
-            _ => {} // Only a validated exact exemption can account for this missing cwd below.
+        match path {
+            Ok(Some(raw)) => match resolve_cwd(&raw, cfg!(target_os = "linux"), start) {
+                Ok((path, was_deleted)) => {
+                    if path.as_os_str().len() > TEXT {
+                        return Err(failure("canonical cwd exceeds bound"));
+                    }
+                    cwds.insert(r.pid, path);
+                    if was_deleted {
+                        deleted.insert(r.pid);
+                    }
+                }
+                Err(_) if !alive(r.pid)? => {}
+                Err(e) => return Err(failure(format!("cwd classification incomplete: {e}"))),
+            },
+            Ok(None) => {} // No lsof record: only an existing exact typed exemption can cover it.
+            Err(_) if !alive(r.pid)? => {}
+            Err(e) => return Err(failure(format!("cwd record unavailable: {e}"))),
         }
     }
     let last = snapshot(uid, start, &mut probes)?;
@@ -476,9 +552,36 @@ fn scan_pair(
         return Ok(None);
     }
     deadline(start)?;
-    let scan = evidence(&last, &cwds, checkout, shell, observer, uid, &probes, trust)?;
+    let scan = classified_evidence(
+        &last, &cwds, checkout, shell, observer, uid, &probes, trust, &deleted,
+    )?;
     deadline(start)?;
     Ok(Some(scan))
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn evidence(
+    rows: &[Row],
+    cwds: &BTreeMap<i32, PathBuf>,
+    checkout: &Path,
+    shell: i32,
+    observer: i32,
+    uid: u32,
+    probes: &BTreeSet<i32>,
+    trust: &Trust,
+) -> Result<Value> {
+    classified_evidence(
+        rows,
+        cwds,
+        checkout,
+        shell,
+        observer,
+        uid,
+        probes,
+        trust,
+        &BTreeSet::new(),
+    )
 }
 
 #[cfg(test)]
@@ -501,6 +604,173 @@ mod tests {
             command: command.into(),
             zombie: false,
         }
+    }
+    #[test]
+    fn deleted_kernel_cwds_classify_inside_outside_and_resolved_alias_ancestor() {
+        use std::os::unix::fs::symlink;
+        let scratch = super::super::tests::Scratch::new();
+        fs::create_dir(scratch.0.join("checkout")).unwrap();
+        fs::create_dir(scratch.0.join("outside")).unwrap();
+        symlink(scratch.0.join("checkout"), scratch.0.join("alias")).unwrap();
+        let checkout = fs::canonicalize(scratch.0.join("checkout")).unwrap();
+        let rows = vec![
+            row(10, 1, 10, "ttys1", "zsh"),
+            row(20, 1, 20, "?", "taskr"),
+            row(12, 1, 12, "?", "writer"),
+        ];
+        let trust = Trust {
+            shells: BTreeMap::from([(10, shell("zsh", "w1:p1", 10))]),
+            ..Default::default()
+        };
+        for linux in [false, true] {
+            for (relative, inside) in [
+                ("checkout/gone/child", true),
+                ("outside/gone/child", false),
+                ("alias/gone/child", true),
+            ] {
+                let path = scratch.0.join(relative);
+                let raw = if linux {
+                    PathBuf::from(format!("{} (deleted)", path.display()))
+                } else {
+                    path
+                };
+                let (cwd, deleted) = resolve_cwd(&raw, linux, Instant::now()).unwrap();
+                assert!(deleted);
+                assert_eq!(cwd.starts_with(&checkout), inside);
+                let scan = classified_evidence(
+                    &rows,
+                    &BTreeMap::from([(12, cwd)]),
+                    &checkout,
+                    10,
+                    20,
+                    501,
+                    &BTreeSet::new(),
+                    &trust,
+                    &BTreeSet::from([12]),
+                )
+                .unwrap();
+                assert_eq!(scan["deleted_cwd"], 1);
+                assert_eq!(
+                    scan["checkout_remaining"].as_array().unwrap().len(),
+                    usize::from(inside)
+                );
+                assert_eq!(scan["session_remaining"], json!([]));
+                assert!(
+                    !scan["exempt"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|e| e["pid"] == 12)
+                );
+                let _: api::ProcessScan = serde_json::from_value(scan).unwrap();
+            }
+        }
+        // The checkout root itself must resolve, even if a kernel cwd could be classified.
+        assert!(scan(&scratch.0.join("missing-checkout"), 10, &trust).is_err());
+        // No kernel cwd record cannot be reinterpreted as a deleted directory.
+        assert!(
+            evidence(
+                &rows,
+                &BTreeMap::new(),
+                &checkout,
+                10,
+                20,
+                501,
+                &BTreeSet::new(),
+                &trust
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn deleted_cwd_suffix_validation_and_non_enoent_fail_closed() {
+        use std::os::unix::fs::symlink;
+        let scratch = super::super::tests::Scratch::new();
+        for suffix in ["gone/../child", "gone/./child", "gone//child", "gone/"] {
+            assert!(
+                resolve_cwd(&scratch.0.join(suffix), false, Instant::now()).is_err(),
+                "{suffix}"
+            );
+        }
+        fs::write(scratch.0.join("file"), "not a directory").unwrap();
+        let err = resolve_cwd(&scratch.0.join("file/child"), false, Instant::now()).unwrap_err();
+        assert_eq!(
+            err.raw_os_error(),
+            Some(rustix::io::Errno::NOTDIR.raw_os_error())
+        );
+        symlink("loop", scratch.0.join("loop")).unwrap();
+        let err = resolve_cwd(&scratch.0.join("loop/child"), false, Instant::now()).unwrap_err();
+        assert_eq!(
+            err.raw_os_error(),
+            Some(rustix::io::Errno::LOOP.raw_os_error())
+        );
+        for errno in [
+            rustix::io::Errno::ACCESS,
+            rustix::io::Errno::NOTDIR,
+            rustix::io::Errno::LOOP,
+        ] {
+            assert!(!enoent(&std::io::Error::from_raw_os_error(
+                errno.raw_os_error()
+            )));
+        }
+        let marker = scratch.0.join("gone (deleted) (deleted)");
+        let (cwd, deleted) = resolve_cwd(&marker, true, Instant::now()).unwrap();
+        assert!(deleted);
+        assert_eq!(cwd, scratch.0.join("gone (deleted)")); // Strip exactly one marker.
+        let literal = scratch.0.join("live (deleted)");
+        fs::create_dir(&literal).unwrap();
+        assert_eq!(
+            resolve_cwd(&literal, true, Instant::now()).unwrap(),
+            (literal, false)
+        );
+        for raw in [
+            "relative/gone".to_owned(),
+            "/bad\npath".into(),
+            format!("/{}", "x".repeat(TEXT)),
+        ] {
+            assert!(resolve_cwd(Path::new(&raw), false, Instant::now()).is_err());
+        }
+        assert!(resolve_cwd(&scratch.0.join("gone"), false, Instant::now() - BUDGET).is_err());
+    }
+    #[test]
+    fn deleted_cwds_never_receive_shell_root_observer_or_probe_exemptions() {
+        let mut rows = vec![
+            row(10, 1, 10, "ttys1", "zsh"),
+            row(20, 1, 20, "?", "taskr"),
+            row(21, 20, 20, "?", "ps"),
+            row(30, 1, 30, "ttys2", "taskr"),
+        ];
+        let mut zombie = row(40, 1, 40, "?", "writer");
+        zombie.zombie = true;
+        rows.push(zombie);
+        let trust = Trust {
+            shells: BTreeMap::from([(10, shell("zsh", "w1:p1", 10))]),
+            root: BTreeMap::from([(30, "taskr".into())]),
+            root_pane: "w2:p1".into(),
+            root_group: 30,
+            root_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let cwds = rows
+            .iter()
+            .map(|r| (r.pid, PathBuf::from("/outside/gone")))
+            .collect();
+        let deleted = rows.iter().map(|r| r.pid).collect();
+        let scan = classified_evidence(
+            &rows,
+            &cwds,
+            Path::new("/checkout"),
+            10,
+            20,
+            501,
+            &BTreeSet::from([21]),
+            &trust,
+            &deleted,
+        )
+        .unwrap();
+        assert_eq!(scan["deleted_cwd"], 4);
+        assert_eq!(scan["exempt"], json!([]));
+        assert_eq!(scan["checkout_remaining"], json!([]));
+        assert_eq!(scan["session_remaining"][0]["pid"], 10);
     }
     #[test]
     fn signed_uid_tokens_normalize_before_filtering_without_exempting_names() {
