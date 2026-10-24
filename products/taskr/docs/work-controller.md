@@ -115,13 +115,19 @@ native identity or unknown writer remains reserved for explicit recovery. Local
 acceptance grants no merge, release or publication authority.
 
 Stopped receipts also require `process_scan` with method
-`local-user-session-cwd-v1`, UID, shell PID, true POSIX session ID, scanned count,
+`local-user-session-cwd-v1`, effective UID, shell PID, true POSIX session ID, scanned count,
 empty `session_remaining` and `checkout_remaining`, and evidence-bearing tagged
 `exempt` entries. The shell PID must match the foreground observation. The local scanner
-uses `/bin/ps -ww -U UID` for PID/PPID/PGID/tty/state/command and safe rustix `getsid` for
+uses bounded `/bin/ps -ww -A -o uid=,ruid=,pid=,ppid=,pgid=,tty=,stat=,comm=`
+and explicitly filters the numeric effective `uid` column against safe rustix
+`geteuid`. Real UID never grants scope: setuid processes with another effective
+UID are outside this profile even if their real UID matches. Conversely, a matching
+effective UID still requires cwd coverage even if its real UID differs. This uses
+no process-name exception. Safe rustix `getsid` supplies
 session IDs; macOS `ps sess` is not a session-ID source. It checks the shell's
 descendants, session and tty, including background process groups. Linux cwd
-reads use `/proc/PID/cwd`; macOS uses `/usr/sbin/lsof -a -u UID -d cwd -F0pcfn`
+reads use `/proc/PID/cwd` for that filtered set; macOS uses
+`/usr/sbin/lsof -a -u EUID -d cwd -F0pcfn` over the same effective UID
 with a strict NUL-field parser. Canonical cwd paths match the checkout itself or
 descendants using path components, so similarly named siblings do not match.
 Configured and observed cwd aliases are resolved to real paths at scan time;
@@ -131,7 +137,7 @@ Only the observer PID and its exact owned probe PIDs, freshly attested campaign
 root foreground PIDs, and observed interactive foreground shells of the selected
 workspace with no other live process in their session can be exempt. Names alone
 and arbitrary observer/root descendants never grant exemptions. Every other
-same-user process with a checkout cwd blocks handoff, including manual workers.
+process with the same effective UID and a checkout cwd blocks handoff, including manual workers.
 A single login-shell leading dash is normalized only for supported shell
 basenames (for example, ps `-zsh` versus Herdr `zsh`); exact PID, foreground group,
 session and pane evidence still controls the exemption.
@@ -149,7 +155,8 @@ when that coverage requirement is met; malformed, truncated or failed probes
 still fail closed.
 
 Each OS scan has its own fifteen-second total budget, independent of the
-four-second between-items dispatch budget, at most 4096 processes, one MiB of captured
+four-second between-items dispatch budget, at most 4096 raw ps rows across all users,
+one MiB of captured
 output per probe, at most 1024 entries in each evidence array, and 1024-byte
 command/cwd fields. Changed snapshot pairs retry the complete inventory/cwd pair
 within that one budget; attempts do not reset the deadline or reuse partial cwd
@@ -182,8 +189,8 @@ refuse the scan; explicit matching hosts retain the usual client-local path.
 Inspection remains available for disabled campaigns and cancelled work without
 enabling dispatch or changing ledger state.
 
-This observes cooperative same-user local processes. It is not a security sandbox
-or proof about another UID, containers/remotes, any detached process with cwd
+This observes cooperative local processes with the same effective UID. It is not a security sandbox
+or proof about another effective UID, containers/remotes, any detached process with cwd
 outside the checkout (including absolute-path writers with no retained descriptor),
 or a hostile same-user writer.
 Automatic workers must not detach background jobs or create external runtimes.
@@ -207,6 +214,19 @@ or unconfirmed observation marks uncertainty and withholds the brief. Existing
 pending prompt attempts are observed rather than resent.
 Model processes without identity need explicit reconciliation; they cannot use
 an anonymous stopped receipt. Gate shells retain their separate shell-exit proof.
+
+Automatic work requires one canonical checkout root spelling. Before every new
+claim, process start and recovery prompt, the configured cwd must literally equal
+Rust `fs::canonicalize` (including OS realpath case normalization). Launch panes
+must report that exact literal cwd. The reserved launcher also checks physical
+`pwd -P` equality before step2; Python realpath is not substituted. Known aliases,
+dot spellings and case aliases block with `checkout-not-canonical` before writer
+effects; revise an old contract before starting new work. No new lock/schema is
+used: canonical roots make the existing literal host/cwd fence collide for aliases.
+This applies to automated launch/claim paths, not a global filesystem security fence.
+Inspection, stopped observations and cancellation cleanup keep canonical comparison
+so old alias contracts can still clean up their actual processes. Bind-mount aliases
+and nested overlapping Git roots are outside this cooperative profile.
 
 Worker validation is limited to source/parser and repository leaf checks. Builds,
 behavioral fixtures, local loop proof, Linux admission proof, compatible installation

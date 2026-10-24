@@ -171,6 +171,14 @@ fn uncertain(
 fn canonical(path: &str) -> Result<PathBuf> {
     fs::canonicalize(path).map_err(failure)
 }
+pub(super) fn require_canonical_checkout(cwd: &Path) -> Result<()> {
+    if fs::canonicalize(cwd).map_err(failure)?.as_os_str() != cwd.as_os_str() {
+        return Err(failure(
+            "checkout-not-canonical: configured checkout spelling must equal its canonical real path",
+        ));
+    }
+    Ok(())
+}
 fn verify_workspace(b: &impl Backend, workspace: &str, cwd: &str) -> Result<()> {
     let rows = b.herdr(&["worktree", "list", "--workspace", workspace])?;
     let target = canonical(cwd)?;
@@ -187,8 +195,26 @@ fn verify_workspace(b: &impl Backend, workspace: &str, cwd: &str) -> Result<()> 
     Ok(())
 }
 fn pane_location(b: &impl Backend, pane: &str, workspace: &str, cwd: &str) -> Result<String> {
+    pane_location_for(b, pane, workspace, cwd, false)
+}
+fn start_location(b: &impl Backend, pane: &str, workspace: &str, cwd: &str) -> Result<String> {
+    require_canonical_checkout(Path::new(cwd))?;
+    pane_location_for(b, pane, workspace, cwd, true)
+}
+fn pane_location_for(
+    b: &impl Backend,
+    pane: &str,
+    workspace: &str,
+    cwd: &str,
+    literal: bool,
+) -> Result<String> {
     let info = b.herdr(&["pane", "get", pane])?;
     let p = &info["pane"];
+    if literal && p["cwd"] != cwd {
+        return Err(failure(
+            "checkout-not-canonical: launch pane cwd must literally match canonical contract checkout",
+        ));
+    }
     if p["pane_id"] != pane
         || p["workspace_id"] != workspace
         || canonical(field(p, "cwd")?)? != canonical(cwd)?
@@ -421,6 +447,7 @@ fn drive_work(
     }
     let id = number(work, "work_id")?;
     let run = if work["state"] == "queued" {
+        require_canonical_checkout(Path::new(&c.checkout.cwd))?;
         // Validate policy before the durable claim, so a drifted lane never creates a writer.
         let table = b.lanes()?;
         if !lane_matches(&table, &c.executor, "executor")
@@ -607,7 +634,7 @@ fn new_pane(
             .any(|l| l["pane_id"] == pane)
             && campaign["root"]["pane_id"] != pane;
         if unused && agent(b, pane)?.is_none() && shell(b, pane).is_ok() {
-            let tab = pane_location(b, pane, ws, cwd)?;
+            let tab = start_location(b, pane, ws, cwd)?;
             b.herdr(&["tab", "rename", &tab, name])?;
             return Ok((tab, pane.into()));
         }
@@ -662,6 +689,7 @@ fn dispatch(
     run: &Value,
     a: &Value,
 ) -> Result<()> {
+    require_canonical_checkout(Path::new(&c.checkout.cwd))?;
     let launch = number(a, "launch_id")?;
     let task = number(a, "task_id")?;
     let n = name(a)?;
@@ -674,7 +702,7 @@ fn dispatch(
     }
     same_generation(b, root, g)?;
     let (tab, pane) = new_pane(b, root, ws, &c.checkout.cwd, &n)?;
-    pane_location(b, &pane, ws, &c.checkout.cwd)?;
+    start_location(b, &pane, ws, &c.checkout.cwd)?;
     shell(b, &pane)?;
     let dir = b.directory(root, launch)?;
     let brief = dir.join("brief.md");
@@ -690,6 +718,7 @@ fn dispatch(
     // Anything after bind is recovery work on this exact reservation, never another start.
     let effect: Result<()> = (|| {
         same_generation(b, root, g)?;
+        start_location(b, &pane, ws, &c.checkout.cwd)?;
         if gate {
             let exit = dir.join("shell-exit");
             let cmd = format!(
@@ -804,6 +833,13 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
             uncertain(b, a, root, g, "bound start has no captured brief")?;
             return Ok(());
         }
+        let c = current_contract(work)?;
+        start_location(
+            b,
+            pane,
+            field(&a["dispatch"], "workspace")?,
+            &c.checkout.cwd,
+        )?;
         same_generation(b, root, g)?;
         let observed = (|| -> Result<()> {
             let pinned = b.change(
@@ -843,6 +879,12 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
             return Ok(());
         }
         same_generation(b, root, g)?;
+        start_location(
+            b,
+            pane,
+            field(&a["dispatch"], "workspace")?,
+            &c.checkout.cwd,
+        )?;
         b.command(&[
             "prompt".into(),
             task.to_string(),
@@ -1122,7 +1164,7 @@ fn brief_text(
         json!({"kind":"adjudication","result":{"source":"exact reviewed source below","review_result":"review result_id below","finding_ids":["disputed stable IDs"],"verdict":"clear|rework|disputed","reason":"source-grounded adjudication"}})
     };
     Ok(format!(
-        "HERDR-BRIEF role={role}\norchestrator=taskr:{root} report={}\nTask topology: workspace={ws} tab={tab} pane={pane} cwd={}\nObjective: {}\nAcceptance: {}\nOwnership: {}\nAuthority: {}\nValidation: approved deterministic profile only; controller runs checks. {}\nTask identity: work={id} revision={} run={} round={} task={task} launch={launch}\nSource/profile: {}\nResults and prior findings: {}\nResult JSON schema: {}\nProcess boundary: never detach background jobs or create external runtimes. A task needing these requires a named managed runtime and stronger explicit cleanup proof; no automatic handoff under this local profile. The same-user local session/descendant/cwd scan is cooperative evidence, not a sandbox or proof about another UID, containers/remotes, any detached process with cwd outside the checkout (including absolute-path writers with no retained descriptor), or a hostile same-user writer. Model agreement cannot certify containment.\nProgress: write report at report=, write UTF-8 result JSON to {}, then taskr work submit {launch} --file {} && taskr ready 'work result submitted' --report {} && taskr done 'work result submitted'. Use taskr work source {id} for canonical actual source identity. Executor must commit clean owned source before submission. Reviewer/adjudicator is read-only. Never publish, launch helpers, accept yourself, change the contract or weaken checks. Missing consequential decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, then ack its event.\n",
+        "HERDR-BRIEF role={role}\norchestrator=taskr:{root} report={}\nTask topology: workspace={ws} tab={tab} pane={pane} cwd={}\nObjective: {}\nAcceptance: {}\nOwnership: {}\nAuthority: {}\nValidation: approved deterministic profile only; controller runs checks. {}\nTask identity: work={id} revision={} run={} round={} task={task} launch={launch}\nSource/profile: {}\nResults and prior findings: {}\nResult JSON schema: {}\nProcess boundary: never detach background jobs or create external runtimes. A task needing these requires a named managed runtime and stronger explicit cleanup proof; no automatic handoff under this local profile. The local session/descendant/cwd scan for the same effective UID is cooperative evidence, not a sandbox or proof about another effective UID, containers/remotes, any detached process with cwd outside the checkout (including absolute-path writers with no retained descriptor), or a hostile same-user writer. Model agreement cannot certify containment.\nProgress: write report at report=, write UTF-8 result JSON to {}, then taskr work submit {launch} --file {} && taskr ready 'work result submitted' --report {} && taskr done 'work result submitted'. Use taskr work source {id} for canonical actual source identity. Executor must commit clean owned source before submission. Reviewer/adjudicator is read-only. Never publish, launch helpers, accept yourself, change the contract or weaken checks. Missing consequential decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, then ack its event.\n",
         report.display(),
         c.checkout.cwd,
         c.intent,

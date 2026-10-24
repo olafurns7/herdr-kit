@@ -64,6 +64,7 @@ pub(super) fn payload(work_id: i64, launch: i64, check_id: &str, attempt: &Path)
     let work = read("show", work_id)?;
     let (run, _a, task) = runner::check_identity(&work, launch)?;
     let c = current_contract(&work)?;
+    driver::require_canonical_checkout(Path::new(&c.checkout.cwd))?;
     let check = c
         .profile
         .checks

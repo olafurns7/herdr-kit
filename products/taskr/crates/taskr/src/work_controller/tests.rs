@@ -43,6 +43,7 @@ struct Fake {
     observe_unconfirmed: Cell<bool>,
     observe_drift: Cell<bool>,
     block_events: Cell<usize>,
+    pane_cwd: RefCell<Option<String>>,
 }
 impl Fake {
     fn new() -> Self {
@@ -74,6 +75,7 @@ impl Fake {
             observe_unconfirmed: Cell::new(false),
             observe_drift: Cell::new(false),
             block_events: Cell::new(0),
+            pane_cwd: RefCell::new(None),
         }
     }
     fn run() -> Value {
@@ -84,6 +86,9 @@ impl Fake {
     }
     fn current(&self) -> Value {
         self.snapshot.borrow()["work"][0]["runs"][0]["assignments"][0].clone()
+    }
+    fn work(&self) -> Value {
+        self.snapshot.borrow()["work"][0].clone()
     }
     fn active(&self, process: &str) {
         let mut s = self.snapshot.borrow_mut();
@@ -102,6 +107,33 @@ impl Fake {
             json!({"name":name,"pane_id":"w1:p1","agent_status":"idle","agent_session":{"value":session}}),
         ];
     }
+}
+fn checkout_alias(b: &Fake, kind: &str) -> Option<String> {
+    let alias = match kind {
+        "symlink" => {
+            let path = b.scratch.0.join("alias");
+            std::os::unix::fs::symlink(&b.scratch.0, &path).unwrap();
+            path
+        }
+        "dot" => PathBuf::from(format!("{}/.", b.scratch.0.display())),
+        "case" => {
+            let path = b.scratch.0.with_file_name(
+                b.scratch
+                    .0
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_uppercase(),
+            );
+            if fs::canonicalize(&path).ok().as_ref() != Some(&b.scratch.0) {
+                return None;
+            }
+            path
+        }
+        _ => unreachable!(),
+    };
+    Some(alias.to_str().unwrap().into())
 }
 impl driver::Backend for Fake {
     fn client_mode(&self) -> bool {
@@ -248,7 +280,7 @@ impl driver::Backend for Fake {
             ["pane", "list", ..] => json!({"panes":[{"pane_id":"w1:p1"}]}),
             ["tab", "list", ..] => json!({"tabs":[{"tab_id":"w1:t1"}]}),
             ["pane", "get", ..] => {
-                json!({"pane":{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","cwd":self.scratch.0}})
+                json!({"pane":{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","cwd":self.pane_cwd.borrow().as_deref().map_or_else(||self.scratch.0.to_string_lossy().into_owned(),str::to_owned)}})
             }
             ["pane", "process-info", "--pane", "w2:p1"] => {
                 json!({"process_info":{"shell_pid":499,"foreground_process_group_id":500,"foreground_processes":[{"pid":500,"name":"taskr"}]}})
@@ -400,8 +432,8 @@ fn recovery_pins_native_identity_before_exactly_one_prompt_without_starting() {
     fs::write(dir.join("brief.md"), "HERDR-BRIEF role=implementer\n").unwrap();
     let a = b.current();
     assert!(a["native_session"].is_null());
-    driver::recover(&b, 3, 7, &json!({}), &a).unwrap();
-    driver::recover(&b, 3, 7, &json!({}), &a).unwrap();
+    driver::recover(&b, 3, 7, &b.work(), &a).unwrap();
+    driver::recover(&b, 3, 7, &b.work(), &a).unwrap();
     assert_eq!(b.current()["native_session"], "native-fixture");
     assert_eq!(b.current()["process_state"], "starting");
     let calls = b.calls.borrow();
@@ -433,7 +465,7 @@ fn recovery_refused_unconfirmed_or_changed_native_observation_withholds_prompt()
         b.observe_drift.set(cause == "changed-native");
         let dir = driver::Backend::directory(&b, 3, 11).unwrap();
         fs::write(dir.join("brief.md"), "HERDR-BRIEF role=implementer\n").unwrap();
-        driver::recover(&b, 3, 7, &json!({}), &b.current()).unwrap();
+        driver::recover(&b, 3, 7, &b.work(), &b.current()).unwrap();
         assert_eq!(b.current()["process_state"], "uncertain");
         assert!(
             !b.calls
@@ -619,6 +651,130 @@ fn native_absence_drift_still_requires_uncertainty_instead_of_automatic_retry() 
     );
 }
 #[test]
+fn noncanonical_contract_blocks_before_claim_launch_and_recovery_prompt() {
+    for phase in ["claim", "launch", "prompt"] {
+        for kind in ["symlink", "dot", "case"] {
+            let b = Fake::new();
+            let Some(alias) = checkout_alias(&b, kind) else {
+                continue;
+            };
+            b.snapshot.borrow_mut()["work"][0]["revisions"][0]["contract"]["checkout"]["cwd"] =
+                json!(alias);
+            if phase != "claim" {
+                b.active(if phase == "launch" {
+                    "reserved"
+                } else {
+                    "starting"
+                });
+            }
+            if phase == "prompt" {
+                b.native("impl-w11", "native-fixture");
+                let dir = driver::Backend::directory(&b, 3, 11).unwrap();
+                fs::write(dir.join("brief.md"), "HERDR-BRIEF role=implementer\n").unwrap();
+            }
+            driver::drive(&b, 3).unwrap();
+            assert!(
+                b.snapshot.borrow()["work"][0]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("checkout-not-canonical:")
+            );
+            assert!(!b.calls.borrow().iter().any(|c| c == "change:claim"
+                || c == "change:bind"
+                || c == "change:observe"
+                || c == "effect:start"
+                || c.starts_with("command:prompt")
+                || c.starts_with("herdr:tab create")
+                || c.starts_with("herdr:tab rename")
+                || c.starts_with("herdr:pane run")));
+        }
+    }
+}
+#[test]
+fn alias_pane_spelling_blocks_new_launch_and_recovery_prompt() {
+    for phase in ["launch", "prompt"] {
+        for kind in ["symlink", "dot", "case"] {
+            let b = Fake::new();
+            let Some(alias) = checkout_alias(&b, kind) else {
+                continue;
+            };
+            *b.pane_cwd.borrow_mut() = Some(alias);
+            b.active(if phase == "launch" {
+                "reserved"
+            } else {
+                "starting"
+            });
+            if phase == "prompt" {
+                b.native("impl-w11", "native-fixture");
+                let dir = driver::Backend::directory(&b, 3, 11).unwrap();
+                fs::write(dir.join("brief.md"), "HERDR-BRIEF role=implementer\n").unwrap();
+            }
+            driver::drive(&b, 3).unwrap();
+            assert!(
+                b.snapshot.borrow()["work"][0]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("checkout-not-canonical:")
+            );
+            assert!(!b.calls.borrow().iter().any(|c| c == "change:bind"
+                || c == "change:observe"
+                || c == "effect:start"
+                || c.starts_with("command:prompt")
+                || c.starts_with("herdr:tab create")
+                || c.starts_with("herdr:tab rename")
+                || c.starts_with("herdr:pane run")));
+        }
+    }
+}
+#[test]
+fn approved_check_rejects_alias_checkout_before_artifacts_or_process_start() {
+    let b = Fake::new();
+    let alias = checkout_alias(&b, "symlink").unwrap();
+    let attempt = b.scratch.0.join("attempt");
+    fs::create_dir(&attempt).unwrap();
+    let check = api::Check {
+        id: "fixture".into(),
+        kind: "command".into(),
+        argv: vec![b.scratch.0.join("missing-command").to_str().unwrap().into()],
+        timeout_ms: 1000,
+        cases: vec![],
+        admission: api::Admission::Direct,
+        receipt_file: None,
+    };
+    let result = runner::execute(&check, &attempt, Path::new(&alias), &AtomicBool::new(false));
+    assert!(matches!(result,Err(e) if e.message.starts_with("checkout-not-canonical:")));
+    assert_eq!(fs::read_dir(&attempt).unwrap().count(), 0);
+}
+#[test]
+fn old_alias_contract_remains_inspectable_and_cancel_cleanup_can_stop() {
+    let b = Fake::new();
+    let alias = checkout_alias(&b, "symlink").unwrap();
+    b.active("running");
+    *b.pane_cwd.borrow_mut() = Some(alias.clone());
+    b.snapshot.borrow_mut()["work"][0]["revisions"][0]["contract"]["checkout"]["cwd"] =
+        json!(alias);
+    b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
+        json!("native-fixture");
+    assert_eq!(driver::inspect_stop(&b, 1, 11)["complete"], true);
+    assert!(
+        !b.calls
+            .borrow()
+            .iter()
+            .any(|c| c.starts_with("change:") || c.contains("send-keys"))
+    );
+    b.snapshot.borrow_mut()["work"][0]["state"] = json!("cancelled");
+    b.native("impl-w11", "native-fixture");
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["process_state"], "stopped");
+    assert!(b.calls.borrow().iter().any(|c| c == "change:reconcile"));
+    assert!(
+        !b.calls
+            .borrow()
+            .iter()
+            .any(|c| c == "effect:start" || c == "change:claim" || c.starts_with("command:prompt"))
+    );
+}
+#[test]
 fn inspect_stop_is_read_only_and_reports_complete_blocked_or_incomplete_scans() {
     for cause in ["clean", "blocker", "incomplete"] {
         let b = Fake::new();
@@ -721,7 +877,7 @@ fn generated_brief_prohibits_unmanaged_processes_and_states_scan_limits() {
     for text in [
         "never detach background jobs or create external runtimes",
         "named managed runtime",
-        "another UID",
+        "another effective UID",
         "absolute-path writers with no retained descriptor",
         "Model agreement cannot certify containment",
     ] {

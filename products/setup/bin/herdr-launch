@@ -381,6 +381,8 @@ fi
     || step_fail "1 (cwd '$cwd' or its main checkout contains \" \\ or a control character)"
 
 if [ -n "$reserved_task" ]; then
+    physical_cwd=$(CDPATH= cd -- "$cwd" && pwd -P) || step_fail '2 (reserved checkout physical path unavailable)'
+    [ "$physical_cwd" = "$cwd" ] || step_fail '2 (reserved checkout must use canonical physical spelling)'
     task=$reserved_task launch=$reserved_launch
     snapshot=$(taskr --json work list "$parent") || step_fail '2 (reserved campaign snapshot)'
     reserved_generation=$(printf '%s\n' "$snapshot" | jq -er '.generation | numbers') || step_fail '2 (reserved generation)'

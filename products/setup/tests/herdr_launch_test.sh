@@ -1338,6 +1338,23 @@ expect_rc 0
 grep -F "export TASKR_DB='$case_dir/scratch.sqlite'" "$case_dir/calls" >/dev/null || fail 'scratch ledger missing from reserved child environment'
 grep -F "export PATH='$candidate_bin:" "$case_dir/calls" >/dev/null || fail 'candidate CLI directory missing from reserved child PATH'
 
+for alias_kind in symlink dot case; do
+    new_case "reserved $alias_kind checkout spelling refuses before step2"
+    case $alias_kind in
+        symlink) ln -s "$work" "$case_dir/work-alias"; tcwd=$case_dir/work-alias ;;
+        dot) tcwd=$work/. ;;
+        case) tcwd=$case_dir/WORK; if [ ! -d "$tcwd" ]; then printf '  SKIP (case-sensitive filesystem)\n'; continue; fi ;;
+    esac
+    STUB_PANE_CWD=$tcwd
+    reserved_snapshot
+    run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+    expect_rc 1
+    expect_err 'canonical physical spelling'
+    if grep -E '^(taskr\||herdr\|(agent\|start|pane\|(run|send-keys)|tab\|(create|rename))\|)' "$case_dir/calls" >/dev/null; then
+        fail 'noncanonical reserved checkout reached step2 or process effects'
+    fi
+done
+
 for field in task_id launch_id round pane cwd model effort; do
     new_case "reserved mismatch $field fails before agent start"
     reserved_snapshot

@@ -162,6 +162,7 @@ pub(super) fn execute(
     cwd: &Path,
     cancel: &AtomicBool,
 ) -> Result<Outcome> {
+    driver::require_canonical_checkout(cwd)?;
     let executable = check
         .argv
         .first()
@@ -267,6 +268,7 @@ fn run_inner(work_id: i64, launch: i64, cancel: &AtomicBool) -> Result<Value> {
         return Err(failure("gate runner already active"));
     };
     let contract = current_contract(&work)?;
+    driver::require_canonical_checkout(Path::new(&contract.checkout.cwd))?;
     if contract.checkout.host != store::local_machine() {
         return Err(failure("runner checkout belongs to another host"));
     }

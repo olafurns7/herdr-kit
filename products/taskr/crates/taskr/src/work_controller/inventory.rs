@@ -1,4 +1,4 @@
-//! Cooperative same-user evidence, never authority to kill an unexplained process.
+//! Cooperative evidence for one effective UID, never authority to kill an unexplained process.
 use super::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -48,27 +48,38 @@ fn pid(text: &str, zero: bool) -> Result<i32> {
     }
     Ok(n)
 }
-fn parse_ps(bytes: &[u8]) -> Result<Vec<Row>> {
+fn parse_ps(bytes: &[u8], uid: u32) -> Result<Vec<Row>> {
     let text = std::str::from_utf8(bytes).map_err(failure)?;
     if text.is_empty() || !text.ends_with('\n') {
         return Err(failure("incomplete ps output"));
     }
     let mut rows = Vec::new();
     let mut seen = BTreeSet::new();
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
         let fields = line.split_whitespace().collect::<Vec<_>>();
-        if fields.len() < 6 || rows.len() == MAX {
+        if fields.len() < 8 || index == MAX {
             return Err(failure("invalid or bounded ps inventory"));
         }
-        let id = pid(fields[0], false)?;
-        let command = fields[5..].join(" ");
-        if !seen.insert(id)
-            || command.len() > TEXT
+        let effective: u32 = fields[0].parse().map_err(failure)?;
+        let _: u32 = fields[1].parse().map_err(failure)?;
+        let id = pid(fields[2], true)?;
+        if !seen.insert(id) {
+            return Err(failure("duplicate ps PID"));
+        }
+        // ps user selectors differ across platforms; uid is explicitly the effective UID.
+        if effective != uid {
+            continue;
+        }
+        if id == 0 {
+            return Err(failure("invalid own effective-UID PID"));
+        }
+        let command = fields[7..].join(" ");
+        if command.len() > TEXT
             || command.chars().any(char::is_control)
-            || fields[3].len() > 128
-            || fields[4].len() > 16
+            || fields[5].len() > 128
+            || fields[6].len() > 16
             || !matches!(
-                fields[4].chars().next(),
+                fields[6].chars().next(),
                 Some('D' | 'I' | 'R' | 'S' | 'T' | 'U' | 'W' | 'X' | 'Z' | 't')
             )
         {
@@ -76,10 +87,10 @@ fn parse_ps(bytes: &[u8]) -> Result<Vec<Row>> {
         }
         rows.push(Row {
             pid: id,
-            parent: pid(fields[1], true)?,
-            group: pid(fields[2], false)?,
-            tty: fields[3].into(),
-            zombie: fields[4].starts_with('Z'),
+            parent: pid(fields[3], true)?,
+            group: pid(fields[4], false)?,
+            tty: fields[5].into(),
+            zombie: fields[6].starts_with('Z'),
             command,
             session: 0,
         });
@@ -201,16 +212,15 @@ fn snapshot(uid: u32, start: Instant, probes: &mut BTreeSet<i32>) -> Result<Vec<
         &[
             "/bin/ps",
             "-ww",
-            "-U",
-            &uid.to_string(),
+            "-A",
             "-o",
-            "pid=,ppid=,pgid=,tty=,stat=,comm=",
+            "uid=,ruid=,pid=,ppid=,pgid=,tty=,stat=,comm=",
         ],
         start,
         probes,
     )?;
     let mut rows = Vec::new();
-    for mut row in parse_ps(&bytes)? {
+    for mut row in parse_ps(&bytes, uid)? {
         deadline(start)?;
         let pid = rustix::process::Pid::from_raw(row.pid)
             .ok_or_else(|| failure("invalid inventory PID"))?;
@@ -374,7 +384,7 @@ fn evidence(
 }
 pub(super) fn scan(checkout: &Path, shell: i32, trust: &Trust) -> Result<Value> {
     let start = Instant::now();
-    let uid = rustix::process::getuid().as_raw();
+    let uid = rustix::process::geteuid().as_raw();
     let observer = i32::try_from(std::process::id()).map_err(failure)?;
     let checkout = fs::canonicalize(checkout).map_err(failure)?;
     retry_pair(start, |start| {
@@ -483,6 +493,69 @@ mod tests {
         }
     }
     #[test]
+    fn effective_uid_filter_excludes_foreign_setuid_but_requires_own_cwd() {
+        let mut rows=parse_ps(b"0 0 0 0 0 ?? R kernel_task\n0 501 74509 1 74509 ttys1 S /usr/bin/login\n501 501 10 1 10 ttys2 S zsh\n501 501 20 1 20 ? S taskr\n501 0 12 1 12 ? S /usr/bin/login\n",501).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.pid).collect::<Vec<_>>(),
+            vec![10, 20, 12]
+        );
+        for r in &mut rows {
+            r.session = r.pid;
+        }
+        let trust = Trust {
+            shells: BTreeMap::from([(10, shell("zsh", "w1:p1", 10))]),
+            ..Default::default()
+        };
+        assert!(
+            evidence(
+                &rows,
+                &BTreeMap::new(),
+                Path::new("/checkout"),
+                10,
+                20,
+                501,
+                &BTreeSet::new(),
+                &trust
+            )
+            .is_err()
+        );
+        let scan = evidence(
+            &rows,
+            &BTreeMap::from([(12, PathBuf::from("/checkout/sub"))]),
+            Path::new("/checkout"),
+            10,
+            20,
+            501,
+            &BTreeSet::new(),
+            &trust,
+        )
+        .unwrap();
+        assert_eq!(scan["checkout_remaining"][0]["pid"], 12);
+        assert_eq!(scan["uid"], 501);
+        rows.retain(|r| r.pid != 12);
+        let scan = evidence(
+            &rows,
+            &BTreeMap::new(),
+            Path::new("/checkout"),
+            10,
+            20,
+            501,
+            &BTreeSet::new(),
+            &trust,
+        )
+        .unwrap();
+        assert_eq!(scan["checkout_remaining"], json!([]));
+        let foreign = (1..=MAX + 1)
+            .map(|id| format!("0 501 {id} 1 {id} ? S login\n"))
+            .collect::<String>();
+        assert!(
+            parse_ps(foreign.as_bytes(), 501)
+                .unwrap_err()
+                .message
+                .contains("bounded")
+        );
+    }
+    #[test]
     fn snapshot_pair_churn_retries_with_one_budget_and_preserves_writer_coverage() {
         let first = vec![row(10, 1, 10, "ttys1", "zsh"), row(20, 1, 20, "?", "taskr")];
         let mut last = first.clone();
@@ -533,7 +606,11 @@ mod tests {
     }
     #[test]
     fn login_shell_normalization_preserves_exact_inventory_exemptions() {
-        let mut rows = parse_ps(b"17576 1 17576 ttys023 Ss+ -zsh\n600 1 600 ? S taskr\n").unwrap();
+        let mut rows = parse_ps(
+            b"501 501 17576 1 17576 ttys023 Ss+ -zsh\n501 501 600 1 600 ? S taskr\n",
+            501,
+        )
+        .unwrap();
         for r in &mut rows {
             r.session = r.pid;
         }
@@ -658,21 +735,24 @@ mod tests {
     }
     #[test]
     fn parsers_reject_partial_duplicate_invalid_and_bounded_inventories() {
-        assert_eq!(parse_ps(b" 10 1 10 ttys1 S /bin/zsh\n").unwrap()[0].pid, 10);
+        assert_eq!(
+            parse_ps(b"501 501 10 1 10 ttys1 S /bin/zsh\n", 501).unwrap()[0].pid,
+            10
+        );
         for bad in [
             b"".as_slice(),
-            b"10 1 10 ttys1 S zsh",
-            b"10 bad 10 ttys1 S zsh\n",
-            b"0 1 1 ? S zsh\n",
-            b"10 1 10 ? S\n",
-            b"10 1 10 ? S zsh\n10 1 10 ? S zsh\n",
+            b"501 501 10 1 10 ttys1 S zsh",
+            b"501 501 10 bad 10 ttys1 S zsh\n",
+            b"501 501 0 1 1 ? S zsh\n",
+            b"501 501 10 1 10 ? S\n",
+            b"501 501 10 1 10 ? S zsh\n501 501 10 1 10 ? S zsh\n",
         ] {
-            assert!(parse_ps(bad).is_err());
+            assert!(parse_ps(bad, 501).is_err());
         }
         let large = (1..=MAX + 1)
-            .map(|id| format!("{id} 1 {id} ? S taskr\n"))
+            .map(|id| format!("501 501 {id} 1 {id} ? S taskr\n"))
             .collect::<String>();
-        assert!(parse_ps(large.as_bytes()).is_err());
+        assert!(parse_ps(large.as_bytes(), 501).is_err());
         let valid = b"p10\0czsh\0\nfcwd\0n/checkout with spaces\0\np20\0ctaskr\0\nfcwd\0n/\0\n";
         assert_eq!(
             parse_lsof(valid).unwrap()[&10],
