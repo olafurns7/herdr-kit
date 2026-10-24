@@ -163,6 +163,8 @@ pub(super) fn execute(
     cancel: &AtomicBool,
 ) -> Result<Outcome> {
     driver::require_canonical_checkout(cwd)?;
+    let output = attempt.join("check-output");
+    private_dir(&output)?;
     let executable = check
         .argv
         .first()
@@ -177,7 +179,7 @@ pub(super) fn execute(
     let mut cmd = Command::new(executable);
     cmd.args(&check.argv[1..])
         .current_dir(cwd)
-        .env("TASKR_ATTEMPT_DIR", attempt);
+        .env("TASKR_ATTEMPT_DIR", &output);
     let out =
         process::run(cmd, Duration::from_millis(check.timeout_ms), cancel).map_err(failure)?;
     let mut artifacts = vec![
@@ -189,7 +191,7 @@ pub(super) fn execute(
         .cancelled
         .then(|| "check cancelled; process group killed".to_string());
     let cases = match &check.receipt_file {
-        Some(path) => match receipt(attempt, path, &check.cases) {
+        Some(path) => match receipt(&output, path, &check.cases) {
             Ok((cases, bytes)) => {
                 artifacts.push(artifact(attempt, "receipt", &bytes)?);
                 cases

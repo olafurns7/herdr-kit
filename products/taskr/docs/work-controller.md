@@ -101,8 +101,11 @@ The script retains the selected CLI/ledger environment, actual status capture an
 shell-exit receipt. Existing files refuse rather than being overwritten. Starting
 gate recovery observes receipts and never resends the command.
 
-Case checks read only their declared relative receipt under the fresh runner-owned
-`TASKR_ATTEMPT_DIR`. The file is bounded JSON of this shape:
+Each approved check receives a private `check-output` child directory through
+`TASKR_ATTEMPT_DIR`. Case checks read only their declared relative receipt there.
+Controller artifacts, including the immutable canonical `receipt` copy, stdout,
+tool context and admission/completion records, stay at the attempt root so checker
+filenames cannot collide with them. The receipt is bounded JSON of this shape:
 
 ```json
 {"cases":[{"id":"approved-case-id","status":"passed"}]}

@@ -351,7 +351,9 @@ Per-check admission is `direct` (default) or `heavy`. Proof evidence is
 Heavy requires a slotr ticket, or an explicitly configured campaign `no_slotr`
 host exception with a reason. That exception is off by default. A nonempty case
 set requires `receipt_file`, a relative path up to 256 bytes without empty/dot/
-parent components. The runner resolves it only inside its own attempt directory.
+parent components. The runner resolves it only inside the private `check-output`
+child directory exported as `TASKR_ATTEMPT_DIR`; controller artifacts remain at
+the parent attempt root.
 
 Work audit events have no inbox recipient. Actionable notices use compatible
 self-addressed `message` events with typed `notice` data and the current push
