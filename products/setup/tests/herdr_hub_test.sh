@@ -5,6 +5,7 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 exec python3 - "$repo_dir" "${HUB_SH:-sh}" <<'PY'
 import fcntl, json, os, pty, shlex, shutil, signal, subprocess, sys, tempfile, termios, time
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 setup = Path(sys.argv[1])
 shell = shutil.which(sys.argv[2])
@@ -13,6 +14,60 @@ count = 0
 def executable(path, source):
     path.write_text(source)
     path.chmod(0o755)
+
+def stop_owned_process(process):
+    # A reaped child's numeric process group is no longer an owned live reference.
+    if process.poll() is not None:
+        return
+    try:
+        identity = (os.getsid(process.pid), os.getpgid(process.pid))
+        if identity != (process.pid, process.pid):
+            process.kill()
+            process.wait(timeout=5)
+            raise AssertionError(('fixture child changed session/group', process.pid, identity))
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=5)
+
+with patch('os.getsid', return_value=424242) as sid, patch('os.getpgid', return_value=424242) as group, \
+     patch('os.killpg') as signal_group:
+    child = Mock(pid=424242)
+    child.poll.return_value = 0
+    stop_owned_process(child)
+    sid.assert_not_called()
+    group.assert_not_called()
+    signal_group.assert_not_called()
+
+    child.poll.return_value = None
+    stop_owned_process(child)
+    signal_group.assert_called_once_with(424242, signal.SIGKILL)
+    child.wait.assert_called_once_with(timeout=5)
+
+    signal_group.reset_mock()
+    child.reset_mock()
+    sid.side_effect = ProcessLookupError
+    stop_owned_process(child)
+    signal_group.assert_not_called()
+    child.wait.assert_called_once_with(timeout=5)
+
+    sid.side_effect = None
+    for identity in ((424243, 424242), (424242, 424243)):
+        sid.return_value, group.return_value = identity
+        child.reset_mock()
+        try: stop_owned_process(child)
+        except AssertionError: pass
+        else: raise AssertionError('changed child identity was accepted')
+        signal_group.assert_not_called()
+        child.kill.assert_called_once_with()
+        child.wait.assert_called_once_with(timeout=5)
+
+    sid.return_value = group.return_value = 424242
+    signal_group.side_effect = PermissionError('fixture permission failure')
+    try: stop_owned_process(child)
+    except PermissionError: pass
+    else: raise AssertionError('permission failure was suppressed')
+print('PASS: owned-process cleanup checks', flush=True)
 
 with tempfile.TemporaryDirectory(prefix='herdr-hub-test.') as scratch:
     # getcwd reports the physical path when TMPDIR traverses a symlink.
@@ -228,11 +283,9 @@ else: sys.exit(98)
                 assert (case / 'note').exists(), 'prover did not stop within 5 s of cdl exit'
                 assert time.monotonic() - started < 5
         finally:
-            # A failed mutation must not leave its prover running after this test.
-            try: os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError: pass
-            process.wait()
-            os.close(master)
+            # Always close our PTY, including ownership or permission failures.
+            try: stop_owned_process(process)
+            finally: os.close(master)
         calls = [json.loads(line) for line in (case / 'calls').read_text().splitlines()] if (case / 'calls').exists() else []
         print(f'case {count}: {name}', flush=True)
         return case, home, process, out, err, calls
@@ -614,8 +667,7 @@ ledger() {
         for q in procs:
             try: q.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                os.killpg(q.pid, signal.SIGKILL)
-                q.wait()
+                stop_owned_process(q)
     print(f'case {count}: an orphan prover never removes a replacement start.lock', flush=True)
 
     # The generation-conflict hold mark is written only on this run's own lock.
@@ -709,8 +761,7 @@ exit "$rc"
             for q in procs:
                 try: q.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    os.killpg(q.pid, signal.SIGKILL)
-                    q.wait()
+                    stop_owned_process(q)
         print(f'case {count}: {script}: an interrupted guard release never frees another start\'s guard', flush=True)
 
 print(f'PASS: {count} herdr-hub cases')
