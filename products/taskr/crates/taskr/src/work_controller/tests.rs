@@ -49,6 +49,7 @@ struct Fake {
     herdr_reject: Cell<bool>,
     observe_transport: Cell<bool>,
     native_init: Cell<&'static str>,
+    native_init_receipt: Cell<bool>,
     exit_observation: Cell<&'static str>,
     claims: RefCell<std::collections::BTreeMap<String, Value>>,
     claim_keys: RefCell<Vec<String>>,
@@ -90,6 +91,7 @@ impl Fake {
             herdr_reject: Cell::new(false),
             observe_transport: Cell::new(false),
             native_init: Cell::new("refuse"),
+            native_init_receipt: Cell::new(false),
             exit_observation: Cell::new("absent"),
             claims: RefCell::new(Default::default()),
             claim_keys: RefCell::new(Vec::new()),
@@ -177,17 +179,41 @@ impl driver::Backend for Fake {
         assert_eq!(a["task_id"], 12);
         assert_eq!(a["launch_id"], 11);
         assert_eq!(a["process_state"], "starting");
+        if self
+            .agents
+            .borrow()
+            .iter()
+            .any(|agent| agent["agent_status"] == "done")
+            && !self.native_init_receipt.get()
+        {
+            return Err(store::Error {
+                code: ExitCode::Rejected,
+                message: "done requires matching completed receipt before any shell send".into(),
+            });
+        }
         match self.native_init.get() {
-            "complete" | "mismatch" | "reread-outage" => {
+            "complete" | "complete-done" | "mismatch" | "mismatch-done" | "reread-outage"
+            | "post-working" | "post-blocked" => {
+                self.call(if self.native_init_receipt.replace(true) {
+                    "bootstrap:reuse-completed-receipt"
+                } else {
+                    "bootstrap:fixed-shell"
+                });
                 self.native(
                     "rev-w11",
-                    if self.native_init.get() == "mismatch" {
+                    if matches!(self.native_init.get(), "mismatch" | "mismatch-done") {
                         "replacement"
                     } else {
                         "native-fixture"
                     },
                 );
                 self.agents.borrow_mut()[0]["agent"] = json!("codex");
+                self.agents.borrow_mut()[0]["agent_status"] = json!(match self.native_init.get() {
+                    "complete-done" | "mismatch-done" => "done",
+                    "post-working" => "working",
+                    "post-blocked" => "blocked",
+                    _ => "idle",
+                });
                 if self.native_init.get() == "reread-outage" {
                     let next = self
                         .calls
@@ -740,10 +766,186 @@ fn recovery_initializes_missing_codex_identity_then_observes_before_work_prompt(
     );
 }
 #[test]
+fn recovery_accepts_receipt_bound_done_after_initializer_return_before_observe_and_prompt() {
+    let b = Fake::new();
+    b.fresh_codex();
+    b.native_init.set("complete-done");
+    driver::drive(&b, 3).unwrap();
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["process_state"], "starting");
+    assert_eq!(b.current()["native_session"], "native-fixture");
+    assert_eq!(b.agents.borrow()[0]["agent_status"], "done");
+    let calls = b.calls.borrow();
+    let init = calls
+        .iter()
+        .position(|c| c == "effect:initialize-native")
+        .unwrap();
+    let observe = calls.iter().position(|c| c == "change:observe").unwrap();
+    let prompt = calls
+        .iter()
+        .position(|c| c.starts_with("command:prompt"))
+        .unwrap();
+    assert!(init < observe && observe < prompt);
+    assert!(
+        calls[init + 1..observe]
+            .iter()
+            .any(|c| c == "herdr:agent list")
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.as_str() == "bootstrap:fixed-shell")
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.as_str() == "effect:initialize-native")
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.starts_with("command:prompt"))
+            .count(),
+        1
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c == "change:started" || c == "change:uncertain" || c == "effect:start")
+    );
+}
+#[test]
+fn done_completed_receipt_recovery_reuses_adapter_without_shell_resend() {
+    for metadata in [false, true] {
+        for pinned in [false, true] {
+            let b = Fake::new();
+            b.fresh_codex();
+            b.native_init.set("complete-done");
+            b.native_init_receipt.set(true);
+            b.agents.borrow_mut()[0]["agent_status"] = json!("done");
+            if metadata {
+                b.agents.borrow_mut()[0]["agent_session"] = json!({"value":"native-fixture"});
+            }
+            if pinned {
+                b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
+                    json!("native-fixture");
+            }
+            driver::drive(&b, 3).unwrap();
+            driver::drive(&b, 3).unwrap();
+            assert_eq!(
+                b.current()["process_state"],
+                "starting",
+                "metadata={metadata} pinned={pinned}"
+            );
+            assert_eq!(b.current()["native_session"], "native-fixture");
+            let calls = b.calls.borrow();
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|c| c.as_str() == "bootstrap:reuse-completed-receipt")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|c| c.as_str() == "effect:initialize-native")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|c| c.starts_with("command:prompt"))
+                    .count(),
+                1
+            );
+            assert!(!calls.iter().any(|c| c == "bootstrap:fixed-shell"
+                || c == "change:started"
+                || c == "change:uncertain"
+                || c == "effect:start"));
+        }
+    }
+}
+#[test]
+fn done_without_completed_receipt_refuses_before_shell_or_work_prompt() {
+    for metadata in [false, true] {
+        let b = Fake::new();
+        b.fresh_codex();
+        b.native_init.set("complete-done");
+        b.agents.borrow_mut()[0]["agent_status"] = json!("done");
+        if metadata {
+            b.agents.borrow_mut()[0]["agent_session"] = json!({"value":"native-fixture"});
+        }
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], "uncertain");
+        b.native_init_receipt.set(true);
+        driver::drive(&b, 3).unwrap();
+        let calls = b.calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c.as_str() == "effect:initialize-native")
+                .count(),
+            1
+        );
+        assert!(!calls.iter().any(|c| c.starts_with("bootstrap:")
+            || c.starts_with("command:prompt")
+            || c == "change:observe"
+            || c == "change:started"
+            || c == "effect:start"));
+    }
+}
+#[test]
+fn receipt_bound_done_preserves_uncertain_prior_prompt_and_conflicting_native_refusal() {
+    for cause in ["uncertain", "prior-prompt", "conflicting-native"] {
+        let b = Fake::new();
+        b.fresh_codex();
+        b.native_init.set("complete-done");
+        b.native_init_receipt.set(true);
+        b.agents.borrow_mut()[0]["agent_status"] = json!("done");
+        b.agents.borrow_mut()[0]["agent_session"] = json!({"value":"native-fixture"});
+        match cause {
+            "uncertain" => {
+                b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["process_state"] =
+                    json!("uncertain")
+            }
+            "prior-prompt" => b
+                .log
+                .borrow_mut()
+                .push(json!({"launch_id":11,"kind":"prompt"})),
+            "conflicting-native" => {
+                b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
+                    json!("other-native")
+            }
+            _ => unreachable!(),
+        }
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], "uncertain", "{cause}");
+        assert!(
+            !b.calls
+                .borrow()
+                .iter()
+                .any(|c| c == "effect:initialize-native"
+                    || c.starts_with("bootstrap:")
+                    || c.starts_with("command:prompt")
+                    || c == "change:observe"
+                    || c == "change:started")
+        );
+    }
+}
+#[test]
 fn recovery_initializer_mismatch_refusal_transport_or_unknown_reread_never_repeats() {
     for mode in [
         "refuse",
         "mismatch",
+        "mismatch-done",
+        "post-working",
+        "post-blocked",
         "malformed",
         "transport",
         "reread-outage",
@@ -796,7 +998,7 @@ fn recovery_initializer_requires_fresh_idle_codex_without_prior_work_prompt() {
         "agent",
         "name",
         "pane",
-        "done",
+        "blocked",
         "working",
         "bound-native",
         "malformed-native",
@@ -816,7 +1018,7 @@ fn recovery_initializer_requires_fresh_idle_codex_without_prior_work_prompt() {
             "agent" => b.agents.borrow_mut()[0]["agent"] = json!("claude"),
             "name" => b.agents.borrow_mut()[0]["name"] = json!("replacement"),
             "pane" => b.agents.borrow_mut()[0]["pane_id"] = json!("w1:p2"),
-            "done" | "working" => b.agents.borrow_mut()[0]["agent_status"] = json!(cause),
+            "blocked" | "working" => b.agents.borrow_mut()[0]["agent_status"] = json!(cause),
             "bound-native" => {
                 b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
                     json!("prior-native")

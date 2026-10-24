@@ -1288,8 +1288,16 @@ fn recover_inner(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -
     };
     let mut log =
         observation(b.command(&["log".into(), task.to_string(), "--limit".into(), "0".into()]))?;
-    if observed_agent["agent_session"].is_null() {
-        observed_agent = initialize_missing_native(b, root, g, work, a, &observed_agent, &log)?;
+    let no_work_prompt = !events(&log)
+        .iter()
+        .any(|e| e["launch_id"] == launch && e["kind"] == "prompt");
+    if observed_agent["agent_session"].is_null()
+        || a["lane"]["provider"] == "codex"
+            && observed_agent["agent_status"] == "done"
+            && no_work_prompt
+    {
+        observed_agent =
+            initialize_native_before_prompt(b, root, g, work, a, &observed_agent, &log)?;
         log = observation(b.command(&[
             "log".into(),
             task.to_string(),
@@ -1365,9 +1373,11 @@ fn recover_inner(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -
             let current = observation(agent(b, pane))?.ok_or_else(|| {
                 identity_error("recovery native agent disappeared after observation")
             })?;
-            if !owns_agent(&current, &name(a)?, native, pane) {
+            if !owns_agent(&current, &name(a)?, native, pane)
+                || !matches!(current["agent_status"].as_str(), Some("idle" | "done"))
+            {
                 return Err(identity_error(
-                    "recovery native identity changed after observation",
+                    "recovery native identity or ready state changed after observation",
                 ));
             }
             Ok(())
@@ -1435,7 +1445,7 @@ fn recover_inner(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -
     }
     Ok(())
 }
-fn initialize_missing_native(
+fn initialize_native_before_prompt(
     b: &impl Backend,
     root: i64,
     g: i64,
@@ -1444,19 +1454,31 @@ fn initialize_missing_native(
     current: &Value,
     log: &Value,
 ) -> Result<Value> {
+    let done = current["agent_status"] == "done";
+    if !a["native_session"].is_null() {
+        let bound = field(a, "native_session").map_err(|e| identity_error(e.message))?;
+        if !done
+            || current["agent_session"]["value"]
+                .as_str()
+                .is_some_and(|id| id != bound)
+        {
+            return Err(identity_error(
+                "bound native identity conflicts with initialization recovery",
+            ));
+        }
+    }
     if a["process_state"] != "starting"
-        || !a["native_session"].is_null()
         || a["lane"]["provider"] != "codex"
         || current["agent"] != "codex"
         || current["name"] != name(a)?
         || current["pane_id"] != a["dispatch"]["pane"]
-        || current["agent_status"] != "idle"
+        || !matches!(current["agent_status"].as_str(), Some("idle" | "done"))
         || events(log)
             .iter()
             .any(|e| e["launch_id"] == a["launch_id"] && e["kind"] == "prompt")
     {
         return Err(identity_error(
-            "missing native identity is not a fresh idle Codex start; no initialization or work prompt",
+            "native initialization requires a ready Codex start without a work prompt",
         ));
     }
     let c = current_contract(work)?;
@@ -1468,7 +1490,7 @@ fn initialize_missing_native(
         &c.checkout.cwd,
     ))?;
     same_generation(b, root, g).map_err(retry_transport)?;
-    // The adapter owns sent-intent/receipt reuse. Any failed invocation may have sent its shell command.
+    // The adapter proves a completed receipt before allowing done; otherwise it refuses without sending.
     let initialized = b
         .initialize_native(root, g, &c.checkout.cwd, a)
         .map_err(|e| identity_error(format!("native initialization unconfirmed: {}", e.message)))?;
@@ -1495,7 +1517,7 @@ fn initialize_missing_native(
         .ok_or_else(|| identity_error("native agent absent after initialization"))?;
     if !owns_agent(&fresh, &name(a)?, native, pane)
         || fresh["agent"] != "codex"
-        || fresh["agent_status"] != "idle"
+        || !matches!(fresh["agent_status"].as_str(), Some("idle" | "done"))
     {
         return Err(identity_error(
             "initialized native metadata did not match exact reread",
