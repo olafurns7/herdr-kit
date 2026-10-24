@@ -194,6 +194,49 @@ fn herdr_result(args: &[&str], out: &process::Output) -> Result<Value> {
 #[cfg(test)]
 mod observation_tests {
     use super::*;
+    #[test]
+    fn long_gate_path_is_recorded_exactly_but_terminal_input_stays_short() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = super::super::tests::Scratch::new();
+        let checkout = scratch.0.join("checkout");
+        fs::create_dir(&checkout).unwrap();
+        let path = format!("/candidate/bin:{}", "/synthetic/long-path:".repeat(1000));
+        let command = format!(
+            "unset TASKR_DB && export PATH={} && export TASKR_DB='/scratch/ledger' TASKR_TASK=12 TASKR_LAUNCH=11 && '/candidate/bin/taskr' work run-checks 1 --launch 11; taskr_check_rc=$?; printf '%s\\n' \"$taskr_check_rc\" > '/scratch/shell-exit'",
+            quote(&path)
+        );
+        assert!(command.len() > 4096);
+        let input = gate_input(&scratch.0, &command, &checkout).unwrap();
+        let script = scratch.0.join("gate-command.sh");
+        assert_eq!(
+            input,
+            format!("/bin/sh {}", quote(script.to_str().unwrap()))
+        );
+        assert!(input.len() <= 512);
+        assert!(!input.contains(&path));
+        assert_eq!(
+            fs::read(&script).unwrap(),
+            format!("{command}\n").as_bytes()
+        );
+        assert_eq!(
+            fs::metadata(&script).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(gate_input(&scratch.0, "changed command", &checkout).is_err());
+        assert_eq!(
+            fs::read(&script).unwrap(),
+            format!("{command}\n").as_bytes()
+        );
+    }
+    #[test]
+    fn gate_script_refuses_relative_or_oversized_terminal_paths_before_writing() {
+        let scratch = super::super::tests::Scratch::new();
+        assert!(gate_input(Path::new("relative-attempt"), "command", &scratch.0).is_err());
+        let long = scratch.0.join("x".repeat(513));
+        assert!(gate_input(&long, "command", &scratch.0).is_err());
+        assert!(gate_input(&scratch.0, "command", &scratch.0).is_err());
+        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 0);
+    }
     fn output(exit: Option<i32>, stdout: &[u8], stderr: &[u8]) -> process::Output {
         process::Output {
             pid: 1,
@@ -942,6 +985,37 @@ fn write_once(path: &Path, bytes: &[u8]) -> Result<()> {
     f.write_all(bytes).map_err(failure)?;
     f.sync_all().map_err(failure)
 }
+fn gate_input(dir: &Path, command: &str, checkout: &Path) -> Result<String> {
+    let script = dir.join("gate-command.sh");
+    if !script.is_absolute() {
+        return Err(failure(
+            "gate script requires an absolute owned attempt directory",
+        ));
+    }
+    let input = format!(
+        "/bin/sh {}",
+        quote(
+            script
+                .to_str()
+                .ok_or_else(|| failure("non UTF-8 gate script path"))?
+        )
+    );
+    if input.len() > 512 {
+        return Err(failure(
+            "gate script invocation exceeds short terminal input bound",
+        ));
+    }
+    if fs::canonicalize(dir)
+        .map_err(failure)?
+        .starts_with(fs::canonicalize(checkout).map_err(failure)?)
+    {
+        return Err(failure(
+            "gate script attempt directory must be outside checkout",
+        ));
+    }
+    write_once(&script, format!("{command}\n").as_bytes())?;
+    Ok(input)
+}
 #[allow(clippy::too_many_arguments)] // The immutable run and assignment are separate ledger snapshots.
 fn dispatch(
     b: &impl Backend,
@@ -1000,7 +1074,8 @@ fn dispatch(
                         .ok_or_else(|| failure("non UTF-8 exit path"))?
                 )
             );
-            b.herdr(&["pane", "run", &pane, &cmd])?;
+            let input = gate_input(&dir, &cmd, Path::new(&c.checkout.cwd))?;
+            b.herdr(&["pane", "run", &pane, &input])?;
         } else {
             b.launch(&[
                 "--reserved".into(),

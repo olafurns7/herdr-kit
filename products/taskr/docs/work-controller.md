@@ -83,6 +83,14 @@ tool-context artifact records the resolved executable and its content hash. Time
 signals, nonzero exits, failed cases and parse failures cannot pass. Actual failed checks
 settle as failed proof so the core can schedule bounded rework before any reviewer.
 
+Gate dispatch records its exact shell command in a private mode0600 immutable
+`gate-command.sh` under the already-owned attempt directory outside the checkout.
+Only `/bin/sh 'ABSOLUTE_FILE'` is sent through the pane, bounded to512 bytes; a long
+inherited PATH stays in the file and cannot be truncated by canonical terminal input.
+The script retains the selected CLI/ledger environment, actual status capture and
+shell-exit receipt. Existing files refuse rather than being overwritten. Starting
+gate recovery observes receipts and never resends the command.
+
 Case checks read only their declared relative receipt under the fresh runner-owned
 `TASKR_ATTEMPT_DIR`. The file is bounded JSON of this shape:
 
