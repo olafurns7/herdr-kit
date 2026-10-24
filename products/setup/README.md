@@ -12,7 +12,7 @@ sh products/taskr/install.sh --fleet --files-only    # offline source staging
 ```
 
 `products/setup/install.sh` is a compatibility wrapper that adds `--fleet`.
-Set `TASKR_VERSION=taskr/v0.26.0` to select an exact product release. Binary
+Set `TASKR_VERSION=taskr/v0.27.0` to select an exact product release. Binary
 installs need no Cargo, Node, or npm. `gh` authentication or `GH_TOKEN` is
 supported; anonymous downloads use curl. Unpinned curl installs also need jq.
 Launch helpers require jq.

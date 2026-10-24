@@ -66,11 +66,11 @@ and global agent instructions.
 
 Choose the latest release on the
 [Releases page](https://github.com/olafurns7/herdr-kit/releases) with a
-`taskr/vX.Y.Z` tag. The example pins `taskr/v0.26.0`; use a newer published tag
+`taskr/vX.Y.Z` tag. The example pins `taskr/v0.27.0`; use a newer published tag
 if needed:
 
 ```sh
-export TASKR_VERSION=taskr/v0.26.0
+export TASKR_VERSION=taskr/v0.27.0
 sh products/taskr/install.sh --fleet
 taskr version
 command -v taskr-tui herdr-launch
@@ -100,10 +100,10 @@ and [setup assets](products/setup/README.md).
 Skip this step on macOS or if you only want the first worker. slotr requires
 a working systemd user manager; see [its requirements](products/slotr/docs/install.md).
 Pick a published slotr tag separately from taskr. The example pins
-`slotr/v0.3.1`; use a newer published tag if needed:
+`slotr/v0.3.2`; use a newer published tag if needed:
 
 ```sh
-SLOTR_VERSION=slotr/v0.3.1 sh products/slotr/install.sh --config
+SLOTR_VERSION=slotr/v0.3.2 sh products/slotr/install.sh --config
 slotr --version
 slotr config check
 ```
