@@ -47,6 +47,7 @@ struct Fake {
     herdr_once: RefCell<Option<(String, usize)>>,
     herdr_reject: Cell<bool>,
     observe_transport: Cell<bool>,
+    native_init: Cell<&'static str>,
 }
 impl Fake {
     fn new() -> Self {
@@ -82,6 +83,7 @@ impl Fake {
             herdr_once: RefCell::new(None),
             herdr_reject: Cell::new(false),
             observe_transport: Cell::new(false),
+            native_init: Cell::new("refuse"),
         }
     }
     fn run() -> Value {
@@ -113,6 +115,22 @@ impl Fake {
             json!({"name":name,"pane_id":"w1:p1","agent_status":"idle","agent_session":{"value":session}}),
         ];
     }
+    fn fresh_codex(&self) {
+        self.active("starting");
+        let reviewer = self.work()["revisions"][0]["contract"]["reviewer"].clone();
+        let mut s = self.snapshot.borrow_mut();
+        let a = &mut s["work"][0]["runs"][0]["assignments"][0];
+        a["stage"] = json!("reviewer");
+        a["lane"] = reviewer;
+        *self.agents.borrow_mut() =
+            vec![json!({"name":"rev-w11","pane_id":"w1:p1","agent":"codex","agent_status":"idle"})];
+        fs::create_dir_all(self.scratch.0.join("launch-11")).unwrap();
+        fs::write(
+            self.scratch.0.join("launch-11/brief.md"),
+            "HERDR-BRIEF role=reviewer\n",
+        )
+        .unwrap();
+    }
 }
 fn checkout_alias(b: &Fake, kind: &str) -> Option<String> {
     let alias = match kind {
@@ -142,6 +160,47 @@ fn checkout_alias(b: &Fake, kind: &str) -> Option<String> {
     Some(alias.to_str().unwrap().into())
 }
 impl driver::Backend for Fake {
+    fn initialize_native(&self, root: i64, g: i64, cwd: &str, a: &Value) -> Result<Value> {
+        self.call("effect:initialize-native");
+        assert_eq!((root, g), (3, 7));
+        assert_eq!(Path::new(cwd), self.scratch.0.as_path());
+        assert_eq!(a["task_id"], 12);
+        assert_eq!(a["launch_id"], 11);
+        assert_eq!(a["process_state"], "starting");
+        match self.native_init.get() {
+            "complete" | "mismatch" | "reread-outage" => {
+                self.native(
+                    "rev-w11",
+                    if self.native_init.get() == "mismatch" {
+                        "replacement"
+                    } else {
+                        "native-fixture"
+                    },
+                );
+                self.agents.borrow_mut()[0]["agent"] = json!("codex");
+                if self.native_init.get() == "reread-outage" {
+                    let next = self
+                        .calls
+                        .borrow()
+                        .iter()
+                        .filter(|c| c.as_str() == "herdr:agent list")
+                        .count()
+                        + 1;
+                    *self.herdr_once.borrow_mut() = Some(("agent list".into(), next));
+                }
+                Ok(
+                    json!({"native_session":"native-fixture","provenance_path":self.scratch.0.join("bootstrap.json")}),
+                )
+            }
+            "malformed" => Ok(json!({"ok":true})),
+            "transport" => Err(failure("native shell delivery unknown")),
+            "refuse" => Err(store::Error {
+                code: ExitCode::Rejected,
+                message: "native initialization refused".into(),
+            }),
+            mode => panic!("unexpected initializer mode {mode}"),
+        }
+    }
     fn client_mode(&self) -> bool {
         self.client_mode.get()
     }
@@ -512,6 +571,177 @@ fn recovery_observe_transport_outage_retries_without_prompt_or_uncertainty() {
         1
     );
     assert!(!b.calls.borrow().iter().any(|c| c == "change:uncertain"));
+}
+#[test]
+fn recovery_initializes_missing_codex_identity_then_observes_before_work_prompt() {
+    let b = Fake::new();
+    b.fresh_codex();
+    b.native_init.set("complete");
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["native_session"], "native-fixture");
+    assert_eq!(b.current()["process_state"], "starting");
+    driver::drive(&b, 3).unwrap();
+    let calls = b.calls.borrow();
+    let init = calls
+        .iter()
+        .position(|c| c == "effect:initialize-native")
+        .unwrap();
+    let observe = calls.iter().position(|c| c == "change:observe").unwrap();
+    let prompt = calls
+        .iter()
+        .position(|c| c.starts_with("command:prompt"))
+        .unwrap();
+    assert!(init < observe && observe < prompt);
+    assert!(
+        calls[init + 1..observe]
+            .iter()
+            .any(|c| c == "herdr:agent list")
+    );
+    assert!(
+        calls[init + 1..observe]
+            .iter()
+            .any(|c| c == "herdr:pane get w1:p1")
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.as_str() == "effect:initialize-native")
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.starts_with("command:prompt"))
+            .count(),
+        1
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c == "change:started" || c == "change:uncertain" || c == "effect:start")
+    );
+}
+#[test]
+fn recovery_initializer_mismatch_refusal_transport_or_unknown_reread_never_repeats() {
+    for mode in [
+        "refuse",
+        "mismatch",
+        "malformed",
+        "transport",
+        "reread-outage",
+    ] {
+        let b = Fake::new();
+        b.fresh_codex();
+        b.native_init.set(mode);
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], "uncertain", "{mode}");
+        b.native_init.set("complete");
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], "uncertain");
+        let calls = b.calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c.as_str() == "effect:initialize-native")
+                .count(),
+            1
+        );
+        assert!(!calls.iter().any(|c| c.starts_with("command:prompt")
+            || c == "change:observe"
+            || c == "change:started"));
+    }
+}
+#[test]
+fn recovery_initializer_preflight_transport_retries_before_any_effect() {
+    let b = Fake::new();
+    b.fresh_codex();
+    b.native_init.set("complete");
+    *b.herdr_once.borrow_mut() = Some(("pane get w1:p1".into(), 1));
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["process_state"], "starting");
+    assert!(
+        !b.calls
+            .borrow()
+            .iter()
+            .any(|c| c == "effect:initialize-native"
+                || c == "change:uncertain"
+                || c.starts_with("command:prompt"))
+    );
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["native_session"], "native-fixture");
+    assert!(!b.calls.borrow().iter().any(|c| c == "change:uncertain"));
+}
+#[test]
+fn recovery_initializer_requires_fresh_idle_codex_without_prior_work_prompt() {
+    for cause in [
+        "provider",
+        "agent",
+        "name",
+        "pane",
+        "done",
+        "working",
+        "bound-native",
+        "malformed-native",
+        "prior-prompt",
+        "uncertain",
+        "disabled",
+        "cancelled",
+    ] {
+        let b = Fake::new();
+        b.fresh_codex();
+        b.native_init.set("complete");
+        match cause {
+            "provider" => {
+                b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["lane"]["provider"] =
+                    json!("claude")
+            }
+            "agent" => b.agents.borrow_mut()[0]["agent"] = json!("claude"),
+            "name" => b.agents.borrow_mut()[0]["name"] = json!("replacement"),
+            "pane" => b.agents.borrow_mut()[0]["pane_id"] = json!("w1:p2"),
+            "done" | "working" => b.agents.borrow_mut()[0]["agent_status"] = json!(cause),
+            "bound-native" => {
+                b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
+                    json!("prior-native")
+            }
+            "malformed-native" => b.agents.borrow_mut()[0]["agent_session"] = json!({"value":""}),
+            "prior-prompt" => b
+                .log
+                .borrow_mut()
+                .push(json!({"launch_id":11,"kind":"prompt"})),
+            "uncertain" => {
+                b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["process_state"] =
+                    json!("uncertain")
+            }
+            "disabled" => b.snapshot.borrow_mut()["configuration"]["enabled"] = json!(false),
+            "cancelled" => b.snapshot.borrow_mut()["work"][0]["state"] = json!("cancelled"),
+            _ => unreachable!(),
+        }
+        driver::drive(&b, 3).unwrap();
+        assert!(
+            !b.calls
+                .borrow()
+                .iter()
+                .any(|c| c == "effect:initialize-native"
+                    || c == "change:observe"
+                    || c.starts_with("command:prompt")),
+            "{cause}"
+        );
+    }
+}
+#[test]
+fn direct_recovery_of_uncertain_identity_does_not_mark_running_even_with_receipt() {
+    let b = Fake::new();
+    b.fresh_codex();
+    b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["process_state"] =
+        json!("uncertain");
+    b.native("rev-w11", "native-fixture");
+    b.log
+        .borrow_mut()
+        .push(json!({"launch_id":11,"kind":"got"}));
+    driver::recover(&b, 3, 7, &b.work(), &b.current()).unwrap();
+    assert_eq!(b.current()["process_state"], "uncertain");
+    assert!(b.calls.borrow().is_empty());
 }
 #[test]
 fn recovery_refused_unconfirmed_or_changed_native_observation_withholds_prompt() {

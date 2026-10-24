@@ -234,6 +234,24 @@ pending prompt attempts are observed rather than resent.
 Model processes without identity need explicit reconciliation; they cannot use
 an anonymous stopped receipt. Gate shells retain their separate shell-exit proof.
 
+Recovery of a bound starting Codex with absent native metadata can invoke
+`herdr-codex-identity TASK LAUNCH ROOT GENERATION NAME PANE CWD` before work delivery.
+It requires the exact idle Codex name/pane, no pinned conflicting identity and no
+prior work-prompt attempt. Existing native metadata uses the normal observation path.
+The controller supplies its selected absolute `TASKR_WORK_EXECUTABLE`, prepends that
+executable's directory to PATH and preserves an explicit absolute scratch TASKR_DB;
+the default context has no DB override. The adapter owns the private nonce-bound
+native shell receipt, completed-receipt reuse and separate provenance; its successful
+JSON must contain `native_session` and an absolute `provenance_path`. The controller
+independently rereads the exact native metadata, canonical pane location and campaign
+generation, then retains the normal observe acknowledgment before the work prompt.
+This is identity-only native shell evidence, not a SessionStart hook or model request.
+The adapter invocation is bounded to thirty seconds and one MiB per output stream.
+A failed, partial, rejected, timed-out or mismatched invocation/reread leaves uncertainty
+and withholds work; it is never automatically repeated from uncertain state. A
+pre-invocation observation transport failure remains retryable. Disabled campaigns,
+cancelled cleanup and non-Codex providers never enter this initialization path.
+
 Automatic work requires one canonical checkout root spelling. Before every new
 claim, process start and recovery prompt, the configured cwd must literally equal
 Rust `fs::canonicalize` (including OS realpath case normalization). Launch panes

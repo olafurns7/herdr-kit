@@ -16,6 +16,12 @@ pub(super) trait Backend {
     fn command(&self, args: &[String]) -> Result<Value>;
     fn launch(&self, args: &[String]) -> Result<()>;
     fn process_scan(&self, cwd: &Path, shell: i32, trust: &inventory::Trust) -> Result<Value>;
+    fn initialize_native(&self, _root: i64, _g: i64, _cwd: &str, _a: &Value) -> Result<Value> {
+        Err(store::Error {
+            code: ExitCode::Rejected,
+            message: "native identity initializer unavailable".into(),
+        })
+    }
     fn client_mode(&self) -> bool {
         crate::net::client_mode()
     }
@@ -28,6 +34,60 @@ pub(super) trait Backend {
 }
 pub(super) struct Local;
 impl Backend for Local {
+    fn initialize_native(&self, root: i64, g: i64, cwd: &str, a: &Value) -> Result<Value> {
+        let exe = std::env::current_exe().map_err(failure)?;
+        if exe.file_name().and_then(|s| s.to_str()) != Some("taskr") {
+            return Err(failure(
+                "native initializer requires the selected taskr executable",
+            ));
+        }
+        let mut cmd = Command::new("herdr-codex-identity");
+        cmd.args([
+            number(a, "task_id")?.to_string(),
+            number(a, "launch_id")?.to_string(),
+            root.to_string(),
+            g.to_string(),
+            name(a)?,
+            field(&a["dispatch"], "pane")?.into(),
+            cwd.into(),
+        ])
+        .env("TASKR_WORK_EXECUTABLE", &exe)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                exe.parent()
+                    .ok_or_else(|| failure("missing taskr directory"))?
+                    .display(),
+                std::env::var("PATH").map_err(failure)?
+            ),
+        );
+        if let Some(db) = std::env::var_os("TASKR_DB") {
+            let db = PathBuf::from(db);
+            cmd.env(
+                "TASKR_DB",
+                if db.is_absolute() {
+                    db
+                } else {
+                    std::env::current_dir().map_err(failure)?.join(db)
+                },
+            );
+        } else {
+            cmd.env_remove("TASKR_DB");
+        }
+        let out =
+            process::run(cmd, Duration::from_secs(30), &AtomicBool::new(false)).map_err(failure)?;
+        if out.exit != Some(0)
+            || out.timed_out
+            || out.stdout.digest().truncated
+            || out.stderr.digest().truncated
+        {
+            return Err(failure(
+                "native identity initializer failed or exceeded bounds; shell delivery unconfirmed",
+            ));
+        }
+        serde_json::from_slice(&out.stdout.bytes).map_err(failure)
+    }
     fn process_scan(&self, cwd: &Path, shell: i32, trust: &inventory::Trust) -> Result<Value> {
         inventory::scan(cwd, shell, trust)
     }
@@ -867,6 +927,9 @@ fn dispatch(
     Ok(())
 }
 pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -> Result<()> {
+    if a["process_state"] == "uncertain" {
+        return Ok(());
+    }
     match recover_inner(b, root, g, work, a) {
         Err(e) if e.message.starts_with("process-stop-identity:") => {
             uncertain(b, a, root, g, &e.message)?;
@@ -895,7 +958,7 @@ fn recover_inner(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -
         )?;
         return Ok(());
     }
-    let Some(observed_agent) = observation(agent(b, pane))? else {
+    let Some(mut observed_agent) = observation(agent(b, pane))? else {
         uncertain(
             b,
             a,
@@ -905,6 +968,17 @@ fn recover_inner(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -
         )?;
         return Ok(());
     };
+    let mut log =
+        observation(b.command(&["log".into(), task.to_string(), "--limit".into(), "0".into()]))?;
+    if observed_agent["agent_session"].is_null() {
+        observed_agent = initialize_missing_native(b, root, g, work, a, &observed_agent, &log)?;
+        log = observation(b.command(&[
+            "log".into(),
+            task.to_string(),
+            "--limit".into(),
+            "0".into(),
+        ]))?;
+    }
     let native = match field(&observed_agent["agent_session"], "value") {
         Ok(native) => native,
         Err(e) => {
@@ -930,8 +1004,6 @@ fn recover_inner(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -
         )?;
         return Ok(());
     }
-    let log =
-        observation(b.command(&["log".into(), task.to_string(), "--limit".into(), "0".into()]))?;
     if has_receipt(&log, launch) {
         b.change(
             "started",
@@ -1044,6 +1116,81 @@ fn recover_inner(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -
         let _ = work;
     }
     Ok(())
+}
+fn initialize_missing_native(
+    b: &impl Backend,
+    root: i64,
+    g: i64,
+    work: &Value,
+    a: &Value,
+    current: &Value,
+    log: &Value,
+) -> Result<Value> {
+    if a["process_state"] != "starting"
+        || !a["native_session"].is_null()
+        || a["lane"]["provider"] != "codex"
+        || current["agent"] != "codex"
+        || current["name"] != name(a)?
+        || current["pane_id"] != a["dispatch"]["pane"]
+        || current["agent_status"] != "idle"
+        || events(log)
+            .iter()
+            .any(|e| e["launch_id"] == a["launch_id"] && e["kind"] == "prompt")
+    {
+        return Err(identity_error(
+            "missing native identity is not a fresh idle Codex start; no initialization or work prompt",
+        ));
+    }
+    let c = current_contract(work)?;
+    let pane = field(&a["dispatch"], "pane")?;
+    observation(start_location(
+        b,
+        pane,
+        field(&a["dispatch"], "workspace")?,
+        &c.checkout.cwd,
+    ))?;
+    same_generation(b, root, g).map_err(retry_transport)?;
+    // The adapter owns sent-intent/receipt reuse. Any failed invocation may have sent its shell command.
+    let initialized = b
+        .initialize_native(root, g, &c.checkout.cwd, a)
+        .map_err(|e| identity_error(format!("native initialization unconfirmed: {}", e.message)))?;
+    let native = field(&initialized, "native_session").map_err(|e| identity_error(e.message))?;
+    let provenance =
+        field(&initialized, "provenance_path").map_err(|e| identity_error(e.message))?;
+    if native.len() > 1024
+        || native.chars().any(char::is_control)
+        || provenance.len() > 4096
+        || provenance.chars().any(char::is_control)
+        || !Path::new(provenance).is_absolute()
+    {
+        return Err(identity_error(
+            "invalid initialized native identity/provenance",
+        ));
+    }
+    let fresh = agent(b, pane)
+        .map_err(|e| {
+            identity_error(format!(
+                "native initialization reread unconfirmed: {}",
+                e.message
+            ))
+        })?
+        .ok_or_else(|| identity_error("native agent absent after initialization"))?;
+    if !owns_agent(&fresh, &name(a)?, native, pane)
+        || fresh["agent"] != "codex"
+        || fresh["agent_status"] != "idle"
+    {
+        return Err(identity_error(
+            "initialized native metadata did not match exact reread",
+        ));
+    }
+    same_generation(b, root, g).map_err(retry_transport)?;
+    observation(start_location(
+        b,
+        pane,
+        field(&a["dispatch"], "workspace")?,
+        &c.checkout.cwd,
+    ))?;
+    Ok(fresh)
 }
 fn events(log: &Value) -> Vec<&Value> {
     match log.as_array() {
