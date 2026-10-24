@@ -123,7 +123,9 @@ and explicitly filters the numeric effective `uid` column against safe rustix
 `geteuid`. Real UID never grants scope: setuid processes with another effective
 UID are outside this profile even if their real UID matches. Conversely, a matching
 effective UID still requires cwd coverage even if its real UID differs. This uses
-no process-name exception. Safe rustix `getsid` supplies
+no process-name exception. Bounded UID/ruid tokens accept unsigned u32 or Darwin's
+signed i32 bit representation (`-2` becomes `4294967294`) before filtering;
+malformed or out-of-range values fail closed. Safe rustix `getsid` supplies
 session IDs; macOS `ps sess` is not a session-ID source. It checks the shell's
 descendants, session and tty, including background process groups. Linux cwd
 reads use `/proc/PID/cwd` for that filtered set; macOS uses

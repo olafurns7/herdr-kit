@@ -48,6 +48,16 @@ fn pid(text: &str, zero: bool) -> Result<i32> {
     }
     Ok(n)
 }
+fn uid_token(text: &str) -> Result<u32> {
+    if text.len() > 11 {
+        return Err(failure("oversized UID token"));
+    }
+    if text.starts_with('-') {
+        text.parse::<i32>().map(i32::cast_unsigned).map_err(failure)
+    } else {
+        text.parse::<u32>().map_err(failure)
+    }
+}
 fn parse_ps(bytes: &[u8], uid: u32) -> Result<Vec<Row>> {
     let text = std::str::from_utf8(bytes).map_err(failure)?;
     if text.is_empty() || !text.ends_with('\n') {
@@ -60,8 +70,8 @@ fn parse_ps(bytes: &[u8], uid: u32) -> Result<Vec<Row>> {
         if fields.len() < 8 || index == MAX {
             return Err(failure("invalid or bounded ps inventory"));
         }
-        let effective: u32 = fields[0].parse().map_err(failure)?;
-        let _: u32 = fields[1].parse().map_err(failure)?;
+        let effective = uid_token(fields[0])?;
+        uid_token(fields[1])?;
         let id = pid(fields[2], true)?;
         if !seen.insert(id) {
             return Err(failure("duplicate ps PID"));
@@ -490,6 +500,75 @@ mod tests {
             tty: tty.into(),
             command: command.into(),
             zombie: false,
+        }
+    }
+    #[test]
+    fn signed_uid_tokens_normalize_before_filtering_without_exempting_names() {
+        let bytes=b"-2 -2 3305 1 3305 ?? Ss /usr/libexec/dhcp6d\n4294967294 501 3306 1 3306 ttys1 S zsh\n-2 4294967294 3307 1 3307 ? S taskr\n501 -2 10 1 10 ttys2 S zsh\n501 501 20 1 20 ? S taskr\n";
+        assert_eq!(
+            parse_ps(bytes, 501)
+                .unwrap()
+                .iter()
+                .map(|r| r.pid)
+                .collect::<Vec<_>>(),
+            vec![10, 20]
+        );
+        let high = 4294967294;
+        let mut rows = parse_ps(bytes, high).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.pid).collect::<Vec<_>>(),
+            vec![3305, 3306, 3307]
+        );
+        for r in &mut rows {
+            r.session = r.pid;
+        }
+        let trust = Trust {
+            shells: BTreeMap::from([(3306, shell("zsh", "w1:p1", 3306))]),
+            ..Default::default()
+        };
+        assert!(
+            evidence(
+                &rows,
+                &BTreeMap::new(),
+                Path::new("/checkout"),
+                3306,
+                3307,
+                high,
+                &BTreeSet::new(),
+                &trust
+            )
+            .is_err()
+        );
+        let scan = evidence(
+            &rows,
+            &BTreeMap::from([(3305, PathBuf::from("/checkout/sub"))]),
+            Path::new("/checkout"),
+            3306,
+            3307,
+            high,
+            &BTreeSet::new(),
+            &trust,
+        )
+        .unwrap();
+        assert_eq!(scan["checkout_remaining"][0]["pid"], 3305);
+        for (text, expected) in [
+            ("-2", 4294967294),
+            ("-1", u32::MAX),
+            ("4294967295", u32::MAX),
+            ("-2147483648", 2147483648),
+            ("0", 0),
+        ] {
+            assert_eq!(uid_token(text).unwrap(), expected);
+        }
+        for text in [
+            "4294967296",
+            "-2147483649",
+            "--2",
+            "nobody",
+            "",
+            "000000000000",
+        ] {
+            assert!(uid_token(text).is_err());
         }
     }
     #[test]
