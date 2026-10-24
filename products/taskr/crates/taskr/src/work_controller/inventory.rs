@@ -455,7 +455,7 @@ fn classified_evidence(
     }
     Ok(
         json!({"method":"local-user-session-cwd-v1","uid":uid,"shell_pid":shell,"session_id":target.session,
-        "scanned":rows.len(),"deleted_cwd":deleted_cwd,"session_remaining":session,"checkout_remaining":checkout_remaining,
+        "scanned":rows.len(),"deleted_cwd":deleted_cwd,"privileged_cwd":0,"session_remaining":session,"checkout_remaining":checkout_remaining,
         "exempt":exempt.into_values().collect::<Vec<_>>()}),
     )
 }
@@ -650,6 +650,7 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(scan["deleted_cwd"], 1);
+                assert_eq!(scan["privileged_cwd"], 0);
                 assert_eq!(
                     scan["checkout_remaining"].as_array().unwrap().len(),
                     usize::from(inside)

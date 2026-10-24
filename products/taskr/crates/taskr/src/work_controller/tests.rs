@@ -227,7 +227,7 @@ impl driver::Backend for Fake {
             self.native("replacement", "replacement");
         }
         Ok(
-            json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":400,"session_id":400,"scanned":3,"deleted_cwd":0,
+            json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":400,"session_id":400,"scanned":3,"deleted_cwd":0,"privileged_cwd":0,
             "session_remaining":if self.scan_blocker.get(){vec![json!({"pid":401,"command":"synthetic-child"})]}else{vec![]},
             "checkout_remaining":[],"exempt":[{"pid":400,"reason":"workspace-shell","pane":"w1:p1","session_id":400,"foreground_pgid":400,"session_pids":[400]},{"pid":500,"reason":"campaign-root","pane":"w2:p1","foreground_pgid":500,"foreground_pids":[500],"observed_at":store::now()},{"pid":600,"reason":"observer","observer_pid":600,"parent_chain":[600]}]}),
         )
@@ -356,6 +356,7 @@ impl driver::Backend for Fake {
                 );
                 assert_eq!(data.as_ref().unwrap()["process_scan"]["shell_pid"], 400);
                 assert_eq!(data.as_ref().unwrap()["process_scan"]["deleted_cwd"], 0);
+                assert_eq!(data.as_ref().unwrap()["process_scan"]["privileged_cwd"], 0);
                 a["process_state"] = json!("stopped");
             }
             "reconcile" => {
