@@ -118,7 +118,7 @@ pub(super) fn stored(argv: &[String]) -> bool {
             && args.first().is_some_and(|s| {
                 matches!(
                     s.as_str(),
-                    "drive" | "run-checks" | "source" | "_bounded-check"
+                    "drive" | "run-checks" | "source" | "inspect-stop" | "_bounded-check"
                 )
             }))
         && !(name == "jobs"
@@ -253,7 +253,7 @@ pub(super) fn check_args(argv: &[String]) -> Result<(), String> {
             if args.first().is_some_and(|s| {
                 matches!(
                     s.as_str(),
-                    "drive" | "run-checks" | "source" | "_bounded-check"
+                    "drive" | "run-checks" | "source" | "inspect-stop" | "_bounded-check"
                 )
             }) =>
         {
@@ -604,7 +604,7 @@ mod tests {
             assert!(check_args(&args).is_ok());
         }
         assert!(check_args(&argv(&["jobs", "await", "--binding", "a", "--binding=b"])).is_err());
-        for verb in ["drive", "run-checks", "source", "_bounded-check"] {
+        for verb in ["drive", "run-checks", "source", "inspect-stop", "_bounded-check"] {
             let args = argv(&["--json", "work", verb, "1"]);
             assert!(!stored(&args));
             assert!(!crate::net::spoolable(&args));
