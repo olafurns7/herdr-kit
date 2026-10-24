@@ -19,6 +19,17 @@ with tempfile.TemporaryDirectory(prefix='herdr-hub-test.') as scratch:
     scratch = Path(scratch).resolve()
     stubs = scratch / 'stubs'
     stubs.mkdir()
+    # Exercise detachment without depending on an installed util-linux setsid.
+    executable(stubs / 'setsid', '''#!/usr/bin/python3
+import json, os, sys
+from pathlib import Path
+helper = str(Path(os.environ['HOME']) / '.local/bin/herdr-hub')
+if sys.argv[1:4] != [helper, '__move-helper', '42']:
+    sys.exit('fixture setsid refuses an unexpected helper')
+(Path(os.environ['CASE']) / 'setsid-args').write_text(json.dumps(sys.argv[1:]))
+os.setsid()
+os.execv(helper, sys.argv[1:])
+''')
     executable(stubs / 'herdr', '''#!/usr/bin/python3
 import json, os, sys
 from pathlib import Path
@@ -442,6 +453,7 @@ else: sys.exit(98)
     expect(c, 1)
     assert 'no handover since adopt 7' in c[4], c[4]
     assert not herdr_calls(c)
+    assert not (c[0] / 'setsid-args').exists()
     c = run('move refuses outside the recorded hub pane', args=('move','42'), mode='move', location={'HERDR_PANE_ID':'wA:p5'})
     expect(c, 1)
     assert 'recorded at this pane' in c[4]
@@ -460,6 +472,8 @@ else: sys.exit(98)
     keys = [a for a, env in calls if a[:2] == ['pane','send-keys']]
     assert keys == [['pane','send-keys','wA:p1','esc','ctrl+c','ctrl+c']], keys
     bindir = c[1] / '.local/bin'
+    assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
+            '--lane','opus-high','--session','sess-hub','--','--resume','id with spaces']
     assert (c[0] / 'typed').read_text() == f"'{bindir}/herdr-hub' 42 --lane 'opus-high' -- '--resume' 'id with spaces'", text
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
 
@@ -469,6 +483,8 @@ else: sys.exit(98)
     log = Path(c[3].splitlines()[0].split('; log ')[1])
     wait_for(log, 'herdr-hub: moved 42: generation 9 live')
     bindir = c[1] / '.local/bin'
+    assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
+            '--lane','opus-high','--session','sess-hub','--jobs','--','--resume','id with spaces',"quote'arg"]
     assert shlex.split((c[0] / 'typed').read_text()) == [str(bindir / 'herdr-hub'),'42','--lane','opus-high','--jobs',
                                                         '--','--resume','id with spaces',"quote'arg"]
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
@@ -494,13 +510,16 @@ else: sys.exit(98)
 
     nosetsid = scratch / 'nosetsid'
     nosetsid.mkdir()
+    for entry in stubs.iterdir():
+        if entry.name != 'setsid': (nosetsid / entry.name).symlink_to(entry)
     for bindir in ('/usr/bin', '/bin'):
         for entry in os.listdir(bindir):
             if entry != 'setsid' and not os.path.lexists(nosetsid / entry): (nosetsid / entry).symlink_to(Path(bindir) / entry)
-    c = run('move without setsid fails before any helper or stop', args=('move','42'), mode='move', location={'PATH':f'{stubs}:{nosetsid}'})
+    c = run('move without setsid fails before any helper or stop', args=('move','42'), mode='move', location={'PATH':str(nosetsid)})
     expect(c, 1)
     assert 'needs setsid' in c[4], c[4]
-    assert not herdr_calls(c) and not list((c[1] / '.local/state').glob('**/hub-move-*.log'))
+    assert not c[5] and not herdr_calls(c) and not (c[0] / 'setsid-args').exists()
+    assert not (c[1] / '.local/state').exists()
 
     fake = scratch / 'fake-setsid'
     fake.mkdir()
