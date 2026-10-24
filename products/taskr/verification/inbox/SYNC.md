@@ -1,11 +1,12 @@
-# Integrated v5 source correspondence (execution passed, review pending)
+# Integrated v5 source correspondence (execution passed, review READY)
 
 Inspected source: `a21f83afc3fe2082f3da980f1d93e6992f804f64`.
 Previous source and historical successful execution: `71d4146fdbe99a67c0c698877478bc7c796cc360`.
 Parent execution of package/frozen checkout `9af0ea5` passed all 25 exact cases
 and six self-checks against the inspected source map. Command/evidence inventories
-and retained tool/binary hashes were checked. Independent execution review remains
-pending. Historical execution, tool hashes and READY review remain separately
+and retained tool/binary hashes were checked. Independent correspondence/execution
+review is READY for source `a21f83a`, package `9af0ea5` and run 3; metadata
+`6da0a9a` was found consistent. Historical execution, tool hashes and READY review remain separately
 preserved in `historical_executions`; last successful source now records `a21f83a`.
 
 ## Every covered change
@@ -58,7 +59,7 @@ module diffs concern jobs receipt/fallback behavior and work validation/row typi
 they add no protected cursor/lease writer and are outside the unassigned fixture.
 Their state machines remain excluded; the slotr manifest is not added to coverage.
 
-## Maintained correspondence and remaining review
+## Maintained correspondence and reviewed execution
 
 Only the source pin/hashes, supporting action-map anchors/assumptions, documentation
 and verification-file hashes are maintained. `Inbox.tla`, `Inbox.cfg`, `verify.py`
@@ -75,7 +76,9 @@ criteria. All 83 command log hashes and 176 evidence inventory hashes match.
 The nineteen covered blobs also match `0e99765`, without repinning or claiming
 execution of its uncovered changes. No model/build was rerun to maintain metadata.
 
-Independent execution review is pending. Source drift still refuses a run;
+The READY review is separately pinned by its source/package/metadata commits and
+report hash. The copied self-check/proof log is a supplementary receipt; the
+original 176-entry proof inventory is unchanged. Source drift still refuses a run;
 hashes are not auto-refreshed. Uncovered modules may change independently, so each
 run must name its exact complete checkout and binary provenance. Later metadata
 edits are outside the executed package; hashes bind the retained original bytes.

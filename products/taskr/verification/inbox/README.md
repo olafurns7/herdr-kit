@@ -1,4 +1,4 @@
-# Inbox fencing: bounded safety package (execution passed, review pending)
+# Inbox fencing: bounded safety package (execution passed, review READY)
 
 This checks a small TLA+ model with TLC and replays selected paths through the
 real taskr CLI and SQLite. It is not a proof of the Rust implementation. The
@@ -6,7 +6,8 @@ source/action map is `manifest.json`; its source pin is
 `a21f83afc3fe2082f3da980f1d93e6992f804f64`. Parent execution of package `9af0ea5`
 in frozen checkout `9af0ea5` passed all 25 exact cases and six driver self-checks.
 The retained command/evidence inventories and tool hashes were checked;
-**independent execution review remains pending**. The nineteen covered blobs
+**independent correspondence/execution review is READY** for source `a21f83a` and
+executed package `9af0ea5`; it found metadata `6da0a9a` consistent. The nineteen covered blobs
 also match `0e99765`; this does not extend execution proof to its uncovered code.
 
 [Source correspondence](SYNC.md) explains every covered change from `71d4146`
@@ -176,9 +177,13 @@ The current successful receipt identifies all 83 command logs and 176 retained
 evidence entries. Its result, commands, package inventory, evidence inventory and
 original manifest are pinned by SHA-256 in `last_execution.receipt_sha256`.
 `self-checks-and-proof.log` is the portable label for the combined parent build,
-six-self-check and proof receipt. Independent execution review is pending; no
-current READY review or review hash is asserted. The earlier successful execution
-and its READY review hash remain under `historical_executions`. The artifacts
+six-self-check and proof receipt, now retained alongside the proof artifacts. It
+is supplementary and was not added to the original 176-entry proof inventory.
+The separately retained `review-inbox-v5-execution-report.md` is pinned by its
+report hash and reviewed source/package/metadata commits; its verdict is READY.
+Execution success and independent review remain distinct recorded results. The
+earlier successful execution and READY review hash remain under
+`historical_executions`. The artifacts
 remain externally retained; metadata contains no machine paths, host identities
 or task IDs. Receipt hashes bind each original run and its exact package, not
 subsequent documentation/metadata edits or later uncovered source changes.

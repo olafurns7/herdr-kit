@@ -122,9 +122,9 @@
   "current_integration": {
     "covered_blobs_checked_through": "0e9976528c02c24077b07b6e640d459766cf3491",
     "execution": "pass",
-    "outcome": "execution-passed-review-pending",
-    "reason": "Complete inbox ASK_ONLY execution passed at pinned package/checkout; independent review pending. Matching nineteen covered blobs in a later checkout do not prove its uncovered changes or work/controller/jobs state machines.",
-    "review": "pending",
+    "outcome": "execution-and-review-passed",
+    "reason": "Complete inbox ASK_ONLY execution passed at pinned package/checkout and independent correspondence/execution review is READY at those pins. Matching covered blobs do not prove later uncovered changes or work/controller/jobs state machines.",
+    "review": "READY",
     "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64"
   },
   "delivery_policy": {
@@ -199,7 +199,16 @@
     "case_count": 25,
     "command_log_count": 83,
     "evidence_entry_count": 176,
-    "execution_review_verdict": "pending",
+    "execution_review": {
+      "package_commit": "9af0ea5c35b9b6f2a90c940fc10866b7d757dcbe",
+      "proof_checkout_commit": "9af0ea5c35b9b6f2a90c940fc10866b7d757dcbe",
+      "report_label": "review-inbox-v5-execution-report.md",
+      "reviewed_metadata_commit": "6da0a9abd02e571d18d45650de2d409408586804",
+      "scope": "Bounded inbox ASK_ONLY source correspondence and execution receipts only; work/controller/jobs and ongoing uncovered module changes remain excluded.",
+      "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
+      "verdict": "READY"
+    },
+    "execution_review_verdict": "READY",
     "model_negative_control_distinct": {
       "NC1": 393,
       "NC2": 530,
@@ -219,11 +228,16 @@
       "manifest.json": "fe718d8ebd479da53c638eeffc36347740f311be2ff401fbfcc703bd8cf8477d",
       "package-hashes.json": "e1bfac575df7f51014e83770c38150bef141c1a8c6d360e80ec8a094c65655c8",
       "result.json": "44ef83192ef2c613eee42d1f3f7183b08cd61a759705b564a2b2a53db0dac16f",
+      "review-inbox-v5-execution-report.md": "1c0ca5a43fdae0032dc8991224929067c54eb1a55468ec35512744a3eca2bec8",
       "self-checks-and-proof.log": "27a7df7debb4cdbcdf3cdbb5652dc822e7d02c74aaf4a3e5b1d8f305ffcf9d08"
     },
     "scope": "Bounded ASK_ONLY inbox model and fixed CLI replays at the exact package/checkout only; work/controller/jobs state machines and subsequent metadata edits are not proved.",
     "self_check_count": 6,
-    "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64"
+    "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
+    "supplementary_receipts": {
+      "review-inbox-v5-execution-report.md": "Separately retained independent review report; outside original proof inventory.",
+      "self-checks-and-proof.log": "Copied alongside proof evidence after finalization; original proof inventory unchanged."
+    }
   },
   "last_successful_source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
   "negative_controls": {
@@ -296,7 +310,7 @@
     "to_source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
     "unchanged_covered_file_count": 14
   },
-  "status": "execution-passed-review-pending",
+  "status": "execution-and-review-passed",
   "tool_identity": {
     "engine": "TLA+ TLC, tlc2.TLC, exhaustive BFS, one worker, seed 1",
     "identity_evidence": "Each run pins SHA-256 of Java, TLC jar, supplied taskr and built mutants; Java -version and command receipts retained.",
@@ -326,8 +340,8 @@
   "verification_files": {
     "Inbox.cfg": "629e507b4663c9bfc0b0d1667f13d236e494d216b30d46b09255740206f2911c",
     "Inbox.tla": "f220a2d373f7191b0a5c81e6a66c2b42ba96dd7f806981fee694bd3963ed5034",
-    "README.md": "df81ec546b1e6d67ee02a56de8a26f6a76596a5928c41c1c0086fb7641542908",
-    "SYNC.md": "bc08117406c24377fd025da1bc407dca637995a9dba15549a16ed8d0e1b32147",
+    "README.md": "db4db1ef369833f74ff61d9076e46226f2af5fd75d59002c4e07d4db0f69b114",
+    "SYNC.md": "76b1c390831e79410b2e061c085b5bc8e34e573a72d537fb16ab577671a2f32a",
     "test_verify.py": "dc32222fcfed29e7298bb7346b0b50455e49010ecf1871d304b169725c5fe7e0",
     "verify.py": "6eab013ef5e18af03f193d21127f422b437bd6d027f6ba354b596cc2bd1c2926"
   }
