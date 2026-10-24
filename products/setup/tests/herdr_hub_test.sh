@@ -142,6 +142,13 @@ fi
 printf '%s\\n' "$n"
 ''')
     executable(stubs / 'sleep', '#!/bin/sh\nexit 0\n')
+    # Require portable sed argv even when this fixture runs with GNU sed.
+    executable(stubs / 'sed', '''#!/bin/sh
+for arg; do
+    [ "$arg" != -- ] || { printf 'fixture sed: -- is outside the portable profile\\n' >&2; exit 2; }
+done
+exec /usr/bin/sed "$@"
+''')
     cdl = '''#!/usr/bin/python3
 import json, os, signal, sys, time
 from pathlib import Path

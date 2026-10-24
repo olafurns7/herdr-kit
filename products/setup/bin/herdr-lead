@@ -73,7 +73,7 @@ take_lock() {
     lock_dir=$state_dir/start.lock
     take_guard || fail "$state_dir/start.guard is held for 10 s; remove it only if no herdr-lead or herdr-hub start runs for root $root"
     if ! mkdir -- "$lock_dir" 2>/dev/null; then
-        owner=$(sed -n 1p -- "$lock_dir/owner" 2>/dev/null) || owner=
+        owner=$(sed -n '1p' "$lock_dir/owner" 2>/dev/null) || owner=
         owner_pid=${owner%% *}
         owner_host=${owner#* }
         if ! number "$owner_pid" || [ "$owner_host" != "$host" ] || kill -0 "$owner_pid" 2>/dev/null; then

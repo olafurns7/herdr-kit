@@ -158,6 +158,14 @@ n=$((n + 30))
 printf '%s\n' "$n" >"$CASE/clock"
 printf '%s\n' "$n"
 EOF
+# Require portable sed argv even when this fixture runs with GNU sed.
+cat >"$scratch/stubs/sed" <<'EOF'
+#!/bin/sh
+for arg; do
+    [ "$arg" != -- ] || { printf 'fixture sed: -- is outside the portable profile\n' >&2; exit 2; }
+done
+exec /usr/bin/sed "$@"
+EOF
 printf '%s\n' '#!/bin/sh' 'printf "sleep|%s\n" "$1" >>"$CALLS"' >"$scratch/stubs/sleep"
 printf '%s\n' '#!/bin/sh' 'echo "real Claude must not run" >&2' 'exit 99' >"$scratch/stubs/claude"
 chmod 0755 "$scratch/stubs/"*
