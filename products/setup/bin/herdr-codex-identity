@@ -115,6 +115,7 @@ class Adapter:
         p = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, env=env, cwd="/", start_new_session=True)
         chunks = {p.stdout: bytearray(), p.stderr: bytearray()}
+        original = None
         try:
             with selectors.DefaultSelector() as sel:
                 for stream in chunks:
@@ -130,12 +131,26 @@ class Adapter:
                             require(sum(map(len, chunks.values())) <= LIMIT, "CLI output limit")
                 require(p.wait(timeout=self.remaining()) == 0, "CLI failed; work withheld")
             return bytes(chunks[p.stdout])
+        except BaseException as error:
+            original = error
+            raise
         finally:
-            if p.poll() is None:
-                os.killpg(p.pid, signal.SIGKILL)
-                p.wait(timeout=1)
-            p.stdout.close()
-            p.stderr.close()
+            operation = "poll"
+            try:
+                if p.poll() is None:
+                    operation = "killpg"
+                    os.killpg(p.pid, signal.SIGKILL)
+                    operation = "wait"
+                    p.wait(timeout=1)
+            except (OSError, subprocess.SubprocessError) as error:
+                detail = (f"CLI cleanup pid={p.pid} op={operation} errno={getattr(error, 'errno', None)}: "
+                          f"{str(error)[:256]}")
+                if original is None:
+                    raise RuntimeError(detail) from error
+                print("herdr-codex-identity: " + detail, file=sys.stderr)
+            finally:
+                p.stdout.close()
+                p.stderr.close()
 
     def herdr(self, *args):
         value = json.loads(self.command(["herdr", *args]))
@@ -187,70 +202,90 @@ class Adapter:
                 "launch binding changed")
         return found[0], launches[0].get("session_ref")
 
-    def process(self, pid):
+    def process(self, pid, *, classify_only=False):
         require(type(pid) is int and 0 < pid <= 2147483647, "invalid foreground PID")
-        if sys.platform.startswith("linux"):
-            root = Path(f"/proc/{pid}")
-            require(root.stat().st_uid == os.geteuid(), "foreign foreground UID")
-            with (root / "stat").open("rb") as f:
-                raw = f.read(16385)
-            require(len(raw) <= 16384, "process stat read limit")
-            fields = raw.rsplit(b") ", 1)[1].split()
-            require(fields[0] not in (b"Z", b"X"), "dead native process")
-            start = fields[19].decode()
-            exe = os.readlink(root / "exe")
-            cwd = os.readlink(root / "cwd")
-            with (root / "cmdline").open("rb") as f:
-                argv = f.read(65537)
-            require(len(argv) <= 65536 and argv.endswith(b"\0"), "invalid native argv")
-            argv = argv.decode().split("\0")[:-1]
-        elif sys.platform == "darwin":
-            # SDK sys/proc_info.h: PROC_PIDTBSDINFO, including microsecond start identity.
-            class BSDInfo(ctypes.Structure):
-                _fields_ = [(n, ctypes.c_uint32) for n in (
-                    "flags", "status", "xstatus", "pid", "ppid", "uid", "gid", "ruid", "rgid",
-                    "svuid", "svgid", "reserved")] + [("comm", ctypes.c_char * 16),
-                    ("name", ctypes.c_char * 32)] + [(n, ctypes.c_uint32) for n in (
-                    "nfiles", "pgid", "jobc", "tdev", "tpgid", "nice")] + [
-                    ("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64)]
-            lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-            lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
-            lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
-            info = BSDInfo()
-            ctypes.set_errno(0)
-            returned = lib.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
-            error = ctypes.get_errno()
-            reason = None
-            if returned != ctypes.sizeof(info):
-                reason = ("gone" if returned <= 0 and error == errno.ESRCH else
-                          "denied" if returned <= 0 and error in (errno.EPERM, errno.EACCES) else
-                          "empty-result" if returned == 0 and error == 0 else "size-or-query-failure")
-            elif info.pid != pid:
-                reason = "pid-mismatch"
-            elif info.uid != os.geteuid():
-                reason = "foreign-uid"
-            elif info.status == 5:
-                reason = "zombie"
-            require(reason is None, f"native process identity unavailable: pid={pid} op=proc_pidinfo class={reason} "
-                    f"bytes={returned}/{ctypes.sizeof(info)} errno={error} "
-                    f"returned_pid={info.pid} uid={info.uid}/{os.geteuid()} status={info.status}")
-            start = [info.start_sec, info.start_usec]
-            buf = ctypes.create_string_buffer(4096)
-            ctypes.set_errno(0)
-            returned = lib.proc_pidpath(pid, buf, len(buf))
-            error = ctypes.get_errno()
-            require(returned > 0, f"native executable unavailable: pid={pid} op=proc_pidpath "
-                    f"bytes={returned} errno={error} uid={info.uid}/{os.geteuid()} status={info.status}")
-            exe = os.fsdecode(buf.value)
-            argv = self.command(["/bin/ps", "-ww", "-p", str(pid), "-o", "args="]).decode().strip()
-            require(0 < len(argv.encode()) <= 65536, "invalid native argv")
-            output = self.command(["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn0"])
-            paths = [os.fsdecode(v[1:]) for v in output.split(b"\0") if v.startswith(b"n")]
-            require(len(paths) == 1, "native cwd unavailable")
-            cwd = paths[0]
-        else:
-            raise RuntimeError("native identity supports Linux and macOS only")
-        return dict(pid=pid, start=start, exe=exe, argv=argv, cwd=cwd, group=os.getpgid(pid))
+        operation = "platform"
+        try:
+            if sys.platform.startswith("linux"):
+                root = Path(f"/proc/{pid}")
+                operation = "proc-owner"
+                require(root.stat().st_uid == os.geteuid(), "foreign foreground UID")
+                operation = "proc-stat"
+                with (root / "stat").open("rb") as f:
+                    raw = f.read(16385)
+                require(len(raw) <= 16384, "process stat read limit")
+                fields = raw.rsplit(b") ", 1)[1].split()
+                require(fields[0] not in (b"Z", b"X"), "dead native process")
+                start = fields[19].decode()
+                operation = "proc-exe"
+                exe = os.readlink(root / "exe")
+                if not classify_only:
+                    operation = "proc-cwd"
+                    cwd = os.readlink(root / "cwd")
+                    operation = "proc-cmdline"
+                    with (root / "cmdline").open("rb") as f:
+                        argv = f.read(65537)
+                    require(len(argv) <= 65536 and argv.endswith(b"\0"), "invalid native argv")
+                    argv = argv.decode().split("\0")[:-1]
+            elif sys.platform == "darwin":
+                # SDK sys/proc_info.h: PROC_PIDTBSDINFO, including microsecond start identity.
+                class BSDInfo(ctypes.Structure):
+                    _fields_ = [(n, ctypes.c_uint32) for n in (
+                        "flags", "status", "xstatus", "pid", "ppid", "uid", "gid", "ruid", "rgid",
+                        "svuid", "svgid", "reserved")] + [("comm", ctypes.c_char * 16),
+                        ("name", ctypes.c_char * 32)] + [(n, ctypes.c_uint32) for n in (
+                        "nfiles", "pgid", "jobc", "tdev", "tpgid", "nice")] + [
+                        ("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64)]
+                operation = "load-libproc"
+                lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+                lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+                lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+                info = BSDInfo()
+                ctypes.set_errno(0)
+                operation = "proc_pidinfo"
+                returned = lib.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+                error = ctypes.get_errno()
+                reason = None
+                if returned != ctypes.sizeof(info):
+                    reason = ("gone" if returned <= 0 and error == errno.ESRCH else
+                              "denied" if returned <= 0 and error in (errno.EPERM, errno.EACCES) else
+                              "empty-result" if returned == 0 and error == 0 else "size-or-query-failure")
+                elif info.pid != pid:
+                    reason = "pid-mismatch"
+                elif info.uid != os.geteuid():
+                    reason = "foreign-uid"
+                elif info.status == 5:
+                    reason = "zombie"
+                require(reason is None, f"native process identity unavailable: pid={pid} op=proc_pidinfo class={reason} "
+                        f"bytes={returned}/{ctypes.sizeof(info)} errno={error} "
+                        f"returned_pid={info.pid} uid={info.uid}/{os.geteuid()} status={info.status}")
+                start = [info.start_sec, info.start_usec]
+                buf = ctypes.create_string_buffer(4096)
+                ctypes.set_errno(0)
+                operation = "proc_pidpath"
+                returned = lib.proc_pidpath(pid, buf, len(buf))
+                error = ctypes.get_errno()
+                require(returned > 0, f"native executable unavailable: pid={pid} op=proc_pidpath "
+                        f"bytes={returned} errno={error} uid={info.uid}/{os.geteuid()} status={info.status}")
+                exe = os.fsdecode(buf.value)
+                if not classify_only:
+                    operation = "ps-argv"
+                    argv = self.command(["/bin/ps", "-ww", "-p", str(pid), "-o", "args="]).decode().strip()
+                    require(0 < len(argv.encode()) <= 65536, "invalid native argv")
+                    operation = "lsof-cwd"
+                    output = self.command(["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn0"])
+                    paths = [os.fsdecode(v[1:]) for v in output.split(b"\0") if v.startswith(b"n")]
+                    require(len(paths) == 1, "native cwd unavailable")
+                    cwd = paths[0]
+            else:
+                raise RuntimeError("native identity supports Linux and macOS only")
+            require(Path(exe).is_absolute() and len(os.fsencode(exe)) <= 4096, "invalid kernel executable path")
+            if classify_only:
+                return dict(pid=pid, start=start, exe=exe)
+            operation = "getpgid"
+            return dict(pid=pid, start=start, exe=exe, argv=argv, cwd=cwd, group=os.getpgid(pid))
+        except OSError as error:
+            raise RuntimeError(f"process pid={pid} op={operation} errno={error.errno}: {str(error)[:256]}") from error
 
     def guard(self, expected=None):
         assignment, launch_native = self.ledger()
@@ -279,22 +314,35 @@ class Adapter:
         require(info["pane_id"] == self.pane, "process pane mismatch")
         pids = [p["pid"] for p in info["foreground_processes"]]
         require(0 < len(pids) <= 64 and len(set(pids)) == len(pids), "invalid foreground inventory")
+        pinned = (self.basis or {}).get("process")
+        require(pinned is None or pinned["pid"] in pids, "pinned native PID absent from foreground inventory")
         candidates = []
         for pid in pids:
+            operation = "classify"
             try:
+                classification = self.process(pid, classify_only=True)
+                candidate = Path(classification["exe"]).name == "codex"
+                if pinned is not None and pid == pinned["pid"]:
+                    require(candidate and all(pinned[k] == v for k, v in classification.items()),
+                            "pinned native process replaced or no longer Codex")
+                if not candidate:
+                    continue
+                operation = "snapshot"
                 process = self.process(pid)
-            except (RuntimeError, OSError) as error:
-                row = next(p for p in info["foreground_processes"] if p["pid"] == pid)
-                hint = json.dumps(str(row.get("name", ""))[:64], ensure_ascii=True)
-                pinned = (self.basis or {}).get("process", {}).get("pid")
-                raise RuntimeError(f"foreground pid={pid} name_hint={hint} pinned_native_pid={pinned}: "
-                                   f"{str(error)[:512]}") from error
-            if Path(process["exe"]).name == "codex":
+                require(all(process[k] == v for k, v in classification.items()),
+                        "native process changed during classification")
+                operation = "native-magic"
                 with open(process["exe"], "rb") as f:
                     magic = f.read(4)
                 require(magic in (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
                                   b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"), "Codex is not a native executable")
                 candidates.append(process)
+            except (RuntimeError, OSError) as error:
+                row = next(p for p in info["foreground_processes"] if p["pid"] == pid)
+                hint = json.dumps(str(row.get("name", ""))[:64], ensure_ascii=True)
+                pinned_pid = pinned["pid"] if pinned is not None else None
+                raise RuntimeError(f"foreground pid={pid} name_hint={hint} pinned_native_pid={pinned_pid} op={operation}: "
+                                   f"{str(error)[:512]}") from error
         require(len(candidates) == 1, "expected one native foreground Codex")
         process = candidates[0]
         require(process["cwd"] == str(self.cwd) and process["group"] == info["foreground_process_group_id"],

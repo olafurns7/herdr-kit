@@ -4,6 +4,7 @@ import importlib.util
 import json
 import fcntl
 import errno
+import io
 import os
 from pathlib import Path
 import socket
@@ -68,9 +69,11 @@ class Fake(m.Adapter):
             return b"".join(m.encoded(v) for v in self.log)
         raise AssertionError(args)
 
-    def process(self, pid):
-        return dict(pid=pid, start=self.process_version, exe=self.exe, argv=[self.exe],
-                    cwd=str(self.cwd), group=30)
+    def process(self, pid, *, classify_only=False):
+        result = dict(pid=pid, start=self.process_version, exe=self.exe)
+        if not classify_only:
+            result.update(argv=[self.exe], cwd=str(self.cwd), group=30)
+        return result
 
     def preflight(self):
         if self.fault == "server-down":
@@ -408,16 +411,176 @@ class IdentityTests(unittest.TestCase):
                         value["process_info"]["foreground_processes"] = [dict(pid=30, name="codex"), dict(pid=31, name=hint)]
                     return value
                 original_process = self.fake.process
-                def process(pid):
+                def process(pid, **kwargs):
                     if pid == failing_pid:
                         raise RuntimeError(f"native process identity unavailable: pid={pid} op=proc_pidinfo class=gone bytes=0/136 errno=3")
-                    return original_process(pid)
+                    return original_process(pid, **kwargs)
                 with patch.object(self.fake, "herdr", side_effect=herdr), patch.object(self.fake, "process", side_effect=process):
                     with self.assertRaisesRegex(RuntimeError, f'foreground pid={failing_pid} name_hint="{hint}".*class=gone') as caught:
                         self.fake.run_test()
                     self.assertIn("pinned_native_pid=30", str(caught.exception))
                 self.assertEqual(self.fake.sent_count, 0)
                 self.assertFalse((self.fake.folder / "init.json").exists())
+
+    def test_kernel_git_classification_skips_deep_reads_despite_codex_hint(self):
+        self.fake.native = ID
+        self.fake.guard()
+        original_herdr, original_process = self.fake.herdr, self.fake.process
+        modes = []
+        def herdr(*args):
+            value = original_herdr(*args)
+            if args[:2] == ("pane", "process-info"):
+                value["process_info"]["foreground_processes"].append(dict(pid=31, name="codex"))
+            return value
+        def process(pid, *, classify_only=False):
+            if pid == 31:
+                modes.append(classify_only)
+                return m.Adapter.process(self.fake, pid, classify_only=classify_only)
+            return original_process(pid, classify_only=classify_only)
+        lib = Mock()
+        def pidinfo(pid, flavor, arg, output, size):
+            info = output._obj
+            info.pid, info.uid, info.status, info.start_sec, info.start_usec = pid, os.geteuid(), 2, 10, 20
+            return size
+        def pidpath(pid, buf, size):
+            buf.value = b"/usr/bin/git"
+            return len(buf.value)
+        lib.proc_pidinfo.side_effect, lib.proc_pidpath.side_effect = pidinfo, pidpath
+        with patch.object(m.sys, "platform", "darwin"), patch.object(m.ctypes, "CDLL", return_value=lib), \
+                patch.object(m.os, "getpgid", side_effect=ProcessLookupError(errno.ESRCH, "gone after classification")) as group, \
+                patch.object(self.fake, "herdr", side_effect=herdr), patch.object(self.fake, "process", side_effect=process):
+            result = self.fake.run_test()
+        self.assertEqual(result["native_session"], ID)
+        self.assertTrue(modes)
+        self.assertTrue(all(modes))
+        group.assert_not_called()
+        self.assertFalse(any(a[0] in ("/bin/ps", "/usr/sbin/lsof") for a in self.fake.calls))
+        self.assertEqual(self.fake.sent_count, 0)
+
+    def test_pinned_native_absence_or_classification_replacement_refuses(self):
+        for cause in ("absent", "different-pid", "non-codex", "start", "executable"):
+            with self.subTest(cause=cause):
+                root = self.root / cause
+                root.mkdir()
+                f = Fake(root)
+                f.native = ID
+                f.guard()
+                original_herdr, original_process = f.herdr, f.process
+                deep = []
+                def herdr(*args):
+                    value = original_herdr(*args)
+                    if args[:2] == ("pane", "process-info"):
+                        value["process_info"]["foreground_processes"] = (
+                            [] if cause == "absent" else [dict(pid=31 if cause == "different-pid" else 30, name="git")])
+                    return value
+                def process(pid, *, classify_only=False):
+                    if not classify_only:
+                        deep.append(pid)
+                    value = original_process(pid, classify_only=classify_only)
+                    if cause == "non-codex":
+                        value["exe"] = "/usr/bin/git"
+                    elif cause == "start":
+                        value["start"] += 1
+                    elif cause == "executable":
+                        value["exe"] = "/replacement/codex"
+                    return value
+                with patch.object(f, "herdr", side_effect=herdr), patch.object(f, "process", side_effect=process):
+                    with self.assertRaisesRegex(RuntimeError, "invalid foreground inventory|pinned native"):
+                        f.run_test()
+                self.assertEqual(deep, [])
+                self.assertEqual(f.sent_count, 0)
+                self.assertFalse((f.folder / "init.json").exists())
+
+    def test_candidate_failure_replacement_or_multiple_natives_refuses(self):
+        for cause in ("gone-classify", "denied-classify", "gone-snapshot", "start", "executable", "cwd", "group", "multiple"):
+            with self.subTest(cause=cause):
+                root = self.root / cause
+                root.mkdir()
+                f = Fake(root)
+                f.native = ID
+                original_herdr, original_process = f.herdr, f.process
+                def herdr(*args):
+                    value = original_herdr(*args)
+                    if args[:2] == ("pane", "process-info"):
+                        value["process_info"]["foreground_processes"] = [dict(pid=30, name="git")]
+                        if cause == "multiple":
+                            value["process_info"]["foreground_processes"].append(dict(pid=31, name="git"))
+                    return value
+                def process(pid, *, classify_only=False):
+                    if classify_only and cause in ("gone-classify", "denied-classify"):
+                        raise OSError(errno.ESRCH if cause == "gone-classify" else errno.EPERM, "unclassified PID")
+                    if not classify_only and cause == "gone-snapshot":
+                        raise ProcessLookupError(errno.ESRCH, "native candidate gone")
+                    value = original_process(pid, classify_only=classify_only)
+                    if not classify_only:
+                        if cause == "start":
+                            value["start"] += 1
+                        elif cause == "executable":
+                            value["exe"] = "/usr/bin/git"
+                        elif cause == "cwd":
+                            value["cwd"] = str(root)
+                        elif cause == "group":
+                            value["group"] += 1
+                    return value
+                with patch.object(f, "herdr", side_effect=herdr), patch.object(f, "process", side_effect=process):
+                    with self.assertRaises(RuntimeError):
+                        f.run_test()
+                self.assertEqual(f.sent_count, 0)
+                self.assertFalse((f.folder / "init.json").exists())
+
+    def test_full_process_snapshot_retains_group_and_bounded_raw_error_diagnostics(self):
+        lib = Mock()
+        def pidinfo(pid, flavor, arg, output, size):
+            info = output._obj
+            info.pid, info.uid, info.status, info.start_sec, info.start_usec = pid, os.geteuid(), 2, 10, 20
+            return size
+        def pidpath(pid, buf, size):
+            buf.value = b"/usr/bin/git"
+            return len(buf.value)
+        lib.proc_pidinfo.side_effect, lib.proc_pidpath.side_effect = pidinfo, pidpath
+        def command(args):
+            return b"git status\n" if args[0] == "/bin/ps" else b"n" + os.fsencode(self.fake.cwd) + b"\0"
+        with patch.object(m.sys, "platform", "darwin"), patch.object(m.ctypes, "CDLL", return_value=lib), \
+                patch.object(self.fake, "command", side_effect=command) as commands, \
+                patch.object(m.os, "getpgid", return_value=30) as group:
+            snapshot = m.Adapter.process(self.fake, 31)
+            self.assertEqual(snapshot, dict(pid=31, start=[10, 20], exe="/usr/bin/git", argv="git status",
+                                            cwd=str(self.fake.cwd), group=30))
+            self.assertEqual(commands.call_count, 2)
+            group.assert_called_once_with(31)
+            group.side_effect = ProcessLookupError(errno.ESRCH, "x" * 1000)
+            with self.assertRaisesRegex(RuntimeError, "pid=31 op=getpgid errno=3") as error:
+                m.Adapter.process(self.fake, 31)
+            self.assertIsInstance(error.exception.__cause__, ProcessLookupError)
+            self.assertLess(len(str(error.exception)), 350)
+
+    def test_cli_cleanup_error_preserves_original_failure_or_operator_stop(self):
+        for original in (RuntimeError("original CLI failure"), KeyboardInterrupt(), None):
+            with self.subTest(original=type(original).__name__):
+                child = Mock(pid=123)
+                child.poll.return_value = None
+                child.wait.return_value = 0
+                with patch.object(m.subprocess, "Popen", return_value=child), \
+                        patch.object(m.selectors, "DefaultSelector") as selectors, \
+                        patch.object(m.os, "set_blocking"), \
+                        patch.object(m.os, "killpg", side_effect=PermissionError(errno.EPERM, "x" * 1000)), \
+                        patch.object(m.sys, "stderr", new_callable=io.StringIO) as stderr:
+                    if original is not None:
+                        selectors.side_effect = original
+                    else:
+                        selectors.return_value.__enter__.return_value.get_map.return_value = {}
+                    with self.assertRaises(type(original) if original is not None else RuntimeError) as error:
+                        m.Adapter.command(self.fake, ["synthetic-cli"])
+                if original is not None:
+                    self.assertIs(error.exception, original)
+                    detail = stderr.getvalue()
+                    child.wait.assert_not_called()
+                else:
+                    detail = str(error.exception)
+                self.assertIn("CLI cleanup pid=123 op=killpg errno=1", detail)
+                self.assertLess(len(detail), 400)
+                child.stdout.close.assert_called_once()
+                child.stderr.close.assert_called_once()
 
     def test_private_attempt_directory_lock_and_outside_checkout(self):
         self.fake.native = ID
