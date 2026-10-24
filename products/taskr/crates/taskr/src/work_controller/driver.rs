@@ -741,6 +741,17 @@ pub(super) fn drive(b: &impl Backend, root: i64) -> Result<Value> {
         json!({"campaign":root,"generation":generation,"limit":pending["limit"],"returned":rows.len(),"inspected":inspected,"stale":stale,"truncated":truncated,"complete_scan":!truncated&&inspected==rows.len(),"bounded_conditions":conditions}),
     )
 }
+pub(super) fn claim_key(root: i64, work: &Value) -> Result<String> {
+    let mut epoch = 0;
+    for run in array(work, "runs")? {
+        epoch = epoch.max(number(run, "run_id")?);
+    }
+    Ok(format!(
+        "controller:{root}:{}:{}:after-run:{epoch}",
+        number(work, "work_id")?,
+        number(work, "revision")?
+    ))
+}
 fn drive_work(
     b: &impl Backend,
     root: i64,
@@ -768,7 +779,13 @@ fn drive_work(
             ));
         }
         same_generation(b, root, g)?;
-        b.change("claim",id,root,g,Some(json!({"expected_revision":work["revision"],"key":format!("controller:{root}:{id}:{}",work["revision"])})))?
+        b.change(
+            "claim",
+            id,
+            root,
+            g,
+            Some(json!({"expected_revision":work["revision"],"key":claim_key(root, work)?})),
+        )?
     } else {
         current_run(work)
             .ok_or_else(|| failure("active work has no current run"))?

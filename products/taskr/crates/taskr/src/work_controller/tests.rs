@@ -49,6 +49,9 @@ struct Fake {
     observe_transport: Cell<bool>,
     native_init: Cell<&'static str>,
     exit_observation: Cell<&'static str>,
+    claims: RefCell<std::collections::BTreeMap<String, Value>>,
+    claim_keys: RefCell<Vec<String>>,
+    next_run: Cell<i64>,
 }
 impl Fake {
     fn new() -> Self {
@@ -86,6 +89,9 @@ impl Fake {
             observe_transport: Cell::new(false),
             native_init: Cell::new("refuse"),
             exit_observation: Cell::new("absent"),
+            claims: RefCell::new(Default::default()),
+            claim_keys: RefCell::new(Vec::new()),
+            next_run: Cell::new(9),
         }
     }
     fn run() -> Value {
@@ -95,7 +101,7 @@ impl Fake {
         self.calls.borrow_mut().push(s.into());
     }
     fn current(&self) -> Value {
-        self.snapshot.borrow()["work"][0]["runs"][0]["assignments"][0].clone()
+        current_run(&self.snapshot.borrow()["work"][0]).unwrap()["assignments"][0].clone()
     }
     fn work(&self) -> Value {
         self.snapshot.borrow()["work"][0].clone()
@@ -285,18 +291,38 @@ impl driver::Backend for Fake {
                 data.as_ref().unwrap()["expected_revision"],
                 self.snapshot.borrow()["work"][0]["revision"]
             );
+            let key = data.as_ref().unwrap()["key"].as_str().unwrap().to_string();
+            self.claim_keys.borrow_mut().push(key.clone());
+            if let Some(run) = self.claims.borrow().get(&key) {
+                return Ok(run.clone());
+            }
+            let id = self.next_run.get();
+            self.next_run.set(id + 1);
+            let mut run = Self::run();
+            run["run_id"] = json!(id);
+            run["assignments"][0]["run_id"] = json!(id);
+            run["assignments"][0]["launch_id"] = json!(id + 2);
+            run["assignments"][0]["task_id"] = json!(id + 3);
             let mut s = self.snapshot.borrow_mut();
             let w = &mut s["work"][0];
             w["state"] = json!("active");
-            w["current_run"] = json!(9);
-            w["runs"] = json!([Self::run()]);
-            return Ok(Self::run());
+            w["current_run"] = json!(id);
+            w["runs"].as_array_mut().unwrap().push(run.clone());
+            self.claims.borrow_mut().insert(key, run.clone());
+            return Ok(run);
         }
         if verb == "advance" {
             return Ok(self.next.borrow().clone());
         }
         let mut s = self.snapshot.borrow_mut();
-        let a = &mut s["work"][0]["runs"][0]["assignments"][0];
+        let work = &mut s["work"][0];
+        let run = work["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|r| r["run_id"] == work["current_run"])
+            .unwrap();
+        let a = &mut work["runs"][run]["assignments"][0];
         match verb {
             "observe" => {
                 let data = data.unwrap();
@@ -491,6 +517,52 @@ fn duplicate_ticks_never_launch_or_claim_twice() {
         calls.iter().position(|c| c == "change:bind").unwrap()
             < calls.iter().position(|c| c == "effect:start").unwrap()
     );
+}
+#[test]
+fn stopped_abandoned_same_revision_requeue_claims_new_run_once_with_shared_retry_key() {
+    let b = Fake::new();
+    assert_eq!(
+        driver::claim_key(3, &b.work()).unwrap(),
+        "controller:3:1:1:after-run:0"
+    );
+    driver::drive(&b, 3).unwrap();
+    {
+        let mut s = b.snapshot.borrow_mut();
+        let w = &mut s["work"][0];
+        w["runs"][0]["assignments"][0]["process_state"] = json!("stopped");
+        w["runs"][0]["assignments"][0]["stop_event"] = json!(91);
+        w["runs"][0]["state"] = json!("abandoned");
+        w["current_run"] = Value::Null;
+        w["state"] = json!("queued");
+    }
+    b.agents.borrow_mut().clear();
+    let queued = b.work();
+    let concurrent = queued.clone();
+    let key = driver::claim_key(3, &queued).unwrap();
+    assert_eq!(key, "controller:3:1:1:after-run:9");
+    assert_eq!(driver::claim_key(3, &concurrent).unwrap(), key);
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.work()["revision"], 1);
+    assert_eq!(b.work()["current_run"], 10);
+    assert_eq!(b.work()["runs"].as_array().unwrap().len(), 2);
+    for snapshot in [&queued, &concurrent] {
+        let replay = driver::Backend::change(&b, "claim", 1, 3, 7,
+            Some(json!({"expected_revision":snapshot["revision"],"key":driver::claim_key(3,snapshot).unwrap()}))).unwrap();
+        assert_eq!(replay["run_id"], 10);
+    }
+    assert_eq!(b.next_run.get(), 11);
+    assert_eq!(
+        &*b.claim_keys.borrow(),
+        &["controller:3:1:1:after-run:0", &key, &key, &key]
+    );
+    let mut unordered = queued;
+    unordered["runs"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"run_id":4}));
+    assert_eq!(driver::claim_key(3, &unordered).unwrap(), key);
+    unordered["runs"][0]["run_id"] = Value::Null;
+    assert!(driver::claim_key(3, &unordered).is_err());
 }
 #[test]
 fn crash_after_bind_and_unknown_writer_do_not_restart() {

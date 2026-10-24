@@ -22,6 +22,10 @@ The dispatch order is retained: active/verifying before queued, then priority an
 Only selected IDs receive `work show` before effects or brief generation; their
 revision, state and current run must still match the metadata snapshot. Claim keeps
 its expected-revision CAS. Generation and runner configuration reads use thin campaigns.
+Claim idempotency also includes the maximum historical run ID from the selected full
+work snapshot (zero initially). Concurrent/retry snapshots of one queued execution
+share the key; a proved stopped/abandoned run followed by explicit same-revision
+requeue gets a new key instead of replaying the abandoned run.
 The reserved launcher retains its existing full-list identity check at launch time.
 Explicit `limit`, `returned` and `truncated` fields are validated. A truncated root scan
 withholds dispatch and reports the bound; a partial work pass returns `complete_scan:false`
