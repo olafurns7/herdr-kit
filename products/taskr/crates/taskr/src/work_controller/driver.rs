@@ -114,7 +114,7 @@ impl Backend for Local {
             &AtomicBool::new(false),
         )
         .map_err(failure)?;
-        herdr_result(&out)
+        herdr_result(args, &out)
     }
     fn lanes(&self) -> Result<String> {
         let mut cmd = Command::new("herdr-launch");
@@ -148,8 +148,13 @@ impl Backend for Local {
         Ok(())
     }
 }
-fn herdr_result(out: &process::Output) -> Result<Value> {
-    if out.timed_out || out.stdout.digest().truncated || out.stderr.digest().truncated {
+fn herdr_result(args: &[&str], out: &process::Output) -> Result<Value> {
+    if out.timed_out
+        || out.cancelled
+        || out.signal.is_some()
+        || out.stdout.digest().truncated
+        || out.stderr.digest().truncated
+    {
         return Err(failure("Herdr command exceeded bounds"));
     }
     let stderr = serde_json::from_slice::<Value>(&out.stderr.bytes).ok();
@@ -157,6 +162,7 @@ fn herdr_result(out: &process::Output) -> Result<Value> {
     // Use the existing Herdr adapter's structured rejection convention.
     if out.exit == Some(2)
         || code.is_some_and(|code| code == "agent_blocked" || code.contains("not_found"))
+        || stderr.as_ref().is_some_and(|v| !v["error"].is_null())
     {
         return Err(store::Error {
             code: ExitCode::Rejected,
@@ -165,6 +171,16 @@ fn herdr_result(out: &process::Output) -> Result<Value> {
     }
     if out.exit != Some(0) {
         return Err(failure("Herdr command failed"));
+    }
+    // These effects have no result fields; reads and ID-producing mutations require JSON.
+    if out.stdout.bytes.is_empty()
+        && out.stderr.bytes.is_empty()
+        && matches!(
+            args,
+            ["pane", "send-keys", _, _, ..] | ["pane", "run", _, _] | ["tab", "rename", _, _]
+        )
+    {
+        return Ok(Value::Null);
     }
     let value: Value = serde_json::from_slice(&out.stdout.bytes).map_err(failure)?;
     if !value["error"].is_null() {
@@ -178,6 +194,17 @@ fn herdr_result(out: &process::Output) -> Result<Value> {
 #[cfg(test)]
 mod observation_tests {
     use super::*;
+    fn output(exit: Option<i32>, stdout: &[u8], stderr: &[u8]) -> process::Output {
+        process::Output {
+            pid: 1,
+            exit,
+            signal: None,
+            timed_out: false,
+            cancelled: false,
+            stdout: process::Capture::from_bytes(stdout),
+            stderr: process::Capture::from_bytes(stderr),
+        }
+    }
     #[test]
     fn structured_herdr_rejections_stay_distinct_from_transport_and_parse_failures() {
         for (exit, stderr, stdout, timed_out, expected) in [
@@ -214,18 +241,89 @@ mod observation_tests {
             ),
             (Some(0), "", r#"{"result":{"agents":[]}}"#, false, None),
         ] {
-            let mut out = process::Output {
-                pid: 1,
-                exit,
-                signal: None,
-                timed_out,
-                cancelled: false,
-                stdout: process::Capture::default(),
-                stderr: process::Capture::default(),
-            };
-            out.stdout.bytes = stdout.as_bytes().to_vec();
-            out.stderr.bytes = stderr.as_bytes().to_vec();
-            assert_eq!(herdr_result(&out).err().map(|e| e.code), expected);
+            let mut out = output(exit, stdout.as_bytes(), stderr.as_bytes());
+            out.timed_out = timed_out;
+            assert_eq!(
+                herdr_result(&["agent", "list"], &out).err().map(|e| e.code),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn exact_empty_success_is_normalized_only_for_documented_void_effects() {
+        let empty = output(Some(0), b"", b"");
+        for args in [
+            &["pane", "send-keys", "w1:p1", "esc"][..],
+            &["pane", "send-keys", "w1:p1", "ctrl+c", "ctrl+c"][..],
+            &["pane", "run", "w1:p1", "approved gate command"][..],
+            &["tab", "rename", "w1:t1", "impl-w1"][..],
+        ] {
+            assert_eq!(herdr_result(args, &empty).unwrap(), Value::Null);
+            assert!(herdr_result(args, &output(Some(0), b"\n", b"")).is_err());
+            assert!(herdr_result(args, &output(Some(0), b"malformed", b"")).is_err());
+        }
+        for args in [
+            &["agent", "list"][..],
+            &["agent", "wait", "impl-w1"][..],
+            &["pane", "get", "w1:p1"][..],
+            &["pane", "process-info", "--pane", "w1:p1"][..],
+            &["pane", "list", "--workspace", "w1"][..],
+            &["tab", "list", "--workspace", "w1"][..],
+            &["tab", "create", "--workspace", "w1"][..],
+            &["worktree", "list", "--workspace", "w1"][..],
+            &["pane", "read", "w1:p1"][..],
+            &["pane", "run"][..],
+            &["tab", "rename"][..],
+            &[][..],
+        ] {
+            assert!(herdr_result(args, &empty).is_err(), "{args:?}");
+        }
+    }
+    #[test]
+    fn void_effect_normalization_cannot_hide_failure_rejection_or_capture_bounds() {
+        let args = ["pane", "send-keys", "w1:p1", "esc"];
+        for exit in [Some(1), Some(2), Some(6), None] {
+            assert!(herdr_result(&args, &output(exit, b"", b"")).is_err());
+        }
+        for (stdout, stderr) in [
+            (
+                b"".as_slice(),
+                br#"{"error":{"code":"agent_blocked"}}"#.as_slice(),
+            ),
+            (
+                b"".as_slice(),
+                br#"{"error":{"code":"permission_denied"}}"#.as_slice(),
+            ),
+            (
+                br#"{"error":{"code":"agent_blocked"}}"#.as_slice(),
+                b"".as_slice(),
+            ),
+        ] {
+            assert_eq!(
+                herdr_result(&args, &output(Some(0), stdout, stderr))
+                    .unwrap_err()
+                    .code,
+                ExitCode::Rejected
+            );
+        }
+        assert!(herdr_result(&args, &output(Some(0), b"", b"warning")).is_err());
+        let oversized = vec![b' '; process::LIMIT + 1];
+        for (stdout, stderr) in [
+            (oversized.as_slice(), b"".as_slice()),
+            (b"".as_slice(), oversized.as_slice()),
+        ] {
+            let mut out = output(Some(0), stdout, stderr);
+            // Even if retained bytes are empty, the capture's truncation evidence survives.
+            out.stdout.bytes.clear();
+            out.stderr.bytes.clear();
+            assert!(herdr_result(&args, &out).is_err());
+        }
+        for condition in ["timeout", "cancelled", "signal"] {
+            let mut out = output(Some(0), b"", b"");
+            out.timed_out = condition == "timeout";
+            out.cancelled = condition == "cancelled";
+            out.signal = (condition == "signal").then_some(15);
+            assert!(herdr_result(&args, &out).is_err());
         }
     }
 }
@@ -1264,7 +1362,12 @@ pub(super) fn stop(
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while let Some(current) = observation(agent(b, pane))? {
-            if !owns_agent(&current, &n, native, pane) {
+            // Exit can clear metadata before the row disappears; this loop sends no more input.
+            if current["agent_session"]["value"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+                && !owns_agent(&current, &n, native, pane)
+            {
                 return Err(failure("replacement native identity appeared during stop"));
             }
             if std::time::Instant::now() >= deadline {

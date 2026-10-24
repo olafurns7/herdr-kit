@@ -17,6 +17,12 @@ pub(super) struct Capture {
     hash: Sha256,
 }
 impl Capture {
+    #[cfg(test)]
+    pub(super) fn from_bytes(bytes: &[u8]) -> Self {
+        let mut capture = Self::default();
+        capture.add(bytes);
+        capture
+    }
     fn add(&mut self, bytes: &[u8]) {
         self.total += bytes.len() as u64;
         self.hash.update(bytes);

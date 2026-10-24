@@ -48,6 +48,7 @@ struct Fake {
     herdr_reject: Cell<bool>,
     observe_transport: Cell<bool>,
     native_init: Cell<&'static str>,
+    exit_observation: Cell<&'static str>,
 }
 impl Fake {
     fn new() -> Self {
@@ -84,6 +85,7 @@ impl Fake {
             herdr_reject: Cell::new(false),
             observe_transport: Cell::new(false),
             native_init: Cell::new("refuse"),
+            exit_observation: Cell::new("absent"),
         }
     }
     fn run() -> Value {
@@ -378,11 +380,37 @@ impl driver::Backend for Fake {
             ["pane", "process-info", ..] => {
                 json!({"process_info":{"shell_pid":400,"foreground_process_group_id":400,"foreground_processes":[{"pid":400,"name":"zsh"}]}})
             }
-            ["agent", "list"] => json!({"agents":*self.agents.borrow()}),
-            ["pane", "send-keys", _, "ctrl+c", "ctrl+c"] => {
-                self.agents.borrow_mut().clear();
-                json!({})
+            ["agent", "list"] => {
+                let observed = json!({"agents":*self.agents.borrow()});
+                if self.exit_observation.get() == "transient"
+                    && self
+                        .calls
+                        .borrow()
+                        .iter()
+                        .any(|c| c == "herdr:pane send-keys w1:p1 ctrl+c ctrl+c")
+                {
+                    self.agents.borrow_mut().clear();
+                    self.exit_observation.set("absent");
+                }
+                observed
             }
+            ["pane", "send-keys", _, "ctrl+c", "ctrl+c"] => {
+                match self.exit_observation.get() {
+                    "absent" => self.agents.borrow_mut().clear(),
+                    "transient" | "persistent-gap" => {
+                        self.agents.borrow_mut()[0]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("agent_session");
+                    }
+                    "replacement" => {
+                        self.agents.borrow_mut()[0]["agent_session"]["value"] = json!("replacement")
+                    }
+                    mode => panic!("unexpected exit observation {mode}"),
+                }
+                Value::Null
+            }
+            ["pane", "send-keys", ..] | ["pane", "run", ..] | ["tab", "rename", ..] => Value::Null,
             _ => json!({}),
         })
     }
@@ -785,6 +813,64 @@ fn stop_requires_owned_identity_absence_and_shell_foreground() {
     assert_eq!(b.current()["process_state"], "stopped");
     assert!(b.agents.borrow().is_empty());
     assert!(!b.calls.borrow().iter().any(|c| c.contains("Enter")));
+}
+#[test]
+fn post_exit_metadata_gap_waits_only_for_absence_and_never_sends_more_keys() {
+    for (mode, expected) in [
+        ("transient", "stopped"),
+        ("replacement", "uncertain"),
+        ("persistent-gap", "uncertain"),
+    ] {
+        let b = Fake::new();
+        b.active("running");
+        b.native("impl-w11", "native-fixture");
+        {
+            let mut snapshot = b.snapshot.borrow_mut();
+            let a = &mut snapshot["work"][0]["runs"][0]["assignments"][0];
+            a["native_session"] = json!("native-fixture");
+            a["state"] = json!("settled");
+        }
+        b.exit_observation.set(mode);
+        driver::drive(&b, 3).unwrap();
+        assert_eq!(b.current()["process_state"], expected, "{mode}");
+        let calls = b.calls.borrow();
+        assert_eq!(calls.iter().filter(|c| c.contains("send-keys")).count(), 2);
+        assert!(!calls.iter().any(|c| c.contains("Enter")));
+        assert_eq!(
+            calls.iter().any(|c| c == "process:scan"),
+            mode == "transient"
+        );
+        assert_eq!(
+            calls.iter().any(|c| c == "change:stopped"),
+            mode == "transient"
+        );
+        if mode == "persistent-gap" {
+            assert!(
+                calls
+                    .iter()
+                    .any(|c| c == "herdr:pane read w1:p1 --source visible --lines 30")
+            );
+        }
+    }
+}
+#[test]
+fn missing_native_metadata_before_exit_never_gets_keys_or_stop_receipt() {
+    let b = Fake::new();
+    b.active("running");
+    b.native("impl-w11", "native-fixture");
+    b.agents.borrow_mut()[0]
+        .as_object_mut()
+        .unwrap()
+        .remove("agent_session");
+    let mut a = b.current();
+    a["native_session"] = json!("native-fixture");
+    assert!(driver::stop(&b, 3, 7, "w1", b.scratch.0.to_str().unwrap(), &a).is_err());
+    assert!(
+        !b.calls
+            .borrow()
+            .iter()
+            .any(|c| c.contains("send-keys") || c == "process:scan" || c == "change:stopped")
+    );
 }
 #[test]
 fn settled_done_agent_stops_without_changing_its_ready_state() {

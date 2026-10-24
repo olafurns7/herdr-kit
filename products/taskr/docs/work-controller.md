@@ -110,9 +110,20 @@ controller waits for the exact native agent to be idle or done, rechecks identit
 that ready state before exit keys, and observes agent absence plus interactive shell
 foreground. It does not confirm dialogs with Enter. Gate shells also require a
 successful actual shell exit receipt.
+After both guarded exit requests, a row temporarily lacking native metadata may
+remain in the existing five-second read-only absence wait. No more keys are sent;
+an explicit different native identity still refuses, and timeout remains uncertain.
+Pre-exit identity checks and final absence/shell/scan requirements are unchanged.
 Only the core's stopped/advance APIs permit handoff or final acceptance; a changed
 native identity or unknown writer remains reserved for explicit recovery. Local
 acceptance grants no merge, release or publication authority.
+
+The Herdr transport accepts exact empty stdout/stderr success only for the
+effect-only `pane send-keys`, `pane run` and `tab rename` calls. Exit, deadline,
+signal/cancellation, output bounds and structured errors are checked first.
+Reads and ID-producing commands such as `tab create` still require JSON; malformed
+or whitespace-only output does not become a successful empty response. An effect's
+empty acknowledgment supplies no native identity, shell-exit or process-stop proof.
 
 Stopped receipts also require `process_scan` with method
 `local-user-session-cwd-v1`, effective UID, shell PID, true POSIX session ID, scanned count,
