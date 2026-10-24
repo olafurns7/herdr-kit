@@ -94,16 +94,28 @@ pub fn started_observed(
         if ass["dispatch"]["pane"] != input.pane {
             return Err(reject("native observation pane differs from dispatch"));
         }
-        if ass["process_state"] == "uncertain" || ass["process_state"] == "stopped" {
+        if ass["process_state"] == "stopped" {
+            return Err(reject("cannot bind native identity after stopped"));
+        }
+        let (recorded, pane): (Option<String>, Option<String>) = tx.query_row(
+            "select session_ref,pane_id from launches where id=?",
+            [launch],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if task(tx, ass["task_id"].as_i64().unwrap())?.launch != Some(launch)
+            || pane.as_deref() != Some(input.pane.as_str())
+        {
             return Err(reject(
-                "cannot bind native identity after uncertain/stopped",
+                "native observation differs from current launch/pane",
             ));
         }
-        let recorded: Option<String> = tx.query_row(
-            "select session_ref from launches where id=?",
-            [launch],
-            |r| r.get(0),
-        )?;
+        if (ass["process_state"] == "running" || ass["process_state"] == "uncertain")
+            && recorded.as_deref() != Some(input.native_session.as_str())
+        {
+            return Err(reject(
+                "late native binding requires exact stored launch session",
+            ));
+        }
         if recorded
             .as_deref()
             .is_some_and(|s| s != input.native_session)
@@ -114,7 +126,9 @@ pub fn started_observed(
             return Err(reject("native identity changed"));
         }
         observation_time(tx, launch, &input.observed_at)?;
-        start_tx(tx, launch)?;
+        if ass["process_state"] != "uncertain" {
+            start_tx(tx, launch)?;
+        }
         tx.execute("update work_assignments set native_session=?,identity_observation=coalesce(identity_observation,?) where launch_id=?",params![input.native_session,encoded(&input)?,launch])?;
         assignment(tx, launch)
     })
@@ -141,9 +155,48 @@ pub(super) fn release_cancelled(db: &Connection, r: &Run) -> Result<()> {
     }
     Ok(())
 }
+fn process_scan(scan: &ProcessScan, foreground: &Foreground) -> Result<()> {
+    if scan.shell_pid == 0
+        || scan.shell_pid != foreground.pid
+        || scan.session_id == 0
+        || !(1..=65536).contains(&scan.scanned)
+        || scan.session_remaining.len() > 1024
+        || scan.checkout_remaining.len() > 1024
+        || scan.exempt.len() > 1024
+    {
+        return Err(usage("invalid process scan identity/count bounds"));
+    }
+    for process in &scan.session_remaining {
+        if process.pid == 0 {
+            return Err(usage("process scan PID must be positive"));
+        }
+        text(&process.command, 4096, "process command")?;
+    }
+    for process in &scan.checkout_remaining {
+        if process.pid == 0 {
+            return Err(usage("checkout process PID must be positive"));
+        }
+        text(&process.cwd, 4096, "process cwd")?;
+    }
+    let mut exempt = std::collections::BTreeSet::new();
+    for process in &scan.exempt {
+        if process.pid == 0 || !exempt.insert(process.pid) {
+            return Err(usage(
+                "process scan exemption PIDs must be positive and unique",
+            ));
+        }
+    }
+    if !scan.session_remaining.is_empty() || !scan.checkout_remaining.is_empty() {
+        return Err(reject(
+            "process scan reports remaining session/checkout processes",
+        ));
+    }
+    Ok(())
+}
 pub fn stopped(db: &mut Connection, a: Authority, launch: i64, input: Stopped) -> Result<Value> {
     encoded(&input)?;
     location_id(&input.pane)?;
+    process_scan(&input.process_scan, &input.foreground)?;
     text(&input.foreground.command, 4096, "foreground command")?;
     if !input.agent_absent
         || input.foreground.pid == 0

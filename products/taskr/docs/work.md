@@ -111,7 +111,7 @@ checks have approved argv (1..128 arguments) and timeout (1..3600000 ms).
 | reserve | run | stage: executor/reviewer/adjudicator; returns assignment |
 | bind | launch | workspace, tab, pane, dispatch_key |
 | started | launch | derives launch receipt; optional {pane,native_session,observed_at} explicitly binds native identity |
-| stopped | launch | {pane,native_session,foreground:{pid,command},agent_absent,observed_at} |
+| stopped | launch | {pane,native_session,foreground:{pid,command},agent_absent,process_scan,observed_at}; required scan below |
 | block | work | {reason}; identical named condition is a no-op |
 | inputs | work | canonical profile/dependency/input/checkout snapshot |
 | hash | none | {profile,dependencies:[{work,revision,input_digest}]} -> canonical digests |
@@ -152,16 +152,67 @@ exit. A starting/uncertain process is never automatically restarted.
 never invents a native identity. Model stages must have either a hook session
 or an explicit root `started --data {pane,native_session,observed_at}` observation
 before stop can be recorded. Pane must equal immutable dispatch; any existing
-native identity must match. Gate shell stages have null native_session.
+native identity must match. For running/uncertain assignments, late explicit
+binding requires the exact persisted launch session reference, current task launch,
+immutable dispatch/launch pane and launch host. Missing or conflicting stored
+identity is rejected; no identity is guessed from a receipt. Binding preserves
+uncertainty and settled results; only a complete stop observation ends process
+uncertainty. Stopped assignments cannot bind again. Gate shell stages have null
+native_session.
 
 `stopped` is root/host/generation authorized. Its JSON includes exact bound pane
 and native session, `agent_absent:true`, foreground `{pid,command}` identifying a
-positive PID and a known shell (sh/bash/zsh/fish/dash/ksh/nu), plus a fresh RFC3339
-observed_at (within 60 seconds, not before launch or in the future). Changed native
-identity, mismatched pane and worker authority are refused. Identical stop replay
-is idempotent; conflicting observations cannot replace the immutable receipt.
-The controller must obtain these observations from real teardown; the store does
-not run or inspect Herdr itself.
+positive PID and a known shell (sh/bash/zsh/fish/dash/ksh/nu), a required
+`process_scan`, plus a fresh RFC3339 observed_at (within 60 seconds, not before
+launch or in the future). Changed native identity, mismatched pane and worker
+authority are refused. Identical stop replay is idempotent; conflicting
+observations cannot replace the immutable receipt. The controller must obtain
+these observations from real teardown; the store does not inspect OS processes.
+
+A native agent disappearing and an interactive foreground shell do not establish
+that background writers stopped. The required scan has this exact shape:
+
+```json
+{"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell"},{"pid":456,"reason":"observer"}]}
+```
+
+`session_remaining` entries are `{pid,command}`; `checkout_remaining` entries are
+`{pid,cwd}`. Both arrays must be empty to record stop. All PID/session IDs are
+positive u32; shell_pid equals foreground.pid; uid is u32 (including root UID0).
+`scanned` is 1..65536. Each array, including exempt, has at most1024 entries;
+commands/cwd strings are nonempty and at most4096 bytes. Exempt PIDs are positive
+and unique; reasons are only `workspace-shell`, `observer`, `campaign-root`.
+Unknown fields, missing scan/fields and invalid bounds are rejected. There is no
+compatibility default for this unreleased API. An invalid scan writes no receipt
+and retains the checkout reservation.
+
+The controller must perform a complete bounded same-UID inventory, including
+shell descendants and every process in its true POSIX session/tty, including
+background process groups. It must scan same-user cwd values and match the
+canonical checkout or a path under it by component boundaries. This detects
+same-session background jobs and detached children that retain checkout cwd.
+macOS `ps sess` is not a usable POSIX session ID; use getsid. Linux cwd reads use
+/proc; macOS uses a bounded, strictly parsed lsof cwd inventory. Recheck vanished
+PIDs; a still-live non-zombie process with unavailable cwd, permission errors,
+parse errors, truncation or deadline failures makes the scan incomplete.
+
+Exempt only exact observed idle workspace-shell PIDs, the current observer and
+its exact short-lived probes, and freshly verified foreground PIDs of the
+registered campaign root. Never exempt by process name or arbitrary ancestry.
+Recheck native absence and foreground shell after scanning. Unknown processes
+block handoff; do not kill them merely because their cwd matches. An incomplete
+or unavailable scan produces no stop receipt and one named blocked condition.
+Closing the final tab/workspace is not cleanup evidence.
+
+This is trusted root-attested observation of cooperative same-user local
+processes. The store checks receipt shape/identity, not the truth of the OS scan.
+It is not a security sandbox or proof about other UIDs, containers/remotes,
+hostile same-user writers, or a detached process that leaves the checkout while
+retaining a file descriptor. Automatic task workers must not detach background
+jobs or create external runtimes. Such work needs a named managed runtime and
+stronger explicit cleanup proof; no automatic handoff under this local profile.
+Generated worker briefs must state these limits; model agreement cannot certify
+containment.
 
 A normal stop preserves the active run and its checkout through gate/review.
 `reconcile {stopped_event}` acknowledges that recorded receipt without abandoning
@@ -234,8 +285,10 @@ parent components. The runner resolves it only inside its own attempt directory.
 Work audit events have no inbox recipient. Actionable notices use compatible
 self-addressed `message` events with typed `notice` data and the current push
 generation (or null). Parked roots get audit only. Self-notice exhaustion never
-alarms a fictitious sender. Routine work-bound ready/done, including before submit, stay in history without
-waking an enabled live campaign; asks/failures retain routes. Submitted and
+alarms a fictitious sender. Routine work-bound ready/done stay in history without
+waking an enabled live campaign from assignment reservation onward, including
+before typed submission. Leads must use work state for routine progress; do not
+wait for pushed ready/done reports from these lanes. Asks/failures retain routes. Submitted and
 bounded rework are audit-only. Acceptance and actionable exceptions retain notices.
 Root-initiated add/revise/queue/cancel do not send self-notices; hub-to-other-root
 writes still notify. `block` emits at most one notice per unchanged reason.

@@ -6,6 +6,10 @@ use support::Harness;
 use taskr_core::db::{OptionalExtension, params};
 use taskr_core::store::work as api;
 
+fn clean_process_scan() -> Value {
+    json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell"},{"pid":456,"reason":"observer"},{"pid":789,"reason":"campaign-root"}]})
+}
+
 struct Work {
     h: Harness,
     root: String,
@@ -145,7 +149,7 @@ impl Work {
     }
     fn stop(&self, ass: &Value) -> Value {
         let launch = ass["launch_id"].to_string();
-        self.call("stopped",Some(&launch),Some(json!({"pane":"w1:p2","native_session":if ass["stage"]=="gate"{Value::Null}else{json!(format!("native-{launch}"))},"foreground":{"pid":123,"command":"/bin/sh"},"agent_absent":true,"observed_at":taskr_core::store::now()})))
+        self.call("stopped",Some(&launch),Some(json!({"pane":"w1:p2","native_session":if ass["stage"]=="gate"{Value::Null}else{json!(format!("native-{launch}"))},"foreground":{"pid":123,"command":"/bin/sh"},"agent_absent":true,"process_scan":clean_process_scan(),"observed_at":taskr_core::store::now()})))
     }
     fn submit(&self, ass: &Value, payload: Value) -> Value {
         self.h.ok(
@@ -933,6 +937,10 @@ fn failed_gate_is_durable_rework_before_review_and_old_gate_cannot_submit() {
     w.stop(&gate);
     assert_eq!(w.call("advance", Some(&rid), None)["action"], "rework");
     assert_eq!(
+        w.h.ok(&[], &["work", "show", &id])["reason"],
+        "gate check failed; rework"
+    );
+    assert_eq!(
         w.h.conn()
             .query_row(
                 "select count(*) from work_assignments where stage='reviewer'",
@@ -1306,7 +1314,7 @@ fn stopped_requires_bound_native_pane_shell_and_root_authority() {
     let ass = &run["assignments"][0];
     w.running(ass);
     let lid = ass["launch_id"].to_string();
-    let good = json!({"pane":"w1:p2","native_session":format!("native-{lid}"),"foreground":{"pid":123,"command":"/bin/sh"},"agent_absent":true,"observed_at":taskr_core::store::now()});
+    let good = json!({"pane":"w1:p2","native_session":format!("native-{lid}"),"foreground":{"pid":123,"command":"/bin/sh"},"agent_absent":true,"process_scan":clean_process_scan(),"observed_at":taskr_core::store::now()});
     for field in ["pane", "native_session", "foreground", "agent_absent"] {
         let mut bad = good.clone();
         bad[field] = match field {
@@ -1659,4 +1667,239 @@ fn restarted_dispatch_finds_cancelled_cleanup_without_relaunching_and_omits_it_a
             .unwrap(),
         launches_before
     );
+}
+
+#[test]
+fn stop_requires_complete_empty_bounded_process_scan_and_keeps_checkout_on_failure() {
+    let w = Work::new();
+    w.configure();
+    let id = w.queued(w.contract(false));
+    let run = w.claim(&id, "process-scan");
+    let ass = &run["assignments"][0];
+    w.running(ass);
+    let lid = ass["launch_id"].to_string();
+    let good = json!({"pane":"w1:p2","native_session":format!("native-{lid}"),"foreground":{"pid":123,"command":"/bin/sh"},"agent_absent":true,"process_scan":clean_process_scan(),"observed_at":taskr_core::store::now()});
+    let mut missing = good.clone();
+    missing.as_object_mut().unwrap().remove("process_scan");
+    w.reject("stopped", &lid, missing, 2);
+    for field in [
+        "method",
+        "uid",
+        "shell_pid",
+        "session_id",
+        "scanned",
+        "session_remaining",
+        "checkout_remaining",
+        "exempt",
+    ] {
+        let mut partial = good.clone();
+        partial["process_scan"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        w.reject("stopped", &lid, partial, 2);
+    }
+    for (field, value, code) in [
+        ("method", json!("foreground-only"), 2),
+        ("uid", json!(-1), 2),
+        ("unrecognized", json!(true), 2),
+        ("shell_pid", json!(0), 2),
+        ("shell_pid", json!(124), 2),
+        ("session_id", json!(0), 2),
+        ("scanned", json!(0), 2),
+        ("scanned", json!(65537), 2),
+        (
+            "session_remaining",
+            json!([{"pid":321,"command":"background writer"}]),
+            6,
+        ),
+        (
+            "checkout_remaining",
+            json!([{"pid":322,"cwd":"/workspace/project"}]),
+            6,
+        ),
+        (
+            "session_remaining",
+            json!([{"pid":0,"command":"writer"}]),
+            2,
+        ),
+        (
+            "session_remaining",
+            json!([{"pid":321,"command":"x".repeat(4097)}]),
+            2,
+        ),
+        (
+            "checkout_remaining",
+            json!([{"pid":0,"cwd":"/workspace/project"}]),
+            2,
+        ),
+        (
+            "checkout_remaining",
+            json!([{"pid":321,"cwd":"x".repeat(4097)}]),
+            2,
+        ),
+        (
+            "session_remaining",
+            json!(vec![json!({"pid":321,"command":"writer"}); 1025]),
+            2,
+        ),
+        (
+            "checkout_remaining",
+            json!(vec![json!({"pid":321,"cwd":"/workspace/project"}); 1025]),
+            2,
+        ),
+        ("exempt", json!([{"pid":0,"reason":"observer"}]), 2),
+        ("exempt", json!([{"pid":123,"reason":"any-taskr"}]), 2),
+        (
+            "exempt",
+            json!([{"pid":123,"reason":"workspace-shell"},{"pid":123,"reason":"observer"}]),
+            2,
+        ),
+        (
+            "exempt",
+            json!(vec![json!({"pid":123,"reason":"observer"}); 1025]),
+            2,
+        ),
+    ] {
+        let mut bad = good.clone();
+        bad["process_scan"][field] = value;
+        w.reject("stopped", &lid, bad, code);
+    }
+    let db = w.h.conn();
+    assert_eq!(
+        db.query_row(
+            "select count(*) from events where kind='work_process_stopped'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("select count(*) from work_checkouts", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "select process_state from work_assignments where launch_id=?",
+            [ass["launch_id"].as_i64().unwrap()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "running"
+    );
+    let stopped = w.call("stopped", Some(&lid), Some(good.clone()));
+    assert_eq!(stopped["process_state"], "stopped");
+    assert_eq!(
+        w.call("stopped", Some(&lid), Some(good.clone()))["stop_event"],
+        stopped["stop_event"]
+    );
+    let mut changed = good;
+    changed["process_scan"]["scanned"] = json!(41);
+    w.reject("stopped", &lid, changed, 6);
+    assert_eq!(
+        db.query_row("select count(*) from work_checkouts", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn fast_settled_native_binding_requires_exact_persisted_identity_and_preserves_uncertainty() {
+    for uncertain in [false, true] {
+        let w = Work::new();
+        w.configure();
+        let id = w.queued(w.contract(false));
+        let run = w.claim(&id, "fast-native-binding");
+        let ass = &run["assignments"][0];
+        let lid = ass["launch_id"].to_string();
+        w.call(
+            "bind",
+            Some(&lid),
+            Some(
+                json!({"workspace":"w1","tab":"w1:t2","pane":"w1:p2","dispatch_key":"fast-native"}),
+            ),
+        );
+        w.h.ok(&w.env(ass), &["start"]);
+        let exec = w.submit(ass, json!({"kind":"execution","result":{"source":w.source(),"report":"fast","artifacts":[]}}));
+        if uncertain {
+            w.call(
+                "uncertain",
+                Some(&lid),
+                Some(json!({"reason":"agent exited before observation"})),
+            );
+        }
+        let observation = json!({"pane":"w1:p2","native_session":format!("native-{lid}"),"observed_at":taskr_core::store::now()});
+        w.reject("started", &lid, observation.clone(), 6); // no stored session: no guess
+        let db = w.h.conn();
+        db.execute(
+            "update launches set session_ref=? where id=?",
+            params![format!("native-{lid}"), ass["launch_id"].as_i64().unwrap()],
+        )
+        .unwrap();
+        let mut wrong = observation.clone();
+        wrong["native_session"] = json!("other-session");
+        w.reject("started", &lid, wrong, 6);
+        let mut wrong = observation.clone();
+        wrong["pane"] = json!("w1:p9");
+        w.reject("started", &lid, wrong, 6);
+        db.execute(
+            "update launches set pane_id='w1:p9' where id=?",
+            [ass["launch_id"].as_i64().unwrap()],
+        )
+        .unwrap();
+        w.reject("started", &lid, observation.clone(), 6);
+        db.execute(
+            "update launches set pane_id='w1:p2',machine='other-host' where id=?",
+            [ass["launch_id"].as_i64().unwrap()],
+        )
+        .unwrap();
+        w.reject("started", &lid, observation.clone(), 6);
+        db.execute(
+            "update launches set machine=? where id=?",
+            params![
+                taskr_core::store::local_machine(),
+                ass["launch_id"].as_i64().unwrap()
+            ],
+        )
+        .unwrap();
+        let bound = w.call("started", Some(&lid), Some(observation.clone()));
+        assert_eq!(bound["native_session"], observation["native_session"]);
+        assert_eq!(bound["state"], "settled");
+        assert_eq!(
+            bound["process_state"],
+            if uncertain { "uncertain" } else { "running" }
+        );
+        assert_eq!(
+            w.call("started", Some(&lid), Some(observation.clone()))["native_session"],
+            bound["native_session"]
+        );
+        assert_eq!(
+            db.query_row("select count(*) from work_checkouts", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        db.execute(
+            "update launches set session_ref='other-session' where id=?",
+            [ass["launch_id"].as_i64().unwrap()],
+        )
+        .unwrap();
+        let mut conflict = observation.clone();
+        conflict["native_session"] = json!("other-session");
+        w.reject("started", &lid, conflict, 6); // stored launch cannot replace bound native identity
+        db.execute(
+            "update launches set session_ref=? where id=?",
+            params![format!("native-{lid}"), ass["launch_id"].as_i64().unwrap()],
+        )
+        .unwrap();
+        w.stop(ass);
+        w.reject("started", &lid, observation, 6);
+        let rid = run["run_id"].to_string();
+        w.review(&rid, &exec, "clear");
+        assert_eq!(w.call("advance", Some(&rid), None)["action"], "accepted");
+    }
 }

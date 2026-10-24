@@ -170,7 +170,7 @@ fn action(db: &Connection, r: &Run, name: &str, reason: Option<&str>) -> Result<
     }
     Ok(out)
 }
-fn rework(db: &Connection, r: &Run, c: &Contract) -> Result<Value> {
+fn rework(db: &Connection, r: &Run, c: &Contract, reason: &str) -> Result<Value> {
     if !all_stopped(db, r.id)? {
         return stop_action(db, r);
     }
@@ -182,8 +182,8 @@ fn rework(db: &Connection, r: &Run, c: &Contract) -> Result<Value> {
         [r.id],
     )?;
     db.execute(
-        "update work_items set state='active',reason='review requires rework' where id=?",
-        [r.work],
+        "update work_items set state='active',reason=? where id=?",
+        params![reason, r.work],
     )?;
     audit(db, r.root, "rework", Some(r.work), Some(r.id), None, false)?;
     run_output(db, r.id)
@@ -229,7 +229,7 @@ pub fn advance(db: &mut Connection, a: Authority, run: i64) -> Result<Value> {
             }
             let launch:i64=tx.query_row("select launch_id from work_assignments where run_id=? and round=? and stage='gate'",params![r.id,r.round],|r|r.get(0))?;
             if !gate_passes(tx, &r, &c, launch, &gate)? {
-                return rework(tx, &r, &c);
+                return rework(tx, &r, &c, "gate check failed; rework");
             }
         }
         let Some((review_id, Submission::Review(rev))) = result(tx, &r, "reviewer")? else {
@@ -242,7 +242,7 @@ pub fn advance(db: &mut Connection, a: Authority, run: i64) -> Result<Value> {
             return Ok(out);
         }
         match rev.verdict {
-            Verdict::Rework => return rework(tx, &r, &c),
+            Verdict::Rework => return rework(tx, &r, &c, "review requires rework"),
             Verdict::Disputed if c.adjudicator.is_none() => {
                 return escalate(
                     tx,
@@ -261,7 +261,7 @@ pub fn advance(db: &mut Connection, a: Authority, run: i64) -> Result<Value> {
             }
             match adj.verdict {
                 Verdict::Clear => {}
-                Verdict::Rework => return rework(tx, &r, &c),
+                Verdict::Rework => return rework(tx, &r, &c, "review requires rework"),
                 Verdict::Disputed => {
                     return escalate(tx, &r, "adjudication unresolved");
                 }

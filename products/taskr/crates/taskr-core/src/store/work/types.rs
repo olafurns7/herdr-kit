@@ -448,12 +448,49 @@ pub struct Foreground {
     pub command: String,
 }
 #[derive(Debug, Deserialize, Serialize)]
+pub enum ProcessScanMethod {
+    #[serde(rename = "local-user-session-cwd-v1")]
+    LocalUserSessionCwdV1,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProcessExemptionReason {
+    WorkspaceShell,
+    Observer,
+    CampaignRoot,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckoutProcess {
+    pub pid: u32,
+    pub cwd: String,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessExemption {
+    pub pid: u32,
+    pub reason: ProcessExemptionReason,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessScan {
+    pub method: ProcessScanMethod,
+    pub uid: u32,
+    pub shell_pid: u32,
+    pub session_id: u32,
+    pub scanned: u32,
+    pub session_remaining: Vec<Foreground>,
+    pub checkout_remaining: Vec<CheckoutProcess>,
+    pub exempt: Vec<ProcessExemption>,
+}
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Stopped {
     pub pane: String,
     pub native_session: Option<String>,
     pub foreground: Foreground,
     pub agent_absent: bool,
+    pub process_scan: ProcessScan,
     pub observed_at: String,
 }
 
