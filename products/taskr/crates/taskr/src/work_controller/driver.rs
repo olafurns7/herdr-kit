@@ -934,6 +934,17 @@ fn dispatch(
 ) -> Result<()> {
     require_canonical_checkout(Path::new(&c.checkout.cwd))?;
     let launch = number(a, "launch_id")?;
+    let dir = b.directory(root, launch)?;
+    let brief = dir.join("brief.md");
+    match fs::symlink_metadata(&brief) {
+        Ok(_) => {
+            return Err(failure(
+                "dispatch-intent-exists: prior brief without durable bind; reconcile launch",
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(failure(e)),
+    }
     let task = number(a, "task_id")?;
     let n = name(a)?;
     let gate = a["stage"] == "gate";
@@ -947,8 +958,6 @@ fn dispatch(
     let (tab, pane) = new_pane(b, root, ws, &c.checkout.cwd, &n)?;
     start_location(b, &pane, ws, &c.checkout.cwd)?;
     shell(b, &pane)?;
-    let dir = b.directory(root, launch)?;
-    let brief = dir.join("brief.md");
     let report = dir.join("report.md");
     if !gate {
         write_once(

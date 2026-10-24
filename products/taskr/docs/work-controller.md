@@ -45,6 +45,8 @@ One local file lock also prevents overlapping passes for the same campaign. Ever
 agent start uses an existing reserved task and launch. A durable dispatch binding
 precedes startup. Unknown startup or prompt delivery is reconciled from native identity,
 launch receipts and the prompt ledger; it never triggers a blind restart or resend.
+An existing `brief.md` entry before durable bind blocks as `dispatch-intent-exists`
+for explicit reconciliation, preserving the entry and checkout without creating more tabs.
 Failed reserved launcher processes retain exact bounded stdout/stderr bytes in private
 `launch.stdout` and `launch.stderr` files under that root/launch attempt directory.
 `launch-output.json` records exit, signal, timeout/cancellation and each stream's full

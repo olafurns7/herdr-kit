@@ -54,6 +54,7 @@ struct Fake {
     claims: RefCell<std::collections::BTreeMap<String, Value>>,
     claim_keys: RefCell<Vec<String>>,
     next_run: Cell<i64>,
+    multiple_tabs: Cell<bool>,
 }
 impl Fake {
     fn new() -> Self {
@@ -96,6 +97,7 @@ impl Fake {
             claims: RefCell::new(Default::default()),
             claim_keys: RefCell::new(Vec::new()),
             next_run: Cell::new(9),
+            multiple_tabs: Cell::new(false),
         }
     }
     fn run() -> Value {
@@ -448,6 +450,12 @@ impl driver::Backend for Fake {
             ["worktree", "list", "--workspace", "w1"] => {
                 json!({"worktrees":[{"path":self.scratch.0,"open_workspace_id":"w1"}]})
             }
+            ["pane", "list", ..] if self.multiple_tabs.get() => {
+                json!({"panes":[{"pane_id":"w1:p1"},{"pane_id":"w1:p2"}]})
+            }
+            ["tab", "list", ..] if self.multiple_tabs.get() => {
+                json!({"tabs":[{"tab_id":"w1:t1"},{"tab_id":"w1:t2"}]})
+            }
             ["pane", "list", ..] => json!({"panes":[{"pane_id":"w1:p1"}]}),
             ["tab", "list", ..] => json!({"tabs":[{"tab_id":"w1:t1"}]}),
             ["pane", "get", ..] => {
@@ -616,6 +624,78 @@ fn stopped_abandoned_same_revision_requeue_claims_new_run_once_with_shared_retry
     assert_eq!(driver::claim_key(3, &unordered).unwrap(), key);
     unordered["runs"][0]["run_id"] = Value::Null;
     assert!(driver::claim_key(3, &unordered).is_err());
+}
+#[test]
+fn reserved_prior_brief_blocks_repeated_ticks_before_any_layout_or_start() {
+    use std::os::unix::fs::MetadataExt;
+    for entry in [
+        "brief",
+        "partial",
+        "empty",
+        "symlink",
+        "dangling",
+        "directory",
+    ] {
+        let b = Fake::new();
+        b.active("reserved");
+        b.multiple_tabs.set(true);
+        b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["dispatch"] = Value::Null;
+        let dir = driver::Backend::directory(&b, 3, 11).unwrap();
+        let brief = dir.join("brief.md");
+        match entry {
+            "brief" => fs::write(&brief, "HERDR-BRIEF role=implementer\n").unwrap(),
+            "partial" => fs::write(&brief, "HERDR-").unwrap(),
+            "empty" => fs::write(&brief, "").unwrap(),
+            "symlink" | "dangling" => {
+                let target = dir.join("prior-intent");
+                if entry == "symlink" {
+                    fs::write(&target, "prior intent must not be read or reused").unwrap();
+                }
+                std::os::unix::fs::symlink(target, &brief).unwrap();
+            }
+            "directory" => fs::create_dir(&brief).unwrap(),
+            _ => unreachable!(),
+        }
+        let before = fs::symlink_metadata(&brief).unwrap();
+        for _ in 0..2 {
+            driver::drive(&b, 3).unwrap();
+        }
+        assert_eq!(b.work()["current_run"], 9);
+        assert_eq!(b.work()["state"], "active");
+        assert_eq!(b.current()["process_state"], "reserved");
+        assert!(b.current()["dispatch"].is_null());
+        assert_eq!(
+            b.work()["reason"],
+            "dispatch-intent-exists: prior brief without durable bind; reconcile launch"
+        );
+        assert_eq!(
+            b.block_events.get(),
+            1,
+            "{entry}: fixed reason is idempotent"
+        );
+        let after = fs::symlink_metadata(&brief).unwrap();
+        assert_eq!(before.ino(), after.ino(), "{entry}: entry replaced");
+        assert_eq!(before.len(), after.len(), "{entry}: entry changed");
+        assert_eq!(before.file_type(), after.file_type());
+        assert!(
+            !b.calls.borrow().iter().any(|c| {
+                c.starts_with("herdr:pane list")
+                    || c.starts_with("herdr:tab ")
+                    || c.starts_with("effect:")
+                    || c.starts_with("command:prompt")
+                    || matches!(
+                        c.as_str(),
+                        "change:claim"
+                            | "change:reserve"
+                            | "change:bind"
+                            | "change:advance"
+                            | "change:stopped"
+                            | "change:reconcile"
+                    )
+            }),
+            "{entry}: unexpected layout/start/prompt/release"
+        );
+    }
 }
 #[test]
 fn crash_after_bind_and_unknown_writer_do_not_restart() {
