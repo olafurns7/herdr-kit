@@ -120,9 +120,10 @@
     "max_fence": 3
   },
   "current_integration": {
-    "execution": "unrun",
-    "outcome": "blocked",
-    "reason": "Candidate correspondence inspected at the pinned source; complete parent execution and independent review remain pending. No v5 work-domain or controller proof.",
+    "covered_blobs_checked_through": "0e9976528c02c24077b07b6e640d459766cf3491",
+    "execution": "pass",
+    "outcome": "execution-passed-review-pending",
+    "reason": "Complete inbox ASK_ONLY execution passed at pinned package/checkout; independent review pending. Matching nineteen covered blobs in a later checkout do not prove its uncovered changes or work/controller/jobs state machines.",
     "review": "pending",
     "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64"
   },
@@ -141,6 +142,54 @@
     ]
   },
   "format": 1,
+  "historical_executions": [
+    {
+      "baseline_counts": {
+        "distinct": 17340,
+        "generated": 98941,
+        "queued": 0
+      },
+      "case_count": 25,
+      "command_log_count": 83,
+      "evidence_entry_count": 176,
+      "execution_review_verdict": "READY",
+      "model_negative_control_distinct": {
+        "NC1": 393,
+        "NC2": 530,
+        "NC3": 183
+      },
+      "mutant_binary_sha256": {
+        "NC1": "8eed5f77ec58d662493962394d46da9128b740c8e71413106194b027b51982f8",
+        "NC2": "b2bf2e110701728f88065574ae49c4e71e027eda6038bb03f0035fc73bae3f66",
+        "NC3": "e2a298acfb73507f2379a20d3d88adbae88e8f1051ea91797306bc0fde9ae409"
+      },
+      "outcome": "pass",
+      "package_commit": "d4c08a6ad49b31495730eb6d30262220213b3e64",
+      "proof_checkout_commit": "69f3ff9d11df8bea44c534acbfef96e9b20d1719",
+      "receipt_sha256": {
+        "commands.json": "3b82686817277861501d868f166d7ad1bf152d929e2792d904344134086917bf",
+        "evidence-hashes.json": "dff8daf9b21ef0a5aad8546dbf99886ce9fc8760d852d9654bf27e5e3134b860",
+        "execution-review.md": "4262cf44dc533965603bdfab5602a043df757c86b3a7372d425a1e8066c5adc7",
+        "manifest.json": "229cb125d9616a5254a186ad2ff66bb1080475e46512d9975d0f90d29c97e56c",
+        "package-hashes.json": "d0ab0cf8a3304a3df22d30555f6c65f6fab6adffab10f681457aa879c0c4fc47",
+        "result.json": "b8d729565e3ecc7dfa73a32281299c578655b7203d8d34c6da7b06e9f0550993",
+        "self-checks-and-proof.log": "496f89694d8add5a622b20b258a513b54bb46a9db23d6c267a996f23e4b52c61"
+      },
+      "scope": "Historical bounded inbox model and fixed CLI replays only; later metadata/documentation edits and current integration were not executed by this receipt.",
+      "self_check_count": 6,
+      "source_commit": "71d4146fdbe99a67c0c698877478bc7c796cc360",
+      "tool_hashes": {
+        "cargo_sha256": "ec1b9233e7f72990ecd8e62063fa7f6c3dfc2bec8e97f88bff165f9100ac696a",
+        "java_sha256": "0f642542ea1f0be6957557c0db96653ec128113bb5a4aaa7c2534d1d72ddb51f",
+        "taskr_sha256": "a194c8a00d976244fe3bd39b730b754eb772bb8de88e112bc1a98bccb4ccd2f7",
+        "tlc_jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+      },
+      "tool_versions": {
+        "java": "openjdk version \"21.0.13\" 2026-10-20 LTS\nOpenJDK Runtime Environment Temurin-21.0.13+9 (build 21.0.13+9-LTS)\nOpenJDK 64-Bit Server VM Temurin-21.0.13+9 (build 21.0.13+9-LTS, mixed mode, sharing)",
+        "tlc": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+      }
+    }
+  ],
   "last_execution": {
     "baseline_counts": {
       "distinct": 17340,
@@ -150,34 +199,33 @@
     "case_count": 25,
     "command_log_count": 83,
     "evidence_entry_count": 176,
-    "execution_review_verdict": "READY",
+    "execution_review_verdict": "pending",
     "model_negative_control_distinct": {
       "NC1": 393,
       "NC2": 530,
       "NC3": 183
     },
     "mutant_binary_sha256": {
-      "NC1": "8eed5f77ec58d662493962394d46da9128b740c8e71413106194b027b51982f8",
-      "NC2": "b2bf2e110701728f88065574ae49c4e71e027eda6038bb03f0035fc73bae3f66",
-      "NC3": "e2a298acfb73507f2379a20d3d88adbae88e8f1051ea91797306bc0fde9ae409"
+      "NC1": "2c15bec54af2ad97e1245940de65093a7eac9f3ec4d71e37530765cd95150550",
+      "NC2": "5a93d0fad240580f5a283ce7682471846ef7c95fffdf7fe364b2c87f1dadc3e9",
+      "NC3": "0af87832a54e64ff79c0cf7fb20b66f6c1f28087bb6667dedcf9b7018012e411"
     },
     "outcome": "pass",
-    "package_commit": "d4c08a6ad49b31495730eb6d30262220213b3e64",
-    "proof_checkout_commit": "69f3ff9d11df8bea44c534acbfef96e9b20d1719",
+    "package_commit": "9af0ea5c35b9b6f2a90c940fc10866b7d757dcbe",
+    "proof_checkout_commit": "9af0ea5c35b9b6f2a90c940fc10866b7d757dcbe",
     "receipt_sha256": {
-      "commands.json": "3b82686817277861501d868f166d7ad1bf152d929e2792d904344134086917bf",
-      "evidence-hashes.json": "dff8daf9b21ef0a5aad8546dbf99886ce9fc8760d852d9654bf27e5e3134b860",
-      "execution-review.md": "4262cf44dc533965603bdfab5602a043df757c86b3a7372d425a1e8066c5adc7",
-      "manifest.json": "229cb125d9616a5254a186ad2ff66bb1080475e46512d9975d0f90d29c97e56c",
-      "package-hashes.json": "d0ab0cf8a3304a3df22d30555f6c65f6fab6adffab10f681457aa879c0c4fc47",
-      "result.json": "b8d729565e3ecc7dfa73a32281299c578655b7203d8d34c6da7b06e9f0550993",
-      "self-checks-and-proof.log": "496f89694d8add5a622b20b258a513b54bb46a9db23d6c267a996f23e4b52c61"
+      "commands.json": "cd238750c1bd76e27c5909e8095c09a544b9f33cb0c951cebdfa17bd457efc1f",
+      "evidence-hashes.json": "f3b9975cea2b84992daa487f69889dc577c9c910195e24eddbbae54b2d8e88e4",
+      "manifest.json": "fe718d8ebd479da53c638eeffc36347740f311be2ff401fbfcc703bd8cf8477d",
+      "package-hashes.json": "e1bfac575df7f51014e83770c38150bef141c1a8c6d360e80ec8a094c65655c8",
+      "result.json": "44ef83192ef2c613eee42d1f3f7183b08cd61a759705b564a2b2a53db0dac16f",
+      "self-checks-and-proof.log": "27a7df7debb4cdbcdf3cdbb5652dc822e7d02c74aaf4a3e5b1d8f305ffcf9d08"
     },
-    "scope": "Historical bounded inbox model and fixed CLI replays only; later metadata/documentation edits and current integration were not executed by this receipt.",
+    "scope": "Bounded ASK_ONLY inbox model and fixed CLI replays at the exact package/checkout only; work/controller/jobs state machines and subsequent metadata edits are not proved.",
     "self_check_count": 6,
-    "source_commit": "71d4146fdbe99a67c0c698877478bc7c796cc360"
+    "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64"
   },
-  "last_successful_source_commit": "71d4146fdbe99a67c0c698877478bc7c796cc360",
+  "last_successful_source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
   "negative_controls": {
     "NC1": {
       "expected_invariant": "AckAuthority",
@@ -248,14 +296,14 @@
     "to_source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
     "unchanged_covered_file_count": 14
   },
-  "status": "source-map-updated-execution-pending",
+  "status": "execution-passed-review-pending",
   "tool_identity": {
     "engine": "TLA+ TLC, tlc2.TLC, exhaustive BFS, one worker, seed 1",
     "identity_evidence": "Each run pins SHA-256 of Java, TLC jar, supplied taskr and built mutants; Java -version and command receipts retained.",
     "last_successful_tool_hashes": {
       "cargo_sha256": "ec1b9233e7f72990ecd8e62063fa7f6c3dfc2bec8e97f88bff165f9100ac696a",
       "java_sha256": "0f642542ea1f0be6957557c0db96653ec128113bb5a4aaa7c2534d1d72ddb51f",
-      "taskr_sha256": "a194c8a00d976244fe3bd39b730b754eb772bb8de88e112bc1a98bccb4ccd2f7",
+      "taskr_sha256": "d5b38851152ce594ad10c310f876382268d926b9ff1364e4f5422ad24192a897",
       "tlc_jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
     },
     "last_successful_versions": {
@@ -278,8 +326,8 @@
   "verification_files": {
     "Inbox.cfg": "629e507b4663c9bfc0b0d1667f13d236e494d216b30d46b09255740206f2911c",
     "Inbox.tla": "f220a2d373f7191b0a5c81e6a66c2b42ba96dd7f806981fee694bd3963ed5034",
-    "README.md": "a6116c9cb348a9f676b6b8f5b544f4b657635b2c50ed7e5a22b1686ca0c6eb73",
-    "SYNC.md": "ad7ac2f28e49c9f111ca14b8a3d1e586a33e6396a16a771e481d13397df9fefd",
+    "README.md": "df81ec546b1e6d67ee02a56de8a26f6a76596a5928c41c1c0086fb7641542908",
+    "SYNC.md": "bc08117406c24377fd025da1bc407dca637995a9dba15549a16ed8d0e1b32147",
     "test_verify.py": "dc32222fcfed29e7298bb7346b0b50455e49010ecf1871d304b169725c5fe7e0",
     "verify.py": "6eab013ef5e18af03f193d21127f422b437bd6d027f6ba354b596cc2bd1c2926"
   }

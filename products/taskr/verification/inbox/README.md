@@ -1,20 +1,21 @@
-# Inbox fencing: bounded safety package (historical source verified)
+# Inbox fencing: bounded safety package (execution passed, review pending)
 
 This checks a small TLA+ model with TLC and replays selected paths through the
 real taskr CLI and SQLite. It is not a proof of the Rust implementation. The
-source/action map is `manifest.json`; its inspected candidate source pin is
-`a21f83afc3fe2082f3da980f1d93e6992f804f64`. Historical source `71d4146` passed all 25
-cases and six driver self-checks using package `d4c08a6` in frozen checkout
-`69f3ff9`; the independent execution review is READY. Portable receipt and tool
-hashes are recorded in the manifest's `last_execution` and `tool_identity` fields.
+source/action map is `manifest.json`; its source pin is
+`a21f83afc3fe2082f3da980f1d93e6992f804f64`. Parent execution of package `9af0ea5`
+in frozen checkout `9af0ea5` passed all 25 exact cases and six driver self-checks.
+The retained command/evidence inventories and tool hashes were checked;
+**independent execution review remains pending**. The nineteen covered blobs
+also match `0e99765`; this does not extend execution proof to its uncovered code.
 
-**Current integrated-source proof remains BLOCKED: execution/review are pending.**
 [Source correspondence](SYNC.md) explains every covered change from `71d4146`
 to `a21f83a`, why model/driver logic stays unchanged, and the repaired map anchors.
-The updated hashes identify an inspected candidate; they do not establish a pass.
-Historical execution used package bytes at `d4c08a6` and covers neither this
-integrated candidate nor the later metadata/documentation edits. No result here
-proves the v5 work-domain/controller state machines.
+Portable receipts and tool hashes are in `last_execution` and `tool_identity`.
+Historical source `71d4146`, package `d4c08a6`, frozen checkout `69f3ff9` and its
+READY execution review remain separately preserved in `historical_executions`.
+Each result covers its executed package bytes, not subsequent metadata edits.
+Neither result proves v5 work, controller or jobs state machines.
 
 ## Run
 
@@ -141,7 +142,7 @@ filter acknowledgement advances the cursor. NC2 has the same shortest trace,
 but takeover reuses fence 1, and the ghost acquisition identity detects reuse.
 Both expose the same cursor authority defect for filter acknowledgements.
 NC3's shortest trace skips ready by filter ack, then incorrectly coalesces the
-required ask and advances the watermark without handling it. These historical
+required ask and advances the watermark without handling it. These
 BFS traces are retained in the receipt's `command-004.log`, `command-005.log`,
 and `command-006.log`.
 
@@ -171,14 +172,16 @@ jar, supplied taskr and built mutants have binary hashes in receipts; doctor
 also hashes the Cargo shim target when mutation prerequisites are present. Tool
 output and non-vacuous state counts are required, not merely exit 0.
 
-The historical successful receipt identifies all 83 command logs and 176 retained
+The current successful receipt identifies all 83 command logs and 176 retained
 evidence entries. Its result, commands, package inventory, evidence inventory and
 original manifest are pinned by SHA-256 in `last_execution.receipt_sha256`.
-`self-checks-and-proof.log` and `execution-review.md` are portable labels for the
-combined self-check/proof receipt and independent READY review, also pinned there.
-The artifacts remain externally retained; the metadata contains no machine paths,
-host identities or task IDs. Receipt hashes bind the original run, not a rerun of
-the current checkout or the later documentation/metadata edits.
+`self-checks-and-proof.log` is the portable label for the combined parent build,
+six-self-check and proof receipt. Independent execution review is pending; no
+current READY review or review hash is asserted. The earlier successful execution
+and its READY review hash remain under `historical_executions`. The artifacts
+remain externally retained; metadata contains no machine paths, host identities
+or task IDs. Receipt hashes bind each original run and its exact package, not
+subsequent documentation/metadata edits or later uncovered source changes.
 
 Every CLI fixture gets a fresh HOME, TASKR_DB, temporary directory and an allowlisted
 environment. A failing synthetic `herdr` executable and absent scratch socket
@@ -211,8 +214,9 @@ an unexplained implementation failure. Update model transitions when atomicity
 or policy changes, update CLI fixtures and mutation anchors, then manually update
 covered hashes and source commit in the manifest. Do not mark execution confirmed
 or move `last_successful_source_commit` until the complete suite and all negative
-controls pass on the new source. `last_successful_source_commit` records the
-historically verified `71d4146`; keep it there while current source is blocked.
+controls pass on the new source. `last_successful_source_commit` now records
+`a21f83a`; the historical `71d4146` result stays separately retained. Keep
+execution outcome separate from independent review status.
 A candidate covered source pin may advance after that correspondence review,
 with execution explicitly pending. Rerun before advancing the successful source
 pin or claiming proof for a later source revision.

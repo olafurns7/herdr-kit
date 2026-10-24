@@ -1,10 +1,12 @@
-# Integrated v5 source correspondence (execution pending)
+# Integrated v5 source correspondence (execution passed, review pending)
 
 Inspected source: `a21f83afc3fe2082f3da980f1d93e6992f804f64`.
-Previous source and last successful execution: `71d4146fdbe99a67c0c698877478bc7c796cc360`.
-The new map is a reviewed-by-author candidate, not a passing integrated-source
-proof. Parent execution and independent review remain pending. Historical
-`last_execution`, tool hashes and `last_successful_source_commit` stay unchanged.
+Previous source and historical successful execution: `71d4146fdbe99a67c0c698877478bc7c796cc360`.
+Parent execution of package/frozen checkout `9af0ea5` passed all 25 exact cases
+and six self-checks against the inspected source map. Command/evidence inventories
+and retained tool/binary hashes were checked. Independent execution review remains
+pending. Historical execution, tool hashes and READY review remain separately
+preserved in `historical_executions`; last successful source now records `a21f83a`.
 
 ## Every covered change
 
@@ -56,7 +58,7 @@ module diffs concern jobs receipt/fallback behavior and work validation/row typi
 they add no protected cursor/lease writer and are outside the unassigned fixture.
 Their state machines remain excluded; the slotr manifest is not added to coverage.
 
-## Candidate changes and remaining proof
+## Maintained correspondence and remaining review
 
 Only the source pin/hashes, supporting action-map anchors/assumptions, documentation
 and verification-file hashes are maintained. `Inbox.tla`, `Inbox.cfg`, `verify.py`
@@ -65,13 +67,18 @@ named model/Rust mutations, no-vacuity checks, executable symlink handling and
 Ctrl-C cleanup are preserved. Their logic needs no change for the inspected
 inbox/root/legacy-fixture subset.
 
-The integrated-source case set is UNRUN. The current proof remains BLOCKED until
-the parent runs the complete command from [README.md](README.md) at a frozen
-source plus this candidate package, checks every exact case and retained hash,
-and obtains independent review. A covered file drift still refuses the run;
-hashes are not auto-refreshed. Uncovered modules may continue changing, so a
-candidate run must identify its exact complete checkout and binary provenance.
-Only matching evidence may later advance successful execution metadata.
+The parent executed the complete case set at frozen checkout `9af0ea5`, with
+package files exactly at that commit. Baseline completed 17,340 distinct states
+and 98,941 generated states with zero queued; all model negative controls, twelve
+witnesses, four CLI schedules and three real Rust mutants passed their exact
+criteria. All 83 command log hashes and 176 evidence inventory hashes match.
+The nineteen covered blobs also match `0e99765`, without repinning or claiming
+execution of its uncovered changes. No model/build was rerun to maintain metadata.
+
+Independent execution review is pending. Source drift still refuses a run;
+hashes are not auto-refreshed. Uncovered modules may change independently, so each
+run must name its exact complete checkout and binary provenance. Later metadata
+edits are outside the executed package; hashes bind the retained original bytes.
 
 This covers bounded inbox safety, not the controller, v5 acceptance/dispatch,
 native delivery, filesystem writers, cross-host behavior, migration/release
