@@ -132,6 +132,9 @@ root foreground PIDs, and observed interactive foreground shells of the selected
 workspace with no other live process in their session can be exempt. Names alone
 and arbitrary observer/root descendants never grant exemptions. Every other
 same-user process with a checkout cwd blocks handoff, including manual workers.
+A single login-shell leading dash is normalized only for supported shell
+basenames (for example, ps `-zsh` versus Herdr `zsh`); exact PID, foreground group,
+session and pane evidence still controls the exemption.
 The scan rechecks process inventory stability, root/shell observations and target
 native absence. The stopped assignment's own shell is a valid exemption. Each
 shell entry records its pane, true session ID, foreground PGID and singleton

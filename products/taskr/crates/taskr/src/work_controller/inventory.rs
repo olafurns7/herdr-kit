@@ -229,7 +229,14 @@ fn snapshot(uid: u32, start: Instant, probes: &mut BTreeSet<i32>) -> Result<Vec<
     Ok(rows)
 }
 fn same_command(a: &str, b: &str) -> bool {
-    Path::new(a).file_name() == Path::new(b).file_name()
+    fn name(command: &str) -> Option<&str> {
+        let name = Path::new(command).file_name()?.to_str()?;
+        Some(match name.strip_prefix('-') {
+            Some(shell @ ("sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "nu")) => shell,
+            _ => name,
+        })
+    }
+    name(a).zip(name(b)).is_some_and(|(a, b)| a == b)
 }
 fn tty(tty: &str) -> bool {
     !matches!(tty, "?" | "??" | "-")
@@ -455,6 +462,89 @@ mod tests {
             command: command.into(),
             zombie: false,
         }
+    }
+    #[test]
+    fn login_shell_normalization_preserves_exact_inventory_exemptions() {
+        let mut rows = parse_ps(b"17576 1 17576 ttys023 Ss+ -zsh\n600 1 600 ? S taskr\n").unwrap();
+        for r in &mut rows {
+            r.session = r.pid;
+        }
+        let trust = Trust {
+            shells: BTreeMap::from([(17576, shell("zsh", "w1:p1", 17576))]),
+            ..Default::default()
+        };
+        let scan = evidence(
+            &rows,
+            &BTreeMap::new(),
+            Path::new("/checkout"),
+            17576,
+            600,
+            501,
+            &BTreeSet::new(),
+            &trust,
+        )
+        .unwrap();
+        let exempt = scan["exempt"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["pid"] == 17576)
+            .unwrap();
+        assert_eq!(
+            exempt,
+            &json!({"pid":17576,"reason":"workspace-shell","pane":"w1:p1","session_id":17576,"foreground_pgid":17576,"session_pids":[17576]})
+        );
+        rows.push(row(17577, 1, 17577, "?", "-zsh"));
+        let scan = evidence(
+            &rows,
+            &BTreeMap::from([(17577, PathBuf::from("/checkout/sub"))]),
+            Path::new("/checkout"),
+            17576,
+            600,
+            501,
+            &BTreeSet::new(),
+            &trust,
+        )
+        .unwrap();
+        assert_eq!(scan["checkout_remaining"][0]["pid"], 17577);
+        assert!(
+            !scan["exempt"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["pid"] == 17577)
+        );
+        rows[0].group = 17578;
+        assert!(
+            evidence(
+                &rows,
+                &BTreeMap::new(),
+                Path::new("/checkout"),
+                17576,
+                600,
+                501,
+                &BTreeSet::new(),
+                &trust
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn command_normalization_only_strips_one_supported_login_shell_dash() {
+        for shell in ["sh", "bash", "zsh", "fish", "dash", "ksh", "nu"] {
+            assert!(same_command(&format!("-{shell}"), &format!("/bin/{shell}")));
+            assert!(same_command(&format!("/bin/{shell}"), &format!("-{shell}")));
+        }
+        for (a, b) in [
+            ("-taskr", "taskr"),
+            ("--zsh", "zsh"),
+            ("-zsh-helper", "zsh-helper"),
+            ("-zsh", "bash"),
+            ("/", "/"),
+        ] {
+            assert!(!same_command(a, b));
+        }
+        assert!(same_command("/synthetic/bin/codex", "codex"));
     }
     fn fixture(extra: Vec<Row>, cwd: &str, probes: BTreeSet<i32>) -> Result<Value> {
         let mut rows = vec![
