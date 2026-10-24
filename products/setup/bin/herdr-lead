@@ -2,7 +2,7 @@
 # Start one same-host Claude root lead, bound to one immutable adopt generation.
 set -u
 
-usage='usage: herdr-lead start ROOT PANE --worktree DIR [--lane opus-high] [--resume SID --account NAME] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--lane opus-high] [--resume SID --account NAME] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT'
+usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT'
 root= pane= gen= mcp_config= agent= lease=unknown check_task= step=0
 tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf=
 cleanup() {
@@ -232,8 +232,9 @@ case $command in start | move) ;; *) die "$usage" ;; esac
 pane=$1
 shift
 identifier "$pane" || die 'invalid PANE'
-worktree= lane=opus-high resume= account= predecessor= prompt_file= no_handover=
+worktree= lane=opus-high resume= account= predecessor= prompt_file= no_handover= jobs=false
 while [ $# -gt 0 ]; do
+    if [ "$1" = --jobs ]; then jobs=true; shift; continue; fi
     if [ "$command" = move ] && [ "$1" = --no-handover ]; then
         no_handover=1
         shift
@@ -348,8 +349,10 @@ step_line 5 'write immutable generation config'
 mcp_config=$state_dir/taskr-mcp-$gen.json
 [ ! -e "$mcp_config" ] && [ ! -L "$mcp_config" ] || fail 'generation config exists'
 tmp=$(mktemp "$state_dir/.mcp.XXXXXX") || fail 'create config temporary file'
-jq -nc --arg root "$root" --arg gen "$gen" \
-    '{mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as",$root,"--session",$gen]}}}' >"$tmp" || fail 'render config'
+jq -nc --arg root "$root" --arg gen "$gen" --argjson jobs "$jobs" \
+    --arg binding "herdr-lead-root-$root-gen-$gen" \
+    '{mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as",$root,"--session",$gen]}}}
+     | if $jobs then .mcpServers["taskr-jobs"] = {command:"taskr",args:["mcp","--jobs","--as",$root,"--session",$gen,"--binding",$binding]} else . end' >"$tmp" || fail 'render config'
 chmod 0600 "$tmp" || fail 'protect config'
 mv -n -- "$tmp" "$mcp_config" && [ ! -e "$tmp" ] || fail 'generation config exists or could not be saved'
 tmp=

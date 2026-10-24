@@ -3,7 +3,7 @@
 set -eu
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 exec python3 - "$repo_dir" "${HUB_SH:-sh}" <<'PY'
-import fcntl, json, os, pty, shutil, signal, subprocess, sys, tempfile, termios, time
+import fcntl, json, os, pty, shlex, shutil, signal, subprocess, sys, tempfile, termios, time
 from pathlib import Path
 
 setup = Path(sys.argv[1])
@@ -220,7 +220,7 @@ else: sys.exit(98)
     def expect(case, rc):
         assert case[2].returncode == rc, (case[2].returncode, case[3], case[4])
 
-    def success(case, extra=(), new=False):
+    def success(case, extra=(), new=False, jobs=False):
         expect(case, 0)
         work, home, process, out, err, calls = case
         state = home / '.local/state/herdr-orch/lead-push/42'
@@ -234,8 +234,12 @@ else: sys.exit(98)
         assert actual == dict(args=['--model','example-opus','--effort','high','--mcp-config',str(config),
                                    '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
                               task=None, launch=None, role='hub', pid=process.pid, cwd=str(work), umask=0o002), actual
-        assert json.loads(config.read_text()) == {'mcpServers':{'taskr':{'command':'taskr',
-                'args':['mcp','--channel','--as','42','--session','7']}}}
+        servers = {'taskr':{'command':'taskr','args':['mcp','--channel','--as','42','--session','7']}}
+        if jobs:
+            binding = 'herdr-hub-root-42-gen-7'
+            assert 16 <= len(binding) <= 128
+            servers['taskr-jobs'] = {'command':'taskr','args':['mcp','--jobs','--as','42','--session','7','--binding',binding]}
+        assert config.read_text() == json.dumps({'mcpServers':servers}, separators=(',', ':')) + '\n'
         assert config.stat().st_mode & 0o777 == 0o600
         assert state.stat().st_mode & 0o777 == 0o700
         assert (state / 'handover-7.md').stat().st_mode & 0o777 == 0o600
@@ -266,6 +270,15 @@ else: sys.exit(98)
     success(c)
     c = run('new root created then adopted', args=('--new','example-hub','--lane','opus-high'))
     success(c, new=True)
+    c = run('jobs opt-in preserves channel, quoted Claude args and captured config',
+            args=('42','--jobs','--','--resume','id with spaces',"quote'arg"))
+    success(c, ('--resume','id with spaces',"quote'arg"), jobs=True)
+    c = run('new hub opts in with generated root and adopt generation', args=('--new','example-hub','--jobs'))
+    success(c, new=True, jobs=True)
+    c = run('jobs keeps an existing immutable generation config', args=('42','--jobs'), mode='config-exists')
+    expect(c, 1)
+    assert (c[1] / '.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json').read_text() == 'keep'
+    assert not (c[0] / 'cdl').exists()
     c = run('existing hub ref suppresses suggestion', mode='hub-on')
     success(c)
     assert 'To make this the hub:' not in c[3]
@@ -328,6 +341,21 @@ else: sys.exit(98)
         c = run('invalid arguments', args=args)
         expect(c, 2)
         assert not c[5]
+    for args in [('check','42','--jobs'), ('42','--jobs','--allow-ask','17'),
+                 ('42','--jobs','--lane','other')]:
+        c = run('unsupported jobs combination refuses before effects', args=args,
+                lane={'kind':'codex','model':'example','effort':'high','prefixes':['orch']})
+        expect(c, 2)
+        assert not c[5] and not (c[0] / 'herdr-calls').exists()
+        assert not (c[1] / '.local/state').exists()
+    for prefix in [('42',), ('--new','example-hub'), ('move','42')]:
+        for config_arg in [('--mcp-config','other.json'), ('--mcp-config=other.json',)]:
+            c = run('jobs refuses competing Claude MCP config before creation or move',
+                    args=(*prefix,'--jobs','--',*config_arg), mode='move' if prefix[0] == 'move' else '')
+            expect(c, 2)
+            assert '--jobs owns the generation MCP config' in c[4]
+            assert not c[5] and not (c[0] / 'herdr-calls').exists()
+            assert not (c[1] / '.local/state').exists()
     for variable, value in [('HERDR_PANE_ID',''), ('HERDR_TAB_ID','bad id'), ('HERDR_WORKSPACE_ID','null')]:
         c = run('invalid location', location={variable:value})
         expect(c, 2)
@@ -423,6 +451,16 @@ else: sys.exit(98)
     assert keys == [['pane','send-keys','wA:p1','esc','ctrl+c','ctrl+c']], keys
     bindir = c[1] / '.local/bin'
     assert (c[0] / 'typed').read_text() == f"'{bindir}/herdr-hub' 42 --lane 'opus-high' -- '--resume' 'id with spaces'", text
+    assert not any(a[0] == 'adopt' for a,t,l in c[5])
+
+    c = run('jobs move forwards opt-in across detached helper and shell-quoted successor',
+            args=('move','42','--jobs','--','--resume','id with spaces',"quote'arg"), mode='move')
+    expect(c, 0)
+    log = Path(c[3].splitlines()[0].split('; log ')[1])
+    wait_for(log, 'herdr-hub: moved 42: generation 9 live')
+    bindir = c[1] / '.local/bin'
+    assert shlex.split((c[0] / 'typed').read_text()) == [str(bindir / 'herdr-hub'),'42','--lane','opus-high','--jobs',
+                                                        '--','--resume','id with spaces',"quote'arg"]
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
 
     c = run('move helper failure is noted on the root', args=('move','42','--no-handover'), mode='move-stuck')

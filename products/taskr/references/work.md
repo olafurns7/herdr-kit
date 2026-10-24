@@ -101,3 +101,16 @@ existing offered inbox events remain consumable under the normal fenced rules.
 Owner elicitation is optional for one existing structured owner ask explicitly
 opted in by CLI. Native provenance does not authenticate a human; decline/cancel
 leaves no decision, and another channel's answer is not silently superseded.
+
+For a future authorized Claude launch, `herdr-hub 42 --jobs` (or
+`herdr-hub --new example-hub --jobs`) adds native jobs alongside the existing
+channel without hand-written MCP JSON. `herdr-lead start 42 <pane> --worktree
+<checkout> --jobs` and both helpers' `move` paths also support the flag; place it
+before the hub's `--` Claude-argument separator and repeat it on future moves.
+This does not authorize changing or restarting an existing hub. Default launches
+keep the legacy channel-only config; jobs opt-in grants no `allow-ask` permission.
+Preserve the immutable generation config: a same-generation MCP server restart
+reuses its ROOT/GEN/binding and recovers handles; a helper start/move adopts a new
+generation and releases old native routes to channel fallback. Do not invent a
+new binding to recover old work. See orchestration `launch.md` for launch details
+and the linked native jobs guide for recovery and explicit result receipts.

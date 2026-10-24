@@ -66,7 +66,8 @@ It closes the gate accepted or rejected and notes the result.
 `$HOME/.local/state/herdr-orch/lead-push/<root>/hub-check-<gen>.log` and `.result`
 record `live` or `failed: REASON`; `check` reports lease/generation only (0/1/2:
 live/stale/unknown). After a failure, see `recovery.md` for `start.lock`.
-After the hub exits, remove its MCP config by literal path.
+Keep the immutable generation config while recovering native handles; remove it
+by literal path only after that generation's work and recovery are settled.
 
 For each campaign the hub creates the campaign worktree workspace and starts the campaign lead in its root tab. The agent name is `orch-<campaign>`:
 
@@ -92,13 +93,44 @@ herdr-lead check <root>
 
 Do not use `herdr-launch` for a lead: it registers a child. `herdr-lead` accepts any Claude lane that allows `orch-` (default `opus-high`), checks the target shell and predecessor lease, clears worker identity, adopts the root once, and keeps the worktree cwd. It writes immutable `0600` configs and handovers under `$HOME/.local/state/herdr-orch/lead-push/<root>/`, passes the config with `--mcp-config`, and answers the development-channel dialog. It never writes `.mcp.json`. Its acceptance check must still pass on every start.
 
-After the lead is closed, delete its `$HOME/.local/state/herdr-orch/lead-push/<root>/taskr-mcp-<gen>.json` by literal path.
+After the lead is closed and its generation's work/recovery are settled, delete
+its `$HOME/.local/state/herdr-orch/lead-push/<root>/taskr-mcp-<gen>.json` by literal path.
 
 The lead brief says **"herdr-lead adopted you; skip adopt"** and carries the root and generation from the helper's prompt. A second adopt, even in the same pane, fences that channel. Handle pushed events with taskr MCP receipt/inbox/consumer/ack tools and the supplied fence; deduplicate against the inbox before effects. No plain `taskr wait` or `taskr ack` in a push lead. A live lease alone is insufficient: `start` creates a throwaway gate child, emits its ready event, waits up to 240 s for current-generation receipt and ack, and closes the child accepted. A successor first acks older pushed events in order; it prints that backlog, and each new ack extends the wait by up to 240 s (at most 30 min). Only its final `ROOT live at GEN (event E received and acked)` line accepts startup. `check` prints `live`, `stale`, or `unknown` (exit 0, 1, or 2); it checks lease/generation only, not end-to-end delivery.
 
 Move leads one at a time, starting low-traffic; stop rollout on any failed live check. On failure at or after adoption the helper prints `ROOT= GEN= pane= mcp_config= agent= lease= check_task= log=`. Inspect that state and the ledger before recovery; never blindly rerun, re-adopt, or start a second agent. Recovery and account-pinned resume are in `recovery.md` "Your own session".
 
 For a plain lead, use an authorized `orch-` lane and send the brief with `herdr agent prompt`. It registers its own root if needed (`workflow.md` "Brief variants"), and its first ledger act on the root is `taskr adopt <root> --pane <pane>`. The hub checks that `taskr campaign <root>` does not read `unregistered` before reporting startup. A root without a pane cannot be watched or focused from the owner's view. Every lead brief says owner decisions and actions are owner asks; owner notes only summarize them (`owner.md`). A repository's worktree setup plugin may skip `orch/*` branches. The lead needs no dependencies and runs gates in task worktrees.
+
+### Optional native jobs for future Claude launches
+
+For an authorized new launch, add `--jobs` before the hub's `--` Claude-argument
+separator. Supported paths are `herdr-hub <root>`, `herdr-hub --new <name>`,
+`herdr-hub move <root>`, and `herdr-lead start|move <root> <pane>`:
+
+```bash
+herdr-hub <root> --jobs --lane opus-high
+herdr-hub --new <name> --jobs --lane opus-high
+herdr-lead start <root> <pane> --worktree <campaign worktree> --jobs --prompt-file <lead brief>
+```
+
+This is optional new-launch configuration, not permission to restart a current
+hub. Omit the flag for the unchanged legacy config. With it, the same immutable
+`0600` generation file keeps the `taskr` channel and adds `taskr-jobs` running
+`taskr mcp --jobs --as ROOT --session GEN --binding TOKEN`. The binding is
+`herdr-hub-root-ROOT-gen-GEN` or `herdr-lead-root-ROOT-gen-GEN`, saved in that file.
+The hub carries the flag through its detached move helper; repeat it on each
+future move that should opt in. `check`/`stop` do not accept it. With `--jobs`,
+competing `--mcp-config` arguments after `--` are refused before any effects.
+
+An MCP server restart in the same generation reuses the saved ROOT/GEN/binding
+and recovers existing handles. These launch helpers adopt a new generation;
+they are not a jobs-server-only restart. After a new adopt, old native routes
+release to compatible channel fallback; do not change a binding to reclaim them.
+Keep old configs for recovery and process/receipt stable results as described in
+the [native jobs guide](https://github.com/olafurns7/herdr-kit/blob/main/products/taskr/docs/jobs.md). The flag grants no owner
+input permission: owner elicitation stays denied unless an existing exact owner
+ask is separately opted in with CLI `taskr jobs allow-ask`.
 
 ## New task worktree
 
