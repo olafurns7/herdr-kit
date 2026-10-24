@@ -42,8 +42,12 @@ case "$1 $2" in
     "pane wait-output") [ "${STUB_ENV_OK:-1}" = 1 ] || exit 1 ;;
     "pane run") case $3 in *:p8) [ "${STUB_PUSH_FAIL:-}" != run ] || exit 1 ;; esac ;;
     "pane read") printf '%s\n' "${STUB_SCREEN:-}" ;;
-    "agent start") [ "${STUB_START_OK:-1}" = 1 ] || exit 1 ;;
-    "agent list") printf '%s\n' '{"result":{"agents":[]}}' ;;
+    "agent start") [ "${STUB_START_OK:-1}" = 1 ] || exit 1; printf '%s\n' "$3" >"$STUB_CALLS.started" ;;
+    "agent list")
+        if [ -f "$STUB_CALLS.started" ]; then
+            [ -z "${STUB_NATIVE:-}" ] || { printf '%s\n' "$STUB_NATIVE"; exit 0; }
+            printf '{"result":{"agents":[{"name":"%s","pane_id":"wA:p5","agent_session":{"value":"synthetic-native"}}]}}\n' "$(cat "$STUB_CALLS.started")"
+        else printf '%s\n' '{"result":{"agents":[]}}'; fi ;;
 esac
 exit 0
 EOF
@@ -53,8 +57,15 @@ line=taskr
 for arg in "$@"; do line="$line|$arg"; done
 printf '%s\n' "$line" >>"$STUB_CALLS"
 [ "${STUB_FAIL:-}" != "taskr $1" ] || exit 1
+[ "${STUB_FAIL:-}" != "taskr $1 ${2:-}" ] || exit 1
 case $1 in
-    --json) [ "$2 $3" = 'work list' ] || exit 1; cat "$STUB_RESERVED" ;;
+    --json) case "$2 $3" in
+        'work list') cat "$STUB_RESERVED" ;;
+        'work observe')
+            [ "${STUB_FAIL:-}" != 'taskr work observe' ] || exit 1
+            if [ -n "${STUB_OBSERVE:-}" ]; then printf '%s\n' "$STUB_OBSERVE";
+            else printf '%s\n' '{"launch_id":3579,"task_id":2468,"native_session":"synthetic-native","dispatch":{"pane":"wA:p5"}}'; fi ;;
+        *) exit 1 ;; esac ;;
     new) printf '%s\n' "${STUB_NEW:-n1 2468}" ;;
     launch) printf '%s\n' "${STUB_LAUNCH:-l1 {\"launch_id\":3579,\"status\":\"open\"}}" ;;
 esac
@@ -96,7 +107,7 @@ new_case() {
         'Acceptance: launch succeeds' 'Validation: stub calls' >"$brief"
     : >"$case_dir/calls"
     STUB_FAIL= STUB_CURRENT= STUB_TAB= STUB_PANE_WS= STUB_PANE_CWD= STUB_PANE_GET= STUB_FG= STUB_ENV_OK= STUB_NEW= STUB_LAUNCH=
-    STUB_SCREEN= STUB_START_OK= STUB_PUSH_FAIL= STUB_SERVER_RC=0
+    STUB_SCREEN= STUB_START_OK= STUB_PUSH_FAIL= STUB_SERVER_RC=0 STUB_NATIVE= STUB_OBSERVE=
     STUB_RESERVED=$case_dir/reserved.json
     printf '%s\n' "case: $case_name"
 }
@@ -111,6 +122,7 @@ run_launch() {
         STUB_ENV_OK="$STUB_ENV_OK" STUB_NEW="$STUB_NEW" STUB_LAUNCH="$STUB_LAUNCH" \
         STUB_SCREEN="$STUB_SCREEN" STUB_START_OK="$STUB_START_OK" STUB_PUSH_FAIL="$STUB_PUSH_FAIL" \
         STUB_RESERVED="$STUB_RESERVED" STUB_SERVER_RC="$STUB_SERVER_RC" \
+        STUB_NATIVE="$STUB_NATIVE" STUB_OBSERVE="$STUB_OBSERVE" \
         TASKR_FORMAT=json "$@" \
         >"$case_dir/out" 2>"$case_dir/err") || run_status=$?
     out=$(cat "$case_dir/out")
@@ -1284,6 +1296,34 @@ grep -F 'herdr|agent|start|impl-cart|' "$case_dir/calls" >/dev/null || fail 'res
 grep -F "taskr|prompt|2468|--file|$brief" "$case_dir/calls" >/dev/null || fail 'reserved brief not captured'
 grep -F 'TASKR_LAUNCH=3579 DISABLE_AUTO_UPDATE=true' "$case_dir/calls" >/dev/null || fail 'reserved identity/update environment missing'
 grep -F 'unset TASKR_DB && export PATH=' "$case_dir/calls" >/dev/null || fail 'reserved default context did not clear stale ledger override'
+python3 - "$case_dir/calls" <<'PY' || fail 'reserved observation identity/order mismatch'
+import json, sys
+rows = open(sys.argv[1]).read().splitlines()
+start = next(i for i, row in enumerate(rows) if row.startswith('herdr|agent|start|impl-cart|'))
+observe = next(i for i, row in enumerate(rows) if row.startswith('taskr|--json|work|observe|3579|--as|42|--generation|7|--data|'))
+prompt = next(i for i, row in enumerate(rows) if row.startswith('taskr|prompt|2468|'))
+assert start < observe < prompt
+data = json.loads(rows[observe].split('|--data|', 1)[1])
+assert data['pane'] == 'wA:p5' and data['native_session'] == 'synthetic-native' and data['observed_at']
+PY
+
+for fault in missing wrong-pane wrong-name duplicate rejected-observe unconfirmed-observe; do
+    new_case "reserved $fault withholds prompt after native start"
+    reserved_snapshot
+    case $fault in
+        missing) STUB_NATIVE='{"result":{"agents":[{"name":"impl-cart","pane_id":"wA:p5","agent_session":null}]}}' ;;
+        wrong-pane) STUB_NATIVE='{"result":{"agents":[{"name":"impl-cart","pane_id":"wA:p9","agent_session":{"value":"native"}}]}}' ;;
+        wrong-name) STUB_NATIVE='{"result":{"agents":[{"name":"replacement","pane_id":"wA:p5","agent_session":{"value":"native"}}]}}' ;;
+        duplicate) STUB_NATIVE='{"result":{"agents":[{"name":"impl-cart","pane_id":"wA:p5","agent_session":{"value":"native"}},{"name":"replacement","pane_id":"wA:p5","agent_session":{"value":"other"}}]}}' ;;
+        rejected-observe) STUB_FAIL='taskr work observe' ;;
+        unconfirmed-observe) STUB_OBSERVE='qd1 synthetic-request' ;;
+    esac
+    run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+    expect_rc 1
+    if grep -F 'taskr|prompt|' "$case_dir/calls" >/dev/null; then fail 'unobserved native identity received a brief'; fi
+    case $fault in rejected-observe|unconfirmed-observe) ;; *)
+        if grep -F 'taskr|--json|work|observe|' "$case_dir/calls" >/dev/null; then fail 'invalid native identity reached observe'; fi ;; esac
+done
 
 new_case 'reserved scratch ledger and selected candidate CLI propagate to the shell'
 reserved_snapshot

@@ -7,7 +7,7 @@ use std::{
 
 const MAX: usize = 4096;
 const TEXT: usize = 1024;
-const BUDGET: Duration = Duration::from_secs(10);
+const BUDGET: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Row {
@@ -21,8 +21,25 @@ struct Row {
 }
 #[derive(Default, PartialEq, Eq)]
 pub(super) struct Trust {
-    pub shells: BTreeMap<i32, String>,
+    pub shells: BTreeMap<i32, WorkspaceShell>,
     pub root: BTreeMap<i32, String>,
+    pub root_pane: String,
+    pub root_group: i32,
+    pub root_at: String,
+}
+#[derive(PartialEq, Eq)]
+pub(super) struct WorkspaceShell {
+    pub command: String,
+    pub pane: String,
+    pub group: i32,
+}
+impl Trust {
+    pub fn same_basis(&self, other: &Self) -> bool {
+        self.shells == other.shells
+            && self.root == other.root
+            && self.root_pane == other.root_pane
+            && self.root_group == other.root_group
+    }
 }
 fn pid(text: &str, zero: bool) -> Result<i32> {
     let n: i32 = text.parse().map_err(failure)?;
@@ -75,7 +92,10 @@ fn parse_ps(bytes: &[u8]) -> Result<Vec<Row>> {
 // lsof -F0 terminates fields with NUL and process/file records with newline.
 #[cfg(any(target_os = "macos", test))]
 fn parse_lsof(bytes: &[u8]) -> Result<BTreeMap<i32, PathBuf>> {
-    if bytes.is_empty() || !bytes.ends_with(b"\0\n") {
+    if bytes.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    if !bytes.ends_with(b"\0\n") {
         return Err(failure("incomplete lsof output"));
     }
     let mut result = BTreeMap::new();
@@ -125,7 +145,7 @@ fn parse_lsof(bytes: &[u8]) -> Result<BTreeMap<i32, PathBuf>> {
             _ => return Err(failure("unexpected lsof field/order")),
         }
     }
-    if current.is_some() || result.is_empty() {
+    if current.is_some() {
         return Err(failure("partial or empty lsof inventory"));
     }
     Ok(result)
@@ -160,13 +180,16 @@ fn probe(args: &[&str], start: Instant, probes: &mut BTreeSet<i32>) -> Result<Ve
     )
     .map_err(failure)?;
     probes.insert(i32::try_from(out.pid).map_err(failure)?);
-    if out.exit != Some(0)
+    probe_bytes(out, args[0] == "/usr/sbin/lsof")
+}
+fn probe_bytes(out: process::Output, cwd_probe: bool) -> Result<Vec<u8>> {
+    if !(out.exit == Some(0) || cwd_probe && out.exit == Some(1))
         || out.timed_out
         || out.cancelled
         || out.signal.is_some()
         || out.stdout.digest().truncated
         || out.stderr.digest().truncated
-        || !out.stderr.bytes.is_empty()
+        || !cwd_probe && !out.stderr.bytes.is_empty()
     {
         return Err(failure("process probe failed, partial, or exceeded bounds"));
     }
@@ -227,7 +250,12 @@ fn evidence(
     if !rows.iter().any(|r| r.pid == observer) {
         return Err(failure("observer absent from inventory"));
     }
-    for (id, name) in trust.root.iter().chain(trust.shells.iter()) {
+    for (id, name) in trust
+        .root
+        .iter()
+        .map(|(id, name)| (id, name.as_str()))
+        .chain(trust.shells.iter().map(|(id, s)| (id, s.command.as_str())))
+    {
         if !rows
             .iter()
             .any(|r| r.pid == *id && !r.zombie && same_command(name, &r.command))
@@ -249,29 +277,56 @@ fn evidence(
             break;
         }
     }
-    let mut exempt = BTreeMap::from([(observer, "observer")]);
+    let target_pane = &trust
+        .shells
+        .get(&shell)
+        .ok_or_else(|| failure("target shell has no observed pane"))?
+        .pane;
+    let mut exempt = BTreeMap::from([(
+        observer,
+        json!({"pid":observer,"reason":"observer","observer_pid":observer,"parent_chain":[observer]}),
+    )]);
     for r in rows {
         if probes.contains(&r.pid) {
-            exempt.insert(r.pid, "observer");
+            let mut chain = vec![r.pid];
+            while *chain.last().unwrap() != observer {
+                let parent = rows
+                    .iter()
+                    .find(|row| row.pid == *chain.last().unwrap())
+                    .ok_or_else(|| failure("probe PPID chain missing"))?
+                    .parent;
+                if parent <= 0 || chain.contains(&parent) {
+                    return Err(failure("invalid probe PPID chain"));
+                }
+                chain.push(parent);
+            }
+            exempt.insert(r.pid,json!({"pid":r.pid,"reason":"observer","observer_pid":observer,"parent_chain":chain}));
         }
         if trust
             .root
             .get(&r.pid)
             .is_some_and(|name| same_command(name, &r.command))
         {
-            exempt.insert(r.pid, "campaign-root");
+            if trust.root_pane == *target_pane
+                || trust.root_pane.is_empty()
+                || trust.root_group != r.group
+            {
+                return Err(failure("root foreground exemption pane/group mismatch"));
+            }
+            exempt.insert(r.pid,json!({"pid":r.pid,"reason":"campaign-root","pane":trust.root_pane,"foreground_pgid":trust.root_group,"foreground_pids":trust.root.keys().collect::<Vec<_>>(),"observed_at":trust.root_at}));
         }
         if trust
             .shells
             .get(&r.pid)
-            .is_some_and(|name| same_command(name, &r.command))
+            .is_some_and(|s| same_command(&s.command, &r.command) && s.group == r.group)
             && r.group == r.pid
             && tty(&r.tty)
             && !rows
                 .iter()
                 .any(|other| other.pid != r.pid && !other.zombie && other.session == r.session)
         {
-            exempt.insert(r.pid, "workspace-shell");
+            let s = &trust.shells[&r.pid];
+            exempt.insert(r.pid,json!({"pid":r.pid,"reason":"workspace-shell","pane":s.pane,"session_id":r.session,"foreground_pgid":s.group,"session_pids":[r.pid]}));
         }
     }
     let mut session = Vec::new();
@@ -280,12 +335,12 @@ fn evidence(
         if r.zombie || probes.contains(&r.pid) {
             continue;
         }
-        let cwd = cwds
-            .get(&r.pid)
-            .ok_or_else(|| failure("live process cwd missing"))?;
         if exempt.contains_key(&r.pid) {
             continue;
         }
+        let cwd = cwds
+            .get(&r.pid)
+            .ok_or_else(|| failure("live process cwd missing without validated exemption"))?;
         if descendants.contains(&r.pid)
             || r.session == target.session
             || tty(&target.tty) && r.tty == target.tty
@@ -302,7 +357,7 @@ fn evidence(
     Ok(
         json!({"method":"local-user-session-cwd-v1","uid":uid,"shell_pid":shell,"session_id":target.session,
         "scanned":rows.len(),"session_remaining":session,"checkout_remaining":checkout_remaining,
-        "exempt":exempt.into_iter().map(|(pid,reason)|json!({"pid":pid,"reason":reason})).collect::<Vec<_>>()}),
+        "exempt":exempt.into_values().collect::<Vec<_>>()}),
     )
 }
 pub(super) fn scan(checkout: &Path, shell: i32, trust: &Trust) -> Result<Value> {
@@ -348,7 +403,7 @@ pub(super) fn scan(checkout: &Path, shell: i32, trust: &Trust) -> Result<Value> 
                 cwds.insert(r.pid, path);
             }
             _ if !alive(r.pid)? => {}
-            _ => return Err(failure("live process cwd unavailable or oversized")),
+            _ => {} // Only a validated exact exemption can account for this missing cwd below.
         }
     }
     let last = snapshot(uid, start, &mut probes)?;
@@ -379,6 +434,13 @@ pub(super) fn scan(checkout: &Path, shell: i32, trust: &Trust) -> Result<Value> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn shell(command: &str, pane: &str, group: i32) -> WorkspaceShell {
+        WorkspaceShell {
+            command: command.into(),
+            pane: pane.into(),
+            group,
+        }
+    }
     fn row(id: i32, parent: i32, session: i32, tty: &str, command: &str) -> Row {
         Row {
             pid: id,
@@ -412,8 +474,14 @@ mod tests {
             })
             .collect();
         let trust = Trust {
-            shells: BTreeMap::from([(10, "zsh".into()), (40, "bash".into())]),
+            shells: BTreeMap::from([
+                (10, shell("zsh", "w1:p1", 10)),
+                (40, shell("bash", "w1:p4", 40)),
+            ]),
             root: BTreeMap::from([(30, "claude".into())]),
+            root_pane: "w2:p1".into(),
+            root_group: 30,
+            root_at: "2026-01-01T00:00:00Z".into(),
         };
         evidence(
             &rows,
@@ -449,7 +517,6 @@ mod tests {
             Path::new("/checkout with spaces")
         );
         for bad in [
-            b"".as_slice(),
             b"p10\0czsh\0\nfcwd\0n/a",
             b"p10\0czsh\0\nfcwd\0nrelative\0\n",
             b"p10\0czsh\0\nfcwd\0n/a\0\np10\0czsh\0\nfcwd\0n/b\0\n",
@@ -462,6 +529,7 @@ mod tests {
             .map(|id| format!("p{id}\0ctaskr\0\nfcwd\0n/\0\n"))
             .collect::<String>();
         assert!(parse_lsof(large.as_bytes()).is_err());
+        assert!(parse_lsof(b"").unwrap().is_empty());
     }
     #[test]
     fn session_background_descendant_and_shared_tty_block() {
@@ -504,7 +572,10 @@ mod tests {
         let _: api::ProcessScan = serde_json::from_value(scan.clone()).unwrap();
         assert_eq!(
             scan["exempt"],
-            json!([{"pid":10,"reason":"workspace-shell"},{"pid":20,"reason":"observer"},{"pid":30,"reason":"campaign-root"},{"pid":40,"reason":"workspace-shell"}])
+            json!([{"pid":10,"reason":"workspace-shell","pane":"w1:p1","session_id":10,"foreground_pgid":10,"session_pids":[10]},
+                {"pid":20,"reason":"observer","observer_pid":20,"parent_chain":[20]},
+                {"pid":30,"reason":"campaign-root","pane":"w2:p1","foreground_pgid":30,"foreground_pids":[30],"observed_at":"2026-01-01T00:00:00Z"},
+                {"pid":40,"reason":"workspace-shell","pane":"w1:p4","session_id":40,"foreground_pgid":40,"session_pids":[40]}])
         );
         let scan = fixture(
             vec![
@@ -547,11 +618,15 @@ mod tests {
     }
     #[test]
     fn incomplete_cwd_or_attested_identity_fails_closed() {
-        let rows = vec![row(10, 1, 10, "ttys1", "zsh"), row(20, 1, 20, "?", "taskr")];
+        let rows = vec![
+            row(10, 1, 10, "ttys1", "zsh"),
+            row(20, 1, 20, "?", "taskr"),
+            row(51, 1, 51, "?", "unexplained"),
+        ];
         for name in ["zsh", "replacement"] {
             let trust = Trust {
-                shells: BTreeMap::from([(10, name.into())]),
-                root: BTreeMap::new(),
+                shells: BTreeMap::from([(10, shell(name, "w1:p1", 10))]),
+                ..Default::default()
             };
             assert!(
                 evidence(
@@ -567,5 +642,157 @@ mod tests {
                 .is_err()
             );
         }
+    }
+    #[test]
+    fn canonical_configured_and_observed_symlink_aliases_match() {
+        use std::os::unix::fs::symlink;
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            fs::canonicalize("/tmp").unwrap(),
+            fs::canonicalize("/private/tmp").unwrap()
+        );
+        let scratch = super::super::tests::Scratch::new();
+        fs::create_dir_all(scratch.0.join("real/sub")).unwrap();
+        symlink(scratch.0.join("real"), scratch.0.join("alias")).unwrap();
+        let checkout = fs::canonicalize(scratch.0.join("alias")).unwrap();
+        let cwd = fs::canonicalize(scratch.0.join("alias/sub")).unwrap();
+        assert_eq!(cwd, scratch.0.join("real/sub"));
+        let rows = vec![
+            row(10, 1, 10, "ttys1", "zsh"),
+            row(20, 1, 20, "?", "taskr"),
+            row(12, 1, 12, "?", "writer"),
+        ];
+        let trust = Trust {
+            shells: BTreeMap::from([(10, shell("zsh", "w1:p1", 10))]),
+            ..Default::default()
+        };
+        let scan = evidence(
+            &rows,
+            &BTreeMap::from([(12, cwd)]),
+            &checkout,
+            10,
+            20,
+            501,
+            &BTreeSet::new(),
+            &trust,
+        )
+        .unwrap();
+        assert_eq!(scan["checkout_remaining"][0]["pid"], 12);
+    }
+    #[test]
+    fn root_exemption_cannot_impersonate_the_stopped_assignment_pane() {
+        let rows = vec![row(10, 1, 10, "ttys1", "zsh"), row(20, 1, 20, "?", "taskr")];
+        let trust = Trust {
+            shells: BTreeMap::from([(10, shell("zsh", "w1:p1", 10))]),
+            root: BTreeMap::from([(10, "zsh".into())]),
+            root_pane: "w1:p1".into(),
+            root_group: 10,
+            root_at: "2026-01-01T00:00:00Z".into(),
+        };
+        assert!(
+            evidence(
+                &rows,
+                &BTreeMap::new(),
+                Path::new("/checkout"),
+                10,
+                20,
+                501,
+                &BTreeSet::new(),
+                &trust
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn zombies_need_no_cwd_and_are_not_remaining_writers() {
+        let mut zombie = row(12, 10, 10, "ttys1", "zombie");
+        zombie.zombie = true;
+        let rows = vec![
+            row(10, 1, 10, "ttys1", "zsh"),
+            row(20, 1, 20, "?", "taskr"),
+            zombie,
+        ];
+        let trust = Trust {
+            shells: BTreeMap::from([(10, shell("zsh", "w1:p1", 10))]),
+            ..Default::default()
+        };
+        let scan = evidence(
+            &rows,
+            &BTreeMap::new(),
+            Path::new("/checkout"),
+            10,
+            20,
+            501,
+            &BTreeSet::new(),
+            &trust,
+        )
+        .unwrap();
+        assert_eq!(scan["session_remaining"], json!([]));
+        assert_eq!(scan["checkout_remaining"], json!([]));
+        assert_eq!(scan["exempt"][0]["session_pids"], json!([10]));
+    }
+    #[test]
+    fn lsof_exit_one_and_warnings_require_complete_live_pid_coverage() {
+        let mut warning = process::Capture::default();
+        warning.bytes = b"synthetic lsof warning".to_vec();
+        let out = process::Output {
+            pid: 51,
+            exit: Some(1),
+            signal: None,
+            timed_out: false,
+            cancelled: false,
+            stdout: process::Capture::default(),
+            stderr: warning,
+        };
+        assert!(
+            parse_lsof(&probe_bytes(out, true).unwrap())
+                .unwrap()
+                .is_empty()
+        );
+        // Missing records are acceptable only for exact validated exemptions or zombies.
+        let rows = vec![
+            row(10, 1, 10, "ttys1", "zsh"),
+            row(20, 1, 20, "?", "taskr"),
+            row(51, 1, 51, "?", "writer"),
+        ];
+        let trust = Trust {
+            shells: BTreeMap::from([(10, shell("zsh", "w1:p1", 10))]),
+            ..Default::default()
+        };
+        assert!(
+            evidence(
+                &rows,
+                &BTreeMap::new(),
+                Path::new("/checkout"),
+                10,
+                20,
+                501,
+                &BTreeSet::new(),
+                &trust
+            )
+            .is_err()
+        );
+        assert!(
+            evidence(
+                &rows,
+                &BTreeMap::from([(51, PathBuf::from("/outside"))]),
+                Path::new("/checkout"),
+                10,
+                20,
+                501,
+                &BTreeSet::new(),
+                &trust
+            )
+            .is_ok()
+        );
+        assert!(deadline(Instant::now() - BUDGET).is_err());
+        assert!(
+            fixture(
+                vec![row(51, 1, 51, "?", "ps")],
+                "/outside",
+                BTreeSet::from([51])
+            )
+            .is_err()
+        );
     }
 }

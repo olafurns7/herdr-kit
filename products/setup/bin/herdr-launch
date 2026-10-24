@@ -467,6 +467,24 @@ if ! start_agent; then
         || step_fail '6 (the agent was not idle within 90 s after the development-channel dialog)'
 fi
 
+# Pin the actual native identity before a reserved worker can finish its brief.
+if [ -n "$reserved_task" ]; then
+    agents=$(herdr agent list) || step_fail '6 (reserved native identity lookup)'
+    native=$(printf '%s\n' "$agents" | jq -er --arg pane "$pane" --arg name "$name" '
+        [.result.agents[] | select(.pane_id == $pane or .name == $name)] |
+        select(length == 1) | .[0] | select(.pane_id == $pane and .name == $name) |
+        .agent_session.value | select(type == "string" and length > 0 and utf8bytelength <= 256 and (test("[\\x00-\\x1f\\x7f]") | not))') \
+        || step_fail '6 (reserved native identity missing or conflicting; prompt withheld)'
+    observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || step_fail '6 (reserved observation time)'
+    observation=$(jq -cn --arg pane "$pane" --arg native "$native" --arg at "$observed_at" \
+        '{pane:$pane,native_session:$native,observed_at:$at}') || step_fail '6 (reserved observation JSON)'
+    observed=$(taskr --json work observe "$launch" --as "$parent" --generation "$reserved_generation" --data "$observation") \
+        || step_fail '6 (reserved native observation rejected; prompt withheld)'
+    printf '%s\n' "$observed" | jq -e --argjson launch "$launch" --argjson task "$task" --arg pane "$pane" --arg native "$native" \
+        '.launch_id == $launch and .task_id == $task and .dispatch.pane == $pane and .native_session == $native' >/dev/null \
+        || step_fail '6 (reserved native observation unconfirmed; prompt withheld)'
+fi
+
 # Step 7: hand over the brief.
 taskr prompt "$task" --file "$brief" >/dev/null || step_fail '7 (taskr prompt)'
 

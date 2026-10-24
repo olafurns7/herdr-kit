@@ -215,11 +215,7 @@ fn shell(b: &impl Backend, pane: &str) -> Result<Value> {
     }
     Ok(json!({"pid":pid,"command":name}))
 }
-fn process_trust(
-    b: &impl Backend,
-    root: i64,
-    ws: &str,
-) -> Result<(inventory::Trust, String, Value)> {
+fn process_trust(b: &impl Backend, root: i64, ws: &str) -> Result<inventory::Trust> {
     let campaign = b.command(&["campaign".into(), root.to_string(), "--all".into()])?;
     if campaign["root"]["id"] != root || campaign["root"]["host"] != store::local_machine() {
         return Err(failure("registered campaign root identity/host mismatch"));
@@ -230,7 +226,16 @@ fn process_trust(
     if fg.is_empty() || fg.len() > 128 {
         return Err(failure("root foreground missing or bounded"));
     }
-    let mut trust = inventory::Trust::default();
+    let mut trust = inventory::Trust {
+        root_pane: root_pane.clone(),
+        root_group: i32::try_from(number(
+            &info["process_info"],
+            "foreground_process_group_id",
+        )?)
+        .map_err(failure)?,
+        root_at: timestamp(),
+        ..Default::default()
+    };
     for p in fg {
         trust.root.insert(
             i32::try_from(number(p, "pid")?).map_err(failure)?,
@@ -253,11 +258,15 @@ fn process_trust(
         {
             trust.shells.insert(
                 i32::try_from(number(&s, "pid")?).map_err(failure)?,
-                field(&s, "command")?.into(),
+                inventory::WorkspaceShell {
+                    command: field(&s, "command")?.into(),
+                    pane: pane.into(),
+                    group: i32::try_from(number(&s, "pid")?).map_err(failure)?,
+                },
             );
         }
     }
-    Ok((trust, root_pane, info))
+    Ok(trust)
 }
 fn agent(b: &impl Backend, pane: &str) -> Result<Option<Value>> {
     let agents = b.herdr(&["agent", "list"])?;
@@ -889,7 +898,6 @@ pub(super) fn stop(
         }
     }
     let foreground = shell(b, pane)?;
-    let observed_at = timestamp();
     let process_scan = (|| -> Result<Value> {
         let scan = scan_stop(b, root, ws, cwd, pane, &foreground)?;
         if !array(&scan, "session_remaining")?.is_empty()
@@ -912,7 +920,7 @@ pub(super) fn stop(
             "process-stop-incomplete: native absence or shell foreground changed before stopped observation",
         ));
     }
-    b.change("stopped",launch,root,g,Some(json!({"pane":pane,"native_session":native,"foreground":foreground,"agent_absent":true,"process_scan":process_scan,"observed_at":observed_at})))?;
+    b.change("stopped",launch,root,g,Some(json!({"pane":pane,"native_session":native,"foreground":foreground,"agent_absent":true,"process_scan":process_scan,"observed_at":timestamp()})))?;
     Ok(())
 }
 fn scan_stop(
@@ -924,7 +932,10 @@ fn scan_stop(
     foreground: &Value,
 ) -> Result<Value> {
     let started = std::time::Instant::now();
-    let (trust, root_pane, root_info) = process_trust(b, root, ws)?;
+    if agent(b, pane)?.is_some() {
+        return Err(failure("process scan requires native absence first"));
+    }
+    let trust = process_trust(b, root, ws)?;
     if started.elapsed() > Duration::from_secs(30) {
         return Err(failure("process observation deadline"));
     }
@@ -933,10 +944,8 @@ fn scan_stop(
         i32::try_from(number(foreground, "pid")?).map_err(failure)?,
         &trust,
     )?;
-    let (fresh_trust, fresh_pane, fresh_info) = process_trust(b, root, ws)?;
-    if fresh_trust != trust
-        || fresh_pane != root_pane
-        || fresh_info != root_info
+    let fresh_trust = process_trust(b, root, ws)?;
+    if !fresh_trust.same_basis(&trust)
         || shell(b, pane)? != *foreground
         || started.elapsed() > Duration::from_secs(30)
     {
@@ -1028,7 +1037,7 @@ fn brief_text(
         json!({"kind":"adjudication","result":{"source":"exact reviewed source below","review_result":"review result_id below","finding_ids":["disputed stable IDs"],"verdict":"clear|rework|disputed","reason":"source-grounded adjudication"}})
     };
     Ok(format!(
-        "HERDR-BRIEF role={role}\norchestrator=taskr:{root} report={}\nTask topology: workspace={ws} tab={tab} pane={pane} cwd={}\nObjective: {}\nAcceptance: {}\nOwnership: {}\nAuthority: {}\nValidation: approved deterministic profile only; controller runs checks. {}\nTask identity: work={id} revision={} run={} round={} task={task} launch={launch}\nSource/profile: {}\nResults and prior findings: {}\nResult JSON schema: {}\nProcess boundary: never detach background jobs or create external runtimes. A task needing these requires a named managed runtime and stronger explicit cleanup proof; no automatic handoff under this local profile. The same-user local session/descendant/cwd scan is cooperative evidence, not a sandbox or proof about another UID, containers/remotes, a process that detaches and leaves the checkout while retaining a file descriptor, or a hostile same-user writer. Model agreement cannot certify containment.\nProgress: write report at report=, write UTF-8 result JSON to {}, then taskr work submit {launch} --file {} && taskr ready 'work result submitted' --report {} && taskr done 'work result submitted'. Use taskr work source {id} for canonical actual source identity. Executor must commit clean owned source before submission. Reviewer/adjudicator is read-only. Never publish, launch helpers, accept yourself, change the contract or weaken checks. Missing consequential decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, then ack its event.\n",
+        "HERDR-BRIEF role={role}\norchestrator=taskr:{root} report={}\nTask topology: workspace={ws} tab={tab} pane={pane} cwd={}\nObjective: {}\nAcceptance: {}\nOwnership: {}\nAuthority: {}\nValidation: approved deterministic profile only; controller runs checks. {}\nTask identity: work={id} revision={} run={} round={} task={task} launch={launch}\nSource/profile: {}\nResults and prior findings: {}\nResult JSON schema: {}\nProcess boundary: never detach background jobs or create external runtimes. A task needing these requires a named managed runtime and stronger explicit cleanup proof; no automatic handoff under this local profile. The same-user local session/descendant/cwd scan is cooperative evidence, not a sandbox or proof about another UID, containers/remotes, any detached process with cwd outside the checkout (including absolute-path writers with no retained descriptor), or a hostile same-user writer. Model agreement cannot certify containment.\nProgress: write report at report=, write UTF-8 result JSON to {}, then taskr work submit {launch} --file {} && taskr ready 'work result submitted' --report {} && taskr done 'work result submitted'. Use taskr work source {id} for canonical actual source identity. Executor must commit clean owned source before submission. Reviewer/adjudicator is read-only. Never publish, launch helpers, accept yourself, change the contract or weaken checks. Missing consequential decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, then ack its event.\n",
         report.display(),
         c.checkout.cwd,
         c.intent,

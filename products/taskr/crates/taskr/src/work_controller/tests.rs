@@ -5,9 +5,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 static NEXT: AtomicU64 = AtomicU64::new(1);
-struct Scratch(PathBuf);
+pub(super) struct Scratch(pub(super) PathBuf);
 impl Scratch {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
             "taskr-controller-{}-{}",
             std::process::id(),
@@ -96,7 +96,10 @@ impl driver::Backend for Fake {
         self.call("process:scan");
         assert_eq!(shell, 400);
         assert_eq!(trust.root.get(&500).map(String::as_str), Some("taskr"));
-        assert_eq!(trust.shells.get(&400).map(String::as_str), Some("zsh"));
+        assert_eq!(
+            trust.shells.get(&400).map(|s| s.command.as_str()),
+            Some("zsh")
+        );
         if self.scan_error.get() {
             return Err(failure("synthetic incomplete OS inventory"));
         }
@@ -106,7 +109,7 @@ impl driver::Backend for Fake {
         Ok(
             json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":400,"session_id":400,"scanned":3,
             "session_remaining":if self.scan_blocker.get(){vec![json!({"pid":401,"command":"synthetic-child"})]}else{vec![]},
-            "checkout_remaining":[],"exempt":[{"pid":400,"reason":"workspace-shell"},{"pid":500,"reason":"campaign-root"},{"pid":600,"reason":"observer"}]}),
+            "checkout_remaining":[],"exempt":[{"pid":400,"reason":"workspace-shell","pane":"w1:p1","session_id":400,"foreground_pgid":400,"session_pids":[400]},{"pid":500,"reason":"campaign-root","pane":"w2:p1","foreground_pgid":500,"foreground_pids":[500],"observed_at":store::now()},{"pid":600,"reason":"observer","observer_pid":600,"parent_chain":[600]}]}),
         )
     }
     fn read(&self, verb: &str, id: i64) -> Result<Value> {
@@ -526,7 +529,7 @@ fn generated_brief_prohibits_unmanaged_processes_and_states_scan_limits() {
         "never detach background jobs or create external runtimes",
         "named managed runtime",
         "another UID",
-        "retaining a file descriptor",
+        "absolute-path writers with no retained descriptor",
         "Model agreement cannot certify containment",
     ] {
         assert!(brief.contains(text));
