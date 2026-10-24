@@ -751,7 +751,7 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
         )?;
         return Ok(());
     }
-    let Some(agent) = agent(b, pane)? else {
+    let Some(observed_agent) = agent(b, pane)? else {
         uncertain(
             b,
             a,
@@ -761,7 +761,7 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
         )?;
         return Ok(());
     };
-    let native = match field(&agent["agent_session"], "value") {
+    let native = match field(&observed_agent["agent_session"], "value") {
         Ok(native) => native,
         Err(e) => {
             uncertain(
@@ -774,7 +774,7 @@ pub(super) fn recover(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Val
             return Ok(());
         }
     };
-    if !owns_agent(&agent, &name(a)?, native, pane)
+    if !owns_agent(&observed_agent, &name(a)?, native, pane)
         || a["native_session"].as_str().is_some_and(|s| s != native)
     {
         uncertain(
