@@ -95,7 +95,6 @@ class Adapter:
             require(bool(os.environ["TASKR_DB"]), "empty TASKR_DB")
             os.environ["TASKR_DB"] = self.context["db"]
         self.basis = None
-        self.completed_native = None
 
     def remaining(self):
         left = self.deadline - time.monotonic()
@@ -260,15 +259,18 @@ class Adapter:
         require(len(rows) == 1, "ambiguous agent registration")
         a = rows[0]
         dispatch = assignment["dispatch"]
-        # A matching durable shell receipt permits done, never a fresh pre-send check.
-        ready = a.get("agent_status") == "idle" or (
-            a.get("agent_status") == "done" and self.basis is not None
-            and expected is not None and expected == self.completed_native)
+        # Herdr's idle/done distinction reflects UI seen state, not prior work delivery.
+        ready = a.get("agent_status") in ("idle", "done") and a.get("interactive_ready") is True
+        readiness = dict(status=str(a.get("agent_status"))[:32], interactive=a.get("interactive_ready") is True,
+                         provider=a.get("agent") == "codex", name=a.get("name") == self.name,
+                         pane=a.get("pane_id") == self.pane, workspace=a.get("workspace_id") == dispatch["workspace"],
+                         tab=a.get("tab_id") == dispatch["tab"], cwd=a.get("cwd") == str(self.cwd),
+                         foreground_cwd=a.get("foreground_cwd") == str(self.cwd))
         require(a.get("agent") == "codex" and a.get("name") == self.name and a.get("pane_id") == self.pane
-                and ready and a.get("interactive_ready") is True
+                and ready
                 and a.get("workspace_id") == dispatch["workspace"] and a.get("tab_id") == dispatch["tab"]
                 and a.get("cwd") == str(self.cwd) and a.get("foreground_cwd") == str(self.cwd),
-                "agent not ready at reserved checkout")
+                "agent not ready at reserved checkout: " + json.dumps(readiness, ensure_ascii=True))
         pane = self.herdr("pane", "get", self.pane)["pane"]
         require(all(pane.get(k) == v for k, v in dict(pane_id=self.pane, tab_id=dispatch["tab"],
                     workspace_id=dispatch["workspace"], cwd=str(self.cwd), foreground_cwd=str(self.cwd)).items()),
@@ -319,8 +321,7 @@ class Adapter:
                 and all(value[k] == v for k, v in expected.items())
                 and native_id(value["CODEX_THREAD_ID"]) == native_id(value["CODEX_SESSION_ID"]),
                 "native receipt binding mismatch")
-        self.completed_native = value["CODEX_THREAD_ID"]
-        return self.completed_native
+        return value["CODEX_THREAD_ID"]
 
     def report(self, native):
         self.guard(native)
@@ -395,7 +396,6 @@ except OSError:
             os.close(lock)
 
     def initialize(self, folder):
-        self.completed_native = None
         init_path = folder / "init.json"
         sent = folder / "sent.json"
         receipt = folder / "receipt.json"
@@ -447,7 +447,7 @@ except OSError:
                 native = self.receipt(folder, init)
             finally:
                 os.close(fd)
-            # Default wait includes done; the receipt-bound guard still rejects blocked/working.
+            # Default wait includes done; the exact interactive guard still rejects blocked/working.
             self.herdr("agent", "wait", self.name, "--timeout", str(max(1, int(self.remaining() * 1000))))
             self.guard(native)
             method = "native-shell-receipt"

@@ -307,15 +307,16 @@ pending prompt attempts are observed rather than resent.
 Model processes without identity need explicit reconciliation; they cannot use
 an anonymous stopped receipt. Gate shells retain their separate shell-exit proof.
 
-Recovery of a bound starting Codex with absent native metadata, or done before any
-work-prompt attempt, can invoke
+Recovery of a bound starting Codex before any work-prompt attempt invokes
 `herdr-codex-identity TASK LAUNCH ROOT GENERATION NAME PANE CWD` before work delivery.
 It requires the exact ready Codex name/pane, no pinned conflicting identity and no
-prior work-prompt attempt. A fresh shell send still requires idle. Done must pass
-through the adapter's matching durable completed-receipt validation and reuse, even
-when native metadata is already present; done without that proof refuses before
-shell or work delivery. A matching already-pinned ID may recover through this same
-receipt check. Other existing native metadata uses the normal observation path.
+prior work-prompt attempt. Idle and done both mean ready for input in Herdr; both
+require `interactive_ready: true`. Their distinction reflects UI seen state, not
+identity proof or prior work delivery. Fresh done may bootstrap just like idle.
+Existing native metadata needs no shell send. If a durable sent marker exists,
+either state must pass matching completed-receipt validation and reuse, even when
+native metadata has appeared; an absent or invalid receipt withholds work and never
+resends. A matching already-pinned ID may recover through this same receipt check.
 The controller supplies its selected absolute `TASKR_WORK_EXECUTABLE`, prepends that
 executable's directory to PATH and preserves an explicit absolute scratch TASKR_DB;
 the default context has no DB override. The adapter owns the private nonce-bound
@@ -323,8 +324,10 @@ native shell receipt, completed-receipt reuse and separate provenance; its succe
 JSON must contain `native_session` and an absolute `provenance_path`. The controller
 independently rereads the exact native metadata, canonical pane location and campaign
 generation, then retains the normal observe acknowledgment before the work prompt.
-That reread and the fresh post-observe check accept idle or done only with the exact
-returned native ID/name/pane; working, blocked, replacement or unknown still refuse.
+That reread and the fresh post-observe check require interactive idle or done with
+the exact returned native ID/name/pane; working, blocked, replacement, unknown or
+missing interactive readiness still refuse. The same readiness check protects exit
+input, separately from ownership checks that can identify a working agent.
 This is identity-only native shell evidence, not a SessionStart hook or model request.
 The adapter invocation is bounded to thirty seconds and one MiB per output stream.
 A failed, partial, rejected, timed-out or mismatched invocation/reread leaves uncertainty

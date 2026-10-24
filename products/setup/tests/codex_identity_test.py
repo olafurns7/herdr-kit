@@ -84,6 +84,8 @@ class Fake(m.Adapter):
                      workspace_id="w1", tab_id="w1:t1", cwd=str(self.cwd), foreground_cwd=str(self.cwd), terminal_id="term")
             if self.native:
                 a["agent_session"] = dict(value=self.native, agent="codex", source="herdr:codex", kind="id")
+            if self.fault == "missing-interactive":
+                a.pop("interactive_ready")
             return dict(agents=[a, a] if self.fault == "duplicate" else [a])
         if args[:2] == ("pane", "get"):
             return dict(pane=dict(pane_id=self.pane, workspace_id="w1", tab_id="w1:t1",
@@ -192,7 +194,6 @@ class IdentityTests(unittest.TestCase):
         m.write_once(f.folder / "sent.json", m.encoded(dict(nonce=init["nonce"])))
         self.write_shell_receipt(f, init)
         f.basis = None  # A new adapter process must recover the pinned basis from disk.
-        f.completed_native = None
         f.agent_status = "done"
 
     def write_shell_receipt(self, f, init):
@@ -205,17 +206,40 @@ class IdentityTests(unittest.TestCase):
         self.fake.native = native
         self.fake.guard(native)
 
-    def test_done_without_completed_receipt_cannot_initialize(self):
-        self.fake.agent_status = "done"
-        self.fake.native = ID
-        with self.assertRaisesRegex(RuntimeError, "not ready"):
-            self.fake.guard(ID)
-        with self.assertRaisesRegex(RuntimeError, "not ready"):
-            self.fake.run_test()
-        self.assertEqual(self.fake.sent_count, 0)
-        self.assertFalse((self.fake.folder / "init.json").exists())
+    def test_fresh_idle_and_done_with_native_metadata_need_no_shell_receipt(self):
+        for status in ("idle", "done"):
+            with self.subTest(status=status):
+                root = self.root / status
+                root.mkdir()
+                f = Fake(root)
+                f.agent_status = status
+                f.native = ID
+                with patch.dict(os.environ, HOME=str(root / "home")):
+                    result = f.run()
+                folder = Path(result["provenance_path"]).parent
+                self.assertEqual(result["native_session"], ID)
+                self.assertEqual(f.sent_count, 0)
+                self.assertFalse((folder / "sent.json").exists())
+                self.assertFalse((folder / "receipt.json").exists())
+
+    def test_fresh_bootstrap_requires_interactive_idle_or_done(self):
+        for status, interactive, fault in (("blocked", True, ""), ("working", True, ""),
+                                            ("unknown", True, ""), (None, True, ""),
+                                            ("idle", False, ""), ("done", False, ""),
+                                            ("idle", True, "missing-interactive"),
+                                            ("done", True, "missing-interactive")):
+            with self.subTest(status=status, interactive=interactive, fault=fault):
+                self.fake.agent_status = status
+                self.fake.interactive_ready = interactive
+                self.fake.fault = fault
+                with self.assertRaisesRegex(RuntimeError, "not ready.*status.*interactive") as error:
+                    self.fake.run_test()
+                self.assertLess(len(str(error.exception)), 512)
+                self.assertEqual(self.fake.sent_count, 0)
+                self.assertFalse((self.fake.folder / "init.json").exists())
 
     def test_fresh_shell_done_uses_default_wait_and_checks_receipt(self):
+        self.fake.agent_status = "done"
         original = self.fake.herdr
         def herdr(*args):
             if args[:2] != ("agent", "prompt"):
@@ -223,6 +247,7 @@ class IdentityTests(unittest.TestCase):
             self.fake.calls.append(args)
             self.fake.sent_count += 1
             init = json.loads(m.read_private(self.fake.folder / "init.json"))
+            self.assertEqual(json.loads(m.read_private(self.fake.folder / "sent.json")), dict(nonce=init["nonce"]))
             self.write_shell_receipt(self.fake, init)
             fd = os.open(self.fake.folder / "notify", os.O_WRONLY | os.O_NONBLOCK)
             try:
@@ -257,7 +282,8 @@ class IdentityTests(unittest.TestCase):
 
     def test_completed_receipt_does_not_relax_other_state_or_identity_guards(self):
         changes = [lambda f: setattr(f, "agent_status", "working"), lambda f: setattr(f, "agent_status", "blocked"),
-                   lambda f: setattr(f, "agent_status", "uncertain"), lambda f: setattr(f, "interactive_ready", False),
+                   lambda f: setattr(f, "agent_status", "unknown"), lambda f: setattr(f, "interactive_ready", False),
+                   lambda f: setattr(f, "fault", "missing-interactive"),
                    lambda f: setattr(f, "native", OTHER), lambda f: setattr(f, "process_version", 2),
                    lambda f: f.assignment.update(process_state="uncertain"),
                    lambda f: f.log.append(dict(kind="prompt", launch_id=3)),
@@ -274,6 +300,32 @@ class IdentityTests(unittest.TestCase):
                         f.run_test()
                     report.assert_not_called()
                 self.assertEqual(f.sent_count, 0)
+
+    def test_sent_requires_matching_receipt_even_when_ready_metadata_appears(self):
+        for status in ("idle", "done"):
+            for invalid in ("missing", "nonce", "native", "partial"):
+                with self.subTest(status=status, invalid=invalid):
+                    root = self.root / (status + invalid)
+                    root.mkdir()
+                    f = Fake(root)
+                    self.completed_attempt(f)
+                    f.agent_status = status
+                    f.native = ID
+                    receipt = f.folder / "receipt.json"
+                    if invalid == "missing":
+                        receipt.unlink()
+                    elif invalid == "partial":
+                        receipt.write_bytes(b'{"version":')
+                    else:
+                        value = json.loads(m.read_private(receipt))
+                        value["nonce" if invalid == "nonce" else "CODEX_SESSION_ID"] = "stale" if invalid == "nonce" else OTHER
+                        receipt.write_bytes(m.encoded(value))
+                    with patch.object(f, "report") as report:
+                        with self.assertRaises((RuntimeError, ValueError)):
+                            f.run_test()
+                        report.assert_not_called()
+                    self.assertEqual(f.sent_count, 0)
+                    self.assertFalse(any(a[:2] in (("agent", "prompt"), ("agent", "wait")) for a in f.calls))
 
     def test_uncertain_assignment_refuses_before_initialization(self):
         self.fake.assignment["process_state"] = "uncertain"

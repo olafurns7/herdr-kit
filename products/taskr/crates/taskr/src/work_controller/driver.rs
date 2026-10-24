@@ -731,6 +731,9 @@ pub(super) fn owns_agent(a: &Value, expected_name: &str, native: &str, pane: &st
         && a["pane_id"] == pane
         && a["agent_session"]["value"] == native
 }
+fn ready_agent(a: &Value) -> bool {
+    matches!(a["agent_status"].as_str(), Some("idle" | "done")) && a["interactive_ready"] == true
+}
 fn name(a: &Value) -> Result<String> {
     let prefix = if a["stage"] == "executor" {
         "impl"
@@ -1304,9 +1307,7 @@ fn recover_inner(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -
         .iter()
         .any(|e| e["launch_id"] == launch && e["kind"] == "prompt");
     if observed_agent["agent_session"].is_null()
-        || a["lane"]["provider"] == "codex"
-            && observed_agent["agent_status"] == "done"
-            && no_work_prompt
+        || a["lane"]["provider"] == "codex" && no_work_prompt
     {
         observed_agent =
             initialize_native_before_prompt(b, root, g, work, a, &observed_agent, &log)?;
@@ -1385,9 +1386,7 @@ fn recover_inner(b: &impl Backend, root: i64, g: i64, work: &Value, a: &Value) -
             let current = observation(agent(b, pane))?.ok_or_else(|| {
                 identity_error("recovery native agent disappeared after observation")
             })?;
-            if !owns_agent(&current, &name(a)?, native, pane)
-                || !matches!(current["agent_status"].as_str(), Some("idle" | "done"))
-            {
+            if !owns_agent(&current, &name(a)?, native, pane) || !ready_agent(&current) {
                 return Err(identity_error(
                     "recovery native identity or ready state changed after observation",
                 ));
@@ -1466,25 +1465,26 @@ fn initialize_native_before_prompt(
     current: &Value,
     log: &Value,
 ) -> Result<Value> {
-    let done = current["agent_status"] == "done";
+    let observed_native = if current["agent_session"].is_null() {
+        None
+    } else {
+        Some(field(&current["agent_session"], "value").map_err(|e| identity_error(e.message))?)
+    };
     if !a["native_session"].is_null() {
         let bound = field(a, "native_session").map_err(|e| identity_error(e.message))?;
-        if !done
-            || current["agent_session"]["value"]
-                .as_str()
-                .is_some_and(|id| id != bound)
-        {
+        if observed_native.is_some_and(|id| id != bound) {
             return Err(identity_error(
                 "bound native identity conflicts with initialization recovery",
             ));
         }
     }
-    if a["process_state"] != "starting"
+    if a["state"] != "starting"
+        || a["process_state"] != "starting"
         || a["lane"]["provider"] != "codex"
         || current["agent"] != "codex"
         || current["name"] != name(a)?
         || current["pane_id"] != a["dispatch"]["pane"]
-        || !matches!(current["agent_status"].as_str(), Some("idle" | "done"))
+        || !ready_agent(current)
         || events(log)
             .iter()
             .any(|e| e["launch_id"] == a["launch_id"] && e["kind"] == "prompt")
@@ -1502,14 +1502,18 @@ fn initialize_native_before_prompt(
         &c.checkout.cwd,
     ))?;
     same_generation(b, root, g).map_err(retry_transport)?;
-    // The adapter proves a completed receipt before allowing done; otherwise it refuses without sending.
+    // The adapter validates any durable sent intent and matching receipt before recovery; it never resends.
     let initialized = b
         .initialize_native(root, g, &c.checkout.cwd, a)
         .map_err(|e| identity_error(format!("native initialization unconfirmed: {}", e.message)))?;
     let native = field(&initialized, "native_session").map_err(|e| identity_error(e.message))?;
     let provenance =
         field(&initialized, "provenance_path").map_err(|e| identity_error(e.message))?;
-    if native.len() > 1024
+    if observed_native.is_some_and(|id| id != native)
+        || a["native_session"]
+            .as_str()
+            .is_some_and(|bound| bound != native)
+        || native.len() > 1024
         || native.chars().any(char::is_control)
         || provenance.len() > 4096
         || provenance.chars().any(char::is_control)
@@ -1529,7 +1533,7 @@ fn initialize_native_before_prompt(
         .ok_or_else(|| identity_error("native agent absent after initialization"))?;
     if !owns_agent(&fresh, &name(a)?, native, pane)
         || fresh["agent"] != "codex"
-        || !matches!(fresh["agent_status"].as_str(), Some("idle" | "done"))
+        || !ready_agent(&fresh)
     {
         return Err(identity_error(
             "initialized native metadata did not match exact reread",
@@ -1601,9 +1605,7 @@ pub(super) fn stop(
                 let current = observation(agent(b, pane))?.ok_or_else(|| {
                     failure("owned agent vanished during exit sequence; inspect shell")
                 })?;
-                if !owns_agent(&current, &n, native, pane)
-                    || !matches!(current["agent_status"].as_str(), Some("idle" | "done"))
-                {
+                if !owns_agent(&current, &n, native, pane) || !ready_agent(&current) {
                     return Err(failure(
                         "native identity or ready state changed before exit input",
                     ));

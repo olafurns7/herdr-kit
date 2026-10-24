@@ -124,7 +124,7 @@ impl Fake {
     }
     fn native(&self, name: &str, session: &str) {
         *self.agents.borrow_mut() = vec![
-            json!({"name":name,"pane_id":"w1:p1","agent_status":"idle","agent_session":{"value":session}}),
+            json!({"name":name,"pane_id":"w1:p1","agent_status":"idle","interactive_ready":true,"agent_session":{"value":session}}),
         ];
     }
     fn fresh_codex(&self) {
@@ -134,8 +134,9 @@ impl Fake {
         let a = &mut s["work"][0]["runs"][0]["assignments"][0];
         a["stage"] = json!("reviewer");
         a["lane"] = reviewer;
-        *self.agents.borrow_mut() =
-            vec![json!({"name":"rev-w11","pane_id":"w1:p1","agent":"codex","agent_status":"idle"})];
+        *self.agents.borrow_mut() = vec![
+            json!({"name":"rev-w11","pane_id":"w1:p1","agent":"codex","agent_status":"idle","interactive_ready":true}),
+        ];
         fs::create_dir_all(self.scratch.0.join("launch-11")).unwrap();
         fs::write(
             self.scratch.0.join("launch-11/brief.md"),
@@ -179,24 +180,23 @@ impl driver::Backend for Fake {
         assert_eq!(a["task_id"], 12);
         assert_eq!(a["launch_id"], 11);
         assert_eq!(a["process_state"], "starting");
-        if self
-            .agents
-            .borrow()
-            .iter()
-            .any(|agent| agent["agent_status"] == "done")
-            && !self.native_init_receipt.get()
-        {
-            return Err(store::Error {
-                code: ExitCode::Rejected,
-                message: "done requires matching completed receipt before any shell send".into(),
-            });
-        }
         match self.native_init.get() {
-            "complete" | "complete-done" | "mismatch" | "mismatch-done" | "reread-outage"
-            | "post-working" | "post-blocked" => {
-                self.call(if self.native_init_receipt.replace(true) {
+            "complete"
+            | "complete-done"
+            | "mismatch"
+            | "mismatch-done"
+            | "reread-outage"
+            | "post-working"
+            | "post-blocked"
+            | "post-unknown"
+            | "post-noninteractive"
+            | "post-missing-interactive" => {
+                self.call(if self.native_init_receipt.get() {
                     "bootstrap:reuse-completed-receipt"
+                } else if self.agents.borrow()[0]["agent_session"]["value"].is_string() {
+                    "bootstrap:existing-native-metadata"
                 } else {
+                    self.native_init_receipt.set(true);
                     "bootstrap:fixed-shell"
                 });
                 self.native(
@@ -212,8 +212,18 @@ impl driver::Backend for Fake {
                     "complete-done" | "mismatch-done" => "done",
                     "post-working" => "working",
                     "post-blocked" => "blocked",
+                    "post-unknown" => "unknown",
                     _ => "idle",
                 });
+                if self.native_init.get() == "post-noninteractive" {
+                    self.agents.borrow_mut()[0]["interactive_ready"] = json!(false);
+                }
+                if self.native_init.get() == "post-missing-interactive" {
+                    self.agents.borrow_mut()[0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("interactive_ready");
+                }
                 if self.native_init.get() == "reread-outage" {
                     let next = self
                         .calls
@@ -766,7 +776,7 @@ fn recovery_initializes_missing_codex_identity_then_observes_before_work_prompt(
     );
 }
 #[test]
-fn recovery_accepts_receipt_bound_done_after_initializer_return_before_observe_and_prompt() {
+fn recovery_accepts_done_after_initializer_return_before_observe_and_prompt() {
     let b = Fake::new();
     b.fresh_codex();
     b.native_init.set("complete-done");
@@ -872,18 +882,23 @@ fn done_completed_receipt_recovery_reuses_adapter_without_shell_resend() {
     }
 }
 #[test]
-fn done_without_completed_receipt_refuses_before_shell_or_work_prompt() {
-    for metadata in [false, true] {
+fn fresh_idle_and_done_bootstrap_without_completed_receipt_before_work_prompt() {
+    for (status, metadata) in [
+        ("idle", false),
+        ("done", false),
+        ("idle", true),
+        ("done", true),
+    ] {
         let b = Fake::new();
         b.fresh_codex();
         b.native_init.set("complete-done");
-        b.agents.borrow_mut()[0]["agent_status"] = json!("done");
+        b.agents.borrow_mut()[0]["agent_status"] = json!(status);
         if metadata {
             b.agents.borrow_mut()[0]["agent_session"] = json!({"value":"native-fixture"});
         }
         driver::drive(&b, 3).unwrap();
-        assert_eq!(b.current()["process_state"], "uncertain");
-        b.native_init_receipt.set(true);
+        assert_eq!(b.current()["process_state"], "starting");
+        assert_eq!(b.current()["native_session"], "native-fixture");
         driver::drive(&b, 3).unwrap();
         let calls = b.calls.borrow();
         assert_eq!(
@@ -893,12 +908,55 @@ fn done_without_completed_receipt_refuses_before_shell_or_work_prompt() {
                 .count(),
             1
         );
-        assert!(!calls.iter().any(|c| c.starts_with("bootstrap:")
-            || c.starts_with("command:prompt")
-            || c == "change:observe"
-            || c == "change:started"
-            || c == "effect:start"));
+        let bootstrap = if metadata {
+            "bootstrap:existing-native-metadata"
+        } else {
+            "bootstrap:fixed-shell"
+        };
+        assert_eq!(calls.iter().filter(|c| c.as_str() == bootstrap).count(), 1);
+        let observe = calls.iter().position(|c| c == "change:observe").unwrap();
+        let prompt = calls
+            .iter()
+            .position(|c| c.starts_with("command:prompt"))
+            .unwrap();
+        assert!(observe < prompt);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c.starts_with("command:prompt"))
+                .count(),
+            1
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c == "change:uncertain" || c == "change:started" || c == "effect:start")
+        );
     }
+}
+#[test]
+fn idle_completed_receipt_with_pinned_identity_recovers_without_resend() {
+    let b = Fake::new();
+    b.fresh_codex();
+    b.native_init.set("complete");
+    b.native_init_receipt.set(true);
+    b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
+        json!("native-fixture");
+    driver::drive(&b, 3).unwrap();
+    assert_eq!(b.current()["native_session"], "native-fixture");
+    let calls = b.calls.borrow();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| c.as_str() == "bootstrap:reuse-completed-receipt")
+            .count(),
+        1
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c == "bootstrap:fixed-shell" || c == "change:uncertain")
+    );
 }
 #[test]
 fn receipt_bound_done_preserves_uncertain_prior_prompt_and_conflicting_native_refusal() {
@@ -946,6 +1004,9 @@ fn recovery_initializer_mismatch_refusal_transport_or_unknown_reread_never_repea
         "mismatch-done",
         "post-working",
         "post-blocked",
+        "post-unknown",
+        "post-noninteractive",
+        "post-missing-interactive",
         "malformed",
         "transport",
         "reread-outage",
@@ -992,7 +1053,7 @@ fn recovery_initializer_preflight_transport_retries_before_any_effect() {
     assert!(!b.calls.borrow().iter().any(|c| c == "change:uncertain"));
 }
 #[test]
-fn recovery_initializer_requires_fresh_idle_codex_without_prior_work_prompt() {
+fn recovery_initializer_requires_interactive_ready_codex_without_prior_work_prompt() {
     for cause in [
         "provider",
         "agent",
@@ -1000,6 +1061,9 @@ fn recovery_initializer_requires_fresh_idle_codex_without_prior_work_prompt() {
         "pane",
         "blocked",
         "working",
+        "unknown",
+        "noninteractive",
+        "missing-interactive",
         "bound-native",
         "malformed-native",
         "prior-prompt",
@@ -1018,10 +1082,20 @@ fn recovery_initializer_requires_fresh_idle_codex_without_prior_work_prompt() {
             "agent" => b.agents.borrow_mut()[0]["agent"] = json!("claude"),
             "name" => b.agents.borrow_mut()[0]["name"] = json!("replacement"),
             "pane" => b.agents.borrow_mut()[0]["pane_id"] = json!("w1:p2"),
-            "blocked" | "working" => b.agents.borrow_mut()[0]["agent_status"] = json!(cause),
+            "blocked" | "working" | "unknown" => {
+                b.agents.borrow_mut()[0]["agent_status"] = json!(cause)
+            }
+            "noninteractive" => b.agents.borrow_mut()[0]["interactive_ready"] = json!(false),
+            "missing-interactive" => {
+                b.agents.borrow_mut()[0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("interactive_ready");
+            }
             "bound-native" => {
                 b.snapshot.borrow_mut()["work"][0]["runs"][0]["assignments"][0]["native_session"] =
-                    json!("prior-native")
+                    json!("prior-native");
+                b.agents.borrow_mut()[0]["agent_session"] = json!({"value":"conflicting-native"});
             }
             "malformed-native" => b.agents.borrow_mut()[0]["agent_session"] = json!({"value":""}),
             "prior-prompt" => b
@@ -1185,11 +1259,26 @@ fn settled_done_agent_stops_without_changing_its_ready_state() {
 }
 #[test]
 fn non_ready_agent_never_gets_exit_keys() {
-    for status in ["blocked", "unknown", "working"] {
+    for cause in [
+        "blocked",
+        "unknown",
+        "working",
+        "noninteractive",
+        "missing-interactive",
+    ] {
         let b = Fake::new();
         b.active("running");
         b.native("impl-w11", "native-fixture");
-        b.agents.borrow_mut()[0]["agent_status"] = json!(status);
+        match cause {
+            "noninteractive" => b.agents.borrow_mut()[0]["interactive_ready"] = json!(false),
+            "missing-interactive" => {
+                b.agents.borrow_mut()[0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("interactive_ready");
+            }
+            _ => b.agents.borrow_mut()[0]["agent_status"] = json!(cause),
+        }
         let mut a = b.current();
         a["native_session"] = json!("native-fixture");
         assert!(driver::stop(&b, 3, 7, "w1", b.scratch.0.to_str().unwrap(), &a).is_err());
