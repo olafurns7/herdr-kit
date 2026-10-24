@@ -37,6 +37,8 @@ struct Fake {
     scan_error: Cell<bool>,
     scan_blocker: Cell<bool>,
     scan_native_drift: Cell<bool>,
+    root_host: RefCell<Value>,
+    client_mode: Cell<bool>,
 }
 impl Fake {
     fn new() -> Self {
@@ -62,6 +64,8 @@ impl Fake {
             scan_error: Cell::new(false),
             scan_blocker: Cell::new(false),
             scan_native_drift: Cell::new(false),
+            root_host: RefCell::new(json!("")),
+            client_mode: Cell::new(false),
         }
     }
     fn run() -> Value {
@@ -92,6 +96,9 @@ impl Fake {
     }
 }
 impl driver::Backend for Fake {
+    fn client_mode(&self) -> bool {
+        self.client_mode.get()
+    }
     fn process_scan(&self, _cwd: &Path, shell: i32, trust: &inventory::Trust) -> Result<Value> {
         self.call("process:scan");
         assert_eq!(shell, 400);
@@ -256,7 +263,7 @@ impl driver::Backend for Fake {
         }
         if args[0] == "campaign" {
             return Ok(
-                json!({"root":{"id":3,"host":store::local_machine(),"pane_id":"w2:p1"},"lanes":[]}),
+                json!({"root":{"id":3,"host":*self.root_host.borrow(),"pane_id":"w2:p1"},"lanes":[]}),
             );
         }
         if args[0] == "prompt" {
@@ -504,6 +511,50 @@ fn inspect_stop_uses_selected_revision_and_rejects_unassigned_launch() {
             .unwrap()
             .contains("does not belong")
     );
+}
+#[test]
+fn inspect_stop_normalizes_local_empty_root_host_without_enabling_work() {
+    for state in ["active", "cancelled"] {
+        let b = Fake::new();
+        b.active("running");
+        b.snapshot.borrow_mut()["configuration"]["enabled"] = json!(false);
+        b.snapshot.borrow_mut()["work"][0]["state"] = json!(state);
+        assert_eq!(*b.root_host.borrow(), json!(""));
+        assert_eq!(driver::inspect_stop(&b, 1, 11)["complete"], true);
+        assert!(b.calls.borrow().iter().any(|c| c == "process:scan"));
+        assert!(
+            !b.calls
+                .borrow()
+                .iter()
+                .any(|c| c.starts_with("change:") || c.contains("send-keys"))
+        );
+    }
+}
+#[test]
+fn inspect_stop_refuses_wrong_remote_and_hub_local_client_roots_before_scan() {
+    for (host, client) in [
+        (json!("remote.example"), false),
+        (json!(""), true),
+        (Value::Null, false),
+    ] {
+        let b = Fake::new();
+        b.active("running");
+        *b.root_host.borrow_mut() = host;
+        b.client_mode.set(client);
+        let result = driver::inspect_stop(&b, 1, 11);
+        assert_eq!(result["complete"], false);
+        assert!(result["error"].as_str().unwrap().contains("campaign root"));
+        assert!(
+            !b.calls.borrow().iter().any(|c| c == "process:scan"
+                || c.starts_with("change:")
+                || c.contains("send-keys"))
+        );
+    }
+    let b = Fake::new();
+    b.active("running");
+    *b.root_host.borrow_mut() = json!(store::local_machine());
+    b.client_mode.set(true);
+    assert_eq!(driver::inspect_stop(&b, 1, 11)["complete"], true);
 }
 #[test]
 fn inspect_stop_parser_rejects_missing_or_invalid_launch_before_os_reads() {

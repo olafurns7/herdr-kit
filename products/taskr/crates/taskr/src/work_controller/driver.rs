@@ -16,6 +16,9 @@ pub(super) trait Backend {
     fn command(&self, args: &[String]) -> Result<Value>;
     fn launch(&self, args: &[String]) -> Result<()>;
     fn process_scan(&self, cwd: &Path, shell: i32, trust: &inventory::Trust) -> Result<Value>;
+    fn client_mode(&self) -> bool {
+        crate::net::client_mode()
+    }
     fn directory(&self, root: i64, launch: i64) -> Result<PathBuf> {
         attempt_dir(root, launch)
     }
@@ -217,7 +220,17 @@ fn shell(b: &impl Backend, pane: &str) -> Result<Value> {
 }
 fn process_trust(b: &impl Backend, root: i64, ws: &str) -> Result<inventory::Trust> {
     let campaign = b.command(&["campaign".into(), root.to_string(), "--all".into()])?;
-    if campaign["root"]["id"] != root || campaign["root"]["host"] != store::local_machine() {
+    let host = campaign["root"]["host"]
+        .as_str()
+        .ok_or_else(|| failure("registered campaign root host projection missing"))?;
+    // Empty legacy projection denotes the ledger host, never a remote client's host.
+    if host.is_empty() && b.client_mode() {
+        return Err(failure(
+            "registered campaign root identity/host mismatch: hub-local root cannot authorize a client scan",
+        ));
+    }
+    let host = store::machine_name((!host.is_empty()).then_some(host));
+    if campaign["root"]["id"] != root || host != store::local_machine() {
         return Err(failure("registered campaign root identity/host mismatch"));
     }
     let root_pane = field(&campaign["root"], "pane_id")?.to_string();

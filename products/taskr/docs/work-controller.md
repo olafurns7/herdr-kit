@@ -165,6 +165,13 @@ then uses the same scanner and fresh root/shell checks. JSON includes `complete`
 may have remaining processes; an incomplete scan returns `remaining:null` and
 an error. It sends no exit keys, writes no stopped receipt and never accepts a
 handoff. The command must run on the checkout host, outside ledger-host RPC.
+The legacy campaign root projection uses an empty host for a ledger-local NULL
+machine. It is normalized with core host semantics only in local ledger mode
+(including explicit scratch TASKR_DB). A client cannot reinterpret that empty
+ledger-host value as its own host. Explicit foreign hosts and missing host fields
+refuse the scan; explicit matching hosts retain the usual client-local path.
+Inspection remains available for disabled campaigns and cancelled work without
+enabling dispatch or changing ledger state.
 
 This observes cooperative same-user local processes. It is not a security sandbox
 or proof about another UID, containers/remotes, any detached process with cwd
