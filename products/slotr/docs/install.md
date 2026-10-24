@@ -17,9 +17,9 @@ Install from a release or build from source.
 
 ```sh
 curl -fsSL -o slotr-install.sh \
-  https://github.com/olafurns7/herdr-kit/releases/download/slotr/v0.3.1/install.sh &&
+  https://github.com/olafurns7/herdr-kit/releases/download/slotr/v0.3.2/install.sh &&
   printf '%s  %s\n' dd11030f1a59b4bf828b0b5c388ce4793a02e6b6cc7a3383c1f0ba1f8636e919 slotr-install.sh | sha256sum -c - &&
-  SLOTR_VERSION=slotr/v0.3.1 sh slotr-install.sh
+  SLOTR_VERSION=slotr/v0.3.2 sh slotr-install.sh
 ```
 
 The script:
@@ -36,7 +36,7 @@ The script:
 - Removes temporary files on exit and reports failures as `slotr install: REASON`.
 
 After downloading and verifying the script, run
-`SLOTR_VERSION=slotr/v0.3.1 sh slotr-install.sh --config`. It creates `~/.config/slotr/config.toml`
+`SLOTR_VERSION=slotr/v0.3.2 sh slotr-install.sh --config`. It creates `~/.config/slotr/config.toml`
 from the release's `config.example.toml` only when absent, then checks that
 file. It never overwrites an existing config.
 
@@ -61,27 +61,27 @@ if a command fails.
 
    ```sh
    cd "$(mktemp -d)"
-   curl -fsSLO https://github.com/olafurns7/herdr-kit/releases/download/slotr/v0.3.1/slotr-0.3.1-x86_64-unknown-linux-musl.tar.gz
-   curl -fsSLO https://github.com/olafurns7/herdr-kit/releases/download/slotr/v0.3.1/slotr-0.3.1-x86_64-unknown-linux-musl.tar.gz.sha256
+   curl -fsSLO https://github.com/olafurns7/herdr-kit/releases/download/slotr/v0.3.2/slotr-0.3.2-x86_64-unknown-linux-musl.tar.gz
+   curl -fsSLO https://github.com/olafurns7/herdr-kit/releases/download/slotr/v0.3.2/slotr-0.3.2-x86_64-unknown-linux-musl.tar.gz.sha256
    ```
 
 2. Verify the download. Go on only when it prints `OK`.
 
    ```sh
-   sha256sum -c slotr-0.3.1-x86_64-unknown-linux-musl.tar.gz.sha256
+   sha256sum -c slotr-0.3.2-x86_64-unknown-linux-musl.tar.gz.sha256
    ```
 
 3. Look at what the archive holds. It should list only `slotr`, `LICENSE`
    and `THIRD-PARTY-NOTICES`, each on a line that starts with `-`.
 
    ```sh
-   tar -tvzf slotr-0.3.1-x86_64-unknown-linux-musl.tar.gz
+   tar -tvzf slotr-0.3.2-x86_64-unknown-linux-musl.tar.gz
    ```
 
 4. Extract the binary. Only `slotr` is taken out.
 
    ```sh
-   tar -xzf slotr-0.3.1-x86_64-unknown-linux-musl.tar.gz slotr
+   tar -xzf slotr-0.3.2-x86_64-unknown-linux-musl.tar.gz slotr
    ```
 
 5. Install it for your user.
@@ -108,7 +108,7 @@ mean to use a mirror. Local tests use
 `file://` URLs, which curl supports:
 
 ```sh
-SLOTR_VERSION=0.3.1 SLOTR_INSTALL_BASE_URL=file:///tmp/slotr-release sh install.sh --config
+SLOTR_VERSION=0.3.2 SLOTR_INSTALL_BASE_URL=file:///tmp/slotr-release sh install.sh --config
 ```
 
 ## Build from source

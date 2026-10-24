@@ -32,7 +32,7 @@ too old, or the floor cannot be fetched, stop and tell the user.
 
 ## 2. Install
 
-Pin a published taskr release with `TASKR_VERSION=taskr/v0.26.0` in the download
+Pin a published taskr release with `TASKR_VERSION=taskr/v0.27.0` in the download
 commands below. The installer also accepts `vX.Y.Z` and `X.Y.Z`. Without a version it
 enumerates paginated
 releases, skips drafts/prereleases and other products, and chooses the highest
@@ -41,7 +41,7 @@ strict semver with the requested assets. Unpinned selection needs authenticated
 Download the installer with curl or authenticated GitHub CLI below. Do not pipe
 to sh: a partial download could execute before failure is reported.
 ```sh
-export TASKR_VERSION=taskr/v0.26.0   # or a newer taskr/vX.Y.Z
+export TASKR_VERSION=taskr/v0.27.0   # or a newer taskr/vX.Y.Z
 curl -fsSL -o taskr-install.sh \
   "https://github.com/olafurns7/herdr-kit/releases/download/$TASKR_VERSION/install.sh" &&
   test -s taskr-install.sh &&
@@ -51,7 +51,7 @@ curl -fsSL -o taskr-install.sh \
 Alternatively, use GitHub CLI:
 ```sh
 # Download the installer through GitHub CLI, then install and link agent skills.
-export TASKR_VERSION=taskr/v0.26.0   # or a newer taskr/vX.Y.Z
+export TASKR_VERSION=taskr/v0.27.0   # or a newer taskr/vX.Y.Z
 gh release download "$TASKR_VERSION" --repo olafurns7/herdr-kit \
   --pattern install.sh --output taskr-install.sh &&
   test -s taskr-install.sh &&

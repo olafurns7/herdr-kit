@@ -174,7 +174,7 @@ esac
                 assert f'KEEP taskr {installed}' in out
                 assert all(f.read_bytes() == content for f, content in before.items())
             calls = log.read_text()
-            tag = 'taskr/v0.0.1' if explicit else 'taskr/v0.26.0'
+            tag = 'taskr/v0.0.1' if explicit else 'taskr/v0.27.0'
             assert f'tarball/{tag}' in calls and f'release download {tag} ' in calls
             assert '--paginate' not in calls
             assert (h / '.agents/skills/taskr/SKILL.md').is_file()
