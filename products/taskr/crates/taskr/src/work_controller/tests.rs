@@ -1943,6 +1943,92 @@ fn exact_cases_reject_missing_duplicate_skipped_failed_error_and_extra() {
     );
 }
 #[test]
+fn actual_receipt_check_produces_a_core_valid_proof() {
+    let cwd = Scratch::new();
+    let attempt = Scratch::new();
+    let check = api::Check {
+        id: "sum".into(),
+        kind: "cases".into(),
+        argv: vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            r#"test "$((2 + 3))" -eq 5 && printf '%s\n' '{"cases":[{"id":"sum","status":"passed"}]}' > "$TASKR_ATTEMPT_DIR/cases.json""#.into(),
+        ],
+        timeout_ms: 5000,
+        cases: vec!["sum".into()],
+        admission: api::Admission::Direct,
+        receipt_file: Some("cases.json".into()),
+    };
+    let mut profile = api::Profile {
+        id: "receipt-contract".into(),
+        version: 1,
+        digest: "0".repeat(64),
+        checks: vec![check.clone()],
+    };
+    profile.digest = api::profile_digest(&profile).unwrap();
+    let source = api::Source {
+        commit: "a".repeat(40),
+        tree: "b".repeat(40),
+        input_digest: "c".repeat(64),
+    };
+    let out = runner::execute(&check, &attempt.0, &cwd.0, &AtomicBool::new(false)).unwrap();
+    let mut proof = api::Proof {
+        run: 9,
+        revision: 1,
+        source: source.clone(),
+        profile_digest: profile.digest.clone(),
+        check: check.id.clone(),
+        checker_launch: 11,
+        argv: check.argv,
+        exit: out.exit,
+        signal: out.signal,
+        timed_out: out.timed_out,
+        error: out.error,
+        admission: api::AdmissionEvidence {
+            method: api::AdmissionMethod::Direct,
+            ticket: None,
+            reason: None,
+        },
+        stdout: out.stdout,
+        stderr: out.stderr,
+        cases: out.cases,
+        artifacts: out.artifacts,
+    };
+    let validate = |proof: &api::Proof| api::validate_proof(&profile, &source, 9, 1, 11, proof);
+    validate(&proof).unwrap();
+    let receipt_index = proof
+        .artifacts
+        .iter()
+        .position(|a| a.name == "receipt")
+        .unwrap();
+    let bytes = fs::read(attempt.0.join("cases.json")).unwrap();
+    assert_eq!(fs::read(attempt.0.join("receipt")).unwrap(), bytes);
+    assert_eq!(
+        proof.artifacts[receipt_index].sha256,
+        format!("{:x}", Sha256::digest(&bytes))
+    );
+    assert!(!proof.artifacts.iter().any(|a| a.name == "case-receipt"));
+
+    let receipt = proof.artifacts.remove(receipt_index);
+    assert!(validate(&proof).is_err());
+    proof.artifacts.insert(receipt_index, receipt);
+    for name in ["case-receipt", "wrong-receipt"] {
+        proof.artifacts[receipt_index].name = name.into();
+        assert!(validate(&proof).is_err(), "wrong canonical name: {name}");
+    }
+    proof.artifacts[receipt_index].name = "receipt".into();
+    let hash = std::mem::replace(
+        &mut proof.artifacts[receipt_index].sha256,
+        "invalid-hash".into(),
+    );
+    assert!(validate(&proof).is_err());
+    proof.artifacts[receipt_index].sha256 = hash;
+    proof.cases[0].status = "failed".into();
+    assert!(validate(&proof).is_err());
+    proof.cases[0].status = "passed".into();
+    validate(&proof).unwrap();
+}
+#[test]
 fn receipt_traversal_and_symlink_escape_fail() {
     let dir = Scratch::new();
     fs::write(dir.0.join("outside.json"), r#"{"cases":[]}"#).unwrap();

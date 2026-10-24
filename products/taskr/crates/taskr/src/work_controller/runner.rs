@@ -191,7 +191,7 @@ pub(super) fn execute(
     let cases = match &check.receipt_file {
         Some(path) => match receipt(attempt, path, &check.cases) {
             Ok((cases, bytes)) => {
-                artifacts.push(artifact(attempt, "case-receipt", &bytes)?);
+                artifacts.push(artifact(attempt, "receipt", &bytes)?);
                 cases
             }
             Err(e) => {
