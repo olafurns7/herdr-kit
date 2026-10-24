@@ -39,7 +39,7 @@ class Fake(m.Adapter):
         self.native = None
         self.process_version = 1
         self.sent_count = 0
-        self.assignment = dict(launch_id=3, task_id=2, round=0, state="starting", process_state="uncertain",
+        self.assignment = dict(launch_id=3, task_id=2, round=0, state="starting", process_state="starting",
                                stage="executor", native_session=None, lane=dict(provider="codex"),
                                dispatch=dict(workspace="w1", tab="w1:t1", pane="w1:p1"))
         self.snap = dict(campaign=1, generation=4, parked=False, configuration=dict(enabled=True, workspace="w1"),
@@ -166,7 +166,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(self.fake.sent_count, 1)
         self.assertEqual(self.requests[0]["params"]["source"], "herdr:codex")
         self.assertNotIn("session_start_source", self.requests[0]["params"])
-        self.assertEqual(self.fake.assignment["process_state"], "uncertain")
+        self.assertEqual(self.fake.assignment["process_state"], "starting")
 
     def test_ok_without_native_metadata_is_refused(self):
         thread = self.report_server(ignored=True)
@@ -180,6 +180,29 @@ class IdentityTests(unittest.TestCase):
         result = self.fake.run_test()
         self.assertEqual(result["native_session"], ID)
         self.assertEqual(self.fake.sent_count, 0)
+
+    def test_uncertain_assignment_refuses_before_initialization(self):
+        self.fake.assignment["process_state"] = "uncertain"
+        with self.assertRaisesRegex(RuntimeError, "reservation changed"):
+            self.fake.run_test()
+        self.assertEqual(self.fake.sent_count, 0)
+        self.assertFalse((self.fake.folder / "init.json").exists())
+        self.assertEqual(len(self.fake.calls), 1)  # Only the fake campaign read.
+
+    def test_query_subprocess_clears_inherited_worker_identity(self):
+        args = [self.fake.taskr, "--json", "work", "list", "1"]
+        with patch.dict(os.environ, TASKR_TASK="998", TASKR_LAUNCH="997", TASKR_DB=self.fake.context["db"]):
+            with patch.object(m.subprocess, "Popen", side_effect=RuntimeError("captured without process")) as popen:
+                with self.assertRaisesRegex(RuntimeError, "captured without process"):
+                    m.Adapter.command(self.fake, args)
+            popen.assert_called_once()
+            self.assertEqual(popen.call_args.args[0], args)
+            env = popen.call_args.kwargs["env"]
+            self.assertNotIn("TASKR_TASK", env)
+            self.assertNotIn("TASKR_LAUNCH", env)
+            self.assertEqual(env["TASKR_DB"], self.fake.context["db"])
+            self.assertEqual(os.environ["TASKR_TASK"], "998")
+            self.assertEqual(os.environ["TASKR_LAUNCH"], "997")
 
     def test_private_attempt_directory_lock_and_outside_checkout(self):
         self.fake.native = ID

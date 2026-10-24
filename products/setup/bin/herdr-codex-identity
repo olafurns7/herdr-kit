@@ -109,6 +109,8 @@ class Adapter:
         self.preflight()  # Even taskr reads must not precede an unavailable Herdr server.
         env = dict(os.environ, LC_ALL="C", HERDR_SOCKET_PATH=self.socket)
         env.pop("TASKR_FORMAT", None)
+        env.pop("TASKR_TASK", None)
+        env.pop("TASKR_LAUNCH", None)
         p = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, env=env, cwd="/", start_new_session=True)
         chunks = {p.stdout: bytearray(), p.stderr: bytearray()}
@@ -153,7 +155,7 @@ class Adapter:
                         require(run["run_id"] == work["current_run"] and run["state"] == "active"
                                 and run["revision"] == work["revision"]
                                 and a["task_id"] == self.task and a["round"] == run["round"]
-                                and a["state"] == "starting" and a["process_state"] in ("starting", "uncertain")
+                                and a["state"] == "starting" and a["process_state"] == "starting"
                                 and a["stage"] in ("executor", "reviewer", "adjudicator")
                                 and a["lane"]["provider"] == "codex" and len(revisions) == 1
                                 and revisions[0]["contract"]["checkout"]["cwd"] == str(self.cwd)
