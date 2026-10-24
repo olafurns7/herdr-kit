@@ -453,23 +453,33 @@ pub enum ProcessScanMethod {
     LocalUserSessionCwdV1,
 }
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProcessExemptionReason {
-    WorkspaceShell,
-    Observer,
-    CampaignRoot,
-}
-#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckoutProcess {
     pub pid: u32,
     pub cwd: String,
 }
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProcessExemption {
-    pub pid: u32,
-    pub reason: ProcessExemptionReason,
+#[serde(tag = "reason", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ProcessExemption {
+    WorkspaceShell {
+        pid: u32,
+        pane: String,
+        session_id: u32,
+        foreground_pgid: u32,
+        session_pids: Vec<u32>,
+    },
+    Observer {
+        pid: u32,
+        observer_pid: u32,
+        parent_chain: Vec<u32>,
+    },
+    CampaignRoot {
+        pid: u32,
+        pane: String,
+        foreground_pgid: u32,
+        foreground_pids: Vec<u32>,
+        observed_at: String,
+    },
 }
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

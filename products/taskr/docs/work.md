@@ -110,6 +110,7 @@ checks have approved argv (1..128 arguments) and timeout (1..3600000 ms).
 | claim | work | expected_revision, key; returns run_id and executor assignment/launch_id |
 | reserve | run | stage: executor/reviewer/adjudicator; returns assignment |
 | bind | launch | workspace, tab, pane, dispatch_key |
+| observe | launch | {pane,native_session,observed_at}; pins actual launcher-observed identity before prompt, without start evidence |
 | started | launch | derives launch receipt; optional {pane,native_session,observed_at} explicitly binds native identity |
 | stopped | launch | {pane,native_session,foreground:{pid,command},agent_absent,process_scan,observed_at}; required scan below |
 | block | work | {reason}; identical named condition is a no-op |
@@ -131,6 +132,11 @@ taskr work claim 1 --as 42 --generation 0 \
 taskr work bind 100 --as 42 --generation 0 \
   --data '{"workspace":"w1","tab":"w1:t2","pane":"w1:p2","dispatch_key":"dispatch-100"}'
 # External controller starts only after bind commits, exporting the reserved task/launch.
+# Read actual native identity from the successful agent start before sending its brief.
+taskr work observe 100 --as 42 --generation 0 \
+  --data '{"pane":"w1:p2","native_session":"<actual native identity>","observed_at":"<fresh RFC3339>"}'
+# Only send the reserved prompt after observe succeeds; do not guess an identity.
+# A got/start or hook receipt is still required to establish running.
 taskr work started 100 --as 42 --generation 0
 taskr work advance 5 --as 42 --generation 0
 ```
@@ -147,6 +153,17 @@ Result settlement and process state are separate. Assignments retain `state`
 (reserved/starting/running/uncertain/stopped), `native_session`, `stop_event`,
 `identity_observation` and `stopped` receipt data. A result never proves process
 exit. A starting/uncertain process is never automatically restarted.
+
+`observe` is root/host/generation authorized and pins actual Herdr native identity
+on the bound starting dispatch before the reserved launcher sends its brief. It
+stores the root identity observation and initializes the launch session reference
+when absent; it emits no got/start receipt and does not mark the process running.
+Matching persisted/bound identity is idempotent without changing process/result
+state; conflicting identity rejects. Current task launch, immutable pane, host
+and fresh time guards apply. Missing identity withholds the prompt and retains
+the uncertain reservation. Gate shells do not use this operation. Legacy/manual
+launches are unchanged. An old identity-less model run needs explicit
+reconciliation; no anonymous model stop is allowed.
 
 `started` can derive a launch-bound got/start or hook receipt. A receipt alone
 never invents a native identity. Model stages must have either a hook session
@@ -173,7 +190,7 @@ A native agent disappearing and an interactive foreground shell do not establish
 that background writers stopped. The required scan has this exact shape:
 
 ```json
-{"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell"},{"pid":456,"reason":"observer"}]}
+{"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123]},{"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[456]}]}
 ```
 
 `session_remaining` entries are `{pid,command}`; `checkout_remaining` entries are
@@ -181,7 +198,25 @@ that background writers stopped. The required scan has this exact shape:
 positive u32; shell_pid equals foreground.pid; uid is u32 (including root UID0).
 `scanned` is 1..65536. Each array, including exempt, has at most1024 entries;
 commands/cwd strings are nonempty and at most4096 bytes. Exempt PIDs are positive
-and unique; reasons are only `workspace-shell`, `observer`, `campaign-root`.
+and unique. Exemptions are a typed enum tagged by `reason`, with required bases:
+
+- `workspace-shell`: pid, pane, session_id, foreground_pgid, session_pids. The
+  pane belongs to the immutable dispatch workspace and session_pids is exactly `[pid]`.
+  The stopped pane's own idle shell is valid: its PID, pane and session must
+  match the top-level foreground/scan. Other idle workspace shells may also
+  qualify; the controller must actually observe the singleton session.
+- `observer`: pid, observer_pid, parent_chain. The chain contains positive unique
+  PIDs, starting with pid and ending with observer_pid; the observer itself has
+  the one-element chain `[observer_pid]`. The controller attests each PPID link.
+- `campaign-root`: pid, pane, foreground_pgid, foreground_pids, observed_at. Pane
+  equals the recorded campaign root pane and differs from the stopped assignment
+  pane. The positive unique foreground list includes pid, and observed_at is
+  fresh under the launch/time checks. For example:
+  `{"pid":789,"reason":"campaign-root","pane":"w1:p1","foreground_pgid":789,"foreground_pids":[789],"observed_at":"<fresh RFC3339>"}`.
+
+All process-group IDs are positive; chains/foreground lists have1..1024 entries.
+Only the root exemption requires a different pane. Enum fields are required and
+unknown fields rejected; reason-only exemptions are invalid.
 Unknown fields, missing scan/fields and invalid bounds are rejected. There is no
 compatibility default for this unreleased API. An invalid scan writes no receipt
 and retains the checkout reservation.
@@ -189,7 +224,13 @@ and retains the checkout reservation.
 The controller must perform a complete bounded same-UID inventory, including
 shell descendants and every process in its true POSIX session/tty, including
 background process groups. It must scan same-user cwd values and match the
-canonical checkout or a path under it by component boundaries. This detects
+canonical checkout or a path under it by component boundaries. Resolve checkout
+and observed aliases at scan time; unresolved canonical paths make the scan
+incomplete. Zombies are non-writers and need no cwd. The scan has its own
+15-second total deadline, independent of the between-item dispatch budget; record
+its measured duration. lsof exit1 or stderr warnings alone do not invalidate a
+complete inventory, but every live non-zombie process still needs a cwd record or
+a validated exact exemption. This detects
 same-session background jobs and detached children that retain checkout cwd.
 macOS `ps sess` is not a usable POSIX session ID; use getsid. Linux cwd reads use
 /proc; macOS uses a bounded, strictly parsed lsof cwd inventory. Recheck vanished
@@ -207,8 +248,8 @@ Closing the final tab/workspace is not cleanup evidence.
 This is trusted root-attested observation of cooperative same-user local
 processes. The store checks receipt shape/identity, not the truth of the OS scan.
 It is not a security sandbox or proof about other UIDs, containers/remotes,
-hostile same-user writers, or a detached process that leaves the checkout while
-retaining a file descriptor. Automatic task workers must not detach background
+hostile same-user writers, or any detached process with cwd outside the checkout,
+including absolute-path writers without retained file descriptors. Automatic task workers must not detach background
 jobs or create external runtimes. Such work needs a named managed runtime and
 stronger explicit cleanup proof; no automatic handoff under this local profile.
 Generated worker briefs must state these limits; model agreement cannot certify

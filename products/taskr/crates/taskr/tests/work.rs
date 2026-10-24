@@ -7,7 +7,7 @@ use taskr_core::db::{OptionalExtension, params};
 use taskr_core::store::work as api;
 
 fn clean_process_scan() -> Value {
-    json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell"},{"pid":456,"reason":"observer"},{"pid":789,"reason":"campaign-root"}]})
+    json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123]},{"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[456]}]})
 }
 
 struct Work {
@@ -1852,6 +1852,13 @@ fn fast_settled_native_binding_requires_exact_persisted_identity_and_preserves_u
         )
         .unwrap();
         w.reject("started", &lid, observation.clone(), 6);
+        let original_host: Option<String> = db
+            .query_row(
+                "select machine from launches where id=?",
+                [ass["launch_id"].as_i64().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
         db.execute(
             "update launches set pane_id='w1:p2',machine='other-host' where id=?",
             [ass["launch_id"].as_i64().unwrap()],
@@ -1860,10 +1867,7 @@ fn fast_settled_native_binding_requires_exact_persisted_identity_and_preserves_u
         w.reject("started", &lid, observation.clone(), 6);
         db.execute(
             "update launches set machine=? where id=?",
-            params![
-                taskr_core::store::local_machine(),
-                ass["launch_id"].as_i64().unwrap()
-            ],
+            params![original_host, ass["launch_id"].as_i64().unwrap()],
         )
         .unwrap();
         let bound = w.call("started", Some(&lid), Some(observation.clone()));
@@ -1902,4 +1906,269 @@ fn fast_settled_native_binding_requires_exact_persisted_identity_and_preserves_u
         w.review(&rid, &exec, "clear");
         assert_eq!(w.call("advance", Some(&rid), None)["action"], "accepted");
     }
+}
+
+#[test]
+fn process_exemptions_require_auditable_bases_and_allow_own_idle_shell() {
+    let w = Work::new();
+    w.configure();
+    let id = w.queued(w.contract(false));
+    let run = w.claim(&id, "exemption-bases");
+    let ass = &run["assignments"][0];
+    w.running(ass);
+    let lid = ass["launch_id"].to_string();
+    w.h.conn()
+        .execute(
+            "update tasks set pane_id='w1:p1' where id=?",
+            [w.root.parse::<i64>().unwrap()],
+        )
+        .unwrap();
+    let good = json!({"pane":"w1:p2","native_session":format!("native-{lid}"),"foreground":{"pid":123,"command":"/bin/sh"},"agent_absent":true,"process_scan":clean_process_scan(),"observed_at":taskr_core::store::now()});
+    let root = json!({"pid":789,"reason":"campaign-root","pane":"w1:p1","foreground_pgid":789,"foreground_pids":[789],"observed_at":taskr_core::store::now()});
+    w.call(
+        "configure",
+        Some(&w.root),
+        Some(json!({"enabled":false,"max_active":4,"max_review_pending":4})),
+    );
+    for (entry, code) in [
+        (json!({"pid":123,"reason":"workspace-shell"}), 2),
+        (
+            json!({"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123,321]}),
+            6,
+        ),
+        (
+            json!({"pid":124,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":124,"session_pids":[124]}),
+            6,
+        ),
+        (
+            json!({"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":124,"foreground_pgid":123,"session_pids":[123]}),
+            6,
+        ),
+        (
+            json!({"pid":123,"reason":"workspace-shell","pane":"w1:p3","session_id":123,"foreground_pgid":123,"session_pids":[123]}),
+            6,
+        ),
+        (
+            json!({"pid":321,"reason":"workspace-shell","pane":"w2:p3","session_id":321,"foreground_pgid":321,"session_pids":[321]}),
+            6,
+        ),
+        (
+            json!({"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":0,"session_pids":[123]}),
+            6,
+        ),
+        (json!({"pid":456,"reason":"observer"}), 2),
+        (
+            json!({"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[]}),
+            2,
+        ),
+        (
+            json!({"pid":457,"reason":"observer","observer_pid":456,"parent_chain":[458,456]}),
+            6,
+        ),
+        (
+            json!({"pid":457,"reason":"observer","observer_pid":456,"parent_chain":[457,455]}),
+            6,
+        ),
+        (
+            json!({"pid":457,"reason":"observer","observer_pid":456,"parent_chain":[457,457,456]}),
+            2,
+        ),
+        (
+            json!({"pid":457,"reason":"observer","observer_pid":456,"parent_chain":[457,0,456]}),
+            2,
+        ),
+        (
+            json!({"pid":457,"reason":"observer","observer_pid":456,"parent_chain":vec![457;1025]}),
+            2,
+        ),
+        (json!({"pid":789,"reason":"campaign-root"}), 2),
+    ] {
+        let mut bad = good.clone();
+        bad["process_scan"]["exempt"] = json!([entry]);
+        w.reject("stopped", &lid, bad, code);
+    }
+    for (field, value, code) in [
+        ("pane", json!("w1:p2"), 6),
+        ("pane", json!("w1:p9"), 6),
+        ("foreground_pgid", json!(0), 6),
+        ("foreground_pids", json!([790]), 6),
+        ("foreground_pids", json!([]), 2),
+        ("observed_at", json!("2000-01-01T00:00:00Z"), 6),
+    ] {
+        let mut entry = root.clone();
+        entry[field] = value;
+        let mut bad = good.clone();
+        bad["process_scan"]["exempt"] = json!([entry]);
+        w.reject("stopped", &lid, bad, code);
+    }
+    w.h.conn()
+        .execute(
+            "update tasks set pane_id='w1:p2' where id=?",
+            [w.root.parse::<i64>().unwrap()],
+        )
+        .unwrap();
+    let mut root_on_worker = root.clone();
+    root_on_worker["pane"] = json!("w1:p2");
+    let mut bad = good.clone();
+    bad["process_scan"]["exempt"] = json!([root_on_worker]);
+    w.reject("stopped", &lid, bad, 6);
+    w.h.conn()
+        .execute(
+            "update tasks set pane_id='w1:p1' where id=?",
+            [w.root.parse::<i64>().unwrap()],
+        )
+        .unwrap();
+    let mut valid = good;
+    valid["process_scan"]["exempt"].as_array_mut().unwrap().extend([
+        json!({"pid":457,"reason":"observer","observer_pid":456,"parent_chain":[457,456]}),
+        json!({"pid":321,"reason":"workspace-shell","pane":"w1:p3","session_id":321,"foreground_pgid":321,"session_pids":[321]}),
+        root,
+    ]);
+    assert_eq!(
+        w.h.conn()
+            .query_row("select count(*) from work_checkouts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        w.call("stopped", Some(&lid), Some(valid))["process_state"],
+        "stopped"
+    );
+}
+
+#[test]
+fn observe_pins_native_identity_before_prompt_without_establishing_start() {
+    let w = Work::new();
+    w.configure();
+    let id = w.queued(w.contract(false));
+    let run = w.claim(&id, "observe-before-prompt");
+    let ass = &run["assignments"][0];
+    let lid = ass["launch_id"].to_string();
+    let input = json!({"pane":"w1:p2","native_session":format!("native-{lid}"),"observed_at":taskr_core::store::now()});
+    w.reject("observe", &lid, input.clone(), 6);
+    w.call(
+        "bind",
+        Some(&lid),
+        Some(json!({"workspace":"w1","tab":"w1:t2","pane":"w1:p2","dispatch_key":"observe"})),
+    );
+    let db = w.h.conn();
+    let original_host: Option<String> = db
+        .query_row(
+            "select machine from launches where id=?",
+            [ass["launch_id"].as_i64().unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute(
+        "update launches set machine='other-host' where id=?",
+        [ass["launch_id"].as_i64().unwrap()],
+    )
+    .unwrap();
+    w.reject("observe", &lid, input.clone(), 6);
+    db.execute(
+        "update launches set machine=? where id=?",
+        params![original_host, ass["launch_id"].as_i64().unwrap()],
+    )
+    .unwrap();
+    let mut wrong = input.clone();
+    wrong["pane"] = json!("w1:p9");
+    w.reject("observe", &lid, wrong, 6);
+    let mut stale = input.clone();
+    stale["observed_at"] = json!("2000-01-01T00:00:00Z");
+    w.reject("observe", &lid, stale, 6);
+    assert_eq!(
+        w.h.output(
+            &w.env(ass),
+            &[
+                "work",
+                "observe",
+                &lid,
+                "--as",
+                &w.root,
+                "--generation",
+                "0",
+                "--data",
+                &input.to_string()
+            ],
+            b""
+        )
+        .status
+        .code(),
+        Some(6)
+    );
+    assert_eq!(
+        w.h.output(
+            &[],
+            &[
+                "work",
+                "observe",
+                &lid,
+                "--as",
+                &w.root,
+                "--generation",
+                "1",
+                "--data",
+                &input.to_string()
+            ],
+            b""
+        )
+        .status
+        .code(),
+        Some(6)
+    );
+    let observed = w.call("observe", Some(&lid), Some(input.clone()));
+    assert_eq!(observed["state"], "starting");
+    assert_eq!(observed["process_state"], "starting");
+    assert!(observed["start_proof"].is_null());
+    assert_eq!(observed["native_session"], input["native_session"]);
+    assert_eq!(observed["identity_observation"], input);
+    assert_eq!(w.call("observe", Some(&lid), Some(input.clone())), observed);
+    assert_eq!(
+        db.query_row(
+            "select session_ref from launches where id=?",
+            [ass["launch_id"].as_i64().unwrap()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        format!("native-{lid}")
+    );
+    assert_eq!(
+        db.query_row(
+            "select count(*) from events where kind in ('got','start')",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    w.reject("started", &lid, json!({}), 2); // data must be a complete observation
+    let missing_start = w.h.output(
+        &[],
+        &[
+            "work",
+            "started",
+            &lid,
+            "--as",
+            &w.root,
+            "--generation",
+            "0",
+        ],
+        b"",
+    );
+    assert_eq!(missing_start.status.code(), Some(6));
+    let mut conflict = input.clone();
+    conflict["native_session"] = json!("conflicting-native");
+    w.reject("observe", &lid, conflict, 6);
+    w.h.ok(&w.env(ass), &["start"]);
+    let exec = w.submit(ass, json!({"kind":"execution","result":{"source":w.source(),"report":"fast observed worker","artifacts":[]}}));
+    assert_eq!(
+        w.call("observe", Some(&lid), Some(input.clone()))["state"],
+        "settled"
+    );
+    w.stop(ass);
+    w.reject("observe", &lid, input, 6);
+    let rid = run["run_id"].to_string();
+    w.review(&rid, &exec, "clear");
+    assert_eq!(w.call("advance", Some(&rid), None)["action"], "accepted");
 }

@@ -544,6 +544,7 @@ mod tests {
             "reserve",
             "bind",
             "started",
+            "observe",
             "uncertain",
             "reconcile",
             "submit",

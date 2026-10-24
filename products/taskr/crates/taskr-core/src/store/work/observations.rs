@@ -74,11 +74,24 @@ fn observation_time(db: &Connection, launch: i64, at: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Pins launcher-observed native identity before prompting; does not establish start.
+pub fn observe(db: &mut Connection, a: Authority, launch: i64, input: Started) -> Result<Value> {
+    native_observation(db, a, launch, input, false)
+}
 pub fn started_observed(
     db: &mut Connection,
     a: Authority,
     launch: i64,
     input: Started,
+) -> Result<Value> {
+    native_observation(db, a, launch, input, true)
+}
+fn native_observation(
+    db: &mut Connection,
+    a: Authority,
+    launch: i64,
+    input: Started,
+    start: bool,
 ) -> Result<Value> {
     encoded(&input)?;
     location_id(&input.pane)?;
@@ -126,8 +139,19 @@ pub fn started_observed(
             return Err(reject("native identity changed"));
         }
         observation_time(tx, launch, &input.observed_at)?;
-        if ass["process_state"] != "uncertain" {
-            start_tx(tx, launch)?;
+        if start {
+            if ass["process_state"] != "uncertain" {
+                start_tx(tx, launch)?;
+            }
+        } else {
+            if ass["process_state"] != "starting"
+                && ass["native_session"].as_str() != Some(input.native_session.as_str())
+            {
+                return Err(reject(
+                    "initial native observation requires bound starting launch",
+                ));
+            }
+            tx.execute("update launches set session_kind=case when session_ref is null then case when provider='codex' then 'thread_id' else 'id' end else session_kind end,session_source=case when session_ref is null then 'work:observe' else session_source end,session_ref=coalesce(session_ref,?) where id=?",params![input.native_session,launch])?;
         }
         tx.execute("update work_assignments set native_session=?,identity_observation=coalesce(identity_observation,?) where launch_id=?",params![input.native_session,encoded(&input)?,launch])?;
         assignment(tx, launch)
@@ -155,7 +179,18 @@ pub(super) fn release_cancelled(db: &Connection, r: &Run) -> Result<()> {
     }
     Ok(())
 }
-fn process_scan(scan: &ProcessScan, foreground: &Foreground) -> Result<()> {
+fn process_ids(pids: &[u32]) -> Result<()> {
+    let unique: std::collections::BTreeSet<_> = pids.iter().copied().collect();
+    if pids.is_empty() || pids.len() > 1024 || unique.contains(&0) || unique.len() != pids.len() {
+        return Err(usage(
+            "process evidence requires 1..1024 positive unique PIDs",
+        ));
+    }
+    Ok(())
+}
+fn process_scan(db: &Connection, root: i64, launch: i64, input: &Stopped) -> Result<()> {
+    let scan = &input.process_scan;
+    let foreground = &input.foreground;
     if scan.shell_pid == 0
         || scan.shell_pid != foreground.pid
         || scan.session_id == 0
@@ -178,9 +213,71 @@ fn process_scan(scan: &ProcessScan, foreground: &Foreground) -> Result<()> {
         }
         text(&process.cwd, 4096, "process cwd")?;
     }
+    let workspace: Option<String> = db.query_row(
+        "select workspace_id from launches where id=?",
+        [launch],
+        |r| r.get(0),
+    )?;
     let mut exempt = std::collections::BTreeSet::new();
     for process in &scan.exempt {
-        if process.pid == 0 || !exempt.insert(process.pid) {
+        let pid = match process {
+            ProcessExemption::WorkspaceShell {
+                pid,
+                pane,
+                session_id,
+                foreground_pgid,
+                session_pids,
+            } => {
+                location_id(pane)?;
+                if pane.split_once(':').map(|(workspace, _)| workspace) != workspace.as_deref()
+                    || *session_id == 0
+                    || *foreground_pgid == 0
+                    || session_pids.as_slice() != [*pid]
+                    || (pane == &input.pane
+                        && (*pid != foreground.pid || *session_id != scan.session_id))
+                    || (*pid == foreground.pid && pane != &input.pane)
+                {
+                    return Err(reject(
+                        "workspace shell exemption identity/singleton mismatch",
+                    ));
+                }
+                *pid
+            }
+            ProcessExemption::Observer {
+                pid,
+                observer_pid,
+                parent_chain,
+            } => {
+                process_ids(parent_chain)?;
+                if *observer_pid == 0
+                    || parent_chain.first() != Some(pid)
+                    || parent_chain.last() != Some(observer_pid)
+                {
+                    return Err(reject("observer exemption parent chain mismatch"));
+                }
+                *pid
+            }
+            ProcessExemption::CampaignRoot {
+                pid,
+                pane,
+                foreground_pgid,
+                foreground_pids,
+                observed_at,
+            } => {
+                location_id(pane)?;
+                process_ids(foreground_pids)?;
+                if *foreground_pgid == 0
+                    || !foreground_pids.contains(pid)
+                    || pane != &task(db, root)?.pane
+                    || pane == &input.pane
+                {
+                    return Err(reject("campaign root exemption pane/foreground mismatch"));
+                }
+                observation_time(db, launch, observed_at)?;
+                *pid
+            }
+        };
+        if pid == 0 || !exempt.insert(pid) {
             return Err(usage(
                 "process scan exemption PIDs must be positive and unique",
             ));
@@ -196,7 +293,6 @@ fn process_scan(scan: &ProcessScan, foreground: &Foreground) -> Result<()> {
 pub fn stopped(db: &mut Connection, a: Authority, launch: i64, input: Stopped) -> Result<Value> {
     encoded(&input)?;
     location_id(&input.pane)?;
-    process_scan(&input.process_scan, &input.foreground)?;
     text(&input.foreground.command, 4096, "foreground command")?;
     if !input.agent_absent
         || input.foreground.pid == 0
@@ -250,6 +346,7 @@ pub fn stopped(db: &mut Connection, a: Authority, launch: i64, input: Stopped) -
             }
             return assignment(tx, launch);
         }
+        process_scan(tx, r.root, launch, &input)?;
         observation_time(tx, launch, &input.observed_at)?;
         if ass["process_state"] == "reserved" {
             return Err(reject("undispatched reservation has no process to observe"));

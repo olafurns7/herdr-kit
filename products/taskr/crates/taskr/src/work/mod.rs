@@ -17,6 +17,7 @@ const VERBS: &[&str] = &[
     "reserve",
     "bind",
     "started",
+    "observe",
     "uncertain",
     "reconcile",
     "submit",
@@ -245,6 +246,7 @@ fn invoke(
         "claim" => api::claim(db, a, id, api::parse(&raw(f)?)?),
         "reserve" => api::reserve(db, a, id, api::parse(&raw(f)?)?),
         "bind" => api::bind(db, a, id, api::parse(&raw(f)?)?),
+        "observe" => api::observe(db, a, id, api::parse(&raw(f)?)?),
         "started" => {
             if f.was_set("data") || f.was_set("file") {
                 api::started_observed(db, a, id, api::parse(&raw(f)?)?)
