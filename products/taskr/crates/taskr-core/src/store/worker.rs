@@ -240,7 +240,9 @@ pub fn write(db: &mut Connection, w: Write<'_>) -> Result<Value> {
             let has_ask: bool = tx.query_row("with recursive tree(id) as (select ? union all select t.id from tasks t join tree on t.parent_id=tree.id) select exists(select 1 from tree join tasks t on t.id=tree.id join events e on e.task_id=t.id where t.status!='closed' and e.kind='ask' and e.answered_by is null and json_extract(e.data,'$.owner')=1)",[t.id],|r|r.get(0))?;
             warn_owner_items = !has_ask;
         }
-        let to = if matches!(w.kind, "note" | "start") {
+        let to = if matches!(w.kind, "note" | "start")
+            || matches!(w.kind, "ready" | "done") && work::quiet(tx, t.launch)?
+        {
             None
         } else if w.owner {
             let r = root(tx, t.id)?;

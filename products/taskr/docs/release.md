@@ -145,7 +145,42 @@ musl and darwin targets), `zig` and `cargo-zigbuild` (user-space install in
 
 ### Rollback
 
-The previous release stays the rollback. On a host:
+Check ledger compatibility before choosing the previous release as a rollback.
+Taskr 0.27 adds schema version 5 for work and native jobs. Earlier binaries do
+not implement those state machines. Legacy reads can remain compatible with
+the additive tables, but replacing the binary alone does not undo the migration
+or maintain new work and jobs. Validate the commands needed during a mixed-version
+rollout; a successful legacy read is not permission to downgrade active workflows.
+
+Before upgrading the authoritative ledger, take an online SQLite backup, check
+its integrity, and retain the previous binaries and release identity. Test the
+migration on a separate copy: existing table rows, task identities, inbox cursors,
+open asks and launch records must remain unchanged. Upgrade the ledger host
+before its clients. Account for old local CLI and MCP processes that still use
+the previous binary; installation does not replace a running process. Do not
+restart an agent or move its campaign without its task's authorization.
+
+Treat an existing derived search-index fault separately from a schema upgrade.
+Confirm it on a consistent API backup with the release's bundled SQLite, and
+prove any rebuild on a copy. A long write transaction can drop short-timeout
+hooks or expire an older channel's consumer lease. Do not rebuild a live index
+while a protected agent generation must remain connected. If the additive
+migration does not rebuild that index, document the existing search limitation
+and defer repair to an authorized maintenance window. Do not label the unchanged
+fault as repaired, or assume a measured copy duration bounds live lock time.
+
+For a mixed-version rollout, prove old-client RPC commands and channel renewal
+against an isolated new server. Record the live consumer holder, fence and
+generation before the upgrade, then verify continuity afterwards. Compare
+immutable records across consistent snapshots; account for legitimate concurrent
+events, lease renewals and daemon metadata when assessing mutable records.
+
+After new writes reach schema 5, prefer a compatible forward fix. Restoring the
+old backup would discard those writes: stop new writes, preserve and reconcile
+the newer records, and validate the selected backup before a deliberate restore.
+Never restore a backup automatically after a failed health check.
+
+For a release whose ledger schema remains compatible, on a host:
 
 1. download `taskr-<os>-<arch>` from the previous release (or
    `TASKR_VERSION=taskr/vX.Y.Z sh install.sh`, replacing X.Y.Z with the previous version);

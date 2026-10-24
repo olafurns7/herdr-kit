@@ -258,6 +258,9 @@ fn absolute(base: &Path, s: &str) -> PathBuf {
     out
 }
 fn paths(cmd: &str, args: &mut Vec<String>, cwd: &Path) -> Result<Option<PathBuf>> {
+    if cmd == "work" {
+        crate::work::inline_files(args).map_err(|e| Error::new(e.code, "usage", e.message))?;
+    }
     let mut base = cwd.to_path_buf();
     let flags: &[&str] = match cmd {
         "new" => &["cwd", "brief", "report"],
@@ -468,6 +471,8 @@ pub fn route(mut json_mode: bool, raw_args: &[String]) -> Option<ExitCode> {
             return Some(
                 crate::read::dispatch(json_mode, args)
                     .or_else(|| crate::write::dispatch(json_mode, args))
+                    .or_else(|| crate::work::dispatch(json_mode, args))
+                    .or_else(|| crate::jobs::dispatch(json_mode, args))
                     .unwrap_or_else(|| crate::cli::unknown(json_mode, cmd)),
             );
         }

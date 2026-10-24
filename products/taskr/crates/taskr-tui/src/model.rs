@@ -106,6 +106,7 @@ pub struct CampaignRow {
     pub host: String,
     pub pane_id: String,
     pub lanes: LaneCounts,
+    pub work_counts: Option<WorkCounts>,
     /// `working`, `idle`, `gone`, `blocked` or `unregistered`.
     pub lead: String,
     /// The lead holds a live wait lease: it is waiting on its lanes.
@@ -246,6 +247,8 @@ pub struct Campaign {
     pub goal: Vec<String>,
     pub plan: PlanInfo,
     pub lanes: Vec<Lane>,
+    /// None: legacy server; Some with no items: upgraded, empty campaign.
+    pub work: Option<WorkSnapshot>,
     /// Open asks first, then recent ask and answer pairs.
     pub asks: Vec<Event>,
     /// Decisions in force.
@@ -255,6 +258,63 @@ pub struct Campaign {
     /// The tree's recent events, newest first; owner notes carry `owner`.
     pub log: Vec<Event>,
     pub spark: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct WorkCounts {
+    pub total: u64,
+    pub backlog: u64,
+    pub queued: u64,
+    pub active: u64,
+    pub verifying: u64,
+    pub done: u64,
+    pub cancelled: u64,
+    pub blocked: u64,
+}
+
+/// Bounded current-work projection; result bodies are read only on request.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct WorkSnapshot {
+    pub items: Vec<WorkItem>,
+    pub total: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct WorkItem {
+    pub work_id: i64,
+    pub title: String,
+    pub priority: i32,
+    pub revision: i64,
+    pub state: String,
+    pub current_run: Option<i64>,
+    pub run_revision: Option<i64>,
+    pub round: Option<u32>,
+    pub action: Option<String>,
+    pub reason: Option<String>,
+    pub assignment: Option<WorkAssignment>,
+    pub assignments: Vec<WorkAssignment>,
+    pub proof: Option<String>,
+    pub review: Option<String>,
+    pub acceptance_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct WorkAssignment {
+    pub task_id: i64,
+    pub launch_id: i64,
+    pub stage: String,
+    pub state: String,
+    pub process_state: Option<String>,
+    pub stop_event: Option<i64>,
+    pub result_id: Option<i64>,
+    pub finding_count: Option<usize>,
+    pub check_count: Option<usize>,
+    pub failed_checks: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -28,9 +28,25 @@ ignore `golden_contract`. Python 3 is required. On non-Linux systems the three
 `/proc` process proof cells explicitly skip; portable cells still run.
 
 `run.py` compares exit codes, stdout/stderr bytes and a digest of logical SQLite
-state, including schema, sorted visible rows and FTS contents. Shadow tables and
-empty extension tables absent from historical fixtures are excluded; integrity
-and foreign keys are checked. Timeouts, signals and exit 125 fail the run.
+state, including schema, sorted visible rows and FTS contents. FTS implementation
+shadow tables are excluded; integrity and foreign keys are checked. `logical()`
+returns full visible state by default, including empty extension tables. The
+explicit `legacy_projection=True` used for historical golden comparison omits
+empty v2-v4 extension tables and exactly the 13 named v5 work/jobs tables and
+their owned indexes. Populated extension tables remain visible. No old task,
+metadata, launch, event, document or visible FTS content is removed.
+
+Before legacy projection, any fixture advertising v5 or containing v5 objects
+must have `user_version=5` and the exact required work/jobs schema, including
+indexes and constraints. The expected SQLite schema comes from the current
+work/schema.sql and jobs/schema.sql, not another golden digest. The source
+schema fingerprint test remains responsible for approved DDL evolution. A
+successful `--contract-migrate` and prepared RPC-child fixtures explicitly
+require v5 even if a broken migration produced no v5 objects. Deliberately
+unmigrated fixtures and failed commands without v5 objects do not require v5.
+Missing or altered v5 tables/indexes and wrong versions fail before projection.
+Full logical state remains available for diagnostics without this projection.
+Timeouts, signals and exit 125 fail the run.
 `--family` selects an exact family or read/write/net/schema prefix and may repeat.
 The full corpus uses `--catchup-fixtures` and must consume every observation.
 RPC-child vectors use Rust's actual `--hub-child` context and synthetic stdin.
@@ -63,6 +79,11 @@ and local host metadata. It preserves suffixes, unbound ports, the production
 timestamps. Runtime timing, cancellation, transport and OS identity assertions
 remain active before normalization. `selfcheck.py` checks these boundaries, row
 and FTS changes, changed exits, provenance retention and missing observations.
+Its v5 negative controls mutate old task/meta/FTS data, populate a work table,
+and remove/alter required v5 schema or version. These must remain detectable.
+The projection preserves historical Go observations and provenance; it does not
+claim that Go produced or tested the v5 schema. Do not rerecord a schema-only
+compatibility difference or relabel new Rust behavior as Go evidence.
 
 `run.json.gz` uses deterministic gzip (`mtime=0`), one observation per line.
 Inspect with `gzip -cd testdata/contract/golden/run.json.gz`; `.gitattributes`

@@ -148,3 +148,22 @@ Paths are relative to upstream `pstack/` and this repository respectively.
 |---|---|---|
 | `skills/poteto-mode/scripts/worktree-audit.sh` | `products/setup/bin/herdr-worktrees` | adapted: local worktree inventory, rebuilt in POSIX sh with byte-exact merge-tree content checks and isolated temporary objects; no fetch, PR lookup, transcript scan, size/age ranking, deletion advice or writes |
 | `skills/poteto-mode/playbooks/worktree-cleanup.md` | `products/setup/skills/herdr-orchestration/teardown.md` | adapted: inventory before cleanup and owner decisions for unfinished work; task closure checked by hand, existing ownership rules retained, no forced removal |
+
+## Task-local formal maintenance adaptation
+
+These additions use the separately inspected snapshot
+`e7fb9647db242b96206978d56e8aff4a68718088` of
+[pstack](https://github.com/cursor/plugins/tree/e7fb9647db242b96206978d56e8aff4a68718088/pstack).
+Copyright (c) 2026 Lauren Tan; MIT. Its complete LICENSE text matches the existing
+[LICENSE](LICENSE); retain that notice with distributions. Earlier pins and rows
+remain unchanged. Paths below are relative to upstream `pstack/` and this repo.
+
+| Upstream path | Destination path | Adaptation |
+|---|---|---|
+| `skills/create-formal-verification-skill/SKILL.md` | `products/setup/skills/herdr-verification/references/task-proof.md` | adapted: selective risk boundary, properties/bounds/assumptions, atomic code mapping, negative controls and real API replay; no mandatory tool installation or skill generation |
+| `skills/maintain-formal-verification-skill/SKILL.md` | `products/setup/skills/herdr-verification/references/task-proof.md` | adapted: drift classification, source-first model updates, counterexample replay and successful sync pin; no implicit product edits or hash-only acceptance |
+| `skills/statechart/SKILL.md` | `products/setup/skills/herdr-verification/references/task-proof.md` | adapted: shortest counterexample stories in code terms and separation of model/runtime evidence; no copied scripts, mandatory rendering or downloads |
+
+Taskr work commands, orchestration routing and repository parser-only leaf checks
+in this slice describe this project's implementation and ownership rules; they
+do not import another ledger, agent hierarchy, model policy or publish workflow.

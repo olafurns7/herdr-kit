@@ -165,6 +165,7 @@ products/setup/bin/cdl
 products/setup/claude/notifications.json
 products/setup/codex/notifications.json
 products/setup/bin/herdr-launch
+products/setup/bin/herdr-codex-identity
 products/setup/bin/herdr-loop
 products/setup/bin/herdr-worktrees
 products/setup/bin/herdr-lead
@@ -200,6 +201,7 @@ products/setup/skills/herdr-practices/references/verify-existing-fix.md
 products/setup/skills/herdr-practices/references/writing.md
 products/setup/skills/herdr-verification/SKILL.md
 products/setup/skills/herdr-verification/references/feature-map.md
+products/setup/skills/herdr-verification/references/task-proof.md
 third_party/pstack/LICENSE
 third_party/pstack/PROVENANCE.md
 '

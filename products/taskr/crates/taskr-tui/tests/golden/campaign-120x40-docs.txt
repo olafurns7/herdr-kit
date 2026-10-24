@@ -37,4 +37,4 @@
 │ Second review done: hold the send until three wording fixes land (P1-1 ││ 14:03 ● arch-plan-counter: counter-review  │
 │ short rows, P1-2 counts, P1-3 install path).                           ││ 13:58 ◆ tui-frames: D4: one binary for th… │
 ╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────╯
- ⏎ go to pane   o report   tab next pane   1-5 jump   / filter   h back   ? help
+ ⏎ go to pane   o report   tab next pane   1-6 jump   / filter   h back   ? help

@@ -5,6 +5,8 @@ repo_dir=$(CDPATH= cd "$(dirname "$0")/.." && pwd -P)
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/herdr-lead-test.XXXXXX")
 trap 'find "$scratch" -depth -delete' 0
 trap 'exit 1' 1 2 3 15
+# Match the launcher's physical cwd even when TMPDIR traverses a symlink.
+scratch=$(CDPATH= cd -- "$scratch" && pwd -P)
 mkdir "$scratch/stubs"
 cat >"$scratch/stubs/herdr" <<'EOF'
 #!/bin/sh
@@ -156,6 +158,14 @@ n=$((n + 30))
 printf '%s\n' "$n" >"$CASE/clock"
 printf '%s\n' "$n"
 EOF
+# Require portable sed argv even when this fixture runs with GNU sed.
+cat >"$scratch/stubs/sed" <<'EOF'
+#!/bin/sh
+for arg; do
+    [ "$arg" != -- ] || { printf 'fixture sed: -- is outside the portable profile\n' >&2; exit 2; }
+done
+exec /usr/bin/sed "$@"
+EOF
 printf '%s\n' '#!/bin/sh' 'printf "sleep|%s\n" "$1" >>"$CALLS"' >"$scratch/stubs/sleep"
 printf '%s\n' '#!/bin/sh' 'echo "real Claude must not run" >&2' 'exit 99' >"$scratch/stubs/claude"
 chmod 0755 "$scratch/stubs/"*
@@ -192,14 +202,28 @@ run() {
         sh "$repo_dir/bin/herdr-lead" "$@" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
 }
 expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/err")"; }
-has() { grep -F -- "$2" "$case_dir/$1" >/dev/null || fail "$1 missing $2"; }
+has() { grep -F -- "$2" "$case_dir/$1" >/dev/null || fail "$1 missing $2: $(cat "$case_dir/$1")"; }
 lacks() { if grep -F -- "$2" "$case_dir/$1" >/dev/null; then fail "$1 unexpectedly contains $2"; fi; }
 start() { run start 42 wA:p1 --worktree "$work" "$@"; }
 
 new_case 'unsupported lane has no calls or state'
-start --lane sol-high
+start --jobs --lane sol-high
 expect_rc 2
 has err 'Claude leads only'
+[ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+[ ! -e "$home/.local/state" ] || fail 'created state'
+
+for command in check stop; do
+    new_case "$command refuses --jobs before any effects"
+    if [ "$command" = check ]; then run check 42 --jobs; else run stop 42 wA:p1 --jobs; fi
+    expect_rc 2
+    [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+    [ ! -e "$home/.local/state" ] || fail 'created state'
+done
+
+new_case 'jobs does not accept owner-input permission'
+start --jobs --allow-ask 17
+expect_rc 2
 [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
 [ ! -e "$home/.local/state" ] || fail 'created state'
 
@@ -510,10 +534,30 @@ case $(cat "$case_dir/prompt-sent") in *' lead-push-gen-7') ;; *) fail 'missing 
 grep -F 'if the handover Note lists session timers to re-arm, create each again' "$case_dir/prompt-sent" >/dev/null || fail 'prompt does not ask to re-arm session timers'
 config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
 jq -e '.mcpServers.taskr == {command:"taskr",args:["mcp","--channel","--as","42","--session","7"]}' "$config" >/dev/null || fail 'bad config'
+printf '%s\n' '{"mcpServers":{"taskr":{"command":"taskr","args":["mcp","--channel","--as","42","--session","7"]}}}' |
+    cmp - "$config" || fail 'default config bytes changed'
 [ "$(ls -l "$config" | cut -c 1-10)" = -rw------- ] || fail 'config mode is not 0600'
 [ -z "$(find "$case_dir" -name .mcp.json -print)" ] || fail 'wrote .mcp.json'
 [ "$(grep -c 'taskr|adopt' "$case_dir/calls")" = 1 ] || fail 'adopted twice'
 [ "$(grep -c 'herdr|agent|start' "$case_dir/calls")" = 1 ] || fail 'started twice'
+
+new_case 'jobs start adds a generation-bound server without changing channel or resume argv'
+start --jobs --resume 'sid with spaces' --account example
+expect_rc 0
+config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
+jq -e '. == {mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as","42","--session","7"]},"taskr-jobs":{command:"taskr",args:["mcp","--jobs","--as","42","--session","7","--binding","herdr-lead-root-42-gen-7"]}}}' "$config" >/dev/null || fail 'bad jobs config'
+[ "$(ls -l "$config" | cut -c 1-10)" = -rw------- ] || fail 'config mode is not 0600'
+has calls '--account|example|--resume|sid with spaces|--model|'
+has calls "--mcp-config|$config|--dangerously-load-development-channels|server:taskr"
+lacks calls 'server:taskr-jobs'
+[ "$(cat "$home/.local/state/herdr-orch/lead-push/42/handover-7.md")" = 'handover text' ] || fail 'handover lost'
+
+new_case 'jobs never overwrites a captured generation config'
+CONFIG_EXISTS=1
+start --jobs
+expect_rc 1
+[ "$(cat "$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json")" = keep ] || fail 'config overwritten'
+lacks calls 'herdr|agent|start'
 
 for border in plain boxed json; do
     new_case "narrow development-channel dialog: $border"
@@ -631,6 +675,14 @@ done
 moved_campaign='{"root":{"id":42,"name":"example","role":"orchestrator","status":"open","pane_id":"wA:p1"}}'
 old_lead='{"result":{"agents":[{"name":"orch-example","pane_id":"wA:p1","agent_session":{"value":"s1"}}]}}'
 move() { run move 42 wA:p1 --worktree "$work" "$@"; }
+
+new_case 'jobs move carries opt-in through the stop and new generation render'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead
+move --jobs --no-handover
+expect_rc 0
+has calls 'herdr|pane|send-keys|wA:p1|esc|ctrl+c|ctrl+c'
+config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
+jq -e '.mcpServers | keys == ["taskr","taskr-jobs"] and .["taskr-jobs"].args == ["mcp","--jobs","--as","42","--session","7","--binding","herdr-lead-root-42-gen-7"]' "$config" >/dev/null || fail 'move lost jobs identity'
 
 new_case 'move asks for a handover, stops the predecessor, then starts'
 CAMPAIGN=$moved_campaign AGENTS=$old_lead

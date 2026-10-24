@@ -11,10 +11,12 @@ pub mod documents;
 pub mod handover;
 pub mod hook;
 pub mod inbox;
+pub mod jobs;
 pub mod message;
 pub mod orch;
 pub mod plan;
 pub mod tmp;
+pub mod work;
 pub mod worker;
 
 #[derive(Debug)]

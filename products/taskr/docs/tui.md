@@ -396,7 +396,7 @@ frame is marked stale and keeps the last data.
 
 ![Campaign view, light theme](images/campaign-light.png)
 
-`l` on a campaign opens it. Five panes, numbered in their titles:
+`l` on a campaign opens it. Six panes, numbered in their titles:
 
 1. **Lanes:** the tree of workers under the lead, with role, model, host,
    pane and age. Closed lanes show their outcome.
@@ -405,6 +405,36 @@ frame is marked stale and keeps the last data.
 3. **Docs:** captured briefs, reports, the goal and the plan. `o` reads one.
 4. **PRs:** pull request references the campaign recorded.
 5. **Log:** the newest events.
+6. **Tasks:** durable work IDs (`W…`), including unassigned backlog, separate
+   from agent lanes. The list shows backlog, queued, active, verifying, done
+   and cancelled states. Select with `j`/`k`, arrows or the mouse; the strip
+   shows the current revision/run/round, stage, required proof and review
+   status, process state, acceptance receipt and blocked/recheck reason.
+   `Enter`, `o` or `I` reads current-run source identities, check/case receipts,
+   artifact hashes and review findings in the existing document pager.
+   Evidence bodies load only on request, with a 10-second deadline and a
+   1 MiB cap on each of stdout and stderr before JSON parsing. Oversized output
+   is an error; long text and case/finding lists are clipped with a CLI pointer.
+   A typed result does not prove the process stopped, a clear source review
+   does not prove runtime behavior, and done without a receipt does not prove
+   acceptance. No contract is distinct from unavailable/missing fields.
+   Assignment state and result pending/ID are shown separately. A legacy server's Tasks pane
+   says unavailable when opened with `6`; an upgraded empty campaign says
+   no durable tasks. No task creation or mutation is offered here.
+
+The campaign read carries a bounded `work` snapshot (`items`, `total`, `limit`,
+`truncated`), capped at 100 tasks in priority order, with current workflow
+summaries; it refreshes on the existing campaign cadence. Gate records with no
+acceptance receipt say validation pending, or failed when an explicit failed
+check/case was recorded. Only a stored acceptance receipt supports the passed
+summary; an outstanding blocked/recheck reason remains visible alongside it.
+Glance includes grouped `work_counts`; campaigns with unfinished unassigned
+backlog remain listed. Detail shows these counts separately from lane counts.
+Use `taskr work list ROOT` / `taskr work show WORK` for retained history. Narrow
+terminals show one campaign pane at a time; `6` reaches Tasks explicitly.
+Tab skips Tasks on legacy servers. Cancelled work keeps its campaign listed
+only while a run remains active, a checkout is held, or a process needs cleanup;
+a retained cancellation reason alone does not count as blocked.
 
 `c` on the Dashboard, Asks or Fleet lists every campaign, closed ones included.
 
@@ -441,7 +471,7 @@ pools stay, dimmed. Runs that wait on the old heavy flock show only as
 | `D` `A` `F` `I` | Dashboard, Asks, Fleet; Detail of the selected row |
 | `[` `]` | Previous, next screen |
 | `1`-`9`, `0`, `H` | Show/hide a Dashboard panel (remembered; `0` is Issues, `H` Health) |
-| `1`-`5` | Jump to a pane (campaign) |
+| `1`-`6` | Jump to a pane (campaign) |
 | `Enter` | Go to the row's agent pane in Herdr; on Asks, answer the ask shown in full |
 | `l` | Open the campaign |
 | `h`, `esc` | Back, close; from Detail, back to its row |

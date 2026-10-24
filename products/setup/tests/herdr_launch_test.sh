@@ -2,7 +2,7 @@
 # Runs bin/herdr-launch against stub herdr and taskr, with real jq.
 # Never touches the live Herdr
 # server, the live taskr ledger, or the real HOME.
-# Usage: sh tests/herdr_launch_test.sh
+# Usage: [HERDR_LAUNCH_RESERVED_ONLY=1] sh tests/herdr_launch_test.sh
 set -eu
 
 repo_dir=$(CDPATH= cd "$(dirname "$0")/.." && pwd -P)
@@ -39,10 +39,40 @@ case "$1 $2" in
             "${STUB_PANE_CWD:-$PWD}" "$3" "${STUB_PANE_WS:-wA}" "${STUB_PANE_WS:-wA}"
         ;;
     "pane process-info") printf '{"result":{"process_info":{"foreground_process_group_id":%s,"foreground_processes":[{"name":"zsh","pid":400}],"pane_id":"%s","shell_pid":400}}}\n' "${STUB_FG:-400}" "$4" ;;
-    "pane wait-output") [ "${STUB_ENV_OK:-1}" = 1 ] || exit 1 ;;
-    "pane run") case $3 in *:p8) [ "${STUB_PUSH_FAIL:-}" != run ] || exit 1 ;; esac ;;
+    "pane wait-output")
+        [ "${STUB_ENV_OK:-1}" = 1 ] || exit 1
+        if [ -f "$STUB_CALLS.setup" ]; then
+            [ "$(cat "$STUB_CALLS.env")" = "$5" ] || exit 1
+            [ -f "$(cat "$STUB_CALLS.setup-path")" ] || exit 1
+        fi ;;
+    "pane run")
+        case $3 in *:p8) [ "${STUB_PUSH_FAIL:-}" != run ] || exit 1 ;; esac
+        case $4 in '. '*)
+            source_command=$4
+            eval "set -- ${4#'. '}"
+            [ "$#" -eq 1 ] || exit 1
+            printf '%s\n' "$1" >"$STUB_CALLS.setup-path"
+            cp "$1" "$STUB_CALLS.setup"
+            ls -ld "${1%/*}" | cut -c1-10 >"$STUB_CALLS.setup-dir-mode"
+            ls -l "$1" | cut -c1-10 >"$STUB_CALLS.setup-file-mode"
+            (
+                eval "$source_command" || exit 1
+                printf '%s\n' "herdr-launch-env=$TASKR_TASK/$TASKR_LAUNCH/$FLEET_ROLE/$herdr_launch_ok" >"$STUB_CALLS.env"
+                printf '%s\n' "$PATH" >"$STUB_CALLS.path"
+                printf '%s\n' "${TASKR_DB-unset}" >"$STUB_CALLS.db"
+                if [ "${STUB_SOURCE_PROBE:-0}" = 1 ]; then
+                    codex 'two words' 'literal$arg'
+                    claude 'two words' 'literal$arg'
+                fi
+            ) || exit 1
+            ;; esac ;;
     "pane read") printf '%s\n' "${STUB_SCREEN:-}" ;;
-    "agent start") [ "${STUB_START_OK:-1}" = 1 ] || exit 1 ;;
+    "agent start") [ "${STUB_START_OK:-1}" = 1 ] || exit 1; printf '%s\n' "$3" >"$STUB_CALLS.started" ;;
+    "agent list")
+        if [ -f "$STUB_CALLS.started" ]; then
+            [ -z "${STUB_NATIVE:-}" ] || { printf '%s\n' "$STUB_NATIVE"; exit 0; }
+            printf '{"result":{"agents":[{"name":"%s","pane_id":"wA:p5","agent_session":{"value":"synthetic-native"}}]}}\n' "$(cat "$STUB_CALLS.started")"
+        else printf '%s\n' '{"result":{"agents":[]}}'; fi ;;
 esac
 exit 0
 EOF
@@ -52,7 +82,15 @@ line=taskr
 for arg in "$@"; do line="$line|$arg"; done
 printf '%s\n' "$line" >>"$STUB_CALLS"
 [ "${STUB_FAIL:-}" != "taskr $1" ] || exit 1
+[ "${STUB_FAIL:-}" != "taskr $1 ${2:-}" ] || exit 1
 case $1 in
+    --json) case "$2 $3" in
+        'work list') cat "$STUB_RESERVED" ;;
+        'work observe')
+            [ "${STUB_FAIL:-}" != 'taskr work observe' ] || exit 1
+            if [ -n "${STUB_OBSERVE:-}" ]; then printf '%s\n' "$STUB_OBSERVE";
+            else printf '%s\n' '{"launch_id":3579,"task_id":2468,"native_session":"synthetic-native","dispatch":{"pane":"wA:p5"}}'; fi ;;
+        *) exit 1 ;; esac ;;
     new) printf '%s\n' "${STUB_NEW:-n1 2468}" ;;
     launch) printf '%s\n' "${STUB_LAUNCH:-l1 {\"launch_id\":3579,\"status\":\"open\"}}" ;;
 esac
@@ -60,6 +98,9 @@ exit 0
 EOF
 ln -s "$(command -v jq)" "$stub_dir/jq"
 chmod 0755 "$stub_dir/herdr" "$stub_dir/taskr"
+# Reserved-mode socket preflight is isolated too; no connection to a live server.
+printf '%s\n' '#!/bin/sh' 'cat >/dev/null' 'exit "${STUB_SERVER_RC:-0}"' >"$stub_dir/python3"
+chmod 0755 "$stub_dir/python3"
 
 failures=0
 case_count=0
@@ -82,6 +123,9 @@ new_case() {
     printf '%s\n' '#!/bin/sh' '[ "$1" = --version ] || exit 99' 'echo synthetic-opencode' >"$home/.opencode/bin/opencode"
     chmod 0755 "$home/.opencode/bin/opencode"
     work=$(CDPATH= cd "$work" && pwd -P)
+    run_path=$stub_dir:/usr/bin:/bin
+    run_tmpdir=$case_dir/artifacts
+    mkdir "$run_tmpdir"
     ws=wA
     tcwd=$work
     brief=$work/brief.md
@@ -91,19 +135,26 @@ new_case() {
         'Acceptance: launch succeeds' 'Validation: stub calls' >"$brief"
     : >"$case_dir/calls"
     STUB_FAIL= STUB_CURRENT= STUB_TAB= STUB_PANE_WS= STUB_PANE_CWD= STUB_PANE_GET= STUB_FG= STUB_ENV_OK= STUB_NEW= STUB_LAUNCH=
-    STUB_SCREEN= STUB_START_OK= STUB_PUSH_FAIL=
+    STUB_SCREEN= STUB_START_OK= STUB_PUSH_FAIL= STUB_SERVER_RC=0 STUB_NATIVE= STUB_OBSERVE=
+    STUB_INIT_RC=0 STUB_INIT_NATIVE=synthetic-native
+    STUB_SOURCE_PROBE=0
+    STUB_RESERVED=$case_dir/reserved.json
     printf '%s\n' "case: $case_name"
 }
 
 # run_launch ARGS...: runs herdr-launch in $work; sets $out, $err, $rc.
 run_launch() {
     run_status=0
-    (cd "$work" && env -i HOME="$home" PATH="$stub_dir:/usr/bin:/bin" \
+    (cd "$work" && env -i HOME="$home" PATH="$run_path" TMPDIR="$run_tmpdir" \
         STUB_CALLS="$case_dir/calls" STUB_FAIL="$STUB_FAIL" STUB_CURRENT="$STUB_CURRENT" \
         STUB_TAB="$STUB_TAB" STUB_PANE_WS="$STUB_PANE_WS" \
         STUB_PANE_CWD="$STUB_PANE_CWD" STUB_PANE_GET="$STUB_PANE_GET" STUB_FG="$STUB_FG" \
         STUB_ENV_OK="$STUB_ENV_OK" STUB_NEW="$STUB_NEW" STUB_LAUNCH="$STUB_LAUNCH" \
         STUB_SCREEN="$STUB_SCREEN" STUB_START_OK="$STUB_START_OK" STUB_PUSH_FAIL="$STUB_PUSH_FAIL" \
+        STUB_RESERVED="$STUB_RESERVED" STUB_SERVER_RC="$STUB_SERVER_RC" \
+        STUB_NATIVE="$STUB_NATIVE" STUB_OBSERVE="$STUB_OBSERVE" \
+        STUB_INIT_RC="$STUB_INIT_RC" STUB_INIT_NATIVE="$STUB_INIT_NATIVE" \
+        STUB_SOURCE_PROBE="$STUB_SOURCE_PROBE" \
         TASKR_FORMAT=json "$@" \
         >"$case_dir/out" 2>"$case_dir/err") || run_status=$?
     out=$(cat "$case_dir/out")
@@ -165,6 +216,7 @@ tab_calls() {
     printf '%s\n' "herdr|tab|create|--workspace|$ws|--cwd|$tcwd|--label|$1|--env|FLEET_ROLE=worker|--env|DISABLE_AUTO_UPDATE=true|--no-focus"
 }
 
+if [ "${HERDR_LAUNCH_RESERVED_ONLY:-0}" != 1 ]; then
 new_case 'claude lane in a new tab, with Codator forwarding'
 mkdir -p "$home/.local/bin"
 printf '%s\n' '#!/bin/sh' >"$home/.local/bin/codator"
@@ -833,10 +885,44 @@ printf 'taskr %s task=%s launch=%s\n' "$*" "$TASKR_TASK" "$TASKR_LAUNCH" >>"$SID
 [ "$1" != log ] || printf '%s\n' 'j1 {"account":"example","native_home":"/synthetic/home","provider":"codex","t":2468}'
 EOF
 chmod 0755 "$case_dir/bin/taskr"
+# Global zshenv can replace inherited PATH even with -f; set it after startup.
+# A broken stub/loop must fail promptly and reap its own group, never poll for 30 min.
+fixture_python=$(command -v python3)
+run_sidecar() {
+    side_path=$1
+    shift
+    side_shell=$(command -v "$1") || return 127
+    shift
+    "$fixture_python" -I - "$side_path" "$case_dir/side" "$sidecar" "$home" "$side_shell" "$@" <<'SIDECAR_PY'
+import os, signal, subprocess, sys
+
+path, calls, code, home = sys.argv[1:5]
+expected = path.split(os.pathsep)[0] + '/taskr'
+prefix = ('export PATH="$1" SIDE_CALLS="$2" && hash -r && '
+          '[ "$(command -v taskr)" = "$3" ] || '
+          '{ echo "sidecar fixture: taskr is not the selected stub" >&2; exit 125; }; ')
+child = subprocess.Popen([*sys.argv[5:], prefix + code, 'sidecar-fixture', path, calls, expected],
+                         env={'HOME': home, 'PATH': path, 'SIDE_CALLS': calls},
+                         start_new_session=True)
+try:
+    try:
+        result = child.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        print('sidecar fixture: 20s deadline exceeded; cleaning owned process group', file=sys.stderr)
+        result = 124
+finally:
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    child.wait(timeout=3)
+sys.exit(result)
+SIDECAR_PY
+}
 for sh_cmd in 'sh -c' 'bash --noprofile --norc -c' 'zsh -f -c' 'dash -c'; do
     command -v "${sh_cmd%% *}" >/dev/null || continue
     : >"$case_dir/side"
-    SIDE_CALLS=$case_dir/side PATH="$case_dir/bin:$PATH" $sh_cmd "$sidecar" || fail "${sh_cmd%% *}: sidecar exited $?"
+    run_sidecar "$case_dir/bin:/usr/bin:/bin" $sh_cmd || fail "${sh_cmd%% *}: sidecar exited $?"
     want="taskr log 2468 --limit 1 task=2468 launch=3579
 taskr push codex --codex-bin $codex_bin task=2468 launch=3579"
     [ "$(cat "$case_dir/side")" = "$want" ] || fail "${sh_cmd%% *}: sidecar calls: $(cat "$case_dir/side")"
@@ -856,7 +942,7 @@ for sh_cmd in 'sh -c' 'bash --noprofile --norc -c' 'zsh -f -c' 'dash -c'; do
     command -v "${sh_cmd%% *}" >/dev/null || continue
     : >"$case_dir/side"
     side_rc=0
-    side_out=$(env -i PATH="$case_dir/tbin:/usr/bin:/bin" SIDE_CALLS="$case_dir/side" $sh_cmd "$sidecar") || side_rc=$?
+    side_out=$(run_sidecar "$case_dir/tbin:/usr/bin:/bin" $sh_cmd) || side_rc=$?
     n=${sh_cmd%% *}
     [ "$side_rc" -eq 1 ] || fail "$n: never-registered sidecar exited $side_rc"
     [ "$side_out" = 'herdr-launch: the session never ran taskr start; no push sidecar' ] || fail "$n: output: $side_out"
@@ -1229,6 +1315,224 @@ for bad_deny in 'null' 'false' '[]' '{"model":"bad"}' '{"model":["["]}' '{"model
     expect_err 'invalid lane table'
     expect_no_calls
 done
+
+fi
+
+reserved_snapshot() {
+    jq -n --arg cwd "$tcwd" '{campaign:42,generation:7,parked:false,configuration:{enabled:true},work:[{revision:1,current_run:9,revisions:[{revision:1,contract:{checkout:{cwd:$cwd}}}],runs:[{run_id:9,round:1,state:"active",assignments:[{task_id:2468,launch_id:3579,round:1,state:"starting",stage:"executor",dispatch:{workspace:"wA",tab:"wA:t5",pane:"wA:p5"},lane:{name:"opus-medium",provider:"claude",model:"claude-opus-5-5",effort:"medium"}}]}]}]}' >"$STUB_RESERVED"
+}
+
+new_case 'reserved long PATH sources exact private setup before Step5 cleanup'
+reserved_snapshot
+long_tail=$(python3 -B - <<'PY'
+print(':'.join('/synthetic/path ' + str(i) + "'literal$arg" for i in range(400)))
+PY
+)
+run_path=$run_path:$long_tail
+run_tmpdir="$case_dir/setup ' files"
+mkdir "$run_tmpdir" "$case_dir/candidate-bin"
+ln -s "$stub_dir/taskr" "$case_dir/candidate-bin/taskr"
+ln -s "$case_dir/candidate-bin" "$case_dir/candidate-alias"
+candidate_bin=$(CDPATH= cd "$case_dir/candidate-bin" && pwd -P)
+mkdir -p "$home/.local/bin"
+cat >"$home/.local/bin/codator" <<'EOF'
+#!/bin/sh
+printf '<%s>' "$@" >>"$STUB_CALLS.functions"
+printf '\n' >>"$STUB_CALLS.functions"
+EOF
+chmod 0755 "$home/.local/bin/codator"
+STUB_SOURCE_PROBE=1
+run_launch env TASKR_DB="$case_dir/scratch ' ledger.sqlite" TASKR_WORK_EXECUTABLE="$case_dir/candidate-alias/taskr" \
+    sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+expect_rc 0
+python3 -B - "$case_dir" "$candidate_bin:$run_path" "$work" "$case_dir/scratch ' ledger.sqlite" <<'PY' || fail 'long PATH setup content/transport/cleanup'
+import pathlib, shlex, sys
+case, expected_path, checkout = pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3])
+rows = (case / 'calls').read_text().splitlines()
+commands = [r.split('|', 4)[4] for r in rows if r.startswith('herdr|pane|run|')]
+source = [c for c in commands if c.startswith('. ')]
+assert len(source) == 1 and len(source[0].encode()) <= 512
+parts = shlex.split(source[0])
+assert len(parts) == 2 and parts[0] == '.'
+path = pathlib.Path(parts[1])
+assert checkout not in path.resolve().parents
+assert not path.exists() and not path.parent.exists(), 'confirmed setup was retained'
+data = (case / 'calls.setup').read_text()
+assert len(data.encode()) > 10000 and "literal$arg" in data and 'codex()' in data and 'claude()' in data
+assert (case / 'calls.path').read_text() == expected_path + '\n'
+assert (case / 'calls.db').read_text() == sys.argv[4] + '\n'
+assert (case / 'calls.env').read_text() == 'herdr-launch-env=2468/3579/worker/3579\n'
+assert (case / 'calls.functions').read_text() == '<codex><two words><literal$arg>\n<claude><two words><literal$arg>\n'
+assert (case / 'calls.setup-dir-mode').read_text().strip() == 'drwx------'
+assert (case / 'calls.setup-file-mode').read_text().strip() == '-rw-------'
+assert len(commands) == 2 and commands[1].startswith('echo "herdr-launch-env=')
+PY
+
+for delivery in source-unknown receipt-missing; do
+    new_case "reserved $delivery keeps setup for diagnosis and never retries"
+    reserved_snapshot
+    case $delivery in source-unknown) STUB_FAIL='herdr pane run' ;; receipt-missing) STUB_ENV_OK=0 ;; esac
+    run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+    expect_rc 1
+    expect_err 'setup artifact='
+    python3 -B - "$case_dir" <<'PY' || fail 'uncertain setup retention/no-repeat'
+import pathlib, shlex, stat, sys
+case = pathlib.Path(sys.argv[1])
+rows = (case / 'calls').read_text().splitlines()
+source = [r.split('|', 4)[4] for r in rows if r.startswith('herdr|pane|run|') and r.split('|', 4)[4].startswith('. ')]
+assert len(source) == 1
+path = pathlib.Path(shlex.split(source[0])[1])
+assert path.is_file() and stat.S_IMODE(path.stat().st_mode) == 0o600
+assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+assert str(path) in (case / 'err').read_text()
+assert not any(r.startswith(('herdr|agent|start|', 'taskr|prompt|')) for r in rows)
+PY
+done
+
+new_case 'reserved setup refuses a temporary directory inside the checkout'
+reserved_snapshot
+run_tmpdir=$work/tmp
+mkdir "$run_tmpdir"
+run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+expect_rc 1
+expect_err 'private setup must be outside checkout'
+if grep -F 'herdr|pane|run|' "$case_dir/calls" >/dev/null; then fail 'checkout-local setup reached pane'; fi
+
+for identity_case in success refused changed-native; do
+    new_case "reserved Codex initializer $identity_case precedes observe and work"
+    reserved_snapshot
+    jq '.work[0].runs[0].assignments[0].lane = {name:"sol-high",provider:"codex",model:"gpt-6.1-sol",effort:"high"}' \
+        "$STUB_RESERVED" >"$case_dir/updated"
+    mv "$case_dir/updated" "$STUB_RESERVED"
+    mkdir "$case_dir/launch-bin"
+    cp "$launch_sh" "$repo_dir/bin/herdr-lanes.sh" "$case_dir/launch-bin/"
+    mkdir -p "$home/.local/share/herdr-setup"
+    cp "$repo_dir/lanes.json" "$home/.local/share/herdr-setup/lanes.json"
+    cat >"$case_dir/launch-bin/herdr-codex-identity" <<'EOF'
+#!/bin/sh
+line=identity
+for arg in "$@"; do line="$line|$arg"; done
+printf '%s\n' "$line|$TASKR_WORK_EXECUTABLE" >>"$STUB_CALLS"
+[ "$STUB_INIT_RC" = 0 ] || exit "$STUB_INIT_RC"
+printf '{"native_session":"%s","provenance_path":"/synthetic/provenance.json"}\n' "$STUB_INIT_NATIVE"
+EOF
+    chmod 0755 "$case_dir/launch-bin/herdr-codex-identity"
+    case $identity_case in refused) STUB_INIT_RC=1 ;; changed-native) STUB_INIT_NATIVE=other ;; esac
+    run_launch sh "$case_dir/launch-bin/herdr-launch" --reserved 2468 3579 sol-high impl-w3579 "$brief" "$report" 42 wA:p5
+    grep -F "identity|2468|3579|42|7|impl-w3579|wA:p5|$work|$stub_dir/taskr" "$case_dir/calls" >/dev/null \
+        || fail 'Codex initializer did not receive the exact reserved context'
+    if [ "$identity_case" = success ]; then
+        expect_rc 0
+        python3 - "$case_dir/calls" <<'PY' || fail 'Codex initializer ordering'
+import sys
+rows = open(sys.argv[1]).read().splitlines()
+def index(prefix):
+    return next(i for i, row in enumerate(rows) if row.startswith(prefix))
+assert index('herdr|agent|start|') < index('identity|') < index('taskr|--json|work|observe|') < index('taskr|prompt|')
+PY
+    else
+        expect_rc 1
+        if grep -E '^taskr\|(prompt\||--json\|work\|observe\|)' "$case_dir/calls" >/dev/null; then
+            fail 'failed/mismatched initialization reached observation or work prompt'
+        fi
+    fi
+done
+
+new_case 'reserved launch skips new and launch, preserving exports/start/prompt'
+reserved_snapshot
+run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p5'
+if grep -E '^taskr\|(new|launch)\|' "$case_dir/calls" >/dev/null; then fail 'reserved mode created another task or launch'; fi
+grep -F 'herdr|agent|start|impl-cart|' "$case_dir/calls" >/dev/null || fail 'reserved mode did not start'
+grep -F "taskr|prompt|2468|--file|$brief" "$case_dir/calls" >/dev/null || fail 'reserved brief not captured'
+grep -F 'TASKR_LAUNCH=3579 DISABLE_AUTO_UPDATE=true' "$case_dir/calls.setup" >/dev/null || fail 'reserved identity/update environment missing'
+grep -F 'unset TASKR_DB && export PATH=' "$case_dir/calls.setup" >/dev/null || fail 'reserved default context did not clear stale ledger override'
+python3 - "$case_dir/calls" <<'PY' || fail 'reserved observation identity/order mismatch'
+import json, sys
+rows = open(sys.argv[1]).read().splitlines()
+start = next(i for i, row in enumerate(rows) if row.startswith('herdr|agent|start|impl-cart|'))
+observe = next(i for i, row in enumerate(rows) if row.startswith('taskr|--json|work|observe|3579|--as|42|--generation|7|--data|'))
+prompt = next(i for i, row in enumerate(rows) if row.startswith('taskr|prompt|2468|'))
+assert start < observe < prompt
+data = json.loads(rows[observe].split('|--data|', 1)[1])
+assert data['pane'] == 'wA:p5' and data['native_session'] == 'synthetic-native' and data['observed_at']
+PY
+
+for fault in missing wrong-pane wrong-name duplicate rejected-observe unconfirmed-observe; do
+    new_case "reserved $fault withholds prompt after native start"
+    reserved_snapshot
+    case $fault in
+        missing) STUB_NATIVE='{"result":{"agents":[{"name":"impl-cart","pane_id":"wA:p5","agent_session":null}]}}' ;;
+        wrong-pane) STUB_NATIVE='{"result":{"agents":[{"name":"impl-cart","pane_id":"wA:p9","agent_session":{"value":"native"}}]}}' ;;
+        wrong-name) STUB_NATIVE='{"result":{"agents":[{"name":"replacement","pane_id":"wA:p5","agent_session":{"value":"native"}}]}}' ;;
+        duplicate) STUB_NATIVE='{"result":{"agents":[{"name":"impl-cart","pane_id":"wA:p5","agent_session":{"value":"native"}},{"name":"replacement","pane_id":"wA:p5","agent_session":{"value":"other"}}]}}' ;;
+        rejected-observe) STUB_FAIL='taskr work observe' ;;
+        unconfirmed-observe) STUB_OBSERVE='qd1 synthetic-request' ;;
+    esac
+    run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+    expect_rc 1
+    if grep -F 'taskr|prompt|' "$case_dir/calls" >/dev/null; then fail 'unobserved native identity received a brief'; fi
+    case $fault in rejected-observe|unconfirmed-observe) ;; *)
+        if grep -F 'taskr|--json|work|observe|' "$case_dir/calls" >/dev/null; then fail 'invalid native identity reached observe'; fi ;; esac
+done
+
+new_case 'reserved scratch ledger and selected candidate CLI propagate to the shell'
+reserved_snapshot
+# A distinct symlinked candidate proves both CLI selection and physical PATH propagation.
+mkdir -p "$case_dir/candidate-bin"
+ln -s "$stub_dir/taskr" "$case_dir/candidate-bin/taskr"
+ln -s "$case_dir/candidate-bin" "$case_dir/candidate-alias"
+candidate_bin=$(CDPATH= cd -- "$case_dir/candidate-bin" && pwd -P)
+run_launch env TASKR_DB="$case_dir/scratch.sqlite" TASKR_WORK_EXECUTABLE="$case_dir/candidate-alias/taskr" \
+    sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+expect_rc 0
+grep -F "export TASKR_DB='$case_dir/scratch.sqlite'" "$case_dir/calls.setup" >/dev/null || fail 'scratch ledger missing from reserved child environment'
+grep -F "export PATH='$candidate_bin:" "$case_dir/calls.setup" >/dev/null || fail 'candidate CLI directory missing from reserved child PATH'
+
+for alias_kind in symlink dot case; do
+    new_case "reserved $alias_kind checkout spelling refuses before step2"
+    case $alias_kind in
+        symlink) ln -s "$work" "$case_dir/work-alias"; tcwd=$case_dir/work-alias ;;
+        dot) tcwd=$work/. ;;
+        case) tcwd=$case_dir/WORK; if [ ! -d "$tcwd" ]; then printf '  SKIP (case-sensitive filesystem)\n'; continue; fi ;;
+    esac
+    STUB_PANE_CWD=$tcwd
+    reserved_snapshot
+    run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+    expect_rc 1
+    expect_err 'canonical physical spelling'
+    if grep -E '^(taskr\||herdr\|(agent\|start|pane\|(run|send-keys)|tab\|(create|rename))\|)' "$case_dir/calls" >/dev/null; then
+        fail 'noncanonical reserved checkout reached step2 or process effects'
+    fi
+done
+
+for field in task_id launch_id round pane cwd model effort; do
+    new_case "reserved mismatch $field fails before agent start"
+    reserved_snapshot
+    case $field in
+        cwd) filter='.work[0].revisions[0].contract.checkout.cwd = "/other"' ;;
+        pane) filter='.work[0].runs[0].assignments[0].dispatch.pane = "wA:p9"' ;;
+        model|effort) filter=".work[0].runs[0].assignments[0].lane.$field = \"drift\"" ;;
+        *) filter=".work[0].runs[0].assignments[0].$field = 999" ;;
+    esac
+    jq "$filter" "$STUB_RESERVED" >"$STUB_RESERVED.tmp"
+    mv "$STUB_RESERVED.tmp" "$STUB_RESERVED"
+    run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+    expect_rc 1
+    if grep -E '^herdr\|(agent\|start|pane\|run)\|' "$case_dir/calls" >/dev/null; then fail 'mismatched reserved identity reached effects'; fi
+done
+new_case 'reserved unavailable server never calls Herdr or taskr'
+reserved_snapshot
+STUB_SERVER_RC=1
+run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+expect_rc 1
+expect_no_calls
+
+new_case 'reserved requires an explicit pane'
+run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 2
+expect_no_calls
 
 printf '\n%s cases, %s failures\n' "$case_count" "$failures"
 [ "$failures" -eq 0 ]

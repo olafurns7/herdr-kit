@@ -3,8 +3,9 @@
 set -eu
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 exec python3 - "$repo_dir" "${HUB_SH:-sh}" <<'PY'
-import fcntl, json, os, pty, shutil, signal, subprocess, sys, tempfile, termios, time
+import fcntl, json, os, pty, shlex, shutil, signal, subprocess, sys, tempfile, termios, time
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 setup = Path(sys.argv[1])
 shell = shutil.which(sys.argv[2])
@@ -14,10 +15,76 @@ def executable(path, source):
     path.write_text(source)
     path.chmod(0o755)
 
+def stop_owned_process(process):
+    # A reaped child's numeric process group is no longer an owned live reference.
+    if process.poll() is not None:
+        return
+    try:
+        identity = (os.getsid(process.pid), os.getpgid(process.pid))
+        if identity != (process.pid, process.pid):
+            process.kill()
+            process.wait(timeout=5)
+            raise AssertionError(('fixture child changed session/group', process.pid, identity))
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=5)
+
+with patch('os.getsid', return_value=424242) as sid, patch('os.getpgid', return_value=424242) as group, \
+     patch('os.killpg') as signal_group:
+    child = Mock(pid=424242)
+    child.poll.return_value = 0
+    stop_owned_process(child)
+    sid.assert_not_called()
+    group.assert_not_called()
+    signal_group.assert_not_called()
+
+    child.poll.return_value = None
+    stop_owned_process(child)
+    signal_group.assert_called_once_with(424242, signal.SIGKILL)
+    child.wait.assert_called_once_with(timeout=5)
+
+    signal_group.reset_mock()
+    child.reset_mock()
+    sid.side_effect = ProcessLookupError
+    stop_owned_process(child)
+    signal_group.assert_not_called()
+    child.wait.assert_called_once_with(timeout=5)
+
+    sid.side_effect = None
+    for identity in ((424243, 424242), (424242, 424243)):
+        sid.return_value, group.return_value = identity
+        child.reset_mock()
+        try: stop_owned_process(child)
+        except AssertionError: pass
+        else: raise AssertionError('changed child identity was accepted')
+        signal_group.assert_not_called()
+        child.kill.assert_called_once_with()
+        child.wait.assert_called_once_with(timeout=5)
+
+    sid.return_value = group.return_value = 424242
+    signal_group.side_effect = PermissionError('fixture permission failure')
+    try: stop_owned_process(child)
+    except PermissionError: pass
+    else: raise AssertionError('permission failure was suppressed')
+print('PASS: owned-process cleanup checks', flush=True)
+
 with tempfile.TemporaryDirectory(prefix='herdr-hub-test.') as scratch:
-    scratch = Path(scratch)
+    # getcwd reports the physical path when TMPDIR traverses a symlink.
+    scratch = Path(scratch).resolve()
     stubs = scratch / 'stubs'
     stubs.mkdir()
+    # Exercise detachment without depending on an installed util-linux setsid.
+    executable(stubs / 'setsid', '''#!/usr/bin/python3
+import json, os, sys
+from pathlib import Path
+helper = str(Path(os.environ['HOME']) / '.local/bin/herdr-hub')
+if sys.argv[1:4] != [helper, '__move-helper', '42']:
+    sys.exit('fixture setsid refuses an unexpected helper')
+(Path(os.environ['CASE']) / 'setsid-args').write_text(json.dumps(sys.argv[1:]))
+os.setsid()
+os.execv(helper, sys.argv[1:])
+''')
     executable(stubs / 'herdr', '''#!/usr/bin/python3
 import json, os, sys
 from pathlib import Path
@@ -141,6 +208,13 @@ fi
 printf '%s\\n' "$n"
 ''')
     executable(stubs / 'sleep', '#!/bin/sh\nexit 0\n')
+    # Require portable sed argv even when this fixture runs with GNU sed.
+    executable(stubs / 'sed', '''#!/bin/sh
+for arg; do
+    [ "$arg" != -- ] || { printf 'fixture sed: -- is outside the portable profile\\n' >&2; exit 2; }
+done
+exec /usr/bin/sed "$@"
+''')
     cdl = '''#!/usr/bin/python3
 import json, os, signal, sys, time
 from pathlib import Path
@@ -191,6 +265,7 @@ else: sys.exit(98)
         def child_setup():
             os.setsid()
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+            # Deliberately differs from the gate mask: the helper must restore it.
             os.umask(0o002)
         started = time.monotonic()
         process = subprocess.Popen([shell, *(['-m'] if job_control else []), str(bindir / 'herdr-hub'), *args], env=env,
@@ -208,11 +283,9 @@ else: sys.exit(98)
                 assert (case / 'note').exists(), 'prover did not stop within 5 s of cdl exit'
                 assert time.monotonic() - started < 5
         finally:
-            # A failed mutation must not leave its prover running after this test.
-            try: os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError: pass
-            process.wait()
-            os.close(master)
+            # Always close our PTY, including ownership or permission failures.
+            try: stop_owned_process(process)
+            finally: os.close(master)
         calls = [json.loads(line) for line in (case / 'calls').read_text().splitlines()] if (case / 'calls').exists() else []
         print(f'case {count}: {name}', flush=True)
         return case, home, process, out, err, calls
@@ -220,7 +293,7 @@ else: sys.exit(98)
     def expect(case, rc):
         assert case[2].returncode == rc, (case[2].returncode, case[3], case[4])
 
-    def success(case, extra=(), new=False):
+    def success(case, extra=(), new=False, jobs=False):
         expect(case, 0)
         work, home, process, out, err, calls = case
         state = home / '.local/state/herdr-orch/lead-push/42'
@@ -231,11 +304,16 @@ else: sys.exit(98)
                   f'A "hub push check 7" event will arrive: record it and ack it.'
                   f' Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note.')
         actual = json.loads((work / 'cdl').read_text())
-        assert actual == dict(args=['--model','example-opus','--effort','high','--mcp-config',str(config),
-                                   '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
-                              task=None, launch=None, role='hub', pid=process.pid, cwd=str(work), umask=0o002), actual
-        assert json.loads(config.read_text()) == {'mcpServers':{'taskr':{'command':'taskr',
-                'args':['mcp','--channel','--as','42','--session','7']}}}
+        expected = dict(args=['--model','example-opus','--effort','high','--mcp-config',str(config),
+                              '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
+                        task=None, launch=None, role='hub', pid=process.pid, cwd=str(work), umask=0o002)
+        assert actual == expected, {'actual':actual, 'expected':expected}
+        servers = {'taskr':{'command':'taskr','args':['mcp','--channel','--as','42','--session','7']}}
+        if jobs:
+            binding = 'herdr-hub-root-42-gen-7'
+            assert 16 <= len(binding) <= 128
+            servers['taskr-jobs'] = {'command':'taskr','args':['mcp','--jobs','--as','42','--session','7','--binding',binding]}
+        assert config.read_text() == json.dumps({'mcpServers':servers}, separators=(',', ':')) + '\n'
         assert config.stat().st_mode & 0o777 == 0o600
         assert state.stat().st_mode & 0o777 == 0o700
         assert (state / 'handover-7.md').stat().st_mode & 0o777 == 0o600
@@ -266,6 +344,15 @@ else: sys.exit(98)
     success(c)
     c = run('new root created then adopted', args=('--new','example-hub','--lane','opus-high'))
     success(c, new=True)
+    c = run('jobs opt-in preserves channel, quoted Claude args and captured config',
+            args=('42','--jobs','--','--resume','id with spaces',"quote'arg"))
+    success(c, ('--resume','id with spaces',"quote'arg"), jobs=True)
+    c = run('new hub opts in with generated root and adopt generation', args=('--new','example-hub','--jobs'))
+    success(c, new=True, jobs=True)
+    c = run('jobs keeps an existing immutable generation config', args=('42','--jobs'), mode='config-exists')
+    expect(c, 1)
+    assert (c[1] / '.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json').read_text() == 'keep'
+    assert not (c[0] / 'cdl').exists()
     c = run('existing hub ref suppresses suggestion', mode='hub-on')
     success(c)
     assert 'To make this the hub:' not in c[3]
@@ -328,6 +415,21 @@ else: sys.exit(98)
         c = run('invalid arguments', args=args)
         expect(c, 2)
         assert not c[5]
+    for args in [('check','42','--jobs'), ('42','--jobs','--allow-ask','17'),
+                 ('42','--jobs','--lane','other')]:
+        c = run('unsupported jobs combination refuses before effects', args=args,
+                lane={'kind':'codex','model':'example','effort':'high','prefixes':['orch']})
+        expect(c, 2)
+        assert not c[5] and not (c[0] / 'herdr-calls').exists()
+        assert not (c[1] / '.local/state').exists()
+    for prefix in [('42',), ('--new','example-hub'), ('move','42')]:
+        for config_arg in [('--mcp-config','other.json'), ('--mcp-config=other.json',)]:
+            c = run('jobs refuses competing Claude MCP config before creation or move',
+                    args=(*prefix,'--jobs','--',*config_arg), mode='move' if prefix[0] == 'move' else '')
+            expect(c, 2)
+            assert '--jobs owns the generation MCP config' in c[4]
+            assert not c[5] and not (c[0] / 'herdr-calls').exists()
+            assert not (c[1] / '.local/state').exists()
     for variable, value in [('HERDR_PANE_ID',''), ('HERDR_TAB_ID','bad id'), ('HERDR_WORKSPACE_ID','null')]:
         c = run('invalid location', location={variable:value})
         expect(c, 2)
@@ -404,6 +506,7 @@ else: sys.exit(98)
     expect(c, 1)
     assert 'no handover since adopt 7' in c[4], c[4]
     assert not herdr_calls(c)
+    assert not (c[0] / 'setsid-args').exists()
     c = run('move refuses outside the recorded hub pane', args=('move','42'), mode='move', location={'HERDR_PANE_ID':'wA:p5'})
     expect(c, 1)
     assert 'recorded at this pane' in c[4]
@@ -422,7 +525,21 @@ else: sys.exit(98)
     keys = [a for a, env in calls if a[:2] == ['pane','send-keys']]
     assert keys == [['pane','send-keys','wA:p1','esc','ctrl+c','ctrl+c']], keys
     bindir = c[1] / '.local/bin'
+    assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
+            '--lane','opus-high','--session','sess-hub','--','--resume','id with spaces']
     assert (c[0] / 'typed').read_text() == f"'{bindir}/herdr-hub' 42 --lane 'opus-high' -- '--resume' 'id with spaces'", text
+    assert not any(a[0] == 'adopt' for a,t,l in c[5])
+
+    c = run('jobs move forwards opt-in across detached helper and shell-quoted successor',
+            args=('move','42','--jobs','--','--resume','id with spaces',"quote'arg"), mode='move')
+    expect(c, 0)
+    log = Path(c[3].splitlines()[0].split('; log ')[1])
+    wait_for(log, 'herdr-hub: moved 42: generation 9 live')
+    bindir = c[1] / '.local/bin'
+    assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
+            '--lane','opus-high','--session','sess-hub','--jobs','--','--resume','id with spaces',"quote'arg"]
+    assert shlex.split((c[0] / 'typed').read_text()) == [str(bindir / 'herdr-hub'),'42','--lane','opus-high','--jobs',
+                                                        '--','--resume','id with spaces',"quote'arg"]
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
 
     c = run('move helper failure is noted on the root', args=('move','42','--no-handover'), mode='move-stuck')
@@ -446,13 +563,16 @@ else: sys.exit(98)
 
     nosetsid = scratch / 'nosetsid'
     nosetsid.mkdir()
+    for entry in stubs.iterdir():
+        if entry.name != 'setsid': (nosetsid / entry.name).symlink_to(entry)
     for bindir in ('/usr/bin', '/bin'):
         for entry in os.listdir(bindir):
             if entry != 'setsid' and not os.path.lexists(nosetsid / entry): (nosetsid / entry).symlink_to(Path(bindir) / entry)
-    c = run('move without setsid fails before any helper or stop', args=('move','42'), mode='move', location={'PATH':f'{stubs}:{nosetsid}'})
+    c = run('move without setsid fails before any helper or stop', args=('move','42'), mode='move', location={'PATH':str(nosetsid)})
     expect(c, 1)
     assert 'needs setsid' in c[4], c[4]
-    assert not herdr_calls(c) and not list((c[1] / '.local/state').glob('**/hub-move-*.log'))
+    assert not c[5] and not herdr_calls(c) and not (c[0] / 'setsid-args').exists()
+    assert not (c[1] / '.local/state').exists()
 
     fake = scratch / 'fake-setsid'
     fake.mkdir()
@@ -547,8 +667,7 @@ ledger() {
         for q in procs:
             try: q.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                os.killpg(q.pid, signal.SIGKILL)
-                q.wait()
+                stop_owned_process(q)
     print(f'case {count}: an orphan prover never removes a replacement start.lock', flush=True)
 
     # The generation-conflict hold mark is written only on this run's own lock.
@@ -642,8 +761,7 @@ exit "$rc"
             for q in procs:
                 try: q.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    os.killpg(q.pid, signal.SIGKILL)
-                    q.wait()
+                    stop_owned_process(q)
         print(f'case {count}: {script}: an interrupted guard release never frees another start\'s guard', flush=True)
 
 print(f'PASS: {count} herdr-hub cases')

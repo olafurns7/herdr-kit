@@ -3,6 +3,7 @@
 # tab (or given pane), taskr new, taskr launch, pane env, env check,
 # herdr agent start, taskr prompt. The first failed step stops the run.
 # Usage: herdr-launch [--workspace W] [--cwd DIR] [--push] LANE NAME BRIEF REPORT PARENT [PANE]
+#        herdr-launch --reserved TASK LAUNCH LANE NAME BRIEF REPORT PARENT PANE
 #        herdr-launch --lanes
 #        herdr-launch [--push] --check [LANE...]
 # Without PANE the tab goes to W (default: the caller's workspace) with cwd
@@ -72,11 +73,12 @@ die() {
     exit 2
 }
 
-workspace= tab= pane= task= launch= push_tab= mcp_config=
+workspace= tab= pane= task= launch= push_tab= mcp_config= reserved_setup_file=
 step_fail() {
     printf 'herdr-launch: step %s failed; so far: workspace=%s task=%s launch=%s tab=%s pane=%s%s%s\n' \
         "$1" "${workspace:--}" "${task:--}" "${launch:--}" "${tab:--}" "${pane:--}" \
         "${push_tab:+ push_tab=$push_tab}" "${mcp_config:+ mcp_config=$mcp_config}" >&2
+    [ -z "$reserved_setup_file" ] || printf 'herdr-launch: setup artifact=%s; inspect before retry\n' "$reserved_setup_file" >&2
     exit 1
 }
 
@@ -147,7 +149,7 @@ check_lanes() {
     return "$check_status"
 }
 
-workspace= cwd= push=
+workspace= cwd= push= reserved_task= reserved_launch=
 while :; do
     case ${1-} in
         --lanes)
@@ -174,11 +176,20 @@ while :; do
             push=1
             shift
             ;;
+        --reserved)
+            [ -z "$reserved_task" ] && [ $# -ge 3 ] || die '--reserved needs TASK LAUNCH once'
+            reserved_task=$2 reserved_launch=$3
+            case $reserved_task:$reserved_launch in
+                *[!0-9:]* | :* | *: | 0:* | *:0) die 'reserved identities must be positive integers' ;;
+            esac
+            shift 3
+            ;;
         *) break ;;
     esac
 done
 [ $# -eq 5 ] || [ $# -eq 6 ] || die "$usage"
 lane=$1 name=$2 brief=$3 report=$4 parent=$5 given_pane=${6-}
+[ -z "$reserved_task" ] || [ -n "$given_pane" ] || die '--reserved requires PANE'
 
 lane_info "$lane" || die "unknown lane '$lane'"
 case $name in
@@ -273,6 +284,62 @@ fi
 # Compact output is what the parsers below read.
 unset TASKR_FORMAT
 
+# Reserved starts are controller-owned. Connect before any Herdr CLI, whose
+# ordinary missing-server path may auto-start a server. Failure is closed.
+reserved_check() {
+    lane_info "$lane" || return 1
+    case " $prefixes " in *" $prefix "*) ;; *) return 1 ;; esac
+    snapshot=$(taskr --json work list "$parent") || return 1
+    printf '%s\n' "$snapshot" | jq -e --argjson task "$reserved_task" \
+        --argjson launch "$reserved_launch" --arg pane "$pane" --arg ws "$workspace" \
+        --arg tab "$tab" --arg cwd "$cwd" --arg lane "$lane" --arg kind "$kind" \
+        --arg model "$model" --arg effort "$effort" --arg role "$role" \
+        --argjson generation "$reserved_generation" --argjson root "$parent" '
+        . as $s | .campaign == $root and .configuration.enabled == true and .parked == false and .generation == $generation and
+        ([.work[] | . as $w | .runs[] | select(.run_id == $w.current_run and .state == "active") |
+          . as $r | .assignments[] | select(.launch_id == $launch and .task_id == $task and .round == $r.round) |
+          select(.state == "starting" and .dispatch.workspace == $ws and .dispatch.tab == $tab and .dispatch.pane == $pane) |
+          select(.lane.name == $lane and .lane.provider == $kind and .lane.model == $model and .lane.effort == $effort) |
+          select((.stage == "executor" and $role == "implementer") or
+                 ((.stage == "reviewer" or .stage == "adjudicator") and $role == "reviewer")) |
+          $w.revisions[] | select(.revision == $w.revision and .contract.checkout.cwd == $cwd)] | length == 1)' >/dev/null
+}
+if [ -n "$reserved_task" ]; then
+    [ -z "$push" ] || die '--reserved uses the durable work controller, not a push sidecar'
+    reserved_cli=${TASKR_WORK_EXECUTABLE-}
+    [ -n "$reserved_cli" ] || reserved_cli=$(command -v taskr) || die 'reserved taskr CLI is missing'
+    case $reserved_cli in /*/taskr) ;; *) die 'reserved taskr executable must be an absolute path named taskr' ;; esac
+    [ -f "$reserved_cli" ] && [ -x "$reserved_cli" ] || die 'reserved taskr executable is not executable'
+    reserved_bin=$(CDPATH= cd -- "$(dirname -- "$reserved_cli")" && pwd -P) || die 'reserved taskr directory is missing'
+    reserved_path=$(jq -nr --arg path "$reserved_bin:$PATH" '$path | @sh') || die 'invalid reserved PATH'
+    reserved_context=" unset TASKR_DB && export PATH=$reserved_path"
+    if [ "${TASKR_DB+x}" = x ]; then
+        reserved_db=$TASKR_DB
+        case $reserved_db in /*) ;; *) reserved_db=$(pwd -P)/$reserved_db ;; esac
+        reserved_db=$(jq -nr --arg db "$reserved_db" '$db | @sh') || die 'invalid reserved TASKR_DB'
+        reserved_context="$reserved_context && export TASKR_DB=$reserved_db"
+    fi
+    taskr() { "$reserved_cli" "$@"; }
+    reserved_server() {
+        python3 - <<'PY'
+import os, socket
+path = os.environ.get('HERDR_SOCKET_PATH') or os.path.expanduser('~/.config/herdr/herdr.sock')
+with socket.socket(socket.AF_UNIX) as conn:
+    conn.settimeout(0.5)
+    conn.connect(path)
+PY
+    }
+    herdr() {
+        reserved_server || return 1
+        command herdr "$@"
+    }
+    reserved_server || step_fail '1 (reserved server unavailable; no Herdr command run)'
+    agents=$(herdr agent list) || step_fail '1 (reserved server compatibility)'
+    printf '%s\n' "$agents" | jq -e --arg pane "$given_pane" --arg name "$name" \
+        '.result.agents | type == "array" and all(.[]; .pane_id != $pane and .name != $name)' >/dev/null \
+        || step_fail '1 (reserved pane or agent name occupied)'
+fi
+
 # Step 1: a new tab in the task workspace, or the given pane.
 if [ -z "$given_pane" ]; then
     [ -n "$cwd" ] || cwd=$(pwd -P)
@@ -305,13 +372,23 @@ else
         || step_fail '1 (foreground process group from herdr pane process-info)'
     shell_pid=$(json_num shell_pid "$procs") || step_fail '1 (shell pid from herdr pane process-info)'
     [ "$fg" = "$shell_pid" ] || step_fail "1 (pane $pane is not at its shell prompt)"
-    herdr pane send-keys "$pane" ctrl+c >/dev/null || step_fail '1 (herdr pane send-keys ctrl+c)'
+    if [ -z "$reserved_task" ]; then
+        herdr pane send-keys "$pane" ctrl+c >/dev/null || step_fail '1 (herdr pane send-keys ctrl+c)'
+    fi
 fi
 
 # Codex trust needs the cwd, so a path it cannot carry stops before taskr new.
 [ "$kind" != codex ] || trust_paths \
     || step_fail "1 (cwd '$cwd' or its main checkout contains \" \\ or a control character)"
 
+if [ -n "$reserved_task" ]; then
+    physical_cwd=$(CDPATH= cd -- "$cwd" && pwd -P) || step_fail '2 (reserved checkout physical path unavailable)'
+    [ "$physical_cwd" = "$cwd" ] || step_fail '2 (reserved checkout must use canonical physical spelling)'
+    task=$reserved_task launch=$reserved_launch
+    snapshot=$(taskr --json work list "$parent") || step_fail '2 (reserved campaign snapshot)'
+    reserved_generation=$(printf '%s\n' "$snapshot" | jq -er '.generation | numbers') || step_fail '2 (reserved generation)'
+    reserved_check || step_fail '2 (reserved task/launch/root/cwd/pane/lane mismatch)'
+else
 # Step 2: register. Compact output is "n1 <task>"; read the id at line end.
 out=$(taskr new "$name" --parent "$parent" --role "$role" --workspace "$workspace" \
     --tab "$tab" --pane "$pane" --cwd "$cwd" --brief "$brief" --report "$report") \
@@ -328,6 +405,7 @@ launch=$(printf '%s\n' "$out" | sed -n 's/^l1 .*[{,]"launch_id":\([0-9][0-9]*\)[
 case $launch in
     '' | *[!0-9]*) launch=; step_fail "3 (no single '\"launch_id\":<id>' in: $out)" ;;
 esac
+fi
 
 # Step 4: export the ids, and forward codex/claude to Codator when it exists.
 # The parts are chained with && and end by setting herdr_launch_ok to the
@@ -336,6 +414,8 @@ esac
 # A pi lane first drops a pi() bwrap wrapper that a reused shell kept from
 # the earlier sandbox rule; ";" because zsh's unset -f fails when it is absent.
 setup=" export FLEET_ROLE=worker TASKR_TASK=$task TASKR_LAUNCH=$launch"
+[ -z "$reserved_task" ] || setup="$setup DISABLE_AUTO_UPDATE=true"
+[ -z "$reserved_task" ] || setup="$reserved_context &&$setup"
 [ "$kind" != pi ] || setup=" unset -f pi 2>/dev/null;$setup"
 [ "$kind" != claude ] || setup="$setup CLAUDE_CODE_SANDBOXED=1"
 if [ -x "$HOME/.local/bin/codator" ]; then
@@ -345,7 +425,26 @@ if [ "$kind" = opencode ]; then
     setup="$setup && opencode() { $opencode_cli \"\$@\"; } && export OPENCODE_CONFIG_CONTENT=$opencode_config"
 fi
 setup="$setup && herdr_launch_ok=$launch"
-herdr pane run "$pane" "$setup" >/dev/null || step_fail '4 (herdr pane run export)'
+setup_command=$setup
+if [ -n "$reserved_task" ]; then
+    # Keep long inherited PATH/config text off the interactive terminal input line.
+    setup_base=$(CDPATH= cd -- "${TMPDIR:-/tmp}" && pwd -P) || step_fail '4 (private setup base unavailable)'
+    case $setup_base/ in "$cwd/"*) step_fail '4 (private setup must be outside checkout)' ;; esac
+    setup_dir=$(umask 077; mktemp -d "$setup_base/herdr-launch-setup.XXXXXX") \
+        || step_fail '4 (create private setup directory)'
+    reserved_setup_file=$setup_dir/setup.sh
+    chmod 0700 "$setup_dir" || step_fail '4 (protect setup directory)'
+    (umask 077; set -C; printf '%s\n' "$setup" >"$reserved_setup_file") \
+        || step_fail '4 (write private setup)'
+    chmod 0600 "$reserved_setup_file" || step_fail '4 (protect setup file)'
+    case $reserved_setup_file in *[[:cntrl:]]*) step_fail '4 (unsupported setup path)' ;; esac
+    setup_command=$(jq -nr --arg path "$reserved_setup_file" '". " + ($path | @sh)') \
+        || step_fail '4 (quote private setup path)'
+    [ "$(printf '%s' "$setup_command" | wc -c)" -le 512 ] \
+        || step_fail '4 (private setup invocation exceeds 512 bytes)'
+fi
+# A failed/unknown delivery retains the file; never retry the source command here.
+herdr pane run "$pane" "$setup_command" >/dev/null || step_fail '4 (herdr pane run export)'
 
 # Step 5: prove the whole setup landed. The command text holds no expanded
 # values, so only the shell's output can match.
@@ -353,6 +452,10 @@ herdr pane run "$pane" 'echo "herdr-launch-env=$TASKR_TASK/$TASKR_LAUNCH/$FLEET_
     || step_fail '5 (herdr pane run env check)'
 herdr pane wait-output "$pane" --match "herdr-launch-env=$task/$launch/worker/$launch" --timeout 15000 >/dev/null \
     || step_fail "5 (the pane shell did not echo herdr-launch-env=$task/$launch/worker/$launch)"
+if [ -n "$reserved_setup_file" ]; then
+    rm -- "$reserved_setup_file" && rmdir -- "$setup_dir" || step_fail '5 (confirmed setup cleanup)'
+    reserved_setup_file=
+fi
 
 # Step 6: start the agent with the lane's native flags. A claude --push lane
 # first writes a private, task-specific config without inspecting the cwd's
@@ -376,6 +479,7 @@ if [ -n "$push" ] && [ "$kind" = claude ]; then
         || step_fail '6 (push config exists or could not be saved)'
     mcp_tmp=
 fi
+[ -z "$reserved_task" ] || reserved_check || step_fail '6 (reserved decision expired)'
 if ! start_agent; then
     [ -n "$push" ] && [ "$kind" = claude ] || step_fail '6 (herdr agent start)'
     screen=$(herdr pane read "$pane" --source visible --lines 40) \
@@ -387,6 +491,45 @@ if ! start_agent; then
     herdr pane send-keys "$pane" Enter >/dev/null || step_fail '6 (herdr pane send-keys Enter at the development-channel dialog)'
     herdr agent wait "$name" --until idle --timeout 90000 >/dev/null \
         || step_fail '6 (the agent was not idle within 90 s after the development-channel dialog)'
+fi
+
+# Pin the actual native identity before a reserved worker can finish its brief.
+if [ -n "$reserved_task" ]; then
+    initialized_native=
+    if [ "$kind" = codex ]; then
+        initialized=$(TASKR_WORK_EXECUTABLE="$reserved_cli" "$herdr_bin_dir/herdr-codex-identity" \
+            "$task" "$launch" "$parent" "$reserved_generation" "$name" "$pane" "$cwd") \
+            || step_fail '6 (reserved Codex native initialization; prompt withheld)'
+        initialized_native=$(printf '%s\n' "$initialized" | jq -er '
+            select(.provenance_path | type == "string" and startswith("/")) |
+            .native_session | select(type == "string" and length > 0)') \
+            || step_fail '6 (reserved Codex initialization unconfirmed; prompt withheld)'
+    fi
+    agents=$(herdr agent list) || step_fail '6 (reserved native identity lookup)'
+    native=$(printf '%s\n' "$agents" | jq -er --arg pane "$pane" --arg name "$name" '
+        [.result.agents[] | select(.pane_id == $pane or .name == $name)] |
+        select(length == 1) | .[0] | select(.pane_id == $pane and .name == $name) |
+        .agent_session.value | select(type == "string" and length > 0 and utf8bytelength <= 256 and (test("[\\x00-\\x1f\\x7f]") | not))') \
+        || step_fail '6 (reserved native identity missing or conflicting; prompt withheld)'
+    [ -z "$initialized_native" ] || [ "$native" = "$initialized_native" ] \
+        || step_fail '6 (reserved Codex initialized identity changed; prompt withheld)'
+    [ "$kind" != codex ] || reserved_check || step_fail '6 (reserved decision changed before observation)'
+    observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || step_fail '6 (reserved observation time)'
+    observation=$(jq -cn --arg pane "$pane" --arg native "$native" --arg at "$observed_at" \
+        '{pane:$pane,native_session:$native,observed_at:$at}') || step_fail '6 (reserved observation JSON)'
+    observed=$(taskr --json work observe "$launch" --as "$parent" --generation "$reserved_generation" --data "$observation") \
+        || step_fail '6 (reserved native observation rejected; prompt withheld)'
+    printf '%s\n' "$observed" | jq -e --argjson launch "$launch" --argjson task "$task" --arg pane "$pane" --arg native "$native" \
+        '.launch_id == $launch and .task_id == $task and .dispatch.pane == $pane and .native_session == $native' >/dev/null \
+        || step_fail '6 (reserved native observation unconfirmed; prompt withheld)'
+    if [ "$kind" = codex ]; then
+        reserved_check || step_fail '6 (reserved decision changed after observation)'
+        agents=$(herdr agent list) || step_fail '6 (reserved final native lookup)'
+        printf '%s\n' "$agents" | jq -e --arg pane "$pane" --arg name "$name" --arg native "$native" '
+            [.result.agents[] | select(.pane_id == $pane or .name == $name)] |
+            length == 1 and (.[0] | .pane_id == $pane and .name == $name and .agent_session.value == $native)' >/dev/null \
+            || step_fail '6 (reserved native identity changed after observation; prompt withheld)'
+    fi
 fi
 
 # Step 7: hand over the brief.

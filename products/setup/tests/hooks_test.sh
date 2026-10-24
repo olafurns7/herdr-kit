@@ -34,9 +34,9 @@ for harness in ('claude', 'codex'):
                     assert result.stdout == (f'moshi:{harness}-hook\n' if role == 'hub' else ''), result
 
 groups = json.load(open(sys.argv[1]))['hooks']['PreToolUse']
-for tool in ('Agent', 'Task', 'Workflow', 'Bash', 'TaskCreate', 'Read'):
+for tool in ('Agent', 'Task', 'Workflow', 'advisor', 'pre_advisor', 'advisor_extra', 'Bash', 'TaskCreate', 'Read'):
     matching = [g for g in groups if re.search(g['matcher'], tool)]
-    assert bool(matching) == (tool in ('Agent', 'Task', 'Workflow')), tool
+    assert bool(matching) == (tool in ('Agent', 'Task', 'Workflow', 'advisor')), tool
     for group in matching:
         for hook in group['hooks']:
             assert not hook.get('async'), 'delegation denial must be synchronous'

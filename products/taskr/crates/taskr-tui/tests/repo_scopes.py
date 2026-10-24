@@ -66,6 +66,7 @@ esac
                     child.wait(timeout=5)
                     break
                 if not chunk:
+                    child.wait(timeout=5)
                     break
                 output.extend(chunk)
                 while replies < output.count(b'\x1b[6n'):

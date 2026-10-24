@@ -26,7 +26,7 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 with tempfile.TemporaryDirectory(prefix='kit-install-test.') as scratch:
-    scratch = Path(scratch)
+    scratch = Path(scratch).resolve()
     stubs = scratch / 'bin'
     stubs.mkdir()
     executable(stubs / 'herdr', '''#!/bin/sh
@@ -299,6 +299,8 @@ esac
         links = re.findall(r'\]\(([^)]+)\)', entry.read_text())
         for target in links:
             if '://' not in target: assert (entry.parent / target).exists(), target
+    verification_guide = Path('skills/herdr-verification/references/task-proof.md')
+    assert (h / '.agents' / verification_guide).read_bytes() == (setup / verification_guide).read_bytes()
     assert (h / '.local/share/herdr-setup/third_party/pstack/LICENSE').read_bytes() == (repo / 'third_party/pstack/LICENSE').read_bytes()
     for reference in ('incident-intake.md', 'writing.md', 'runbooks.md', 'design.md'):
         relative = Path('skills/herdr-practices/references') / reference
@@ -309,6 +311,7 @@ esac
     h = case('one explicit optional skill does not select the other or fleet')
     run(h, '--verification')
     assert (h / '.agents/skills/herdr-verification/SKILL.md').exists()
+    assert (h / '.agents' / verification_guide).read_bytes() == (setup / verification_guide).read_bytes()
     assert not (h / '.agents/skills/herdr-practices').exists()
     assert not (h / '.agents/skills/herdr-fleet').exists()
 
@@ -667,6 +670,7 @@ exec /bin/cp "$@"
         '.local/bin/cdx': setup / 'bin/cdx',
         '.local/bin/cdl': setup / 'bin/cdl',
         '.local/bin/herdr-launch': setup / 'bin/herdr-launch',
+        '.local/bin/herdr-codex-identity': setup / 'bin/herdr-codex-identity',
         '.local/bin/herdr-loop': setup / 'bin/herdr-loop',
         '.local/bin/herdr-worktrees': setup / 'bin/herdr-worktrees',
         '.local/bin/herdr-lead': setup / 'bin/herdr-lead',

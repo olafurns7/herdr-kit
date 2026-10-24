@@ -15,12 +15,14 @@ mod state;
 mod stats;
 #[cfg(target_os = "linux")]
 mod stops;
+#[cfg(any(target_os = "linux", test))]
 mod timestamp;
 #[derive(Clone, Copy)]
 #[repr(i32)]
 enum ExitCode {
     Success = 0,
     Invalid = 2,
+    #[cfg(target_os = "linux")]
     Stopped = 75,
 }
 impl ExitCode {

@@ -3,6 +3,8 @@ use super::glance::{clip, elapsed, lead, mark, n, s, sparks};
 use super::queries::{host_fresh, one, rows};
 use super::*;
 use std::collections::BTreeMap;
+mod work;
+pub(super) use work::counts as work_counts;
 const TREE: &str = "with recursive tree(id) as (select ? union all select t.id from tasks t join tree on t.parent_id=tree.id) ";
 fn document(db: &Connection, root: i64, kind: &str) -> Result<Option<Value>> {
     let order = if kind == "goal" {
@@ -227,8 +229,9 @@ pub(super) fn snapshot(db: &Connection, root: i64, page: i64, all: bool) -> Resu
     let spark = sparks(db, root)?
         .remove(&root)
         .unwrap_or_else(|| vec![0; 24]);
+    let work = work::snapshot(db, root)?;
     Ok(
-        json!({"root":r,"goal":goal,"plan":plan,"lanes":lanes,"asks":asks,"decisions":decisions,"docs":docs,"log":log,"prs":prs,"spark":spark,"log_page":{"page":page,"pages":pages,"total":total}}),
+        json!({"work":work,"root":r,"goal":goal,"plan":plan,"lanes":lanes,"asks":asks,"decisions":decisions,"docs":docs,"log":log,"prs":prs,"spark":spark,"log_page":{"page":page,"pages":pages,"total":total}}),
     )
 }
 pub fn run(f: &FlagSet) -> Result<()> {

@@ -39,6 +39,8 @@ pub enum Job {
     },
     /// `taskr doc get ID`: the text of a document the campaign read listed.
     Doc { row: DocRow },
+    /// `taskr work show ID`: selected work evidence, read lazily.
+    Work { id: i64 },
     /// `taskr --json slotr`: slotr's pools, read on the hub.
     Slotr,
 }
@@ -60,6 +62,8 @@ pub enum Done {
     Refused(String),
 }
 
+const WORK_READ_LIMIT: usize = 1024 * 1024;
+
 /// What a local-mode taskr says to `--request-key`, before it reads or writes anything.
 const LOCAL_KEY: &str = "--request-key is only for client mode (a server.url without TASKR_DB)";
 
@@ -75,13 +79,17 @@ impl Job {
             Job::Park { name, .. } => format!("unpark {name}"),
             Job::Campaign { name, .. } => format!("read {name}"),
             Job::Doc { row } => format!("read {} {}", row.kind, row.id),
+            Job::Work { id } => format!("read W{id}"),
             Job::Slotr => "read slotr".into(),
         }
     }
 
     /// A read changes nothing; everything else writes or moves the owner's screen.
     pub fn reads(&self) -> bool {
-        matches!(self, Job::Campaign { .. } | Job::Doc { .. } | Job::Slotr)
+        matches!(
+            self,
+            Job::Campaign { .. } | Job::Doc { .. } | Job::Work { .. } | Job::Slotr
+        )
     }
 
     /// The taskr arguments, for the jobs taskr runs. Values follow `--`, so a text that
@@ -116,6 +124,7 @@ impl Job {
             }
             Job::Campaign { root, .. } => args(&["--json", "campaign", &root.to_string(), "--all"]),
             Job::Doc { row } => args(&["doc", "get", &row.id.to_string()]),
+            Job::Work { id } => args(&["--json", "work", "show", &id.to_string()]),
             Job::Slotr => args(&["--json", "slotr"]),
         }
     }
@@ -132,7 +141,11 @@ impl Job {
         let command: Vec<String> = taskr.iter().cloned().chain(args).collect();
         // One bound for the job, the keyless try included.
         let deadline = Instant::now() + client::TIMEOUT;
-        let mut out = client::run(&command, client::TIMEOUT)?;
+        let mut out = if matches!(self, Job::Work { .. }) {
+            client::run_bounded(&command, client::TIMEOUT, WORK_READ_LIMIT)?
+        } else {
+            client::run(&command, client::TIMEOUT)?
+        };
         match self {
             Job::Answer { prompt, .. } => {
                 // A local-mode taskr refuses the key before it touches the ledger, in these
@@ -189,6 +202,11 @@ impl Job {
                 let slotr = serde_json::from_slice(&out.text()?)
                     .map_err(|e| format!("unreadable slotr read: {e}"))?;
                 Ok(Done::Slotr(Box::new(slotr)))
+            }
+            Job::Work { id } => {
+                let value = serde_json::from_slice(&out.text()?)
+                    .map_err(|e| format!("unreadable work read: {e}"))?;
+                crate::work::document(*id, &value).map(Done::Doc)
             }
             Job::Doc { .. } => Ok(Done::Doc(
                 String::from_utf8_lossy(&out.text()?).into_owned(),
@@ -282,6 +300,23 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("a scratch directory");
         dir
+    }
+
+    #[test]
+    fn work_show_refuses_oversized_output_before_json_parsing() {
+        for redirect in ["", " >&2"] {
+            let command = vec![
+                "sh".into(),
+                "-c".into(),
+                format!("head -c {} /dev/zero{redirect}", WORK_READ_LIMIT + 1),
+            ];
+            let error = Job::Work { id: 7 }.run(&command).unwrap_err();
+            assert!(error.contains("1048576 byte read limit"), "{error}");
+            assert!(
+                !error.contains("unreadable work read"),
+                "cap before parsing JSON"
+            );
+        }
     }
 
     #[test]

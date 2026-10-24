@@ -1,0 +1,348 @@
+{
+  "actions": {
+    "Ack": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/inbox.rs:4-47",
+        "products/taskr/crates/taskr/src/write/inbox.rs:245-268",
+        "products/taskr/crates/taskr/src/write/inbox.rs:289-311"
+      ],
+      "mapping": "One store transaction per ack. CLI nonmatch ack after offer is a separate transaction. Pending match advances watermark; required asks have external handling precondition. Already-acked idempotency omitted."
+    },
+    "Adopt": {
+      "code": [
+        "products/taskr/crates/taskr/src/write/handover.rs:74-143",
+        "products/taskr/crates/taskr-core/src/store/delivery.rs:14-20"
+      ],
+      "mapping": "Atomic adopt event changes root generation. Event ids abstracted to 0 and 1; host and open status fixed."
+    },
+    "Crash": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/inbox.rs:198-205"
+      ],
+      "mapping": "Environment failure loses local response but not committed pending_event_id; a later offer can replay. No dispatch or external-effect recovery claim."
+    },
+    "Guard": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:52-61",
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:94-146",
+        "products/taskr/crates/taskr-core/src/store/delivery.rs:14-61",
+        "products/taskr/crates/taskr-core/src/store/worker.rs:12-89"
+      ],
+      "mapping": "Same task and host assumed; claimGen is pinned root session. Plain calls allowed only with no live lease; fenced calls require live binding and equality."
+    },
+    "Handle": {
+      "code": [
+        "products/taskr/crates/taskr/src/write/inbox.rs:253-259"
+      ],
+      "mapping": "Explicit caller assumption outside store: returned required work handled before explicit ack. No implementation claim that the store validates handling."
+    },
+    "Init": {
+      "code": [
+        "products/taskr/schema.sql:1-42",
+        "products/taskr/crates/taskr-core/src/schema.rs:37-50",
+        "products/taskr/crates/taskr-core/src/schema.rs:81-131"
+      ],
+      "mapping": "Already migrated fresh ledger with one open root; cursor and pending default empty; absent lease represented by holder=0, fence=0. Static inbox from an ordinary unassigned worker is a fixture assumption. Migration preservation is not modeled; v5 work/jobs DDL leaves existing inbox/consumer definitions unchanged."
+    },
+    "Offer": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/inbox.rs:90-160",
+        "products/taskr/crates/taskr-core/src/store/inbox.rs:169-207"
+      ],
+      "mapping": "One transaction: guard, lowest id after cursor, got coalesces and clears pending; otherwise offer/replay pending. Only the got coalescing branch is within ASK_ONLY; the remaining coalesce branches concern event kinds outside this policy. Local response observation is a ghost of return value."
+    },
+    "RejectAck": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/inbox.rs:19",
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:94-146",
+        "products/taskr/crates/taskr-core/src/store/mod.rs:96-101"
+      ],
+      "mapping": "Guard rejection rolls back transaction with no cursor or lease write. Witness state is observer-only."
+    },
+    "Release": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:245-255"
+      ],
+      "mapping": "One transaction: holding before clearing holder; counter and cursor preserved."
+    },
+    "Renew": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:226-242"
+      ],
+      "mapping": "One transaction: identify and holding before setting expiry to current time plus TTL."
+    },
+    "Take": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:179-223"
+      ],
+      "mapping": "One transaction: identify, live refusal unless force, fence increment, binding and expiry write. Advisory wait marker fixed absent. Forced live takeover legal."
+    },
+    "Tick": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:52-54",
+        "products/taskr/crates/taskr-core/src/store/consumer.rs:173-175",
+        "products/taskr/crates/taskr-core/src/lib.rs:156-166"
+      ],
+      "mapping": "Abstract wall-clock passage; exclusive expiry. CLI expiry replay requires contract-feature frozen clock."
+    },
+    "TransactionBoundary": {
+      "code": [
+        "products/taskr/crates/taskr-core/src/store/mod.rs:96-101"
+      ],
+      "mapping": "BEGIN IMMEDIATE; closure then commit; errors roll back. Channel/composite loops are not atomic."
+    }
+  },
+  "assumptions": [
+    "Lease validity is checked at transaction guard linearization, not final wall-clock commit time.",
+    "Time advances between atomic modeled transactions; real in-transaction clock passage is not proved.",
+    "One open local root, same admitted host; malicious capability sharing is excluded.",
+    "A compliant caller handles required asks before ack; store cannot enforce external handling.",
+    "Fixed pre-existing got/ready/ask from an ordinary unassigned worker; no active work-owned producer suppression or native route. Work/jobs state machines and migration preservation are excluded."
+  ],
+  "bounds": {
+    "abstract_ttl": 2,
+    "clock": [
+      0,
+      1,
+      2
+    ],
+    "consumers": 2,
+    "fixed_events": [
+      "got",
+      "ready",
+      "ask"
+    ],
+    "generations": [
+      0,
+      1
+    ],
+    "max_acquisitions": 3,
+    "max_fence": 3
+  },
+  "current_integration": {
+    "covered_blobs_checked_through": "0e9976528c02c24077b07b6e640d459766cf3491",
+    "execution": "pass",
+    "outcome": "execution-and-review-passed",
+    "reason": "Complete inbox ASK_ONLY execution passed at pinned package/checkout and independent correspondence/execution review is READY at those pins. Matching covered blobs do not prove later uncovered changes or work/controller/jobs state machines.",
+    "review": "READY",
+    "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64"
+  },
+  "delivery_policy": {
+    "coalescible": [
+      "got"
+    ],
+    "filter_excluded": [
+      "ready"
+    ],
+    "from_filter": false,
+    "handler_assumption": "Required ask handled before ack; not enforced by store.",
+    "name": "ASK_ONLY",
+    "required": [
+      "ask"
+    ]
+  },
+  "format": 1,
+  "historical_executions": [
+    {
+      "baseline_counts": {
+        "distinct": 17340,
+        "generated": 98941,
+        "queued": 0
+      },
+      "case_count": 25,
+      "command_log_count": 83,
+      "evidence_entry_count": 176,
+      "execution_review_verdict": "READY",
+      "model_negative_control_distinct": {
+        "NC1": 393,
+        "NC2": 530,
+        "NC3": 183
+      },
+      "mutant_binary_sha256": {
+        "NC1": "8eed5f77ec58d662493962394d46da9128b740c8e71413106194b027b51982f8",
+        "NC2": "b2bf2e110701728f88065574ae49c4e71e027eda6038bb03f0035fc73bae3f66",
+        "NC3": "e2a298acfb73507f2379a20d3d88adbae88e8f1051ea91797306bc0fde9ae409"
+      },
+      "outcome": "pass",
+      "package_commit": "d4c08a6ad49b31495730eb6d30262220213b3e64",
+      "proof_checkout_commit": "69f3ff9d11df8bea44c534acbfef96e9b20d1719",
+      "receipt_sha256": {
+        "commands.json": "3b82686817277861501d868f166d7ad1bf152d929e2792d904344134086917bf",
+        "evidence-hashes.json": "dff8daf9b21ef0a5aad8546dbf99886ce9fc8760d852d9654bf27e5e3134b860",
+        "execution-review.md": "4262cf44dc533965603bdfab5602a043df757c86b3a7372d425a1e8066c5adc7",
+        "manifest.json": "229cb125d9616a5254a186ad2ff66bb1080475e46512d9975d0f90d29c97e56c",
+        "package-hashes.json": "d0ab0cf8a3304a3df22d30555f6c65f6fab6adffab10f681457aa879c0c4fc47",
+        "result.json": "b8d729565e3ecc7dfa73a32281299c578655b7203d8d34c6da7b06e9f0550993",
+        "self-checks-and-proof.log": "496f89694d8add5a622b20b258a513b54bb46a9db23d6c267a996f23e4b52c61"
+      },
+      "scope": "Historical bounded inbox model and fixed CLI replays only; later metadata/documentation edits and current integration were not executed by this receipt.",
+      "self_check_count": 6,
+      "source_commit": "71d4146fdbe99a67c0c698877478bc7c796cc360",
+      "tool_hashes": {
+        "cargo_sha256": "ec1b9233e7f72990ecd8e62063fa7f6c3dfc2bec8e97f88bff165f9100ac696a",
+        "java_sha256": "0f642542ea1f0be6957557c0db96653ec128113bb5a4aaa7c2534d1d72ddb51f",
+        "taskr_sha256": "a194c8a00d976244fe3bd39b730b754eb772bb8de88e112bc1a98bccb4ccd2f7",
+        "tlc_jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+      },
+      "tool_versions": {
+        "java": "openjdk version \"21.0.13\" 2026-10-20 LTS\nOpenJDK Runtime Environment Temurin-21.0.13+9 (build 21.0.13+9-LTS)\nOpenJDK 64-Bit Server VM Temurin-21.0.13+9 (build 21.0.13+9-LTS, mixed mode, sharing)",
+        "tlc": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+      }
+    }
+  ],
+  "last_execution": {
+    "baseline_counts": {
+      "distinct": 17340,
+      "generated": 98941,
+      "queued": 0
+    },
+    "case_count": 25,
+    "command_log_count": 83,
+    "evidence_entry_count": 176,
+    "execution_review": {
+      "package_commit": "9af0ea5c35b9b6f2a90c940fc10866b7d757dcbe",
+      "proof_checkout_commit": "9af0ea5c35b9b6f2a90c940fc10866b7d757dcbe",
+      "report_label": "review-inbox-v5-execution-report.md",
+      "reviewed_metadata_commit": "6da0a9abd02e571d18d45650de2d409408586804",
+      "scope": "Bounded inbox ASK_ONLY source correspondence and execution receipts only; work/controller/jobs and ongoing uncovered module changes remain excluded.",
+      "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
+      "verdict": "READY"
+    },
+    "execution_review_verdict": "READY",
+    "model_negative_control_distinct": {
+      "NC1": 393,
+      "NC2": 530,
+      "NC3": 183
+    },
+    "mutant_binary_sha256": {
+      "NC1": "2c15bec54af2ad97e1245940de65093a7eac9f3ec4d71e37530765cd95150550",
+      "NC2": "5a93d0fad240580f5a283ce7682471846ef7c95fffdf7fe364b2c87f1dadc3e9",
+      "NC3": "0af87832a54e64ff79c0cf7fb20b66f6c1f28087bb6667dedcf9b7018012e411"
+    },
+    "outcome": "pass",
+    "package_commit": "9af0ea5c35b9b6f2a90c940fc10866b7d757dcbe",
+    "proof_checkout_commit": "9af0ea5c35b9b6f2a90c940fc10866b7d757dcbe",
+    "receipt_sha256": {
+      "commands.json": "cd238750c1bd76e27c5909e8095c09a544b9f33cb0c951cebdfa17bd457efc1f",
+      "evidence-hashes.json": "f3b9975cea2b84992daa487f69889dc577c9c910195e24eddbbae54b2d8e88e4",
+      "manifest.json": "fe718d8ebd479da53c638eeffc36347740f311be2ff401fbfcc703bd8cf8477d",
+      "package-hashes.json": "e1bfac575df7f51014e83770c38150bef141c1a8c6d360e80ec8a094c65655c8",
+      "result.json": "44ef83192ef2c613eee42d1f3f7183b08cd61a759705b564a2b2a53db0dac16f",
+      "review-inbox-v5-execution-report.md": "1c0ca5a43fdae0032dc8991224929067c54eb1a55468ec35512744a3eca2bec8",
+      "self-checks-and-proof.log": "27a7df7debb4cdbcdf3cdbb5652dc822e7d02c74aaf4a3e5b1d8f305ffcf9d08"
+    },
+    "scope": "Bounded ASK_ONLY inbox model and fixed CLI replays at the exact package/checkout only; work/controller/jobs state machines and subsequent metadata edits are not proved.",
+    "self_check_count": 6,
+    "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
+    "supplementary_receipts": {
+      "review-inbox-v5-execution-report.md": "Separately retained independent review report; outside original proof inventory.",
+      "self-checks-and-proof.log": "Copied alongside proof evidence after finalization; original proof inventory unchanged."
+    }
+  },
+  "last_successful_source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
+  "negative_controls": {
+    "NC1": {
+      "expected_invariant": "AckAuthority",
+      "mutation": "Remove fence equality guard",
+      "real_anchor": "products/taskr/crates/taskr-core/src/store/consumer.rs:125",
+      "real_replay": "RUST-NC1"
+    },
+    "NC2": {
+      "expected_invariant": "AckAuthority",
+      "mutation": "Keep first fence 1; omit later forced-take increment",
+      "real_anchor": "products/taskr/crates/taskr-core/src/store/consumer.rs:212",
+      "real_replay": "RUST-NC2"
+    },
+    "NC3": {
+      "expected_invariant": "RequiredHandled",
+      "mutation": "Treat required ask as coalescible when filtered",
+      "real_anchor": "products/taskr/crates/taskr-core/src/store/inbox.rs:99",
+      "real_replay": "RUST-NC3"
+    }
+  },
+  "proof_limits": [
+    "Bounded model safety only; no liveness or exactly-once handling guarantee.",
+    "Supplied taskr binary source provenance is caller-asserted, not inferred.",
+    "Fixed supported real CLI schedules, not automatic arbitrary counterexample translation.",
+    "No proof of dispatch, filesystem writers, native MCP or cross-host delivery.",
+    "See README.md for all omitted paths and maintenance rules."
+  ],
+  "properties": {
+    "AckAuthority": "No stale-acquisition, expired, old-generation fenced ack commit; plain only without live lease.",
+    "CursorShape": "Pending is absent or immediately follows cursor.",
+    "RequiredHandled": "Cursor cannot cross an unhandled ask under ASK_ONLY.",
+    "TypeOK": "All modeled state is within finite bounds."
+  },
+  "source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
+  "source_files": {
+    "Cargo.lock": "d36a11012c88f9cee4d4fc568ec0a89787f528a670b40e4374318a2ccff04361",
+    "Cargo.toml": "4a71713910d85d573d4884e75190ce4ff46455b3066369f658ffc263d090b865",
+    "products/taskr/crates/taskr-core/Cargo.toml": "86f1f4b1df6fef228440562ad7bc07b268b3e45941877d94e2dc4f5e99182748",
+    "products/taskr/crates/taskr-core/src/lib.rs": "cc2173abb756741e3047a30e2e0e3d2f30c48f10a7982f671c84597f3c1d4cc1",
+    "products/taskr/crates/taskr-core/src/schema.rs": "43f98ea9a7d551cf14e3bb9cb036c521c4265b098b679f8a593517e500d8df1f",
+    "products/taskr/crates/taskr-core/src/store/consumer.rs": "9ccf7c542cf4bb95ba3da3d3f5fafdd5bcd06ec049462f232027bda3369c48d2",
+    "products/taskr/crates/taskr-core/src/store/delivery.rs": "03fcd28906d41c9864df02c400dd3f03c8abed642e0924236afd32778fe9b3ed",
+    "products/taskr/crates/taskr-core/src/store/inbox.rs": "9a13b946fd4f47ebea21865c67b883a7af47a41daada51ee80d14a26db243e1f",
+    "products/taskr/crates/taskr-core/src/store/mod.rs": "7219fd2decafd010522190ea9f757256109a2f8b6abde09b010826ffffdf1b18",
+    "products/taskr/crates/taskr-core/src/store/orch.rs": "702ebe0a78a19481397a3a58e4fe325ed0d5df283c898fc32361e686ccb754a0",
+    "products/taskr/crates/taskr-core/src/store/worker.rs": "5090703b55fba92ac75b4c1934452ca2709efcdd2d78f995540dc0db4d5897ce",
+    "products/taskr/crates/taskr/Cargo.toml": "09d15eda6a59f98ec007b1bc845484ecb85abde7b2cf167dd87ae8920e22911a",
+    "products/taskr/crates/taskr/src/write/handover.rs": "2caf2a084a939875488bce8ca938d8b88709a2523fe9d8e2800756946bf42c92",
+    "products/taskr/crates/taskr/src/write/inbox.rs": "9058b8b07f09dd2f5a8772b0475990edf2a6cd946e6e06eda6b0a1131c1b48d8",
+    "products/taskr/crates/taskr/src/write/mod.rs": "f4e24d8de920399aec46ff13b5318b17b287e816c2b1394dd6a04e9d3a73d9bb",
+    "products/taskr/crates/taskr/tests/consumer.rs": "5d3aa4e383e6ffb9f8e46c58dd423721d924817a9252af3a0baefa68ef179734",
+    "products/taskr/crates/taskr/tests/hook/support.rs": "2f9c6e9382f5c4bb7c2b460944239e75f85d1d42352a3c156cadeeeef7945638",
+    "products/taskr/schema.sql": "7a05b404a2c901a21c7bcc35867eb196d403ecec51d5d1bec58c8fae41911355",
+    "rust-toolchain.toml": "d0396bf4ee19fe73ba0cb427f6f0a95c0669e352bd7c92610bfa0578953bdf84"
+  },
+  "source_maintenance": {
+    "changed_covered_files": [
+      "Cargo.lock",
+      "products/taskr/crates/taskr-core/src/schema.rs",
+      "products/taskr/crates/taskr-core/src/store/mod.rs",
+      "products/taskr/crates/taskr-core/src/store/orch.rs",
+      "products/taskr/crates/taskr-core/src/store/worker.rs"
+    ],
+    "correspondence_note": "SYNC.md",
+    "final_delta": "From initial 8e4b1f2 candidate: only covered Cargo.lock changes, slotr package version 0.3.1 to 0.3.2; no dependency/toolchain change. Matching slotr manifest inspected but not added to coverage; release preparation is not installation/publication.",
+    "from_source_commit": "71d4146fdbe99a67c0c698877478bc7c796cc360",
+    "model_and_driver": "unchanged; fixed legacy-worker fixture excludes active work assignments and routes",
+    "to_source_commit": "a21f83afc3fe2082f3da980f1d93e6992f804f64",
+    "unchanged_covered_file_count": 14
+  },
+  "status": "execution-and-review-passed",
+  "tool_identity": {
+    "engine": "TLA+ TLC, tlc2.TLC, exhaustive BFS, one worker, seed 1",
+    "identity_evidence": "Each run pins SHA-256 of Java, TLC jar, supplied taskr and built mutants; Java -version and command receipts retained.",
+    "last_successful_tool_hashes": {
+      "cargo_sha256": "ec1b9233e7f72990ecd8e62063fa7f6c3dfc2bec8e97f88bff165f9100ac696a",
+      "java_sha256": "0f642542ea1f0be6957557c0db96653ec128113bb5a4aaa7c2534d1d72ddb51f",
+      "taskr_sha256": "d5b38851152ce594ad10c310f876382268d926b9ff1364e4f5422ad24192a897",
+      "tlc_jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+    },
+    "last_successful_versions": {
+      "java": "openjdk version \"21.0.13\" 2026-10-20 LTS\nOpenJDK Runtime Environment Temurin-21.0.13+9 (build 21.0.13+9-LTS)\nOpenJDK 64-Bit Server VM Temurin-21.0.13+9 (build 21.0.13+9-LTS, mixed mode, sharing)",
+      "tlc": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+    },
+    "prerequisites": [
+      "Python >=3.11 with sqlite3",
+      "Java",
+      "caller-supplied tla2tools.jar",
+      "contract-feature taskr",
+      "Cargo/Rust with offline locked dependencies"
+    ],
+    "protocol": {
+      "language": "English TLC result/trace/statistics",
+      "safety_exit": 12,
+      "success_exit": 0
+    }
+  },
+  "verification_files": {
+    "Inbox.cfg": "629e507b4663c9bfc0b0d1667f13d236e494d216b30d46b09255740206f2911c",
+    "Inbox.tla": "f220a2d373f7191b0a5c81e6a66c2b42ba96dd7f806981fee694bd3963ed5034",
+    "README.md": "db4db1ef369833f74ff61d9076e46226f2af5fd75d59002c4e07d4db0f69b114",
+    "SYNC.md": "76b1c390831e79410b2e061c085b5bc8e34e573a72d537fb16ab577671a2f32a",
+    "test_verify.py": "dc32222fcfed29e7298bb7346b0b50455e49010ecf1871d304b169725c5fe7e0",
+    "verify.py": "6eab013ef5e18af03f193d21127f422b437bd6d027f6ba354b596cc2bd1c2926"
+  }
+}

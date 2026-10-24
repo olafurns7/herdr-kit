@@ -1,0 +1,533 @@
+#!/usr/bin/env python3
+"""Initialize only a bound, starting Codex; stdout is one JSON identity receipt."""
+import ctypes
+import errno
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import selectors
+import shlex
+import shutil
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import time
+import uuid
+
+LIMIT = 1024 * 1024
+
+
+def require(ok, reason):
+    if not ok:
+        raise RuntimeError(reason)
+
+
+def native_id(value):
+    require(isinstance(value, str) and str(uuid.UUID(value)) == value, "invalid native UUID")
+    return value
+
+
+def private_dir(path):
+    path.mkdir(mode=0o700, exist_ok=True)
+    s = path.lstat()
+    require(stat.S_ISDIR(s.st_mode) and s.st_uid == os.geteuid()
+            and stat.S_IMODE(s.st_mode) == 0o700, "unsafe artifact directory")
+
+
+def read_private(path, limit=131072):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as f:
+        s = os.fstat(f.fileno())
+        require(stat.S_ISREG(s.st_mode) and s.st_uid == os.geteuid()
+                and stat.S_IMODE(s.st_mode) == 0o600 and s.st_nlink == 1
+                and s.st_size <= limit, "unsafe or oversized artifact")
+        data = f.read(limit + 1)
+        require(len(data) <= limit, "artifact read limit")
+        return data
+
+
+def write_once(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def encoded(value):
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+class Adapter:
+    def __init__(self, args):
+        require(len(args) == 7, "usage: herdr-codex-identity TASK LAUNCH ROOT GENERATION NAME PANE CWD")
+        self.task, self.launch, self.root, self.generation = [int(n) for n in args[:4]]
+        require(min(self.task, self.launch, self.root) > 0 and self.generation >= 0, "invalid reservation IDs")
+        self.name, self.pane, cwd = args[4:]
+        self.cwd = Path(cwd)
+        require(self.cwd.is_absolute() and str(self.cwd.resolve(strict=True)) == cwd
+                and self.cwd.is_dir(), "checkout must be canonical")
+        require(all(v and len(v) <= 256 and not any(ord(c) < 32 or ord(c) == 127 for c in v)
+                    for v in (self.name, self.pane)), "invalid name/pane")
+        self.taskr = os.environ.get("TASKR_WORK_EXECUTABLE") or shutil.which("taskr") or ""
+        require(Path(self.taskr).is_absolute() and Path(self.taskr).name == "taskr"
+                and Path(self.taskr).is_file() and os.access(self.taskr, os.X_OK), "absolute taskr executable required")
+        # Preserve the requested executable, including symlinks; pin relative scratch DB paths.
+        self.socket = os.environ.get("HERDR_SOCKET_PATH") or str(Path.home() / ".config/herdr/herdr.sock")
+        self.deadline = time.monotonic() + 30
+        self.context = dict(task=self.task, launch=self.launch, root=self.root,
+                            generation=self.generation, name=self.name, pane=self.pane, cwd=cwd,
+                            taskr=self.taskr, db=str(Path(os.environ.get("TASKR_DB") or
+                                                        Path.home() / ".local/state/taskr/taskr.db").resolve()),
+                            socket=self.socket)
+        if "TASKR_DB" in os.environ:
+            require(bool(os.environ["TASKR_DB"]), "empty TASKR_DB")
+            os.environ["TASKR_DB"] = self.context["db"]
+        self.basis = None
+
+    def remaining(self):
+        left = self.deadline - time.monotonic()
+        require(left > 0, "native initialization deadline; work withheld")
+        return left
+
+    def preflight(self):
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(min(0.5, self.remaining()))
+            conn.connect(self.socket)
+
+    def command(self, args):
+        self.preflight()  # Even taskr reads must not precede an unavailable Herdr server.
+        env = dict(os.environ, LC_ALL="C", HERDR_SOCKET_PATH=self.socket)
+        env.pop("TASKR_FORMAT", None)
+        env.pop("TASKR_TASK", None)
+        env.pop("TASKR_LAUNCH", None)
+        p = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, env=env, cwd="/", start_new_session=True)
+        chunks = {p.stdout: bytearray(), p.stderr: bytearray()}
+        original = None
+        try:
+            with selectors.DefaultSelector() as sel:
+                for stream in chunks:
+                    os.set_blocking(stream.fileno(), False)
+                    sel.register(stream, selectors.EVENT_READ)
+                while sel.get_map():
+                    for key, _ in sel.select(self.remaining()):
+                        data = os.read(key.fileobj.fileno(), 65536)
+                        if not data:
+                            sel.unregister(key.fileobj)
+                        else:
+                            chunks[key.fileobj].extend(data)
+                            require(sum(map(len, chunks.values())) <= LIMIT, "CLI output limit")
+                require(p.wait(timeout=self.remaining()) == 0, "CLI failed; work withheld")
+            return bytes(chunks[p.stdout])
+        except BaseException as error:
+            original = error
+            raise
+        finally:
+            operation = "poll"
+            try:
+                if p.poll() is None:
+                    operation = "killpg"
+                    os.killpg(p.pid, signal.SIGKILL)
+                    operation = "wait"
+                    p.wait(timeout=1)
+            except (OSError, subprocess.SubprocessError) as error:
+                detail = (f"CLI cleanup pid={p.pid} op={operation} errno={getattr(error, 'errno', None)}: "
+                          f"{str(error)[:256]}")
+                if original is None:
+                    raise RuntimeError(detail) from error
+                print("herdr-codex-identity: " + detail, file=sys.stderr)
+            finally:
+                p.stdout.close()
+                p.stderr.close()
+
+    def herdr(self, *args):
+        value = json.loads(self.command(["herdr", *args]))
+        require(isinstance(value.get("result"), dict) and "error" not in value, "invalid Herdr reply")
+        return value["result"]
+
+    def ledger(self):
+        snap = json.loads(self.command([self.taskr, "--json", "work", "list", str(self.root)]))
+        require(snap["campaign"] == self.root and snap["generation"] == self.generation
+                and snap["configuration"]["enabled"] is True and snap["parked"] is False,
+                "campaign disabled, parked or generation changed")
+        found = []
+        for work in snap["work"]:
+            for run in work["runs"]:
+                for a in run["assignments"]:
+                    if a["launch_id"] == self.launch:
+                        revisions = [r for r in work["revisions"] if r["revision"] == work["revision"]]
+                        require(run["run_id"] == work["current_run"] and run["state"] == "active"
+                                and run["revision"] == work["revision"]
+                                and a["task_id"] == self.task and a["round"] == run["round"]
+                                and a["state"] == "starting" and a["process_state"] == "starting"
+                                and a["stage"] in ("executor", "reviewer", "adjudicator")
+                                and a["lane"]["provider"] == "codex" and len(revisions) == 1
+                                and revisions[0]["contract"]["checkout"]["cwd"] == str(self.cwd)
+                                and a["dispatch"]["workspace"] == snap["configuration"]["workspace"]
+                                and a["dispatch"]["pane"] == self.pane, "reservation changed")
+                        prefix = "impl" if a["stage"] == "executor" else "rev"
+                        require(self.name == f"{prefix}-w{self.launch}", "reserved name/stage mismatch")
+                        found.append(dict(work=work["work_id"], run=run["run_id"], revision=work["revision"],
+                                          stage=a["stage"], lane=a["lane"], dispatch=a["dispatch"],
+                                          native=a.get("native_session")))
+        require(len(found) == 1, "reservation not unique")
+        states = [json.loads(line) for line in self.command(
+            [self.taskr, "--json", "status", "--tree", str(self.task), "--all"]).splitlines()]
+        rows = [v for v in states if v.get("id") == self.task]
+        require(len(rows) == 1 and rows[0]["current_launch_id"] == self.launch
+                and rows[0]["status"] == "open" and rows[0]["pane_id"] == self.pane
+                and rows[0]["role"] == ("implementer" if found[0]["stage"] == "executor" else "reviewer")
+                and rows[0]["workspace_id"] == found[0]["dispatch"]["workspace"]
+                and rows[0]["tab_id"] == found[0]["dispatch"]["tab"]
+                and rows[0].get("agent_name") in (None, "", self.name), "task binding changed")
+        log = [json.loads(line) for line in self.command(
+            [self.taskr, "--json", "log", str(self.task), "--limit", "0"]).splitlines()]
+        require(not any(e.get("launch_id") == self.launch and e.get("kind") == "prompt" for e in log),
+                "actual work prompt already attempted; never bootstrap")
+        launches = [e for e in log if e.get("record") == "launch" and e.get("id") == self.launch]
+        require(len(launches) == 1 and launches[0]["provider"] == "codex"
+                and launches[0]["task_id"] == self.task and launches[0]["pane_id"] == self.pane,
+                "launch binding changed")
+        return found[0], launches[0].get("session_ref")
+
+    def process(self, pid, *, classify_only=False):
+        require(type(pid) is int and 0 < pid <= 2147483647, "invalid foreground PID")
+        operation = "platform"
+        try:
+            if sys.platform.startswith("linux"):
+                root = Path(f"/proc/{pid}")
+                operation = "proc-owner"
+                require(root.stat().st_uid == os.geteuid(), "foreign foreground UID")
+                operation = "proc-stat"
+                with (root / "stat").open("rb") as f:
+                    raw = f.read(16385)
+                require(len(raw) <= 16384, "process stat read limit")
+                fields = raw.rsplit(b") ", 1)[1].split()
+                require(fields[0] not in (b"Z", b"X"), "dead native process")
+                start = fields[19].decode()
+                operation = "proc-exe"
+                exe = os.readlink(root / "exe")
+                if not classify_only:
+                    operation = "proc-cwd"
+                    cwd = os.readlink(root / "cwd")
+                    operation = "proc-cmdline"
+                    with (root / "cmdline").open("rb") as f:
+                        argv = f.read(65537)
+                    require(len(argv) <= 65536 and argv.endswith(b"\0"), "invalid native argv")
+                    argv = argv.decode().split("\0")[:-1]
+            elif sys.platform == "darwin":
+                # SDK sys/proc_info.h: PROC_PIDTBSDINFO, including microsecond start identity.
+                class BSDInfo(ctypes.Structure):
+                    _fields_ = [(n, ctypes.c_uint32) for n in (
+                        "flags", "status", "xstatus", "pid", "ppid", "uid", "gid", "ruid", "rgid",
+                        "svuid", "svgid", "reserved")] + [("comm", ctypes.c_char * 16),
+                        ("name", ctypes.c_char * 32)] + [(n, ctypes.c_uint32) for n in (
+                        "nfiles", "pgid", "jobc", "tdev", "tpgid", "nice")] + [
+                        ("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64)]
+                operation = "load-libproc"
+                lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+                lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+                lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+                info = BSDInfo()
+                ctypes.set_errno(0)
+                operation = "proc_pidinfo"
+                returned = lib.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+                error = ctypes.get_errno()
+                reason = None
+                if returned != ctypes.sizeof(info):
+                    reason = ("gone" if returned <= 0 and error == errno.ESRCH else
+                              "denied" if returned <= 0 and error in (errno.EPERM, errno.EACCES) else
+                              "empty-result" if returned == 0 and error == 0 else "size-or-query-failure")
+                elif info.pid != pid:
+                    reason = "pid-mismatch"
+                elif info.uid != os.geteuid():
+                    reason = "foreign-uid"
+                elif info.status == 5:
+                    reason = "zombie"
+                require(reason is None, f"native process identity unavailable: pid={pid} op=proc_pidinfo class={reason} "
+                        f"bytes={returned}/{ctypes.sizeof(info)} errno={error} "
+                        f"returned_pid={info.pid} uid={info.uid}/{os.geteuid()} status={info.status}")
+                start = [info.start_sec, info.start_usec]
+                buf = ctypes.create_string_buffer(4096)
+                ctypes.set_errno(0)
+                operation = "proc_pidpath"
+                returned = lib.proc_pidpath(pid, buf, len(buf))
+                error = ctypes.get_errno()
+                require(returned > 0, f"native executable unavailable: pid={pid} op=proc_pidpath "
+                        f"bytes={returned} errno={error} uid={info.uid}/{os.geteuid()} status={info.status}")
+                exe = os.fsdecode(buf.value)
+                if not classify_only:
+                    operation = "ps-argv"
+                    argv = self.command(["/bin/ps", "-ww", "-p", str(pid), "-o", "args="]).decode().strip()
+                    require(0 < len(argv.encode()) <= 65536, "invalid native argv")
+                    operation = "lsof-cwd"
+                    output = self.command(["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn0"])
+                    paths = [os.fsdecode(v[1:]) for v in output.split(b"\0") if v.startswith(b"n")]
+                    require(len(paths) == 1, "native cwd unavailable")
+                    cwd = paths[0]
+            else:
+                raise RuntimeError("native identity supports Linux and macOS only")
+            require(Path(exe).is_absolute() and len(os.fsencode(exe)) <= 4096, "invalid kernel executable path")
+            if classify_only:
+                return dict(pid=pid, start=start, exe=exe)
+            operation = "getpgid"
+            return dict(pid=pid, start=start, exe=exe, argv=argv, cwd=cwd, group=os.getpgid(pid))
+        except OSError as error:
+            raise RuntimeError(f"process pid={pid} op={operation} errno={error.errno}: {str(error)[:256]}") from error
+
+    def guard(self, expected=None):
+        assignment, launch_native = self.ledger()
+        agents = self.herdr("agent", "list")["agents"]
+        rows = [a for a in agents if a.get("name") == self.name or a.get("pane_id") == self.pane]
+        require(len(rows) == 1, "ambiguous agent registration")
+        a = rows[0]
+        dispatch = assignment["dispatch"]
+        # Herdr's idle/done distinction reflects UI seen state, not prior work delivery.
+        ready = a.get("agent_status") in ("idle", "done") and a.get("interactive_ready") is True
+        readiness = dict(status=str(a.get("agent_status"))[:32], interactive=a.get("interactive_ready") is True,
+                         provider=a.get("agent") == "codex", name=a.get("name") == self.name,
+                         pane=a.get("pane_id") == self.pane, workspace=a.get("workspace_id") == dispatch["workspace"],
+                         tab=a.get("tab_id") == dispatch["tab"], cwd=a.get("cwd") == str(self.cwd),
+                         foreground_cwd=a.get("foreground_cwd") == str(self.cwd))
+        require(a.get("agent") == "codex" and a.get("name") == self.name and a.get("pane_id") == self.pane
+                and ready
+                and a.get("workspace_id") == dispatch["workspace"] and a.get("tab_id") == dispatch["tab"]
+                and a.get("cwd") == str(self.cwd) and a.get("foreground_cwd") == str(self.cwd),
+                "agent not ready at reserved checkout: " + json.dumps(readiness, ensure_ascii=True))
+        pane = self.herdr("pane", "get", self.pane)["pane"]
+        require(all(pane.get(k) == v for k, v in dict(pane_id=self.pane, tab_id=dispatch["tab"],
+                    workspace_id=dispatch["workspace"], cwd=str(self.cwd), foreground_cwd=str(self.cwd)).items()),
+                "pane location changed")
+        info = self.herdr("pane", "process-info", "--pane", self.pane)["process_info"]
+        require(info["pane_id"] == self.pane, "process pane mismatch")
+        pids = [p["pid"] for p in info["foreground_processes"]]
+        require(0 < len(pids) <= 64 and len(set(pids)) == len(pids), "invalid foreground inventory")
+        pinned = (self.basis or {}).get("process")
+        require(pinned is None or pinned["pid"] in pids, "pinned native PID absent from foreground inventory")
+        candidates = []
+        for pid in pids:
+            operation = "classify"
+            try:
+                classification = self.process(pid, classify_only=True)
+                candidate = Path(classification["exe"]).name == "codex"
+                if pinned is not None and pid == pinned["pid"]:
+                    require(candidate and all(pinned[k] == v for k, v in classification.items()),
+                            "pinned native process replaced or no longer Codex")
+                if not candidate:
+                    continue
+                operation = "snapshot"
+                process = self.process(pid)
+                require(all(process[k] == v for k, v in classification.items()),
+                        "native process changed during classification")
+                operation = "native-magic"
+                with open(process["exe"], "rb") as f:
+                    magic = f.read(4)
+                require(magic in (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
+                                  b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"), "Codex is not a native executable")
+                candidates.append(process)
+            except (RuntimeError, OSError) as error:
+                row = next(p for p in info["foreground_processes"] if p["pid"] == pid)
+                hint = json.dumps(str(row.get("name", ""))[:64], ensure_ascii=True)
+                pinned_pid = pinned["pid"] if pinned is not None else None
+                raise RuntimeError(f"foreground pid={pid} name_hint={hint} pinned_native_pid={pinned_pid} op={operation}: "
+                                   f"{str(error)[:512]}") from error
+        require(len(candidates) == 1, "expected one native foreground Codex")
+        process = candidates[0]
+        require(process["cwd"] == str(self.cwd) and process["group"] == info["foreground_process_group_id"],
+                "native foreground location mismatch")
+        metadata = a.get("agent_session") or {}
+        native = metadata.get("value")
+        require(native is None or metadata.get("agent") == "codex"
+                and metadata.get("source") == "herdr:codex" and metadata.get("kind") in ("id", "thread_id"),
+                "unexpected native metadata provider/source/kind")
+        identities = [v for v in (native, assignment.pop("native"), launch_native, expected) if v is not None]
+        require(all(native_id(v) == identities[0] for v in identities), "conflicting native identity")
+        basis = dict(assignment=assignment, process=process, terminal=a.get("terminal_id"))
+        require(self.basis is None or basis == self.basis, "native process or reservation changed")
+        self.basis = basis
+        return native
+
+    def receipt(self, folder, init):
+        value = json.loads(read_private(folder / "receipt.json", 4096))
+        require((folder / "receipt.json").stat().st_mtime_ns >= (folder / "sent.json").stat().st_mtime_ns,
+                "receipt predates delivery intent")
+        expected = dict(version=1, nonce=init["nonce"], TASKR_TASK=str(self.task),
+                        TASKR_LAUNCH=str(self.launch), HERDR_ENV="1", HERDR_PANE_ID=self.pane)
+        require(set(value) == set(expected) | {"CODEX_THREAD_ID", "CODEX_SESSION_ID"}
+                and all(value[k] == v for k, v in expected.items())
+                and native_id(value["CODEX_THREAD_ID"]) == native_id(value["CODEX_SESSION_ID"]),
+                "native receipt binding mismatch")
+        return value["CODEX_THREAD_ID"]
+
+    def report(self, native):
+        self.guard(native)
+        self.preflight()
+        request = dict(id="taskr-native-shell-" + secrets.token_hex(16), method="pane.report_agent_session",
+                       params=dict(pane_id=self.pane, source="herdr:codex", agent="codex",
+                                   seq=time.time_ns(), agent_session_id=native))
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(min(1, self.remaining()))
+            conn.connect(self.socket)
+            conn.sendall(encoded(request))
+            data = bytearray()
+            while b"\n" not in data:
+                part = conn.recv(4096)
+                require(part and len(data) + len(part) <= 16384, "native report reply missing/oversized")
+                data.extend(part)
+            response = json.loads(data)
+            require(response.get("id") == request["id"] and response.get("result", {}).get("type") == "ok"
+                    and "error" not in response, "native report rejected")
+        require(self.guard(native) == native, "native report ignored; work withheld")
+
+    def script(self, init, folder):
+        expected = dict(TASKR_TASK=str(self.task), TASKR_LAUNCH=str(self.launch), HERDR_ENV="1", HERDR_PANE_ID=self.pane)
+        prefix = "expected = " + repr(expected) + "\nnonce = " + repr(init["nonce"]) + "\n"
+        prefix += "receipt = " + repr(str(folder / "receipt.json")) + "\nnotify = " + repr(str(folder / "notify")) + "\n"
+        return (prefix + '''import json, os, stat, uuid
+if not all(os.environ.get(k) == v for k, v in expected.items()):
+    raise RuntimeError('bootstrap environment mismatch')
+thread = os.environ['CODEX_THREAD_ID']
+session = os.environ['CODEX_SESSION_ID']
+if not str(uuid.UUID(thread)) == thread == session:
+    raise RuntimeError('bootstrap native identity mismatch')
+value = dict(expected, version=1, nonce=nonce, CODEX_THREAD_ID=thread, CODEX_SESSION_ID=session)
+fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+with os.fdopen(fd, 'w') as f:
+    os.fchmod(f.fileno(), 0o600)
+    json.dump(value, f, sort_keys=True)
+    f.flush()
+    os.fsync(f.fileno())
+try:
+    fd = os.open(notify, os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    try:
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            raise RuntimeError('invalid notification FIFO')
+        os.write(fd, b'1')
+    finally:
+        os.close(fd)
+except OSError:
+    pass
+''').encode()
+
+    def run(self):
+        base = Path.home() / ".local/state/taskr/native-identity"
+        physical = base.resolve()
+        require(self.cwd != physical and self.cwd not in physical.parents, "artifacts must be outside checkout")
+        # One attempt namespace per ledger/launch, even if generation, CLI or checkout changes.
+        key = dict(db=self.context["db"], launch=self.launch)
+        folder = base / hashlib.sha256(encoded(key)).hexdigest()
+        if not folder.exists() and not folder.is_symlink():
+            self.guard()
+        base.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_dir(base)
+        private_dir(folder)
+        lock = os.open(folder / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        try:
+            s = os.fstat(lock)
+            require(stat.S_ISREG(s.st_mode) and s.st_uid == os.geteuid() and stat.S_IMODE(s.st_mode) == 0o600
+                    and s.st_nlink == 1, "unsafe bootstrap lock")
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return self.initialize(folder)
+        finally:
+            os.close(lock)
+
+    def initialize(self, folder):
+        init_path = folder / "init.json"
+        sent = folder / "sent.json"
+        receipt = folder / "receipt.json"
+        init = None
+        if init_path.exists() or init_path.is_symlink():
+            init = json.loads(read_private(init_path))
+            require(init["context"] == self.context and (self.basis is None or init["basis"] == self.basis),
+                    "stale bootstrap attempt")
+            self.basis = init["basis"]
+        method = "existing-native-metadata"
+        if sent.exists() or sent.is_symlink():
+            require(init is not None, "sent shell intent has no initialization; never resend")
+            require(json.loads(read_private(sent)) == dict(nonce=init["nonce"]), "invalid sent marker")
+            require(read_private(folder / "probe.py") == self.script(init, folder), "bootstrap script changed")
+            require(receipt.exists(), "shell delivery uncertain; matching receipt required, never resend")
+            native = self.receipt(folder, init)
+            self.guard(native)
+            method = "native-shell-receipt"
+        else:
+            native = self.guard()
+            if init is None:
+                require(not receipt.exists() and not receipt.is_symlink(), "orphaned shell receipt; never resend")
+                init = dict(context=self.context, basis=self.basis, nonce=secrets.token_hex(24))
+                write_once(init_path, encoded(init))
+        if method != "native-shell-receipt" and native is None:
+            script = folder / "probe.py"
+            content = self.script(init, folder)
+            if script.exists() or script.is_symlink():
+                require(read_private(script) == content, "bootstrap script changed")
+            else:
+                write_once(script, content)
+            notify = folder / "notify"
+            if not notify.exists():
+                os.mkfifo(notify, 0o600)
+            s = notify.lstat()
+            require(stat.S_ISFIFO(s.st_mode) and s.st_uid == os.geteuid() and stat.S_IMODE(s.st_mode) == 0o600,
+                    "unsafe completion FIFO")
+            fd = os.open(notify, os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW)
+            try:
+                self.guard()
+                write_once(sent, encoded(dict(nonce=init["nonce"])))
+                python = str(Path(sys.executable).resolve(strict=True))
+                command = "! " + " ".join(shlex.quote(v) for v in (python, "-I", "-B", str(script)))
+                self.herdr("agent", "prompt", self.pane, command)
+                with selectors.DefaultSelector() as sel:
+                    sel.register(fd, selectors.EVENT_READ)
+                    require(sel.select(self.remaining()), "native receipt deadline; never resend")
+                    require(os.read(fd, 2) == b"1", "invalid receipt notification")
+                native = self.receipt(folder, init)
+            finally:
+                os.close(fd)
+            # Default wait includes done; the exact interactive guard still rejects blocked/working.
+            self.herdr("agent", "wait", self.name, "--timeout", str(max(1, int(self.remaining() * 1000))))
+            self.guard(native)
+            method = "native-shell-receipt"
+        self.guard(native)
+        if method == "native-shell-receipt":
+            self.report(native)
+        require(self.guard(native) == native, "native metadata absent after initialization")
+        provenance = dict(version=1, method=method, hook_invoked=False, native_session=native,
+                          context=self.context, basis=self.basis, nonce=init["nonce"])
+        path = folder / "provenance.json"
+        if path.exists() or path.is_symlink():
+            require(json.loads(read_private(path)) == provenance, "bootstrap provenance mismatch")
+        else:
+            write_once(path, encoded(provenance))
+        require(self.guard(native) == native, "native metadata changed before return")
+        return dict(native_session=native, provenance_path=str(path))
+
+
+def main():
+    def expired(*_):
+        raise RuntimeError("native initialization exceeded 30 seconds; work withheld")
+    signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, 30)
+    try:
+        print(json.dumps(Adapter(sys.argv[1:]).run()))
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError, IndexError, AttributeError, subprocess.SubprocessError) as e:
+        print("herdr-codex-identity: " + str(e), file=sys.stderr)
+        return 1
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

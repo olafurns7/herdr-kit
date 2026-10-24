@@ -12,6 +12,10 @@ Generated output goes to a repository path only when that repository's instructi
 allow it. Otherwise keep the proposed content in the task's authorized report path.
 Preserve existing verification ownership and stay inside the granted edit scope.
 
+For task-local proof profiles or a covered formal boundary, use
+[task proof and code sync](references/task-proof.md). Select checks by risk;
+trivial edits need no formal model. A map routes to owned checks, not extra agents.
+
 ## Author from the project
 
 Inspect documented start commands, existing tests and harnesses, entry points,

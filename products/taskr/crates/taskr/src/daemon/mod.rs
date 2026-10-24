@@ -145,7 +145,7 @@ impl Log {
             let _ = writeln!(file, "{} {text}", store::now());
         }
     }
-    fn limited(&self, key: &str, interval: Duration, text: &str) {
+    pub(crate) fn limited(&self, key: &str, interval: Duration, text: &str) {
         let mut limited = self.limited.lock().unwrap();
         if let Some((at, n)) = limited.get_mut(key)
             && at.elapsed() < interval
@@ -941,11 +941,13 @@ fn resident(
     }
     let mut pending = None;
     let mut poller = github::Poller::new(&state.dir, db.is_some());
+    let mut work_controller = crate::work_controller::Scheduler::default();
     loop {
         if interrupted.load(Ordering::SeqCst) {
             return "signal";
         }
         let now = Instant::now();
+        work_controller.tick(&state.log);
         if now >= heartbeat {
             heartbeat = now + Duration::from_secs(15);
             if !stay && !Path::new(&state.sock).exists() {

@@ -107,6 +107,24 @@ pub(super) fn stored(argv: &[String]) -> bool {
                 .first()
                 .is_none_or(|s| matches!(s.as_str(), "ls" | "state")))
         && name != "message"
+        && !(name == "work"
+            && args.first().is_some_and(|s| {
+                matches!(
+                    s.as_str(),
+                    "list" | "show" | "campaigns" | "dispatch" | "inputs" | "hash"
+                )
+            }))
+        && !(name == "work"
+            && args.first().is_some_and(|s| {
+                matches!(
+                    s.as_str(),
+                    "drive" | "run-checks" | "source" | "inspect-stop" | "_bounded-check"
+                )
+            }))
+        && !(name == "jobs"
+            && args
+                .first()
+                .is_some_and(|s| matches!(s.as_str(), "get" | "validate")))
         && !(name == "consumer" && args.first().is_none_or(|s| s == "show"))
         && !wants_help(args)
 }
@@ -147,6 +165,19 @@ pub(super) fn check_args(argv: &[String]) -> Result<(), String> {
         "inbox" => &["as", "limit", "help"],
         "delivery" => &["as", "session", "adapter", "fence", "after", "help"],
         "consumer" => &["as", "session", "holder", "ttl", "fence", "force", "help"],
+        "work" => &[
+            "as",
+            "generation",
+            "data",
+            "file",
+            "enabled",
+            "max-active",
+            "max-review-pending",
+            "workspace",
+            "no-slotr",
+            "help",
+        ],
+        "jobs" => &["as", "generation", "binding", "data", "help"],
         "wait" | "ack" if fenced => &["fence", "session", "help"],
         _ => &[],
     };
@@ -195,7 +226,7 @@ pub(super) fn check_args(argv: &[String]) -> Result<(), String> {
         if value.is_none()
             && !matches!(
                 key,
-                "planned" | "confirm" | "prompt" | "help" | "force" | "push" | "pane"
+                "planned" | "confirm" | "prompt" | "help" | "force" | "push" | "pane" | "no-slotr"
             )
         {
             iter.next();
@@ -217,6 +248,16 @@ pub(super) fn check_args(argv: &[String]) -> Result<(), String> {
             return Err(
                 "push is a local process on its own host; it is not available over RPC".into(),
             );
+        }
+        "work"
+            if args.first().is_some_and(|s| {
+                matches!(
+                    s.as_str(),
+                    "drive" | "run-checks" | "source" | "inspect-stop" | "_bounded-check"
+                )
+            }) =>
+        {
+            return Err("work execution runs on its own host; it is not available over RPC".into());
         }
         _ => {}
     }
@@ -242,6 +283,9 @@ pub(super) fn check_args(argv: &[String]) -> Result<(), String> {
                 taskr_core::goflag::quote(value)
             ));
         }
+    }
+    if name == "work" && flag(args, "file").is_some() {
+        return Err("work --file must be captured by the client as --data".into());
     }
     if name == "tmp"
         && args
@@ -485,6 +529,100 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn work_reads_are_fresh_and_mutations_store_only_inline_json() {
+        for verb in ["list", "show", "inputs", "campaigns", "dispatch", "hash"] {
+            assert!(!stored(&argv(&["work", verb, "1"])));
+            assert!(check_args(&argv(&["work", verb, "1"])).is_ok());
+        }
+        for verb in [
+            "configure",
+            "add",
+            "revise",
+            "queue",
+            "claim",
+            "reserve",
+            "bind",
+            "started",
+            "observe",
+            "uncertain",
+            "reconcile",
+            "submit",
+            "advance",
+            "cancel",
+            "recover",
+            "stopped",
+            "block",
+        ] {
+            assert!(stored(&argv(&["work", verb, "1"])));
+        }
+        assert!(
+            check_args(&argv(&[
+                "work",
+                "add",
+                "--data",
+                r#"{"campaign":1,"title":"x"}"#
+            ]))
+            .is_ok()
+        );
+        assert!(
+            check_args(&argv(&["work", "add", "--file", "/not-on-server.json"]))
+                .unwrap_err()
+                .contains("captured by the client")
+        );
+        assert!(
+            check_args(&argv(&[
+                "work",
+                "claim",
+                "1",
+                "--generation",
+                "0",
+                "--generation=0"
+            ]))
+            .is_err()
+        );
+        assert!(check_args(&argv(&["work", "add", "--data", "{}", "--data={}"])).is_err());
+        assert!(!stored(&argv(&["work", "claim", "1", "--help"])));
+    }
+
+    #[test]
+    fn jobs_route_without_spooling_and_work_execution_stays_local() {
+        assert!(crate::cli::known("jobs"));
+        for verb in ["get", "validate"] {
+            assert!(!stored(&argv(&[
+                "jobs",
+                verb,
+                "--as",
+                "1",
+                "--generation",
+                "0"
+            ])));
+        }
+        for verb in ["add", "await", "poll", "receipt", "update", "reconcile"] {
+            let args = argv(&["jobs", verb, "--data", "{}"]);
+            assert!(stored(&args));
+            assert!(!crate::net::spoolable(&args));
+            assert!(check_args(&args).is_ok());
+        }
+        assert!(check_args(&argv(&["jobs", "await", "--binding", "a", "--binding=b"])).is_err());
+        for verb in [
+            "drive",
+            "run-checks",
+            "source",
+            "inspect-stop",
+            "_bounded-check",
+        ] {
+            let args = argv(&["--json", "work", verb, "1"]);
+            assert!(!stored(&args));
+            assert!(!crate::net::spoolable(&args));
+            assert!(
+                check_args(&args)
+                    .unwrap_err()
+                    .contains("not available over RPC")
+            );
+        }
+    }
+
     #[test]
     fn rpc_flag_and_storage_contract() {
         let req=decode(br#"{"argv":[null,"status"],"cwd":null,"env":{"TASKR_TASK":null},"request_key":"null-request"}"#).unwrap();

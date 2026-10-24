@@ -71,9 +71,14 @@ slotr --version
 The workload receives these environment variables:
 
 - `SLOTR_RUN`
+- `SLOTR_INVOCATION`, the current invocation's 32-character hexadecimal nonce
 - `SLOTR_POOL`
 - `SLOTR_SLOT`
 - `SLOTR_PORT_BASE`, when a port block is configured
+
+A check runner can record `SLOTR_RUN` and `SLOTR_INVOCATION` in its own receipt
+before it starts a payload. The supervisor replaces inherited values. These
+identify admission; they do not prove command success or process cleanup.
 
 On admission stderr prints exactly `slotr: admitted RUN`.
 Every automatic stop prints `slotr: stopped RUN: REASON` on stderr and

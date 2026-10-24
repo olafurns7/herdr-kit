@@ -188,6 +188,12 @@ pub fn new(db: &mut Connection, fs: &FlagSet) -> Result<Value> {
 pub fn launch(db: &mut Connection, id: i64, fs: &FlagSet) -> Result<Value> {
     transaction(db, |tx| {
         let t = open_task(tx, id)?;
+        let work_owned: bool = tx.query_row("select exists(select 1 from work_assignments where launch_id=? and process_state!='stopped')", [t.launch], |r| r.get(0))?;
+        if work_owned {
+            return Err(reject(
+                "live work-owned launch cannot be replaced; reconcile first",
+            ));
+        }
         if t.parent.is_none() {
             return Err(reject(format!(
                 "task {id} is a root task; launch records a lane, so give it a task created with --parent"
@@ -274,6 +280,12 @@ pub fn launch(db: &mut Connection, id: i64, fs: &FlagSet) -> Result<Value> {
 pub fn close(db: &mut Connection, id: i64, outcome: &str) -> Result<Value> {
     let report = documents::prepare_report(db, id, "", false);
     let out = transaction(db, |tx| {
+        let live:bool=tx.query_row("select exists(select 1 from work_assignments where lane_id=? and process_state!='stopped')",[id],|r|r.get(0))?;
+        if live {
+            return Err(reject(
+                "live work lane cannot close before process stop/cancellation reconciliation",
+            ));
+        }
         let t = task(tx, id)?;
         let mut out = json!({"ok":true,"task_id":id,"status":"closed"});
         let (workspace, tab): (String, String) = tx.query_row(

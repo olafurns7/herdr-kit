@@ -2609,7 +2609,28 @@ fn detail_lines(app: &App, width: usize) -> Option<(String, Vec<Line<'static>>)>
             }
             (
                 format!("{} · #{}", c.name, c.id),
-                vec![Line::from(head)],
+                {
+                    let mut lines = vec![Line::from(head)];
+                    if let Some(w) = &c.work_counts {
+                        let counts = format!(
+                            "Tasks {} · backlog {} · queued {} · active {} · verifying {} · done {} · cancelled {} · blocked/recheck {}",
+                            w.total,
+                            w.backlog,
+                            w.queued,
+                            w.active,
+                            w.verifying,
+                            w.done,
+                            w.cancelled,
+                            w.blocked
+                        );
+                        lines.extend(
+                            wrap(&counts, width)
+                                .into_iter()
+                                .map(|line| Line::from(sp(line, t.sub))),
+                        );
+                    }
+                    lines
+                },
                 c.status_text().to_string(),
             )
         }
