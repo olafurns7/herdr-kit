@@ -70,16 +70,23 @@ add_keep_arg() {
 }
 
 # Atomically replaces DEST with SRC's content through a temporary file in
-# DEST's directory. An existing DEST keeps its mode; a new one gets MODE. The
+# DEST's directory. An existing DEST keeps its mode, a read-only one (0444)
+# included; a new one gets MODE. Only the temporary file is chmodded. The
 # caller has checked that DEST is not a symlink.
 replace_file() {
     replace_src=$1
     replace_dest=$2
     replace_tmp=$(mktemp "$(dirname "$replace_dest")/.herdr-setup.XXXXXX") || return 1
+    replace_locked=0
     if ! { [ -f "$replace_dest" ] && cp -p "$replace_dest" "$replace_tmp" 2>/dev/null; }; then
         chmod "${3:-0644}" "$replace_tmp"
+    elif [ ! -w "$replace_tmp" ]; then
+        replace_locked=1
+        chmod u+w "$replace_tmp"
     fi
-    if cat "$replace_src" >"$replace_tmp" && mv -f "$replace_tmp" "$replace_dest"; then
+    if cat "$replace_src" >"$replace_tmp" \
+        && { [ "$replace_locked" -eq 0 ] || chmod u-w "$replace_tmp"; } \
+        && mv -f "$replace_tmp" "$replace_dest"; then
         return 0
     fi
     rm -f "$replace_tmp"

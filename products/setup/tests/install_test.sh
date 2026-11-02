@@ -242,27 +242,48 @@ esac
         assert 'SYNTH_OPERATOR_POLICY' not in out
         assert (target / 'instructions.local.md').read_text() == 'SYNTH_OPERATOR_POLICY\n'
 
-    for outcome in ('UPDATE', 'MERGE', 'KEEP'):
-        h = case(f'merged global instructions retain placement contract: {outcome}')
+    merged = instruction_base + b'\nSYNTH_OPERATOR_POLICY\n'
+    for outcome in ('UPDATE', 'EDITED', 'UNRECORDED', 'LOCKED', 'KEEP'):
+        h = case(f'merged global instructions are regenerated: {outcome}')
         overlay = h / '.config/herdr-fleet/instructions.local.md'
         write(overlay, 'SYNTH_OPERATOR_POLICY\n')
         for dest in instruction_paths: write(h / dest, 'previous\n')
-        write(h / '.local/state/herdr-setup/installed', ''.join(f'{sha(h / dest)} {dest}\n' for dest in instruction_paths))
-        if outcome == 'MERGE':
+        if outcome != 'UNRECORDED':
+            write(h / '.local/state/herdr-setup/installed', ''.join(f'{sha(h / dest)} {dest}\n' for dest in instruction_paths))
+        if outcome in ('EDITED', 'LOCKED'):
             for dest in instruction_paths: write(h / dest, 'edited\n')
+        if outcome == 'LOCKED':
+            for dest in instruction_paths: (h / dest).chmod(0o444)
         if outcome == 'KEEP': write(h / '.config/herdr-setup/keep', '\n'.join(instruction_paths) + '\n')
+        modes = {p: p.stat().st_mode for p in (h / '.claude', h / '.codex', *(h / d for d in instruction_paths))}
         out = run(h, '--fleet')
         for dest in instruction_paths:
-            assert f'{outcome} {h / dest}' in out
-            sidecar = h / (dest + '.herdr-setup')
-            if outcome == 'UPDATE': assert (h / dest).read_bytes() == instruction_base + b'\nSYNTH_OPERATOR_POLICY\n'
-            elif outcome == 'MERGE':
-                assert (h / dest).read_text() == 'edited\n'
-                assert sidecar.read_bytes() == instruction_base + b'\nSYNTH_OPERATOR_POLICY\n'
-            else:
+            prev = h / (dest + '.herdr-setup-prev')
+            assert not (h / (dest + '.herdr-setup')).exists()
+            if outcome == 'KEEP':
+                assert f'KEEP {h / dest}' in out
                 assert (h / dest).read_text() == 'previous\n'
-                assert not sidecar.exists()
+                assert not prev.exists()
+                continue
+            assert f'UPDATE {h / dest}' in out
+            assert (h / dest).read_bytes() == merged
+            assert (h / dest).stat().st_mode == modes[h / dest]
+            if outcome == 'UPDATE':
+                assert not prev.exists() and 'SAVE' not in out
+            else:
+                assert out.count(f'SAVE {prev} ') == 1
+                assert prev.read_text() == ('previous\n' if outcome == 'UNRECORDED' else 'edited\n')
+                assert prev.stat().st_mode & 0o777 == 0o600
+        assert not [p for p in h.rglob('.herdr-setup.*')], 'temporary file left behind'
+        assert all(p.stat().st_mode == m for p, m in modes.items() if p.is_dir())
+        if outcome == 'LOCKED': assert all(m & 0o777 == 0o444 for p, m in modes.items() if not p.is_dir())
         assert overlay.read_text() == 'SYNTH_OPERATOR_POLICY\n'
+        before = {p: (p.read_bytes(), p.stat().st_mode) for p in h.rglob('*herdr-setup-prev')}
+        rerun = run(h, '--fleet')
+        assert 'SAVE' not in rerun
+        assert {p: (p.read_bytes(), p.stat().st_mode) for p in h.rglob('*herdr-setup-prev')} == before
+        if outcome != 'KEEP':
+            for dest in instruction_paths: assert f'SKIP {h / dest}' in rerun
 
     h = case('fleet staging preserves overlay and private table byte-for-byte')
     overlay = h / '.agents/skills/herdr-fleet/local.md'
@@ -696,6 +717,7 @@ exec /bin/cp "$@"
             if outcome == 'MERGE':
                 assert (h / dest).read_text() == 'edited content\n'
                 assert (h / (dest + '.herdr-setup')).read_bytes() == expected
+                assert not (h / (dest + '.herdr-setup-prev')).exists()  # no overlay: today's placer
                 assert f'{recorded} {dest}' in (h / '.local/state/herdr-setup/installed').read_text()
             if dest == '.agents/skills/taskr/SKILL.md':
                 assert (h / '.agents/skills/taskr/references/format.md').is_file()
@@ -768,6 +790,9 @@ exec /bin/cp "$@"
     known_gaps = {
         ('.agents/skills/herdr-orchestration/SKILL.md', 'local.md'),
         ('.agents/skills/herdr-orchestration/model-selection.md', '~/.agents/skills/herdr-fleet/local.md'),
+        # The private instructions overlay is the one source of model policy.
+        ('.agents/skills/herdr-orchestration/lanes.md', '~/.config/herdr-fleet/instructions.local.md'),
+        ('.agents/skills/herdr-orchestration/model-selection.md', '~/.config/herdr-fleet/instructions.local.md'),
     }
     gaps, checked = pointer_gaps(h)
     # Current unique local targets: orchestration 34, taskr 24; allow a small margin.
@@ -786,6 +811,8 @@ exec /bin/cp "$@"
     assert pointer_gaps(h)[0] == {
         ('.agents/skills/herdr-orchestration/SKILL.md', 'local.md'),
         ('.agents/skills/herdr-orchestration/model-selection.md', '~/.agents/skills/herdr-fleet/local.md'),
+        ('.agents/skills/herdr-orchestration/lanes.md', '~/.config/herdr-fleet/instructions.local.md'),
+        ('.agents/skills/herdr-orchestration/model-selection.md', '~/.config/herdr-fleet/instructions.local.md'),
         ('.agents/skills/taskr/references/recovery.md', 'recovery.md#agent-hookz'),
         ('.agents/skills/taskr/references/recovery.md', '#agent-hookz'),
     }, 'broken file or same-file anchors must fail; valid same-file anchors must pass'

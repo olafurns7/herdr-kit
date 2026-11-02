@@ -188,7 +188,7 @@ expect_no_calls() {
 
 # The lane flags: full permissions, no sandbox (owner decision, 2026-10-07).
 claude_flags() {
-    printf '%s' "--model|claude-opus-5-5|--effort|$1|--dangerously-skip-permissions|--settings|{\"agentPushNotifEnabled\":false,\"enabledPlugins\":{\"posthog@claude-plugins-official\":false}}"
+    printf '%s' "--model|claude-opus-5-5|--effort|$1|--dangerously-skip-permissions|--settings|{\"agentPushNotifEnabled\":false,\"autoMemoryEnabled\":false,\"enabledPlugins\":{\"posthog@claude-plugins-official\":false}}"
 }
 # codex_flags MODEL EFFORT TRUST
 codex_flags() {
@@ -304,7 +304,7 @@ run_launch sh "$launch_sh" haiku-gather gather-x "$brief" "$report" 42
 expect_rc 0
 expect_calls "$(tab_calls gather-x)" \
     "$(tail_calls gather-x researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$claude_setup" \
-        '|--model|claude-haiku-5-5|--effort|medium|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}}')"
+        '|--model|claude-haiku-5-5|--effort|medium|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"autoMemoryEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}}')"
 
 new_case 'Luna gather launches as a researcher' researcher
 run_launch sh "$launch_sh" luna-gather gather-x "$brief" "$report" 42
