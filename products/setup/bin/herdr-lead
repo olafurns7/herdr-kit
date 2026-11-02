@@ -2,7 +2,7 @@
 # Start one same-host Claude root lead, bound to one immutable adopt generation.
 set -u
 
-usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT'
+usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT | herdr-lead idle ROOT [--hours N]'
 root= pane= gen= mcp_config= agent= lease=unknown check_task= step=0
 tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf=
 cleanup() {
@@ -226,6 +226,28 @@ if [ "$command" = check ]; then
         printf 'live\n'; exit 0
     fi
     printf 'stale\n'; exit 1
+fi
+# Read-only session-cap watcher: list worker lanes whose newest ledger event is N hours old or older.
+if [ "$command" = idle ]; then
+    hours=12
+    if [ $# -eq 2 ] && [ "$1" = --hours ] && number "$2"; then hours=$2
+    elif [ $# -ne 0 ]; then die "$usage"; fi
+    campaign=$(ledger --json campaign "$root") || { printf 'herdr-lead: read campaign %s failed\n' "$root" >&2; exit 1; }
+    lanes=$(printf '%s\n' "$campaign" | jq -r '.lanes | if type == "array" then .[] else error("missing lanes") end
+        | select(.status != "closed" and .status != "planned" and ([.role] | inside(["orchestrator","sub-orchestrator","gate"]) | not))
+        | "\(.id)\t\(.name)\t\(.role)"') || { printf 'herdr-lead: read lanes of %s failed\n' "$root" >&2; exit 1; }
+    tab=$(printf '\t')
+    printf '%s\n' "$lanes" | while IFS=$tab read -r id name role; do
+        [ -n "$id" ] || continue
+        # log includes prompts and answers filed on the lane and messages sent to it.
+        log=$(ledger --json log "$id" --limit 1) || { printf 'herdr-lead: read log %s failed\n' "$id" >&2; exit 1; }
+        printf '%s\n' "$log" | jq -sr --arg id "$id" --arg name "$name" --arg role "$role" --argjson hours "$hours" '
+            [.[] | select(.record == "event")] | last // empty
+            | ((now - (.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 3600 | floor) as $age
+            | select($age >= $hours) | "idle \($id) \($name) \($role) \($age) last_event=\(.id)"' ||
+            { printf 'herdr-lead: read log %s failed\n' "$id" >&2; exit 1; }
+    done
+    exit
 fi
 case $command in start | move) ;; *) die "$usage" ;; esac
 [ $# -ge 1 ] || die "$usage"
