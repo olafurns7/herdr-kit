@@ -15,15 +15,11 @@ Run recurring watches and polls as `herdr-loop` in their own shell tab (`launch.
 
 ## Ledger records
 
-Use the ledger for every campaign so registrations, receipts, questions, plans, and decisions survive a session change. Before reading logs lane by lane for "what did we decide about X", run `taskr search <terms> --root <root>`. Apart from a herdr-loop CHECK script and its last-seen marker, do not write campaign logs, handoff files, state journals, marker files, watch scripts, `*.pane` files, or pane-grep loops. Reports, decision reasoning, and review evidence checkpoints (`journal=`, below) stay in files.
+Use the ledger for every campaign so registrations, receipts, questions, plans, and decisions survive a session change. Before reading logs lane by lane for "what did we decide about X", run `taskr search <terms> --root <root>`. Apart from a herdr-loop CHECK script and its last-seen marker, and a session-cap handover file ("Context cost"), do not write campaign logs, handoff files, state journals, marker files, watch scripts, `*.pane` files, or pane-grep loops. Reports, decision reasoning, and review evidence checkpoints (`journal=`, below) stay in files.
 
 Record each decision, sha, and next step in the ledger as it lands (`taskr decide`, `taskr set`, `taskr next`). Verdicts and their reasoning stay in the report files; taskr copies each report's text into the ledger when the lane reports it. The scratchpad under `/tmp` does not survive a reboot.
 
-When a lane asks about a dependency the lead cannot settle now, answer at once:
-ready with what exists; blocked with the named owner and follow-up; or end the
-turn and re-prompt later with a named follow-up. Never leave a blocking ask
-unanswered. Route root asks explicitly with `--owner`; a peer root gets
-`taskr prompt TARGET --as ROOT --text TEXT`.
+When a lane asks about a dependency the lead cannot settle now, answer at once: ready with what exists; blocked with the named owner and follow-up; or end the turn and re-prompt later with a named follow-up. Never leave a blocking ask unanswered. Route root asks explicitly with `--owner`; a peer root gets `taskr prompt TARGET --as ROOT --text TEXT`.
 
 Before reporting done, audit each claim against its evidence (commit, check output, review verdict); cite that evidence in the final report and name what was not verified.
 
@@ -116,6 +112,8 @@ With a branch per lane, the parent merges each lane branch into the campaign bra
 ## Context cost
 
 Long-lived orchestrator contexts dominate Claude cost. Keep worker output out of your context: read the report file and `git diff --stat`, not full transcripts, and open a diff hunk only when a decision needs it. Prefer a fresh orchestrator session per task, with a `taskr handover`, over a multi-day session. The host layer owns compaction settings.
+
+Session cap: a worker lane whose newest ledger event (its own, or a prompt or answer sent to it) is 12 h old or older starts its next round in a fresh session. `herdr-lead idle <root> [--hours N]` lists those lanes, read-only; run it at each settled wait and before each handover, or as a herdr-loop CHECK. Active time never counts, and nothing is stopped, prompted or relaunched automatically. Before the next round for a listed lane, do not prompt the old session. Write a handover file in the campaign directory (brief path, report path, what the report says is done, open findings, the exact next step), stop the old agent (`teardown.md` "Per-worker teardown"), and start the round fresh (`recovery.md` "Fresh round after the session cap"). The cap never restarts a Claude orchestrator: hub, campaign leads and sub-orchestrators keep their sessions.
 
 ## Blocked or odd status
 

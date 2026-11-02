@@ -147,6 +147,8 @@ case "$1 $2" in
             printf '{"acked_event_id":%s}\n' "${ACK:-9}"
         fi ;;
     'close 43') printf '{"task_id":43}\n' ;;
+    'campaign 50') cat "$CASE/campaign" ;;
+    'log 5'[0-9]) cat "$CASE/log-$2" ;;
     *) exit 1 ;;
 esac
 EOF
@@ -851,6 +853,75 @@ LEASE=bad
 run check 42
 expect_rc 2
 has out unknown
+# Session cap: idle lists worker lanes whose newest ledger event is old enough, and writes nothing.
+stamp() { jq -nr --argjson h "$1" 'now - $h * 3600 | strftime("%Y-%m-%dT%H:%M:%S.123Z")'; }
+idle_fixture() {
+    printf '{"lanes":[' >"$case_dir/campaign"
+    sep=
+    for spec in 51:impl:implementer:13 52:fresh:implementer:11 53:prompted:implementer:13 \
+        54:lead:orchestrator:13 55:sub:sub-orchestrator:13 56:check:gate:13; do
+        IFS=: read -r id lname lrole age <<SPEC
+$spec
+SPEC
+        printf '%s{"id":%s,"name":"%s","role":"%s","status":"open"}' "$sep" "$id" "$lname" "$lrole" >>"$case_dir/campaign"
+        sep=,
+        {
+            printf '{"record":"launch","task_id":%s}\n' "$id"
+            printf '{"record":"event","id":%s0,"kind":"note","created_at":"%s"}\n' "$id" "$(stamp "$age")"
+            # The prompt is newer steering text and resets the clock.
+            [ "$id" != 53 ] || printf '{"record":"event","id":%s1,"kind":"prompt","created_at":"%s"}\n' "$id" "$(stamp 1)"
+        } >"$case_dir/log-$id"
+    done
+    printf ']}\n' >>"$case_dir/campaign"
+}
+read_only() {
+    if grep -v '^taskr|campaign|50|env=/$' "$case_dir/calls" | grep -v '^taskr|log|5[0-9]|--limit|1|env=/$' | grep . >/dev/null; then
+        fail "idle made a non-read call: $(cat "$case_dir/calls")"
+    fi
+    [ ! -e "$home/.local/state" ] || fail 'idle created state'
+}
+
+new_case 'idle lists only a worker lane inactive 12 h or more'
+idle_fixture
+run idle 50
+expect_rc 0
+[ "$(cat "$case_dir/out")" = 'idle 51 impl implementer 13 last_event=510' ] || fail "out: $(cat "$case_dir/out")"
+read_only
+
+new_case 'idle --hours 1 lowers the threshold'
+idle_fixture
+run idle 50 --hours 1
+expect_rc 0
+has out 'idle 51 impl implementer 13 last_event=510'
+has out 'idle 52 fresh implementer 11 last_event=520'
+lacks out 'orchestrator'
+lacks out ' gate '
+read_only
+
+new_case 'idle with no inactive lane prints nothing'
+idle_fixture
+run idle 50 --hours 14
+expect_rc 0
+[ ! -s "$case_dir/out" ] || fail "out: $(cat "$case_dir/out")"
+
+new_case 'idle failed status read exits nonzero'
+idle_fixture
+FAIL='taskr campaign'
+run idle 50
+[ "$rc" != 0 ] || fail 'exit 0 on a failed read'
+[ ! -s "$case_dir/out" ] || fail "out: $(cat "$case_dir/out")"
+
+new_case 'idle failed lane log read exits nonzero'
+idle_fixture
+rm "$case_dir/log-52"
+run idle 50
+[ "$rc" != 0 ] || fail 'exit 0 on a failed read'
+
+new_case 'idle refuses a bad --hours'
+run idle 50 --hours 0
+expect_rc 2
+[ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+
 # Review 7908 F1: A reads a dead owner and pauses mid-reclaim while B and then C start. Only one may enter.
 for script in herdr-lead herdr-hub; do
     new_case "$script start.lock reclaim admits one starter while another reclaims"

@@ -45,11 +45,7 @@ After a reboot or crash, first tear down stranded sessions as `teardown.md` "Wor
 
 ## Resume rules and efforts
 
-For an intentional resume, use the saved report and launch record. Preserve the
-recorded native home, account, model, and session; validate the session as nonempty
-and not literal `null`. Apply the current authorized lane settings from the
-resolved table. If the account or session cannot be established, stop and report.
-The examples below illustrate CLI shape; substitute the configured model/effort.
+For an intentional resume, use the saved report and launch record. Preserve the recorded native home, account, model, and session; validate the session as nonempty and not literal `null`. Apply the current authorized lane settings from the resolved table. If the account or session cannot be established, stop and report. The examples below illustrate CLI shape; substitute the configured model/effort.
 
 ## Locate and verify the pane
 
@@ -103,3 +99,7 @@ herdr pane run "$helper_pane_id" ' export PATH="$PATH:$HOME/.opencode/bin" OPENC
 herdr agent start glm-<slug> --kind opencode --pane "$helper_pane_id" --timeout 90000 -- \
   --standalone --auto --session "$opencode_sid"
 ```
+
+## Fresh round after the session cap
+
+For a worker lane that `herdr-lead idle` lists (`workflow.md` "Context cost"), once its handover file is written and the old agent is stopped: verify the pane as in "Locate and verify the pane" and "Stop before replacing", register a new launch on the same task, and start the agent in that pane with a fresh session (never `--resume`) under the lane's current authorized lane settings (`launch.md`). Then send the round with `taskr prompt <task> --file <handover>`. The cap covers worker lanes only; it never restarts a Claude orchestrator (hub, campaign lead, sub-orchestrator).
