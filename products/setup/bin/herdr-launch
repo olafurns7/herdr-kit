@@ -1,7 +1,9 @@
 #!/bin/sh
 # Starts one registered, verified Herdr worker in seven checked steps:
 # tab (or given pane), taskr new, taskr launch, pane env, env check,
-# herdr agent start, taskr prompt. The first failed step stops the run.
+# herdr agent start, taskr prompt --confirm (one Enter when no receipt
+# comes; the final line then ends submit_retry=enter). The first failed step
+# stops the run.
 # Usage: herdr-launch [--workspace W] [--cwd DIR] [--push] LANE NAME BRIEF REPORT PARENT [PANE]
 #        herdr-launch --reserved TASK LAUNCH LANE NAME BRIEF REPORT PARENT PANE
 #        herdr-launch --lanes
@@ -532,8 +534,33 @@ if [ -n "$reserved_task" ]; then
     fi
 fi
 
-# Step 7: hand over the brief.
-taskr prompt "$task" --file "$brief" >/dev/null || step_fail '7 (taskr prompt)'
+# Step 7: hand over the brief and block up to 60 s for the lane's got. A
+# brief pasted but never submitted leaves no receipt, so on no_receipt only
+# the pane goes to stderr, Enter is pressed once, and a got from this launch
+# is polled for up to 60 s more. rejected or delivery_unknown press nothing.
+# The brief is never sent twice.
+submit_retry=
+prompt_rc=0
+sent=$(taskr prompt "$task" --file "$brief" --confirm --confirm-timeout 60000) || prompt_rc=$?
+if [ "$prompt_rc" -ne 0 ]; then
+    case $prompt_rc:$sent in
+        5:*'"k":"no_receipt"'* | 5:*'"kind":"no_receipt"'*) ;;
+        *) step_fail '7 (taskr prompt)' ;;
+    esac
+    printf 'herdr-launch: step 7 no receipt in 60 s; pane before one Enter:\n' >&2
+    herdr pane read "$pane" --source recent-unwrapped --lines 40 >&2 \
+        || printf 'herdr-launch: herdr pane read failed\n' >&2
+    herdr pane send-keys "$pane" Enter >/dev/null || step_fail '7 (herdr pane send-keys Enter after no receipt)'
+    deadline=$(($(date +%s) + 60)) polls=0
+    until taskr log "$task" --json --limit 5 \
+        | jq -n -e --argjson launch "$launch" 'any(inputs; .kind == "got" and .launch_id == $launch)' >/dev/null 2>&1; do
+        polls=$((polls + 1))
+        [ "$polls" -lt 30 ] && [ "$(($(date +%s) + 2))" -le "$deadline" ] \
+            || step_fail '7 (no receipt 60 s after one Enter; inspect the pane, never resend)'
+        sleep 2
+    done
+    submit_retry=' submit_retry=enter'
+fi
 
 # Step 8, codex --push only: the push sidecar in its own tab. It waits up to
 # 30 min for the launch's native_home, which `taskr start` in the session
@@ -552,4 +579,4 @@ if [ -n "$push" ] && [ "$kind" = codex ]; then
 fi
 [ -z "$mcp_config" ] || extra=" mcp_config=$mcp_config"
 
-printf 'task=%s launch=%s tab=%s pane=%s%s\n' "$task" "$launch" "$tab" "$pane" "$extra"
+printf 'task=%s launch=%s tab=%s pane=%s%s%s\n' "$task" "$launch" "$tab" "$pane" "$extra" "$submit_retry"
