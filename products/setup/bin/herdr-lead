@@ -2,7 +2,7 @@
 # Start one same-host Claude root lead, bound to one immutable adopt generation.
 set -u
 
-usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT | herdr-lead idle ROOT [--hours N]'
+usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT | herdr-lead idle ROOT [--hours N] [--tokens N|NM]'
 root= pane= gen= mcp_config= agent= lease=unknown check_task= step=0
 tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf=
 cleanup() {
@@ -227,25 +227,75 @@ if [ "$command" = check ]; then
     fi
     printf 'stale\n'; exit 1
 fi
-# Read-only session-cap watcher: list worker lanes whose newest ledger event is N hours old or older.
+# Tokens the lane's current session has read (input + cache read + cache write), from its own session file.
+# Sets tokens, or cause when the file cannot be read here. Plain file reads only.
+session_tokens() {
+    tokens= cause=
+    if [ "$lane_host" != "$caller_host" ]; then cause=other-host; return; fi
+    case $provider:$ref in
+        :*) cause=no-launch; return ;;
+        *:) cause=no-session-ref; return ;;
+        *:*[!A-Za-z0-9_.-]* | *:.*) cause=bad-session-ref; return ;;
+    esac
+    case $provider in
+        claude)
+            # projects/<encoded cwd>/<session>.jsonl; one message spans several lines, so count each id once.
+            file=$(find "$home_dir/projects/" -mindepth 2 -maxdepth 2 -type f -name "$ref.jsonl" 2>/dev/null | head -n 1)
+            filter='reduce (inputs | select(.type == "assistant" and .message.usage != null)) as $m ({};
+                .[$m.message.id] = ($m.message.usage | (.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)))
+                | add // 0' ;;
+        codex)
+            # sessions/Y/M/D/rollout-*-<session>.jsonl; input_tokens already includes cached input.
+            file=$(find "$home_dir/sessions/" -type f -name "rollout-*-$ref.jsonl" 2>/dev/null | head -n 1)
+            filter='[inputs | select(.type == "event_msg" and .payload.type == "token_count")
+                | .payload.info.total_token_usage.input_tokens | numbers] | last // error("no token_count")' ;;
+        *) cause=provider-$provider; return ;;
+    esac
+    if [ -z "$file" ]; then cause=missing; return; fi
+    tokens=$(jq -n "$filter" "$file" 2>/dev/null) && case $tokens in '' | *[!0-9]*) false ;; esac || { tokens= cause=parse; }
+}
+# Read-only session-cap watcher: list worker lanes inactive N hours or more, or whose session read M tokens or more.
 if [ "$command" = idle ]; then
-    hours=12
-    if [ $# -eq 2 ] && [ "$1" = --hours ] && number "$2"; then hours=$2
-    elif [ $# -ne 0 ]; then die "$usage"; fi
+    hours=12 cap=150000000
+    while [ $# -gt 0 ]; do
+        [ $# -ge 2 ] || die "$usage"
+        case $1:$2 in
+            --hours:*) number "$2" || die "$usage"; hours=$2 ;;
+            --tokens:*M) number "${2%M}" || die "$usage"; cap=${2%M}000000 ;;
+            --tokens:*) number "$2" || die "$usage"; cap=$2 ;;
+            *) die "$usage" ;;
+        esac
+        shift 2
+    done
+    us=$(printf '\037')
     campaign=$(ledger --json campaign "$root") || { printf 'herdr-lead: read campaign %s failed\n' "$root" >&2; exit 1; }
     lanes=$(printf '%s\n' "$campaign" | jq -r '.lanes | if type == "array" then .[] else error("missing lanes") end
         | select(.status != "closed" and .status != "planned" and ([.role] | inside(["orchestrator","sub-orchestrator","gate"]) | not))
-        | "\(.id)\t\(.name)\t\(.role)"') || { printf 'herdr-lead: read lanes of %s failed\n' "$root" >&2; exit 1; }
-    tab=$(printf '\t')
-    printf '%s\n' "$lanes" | while IFS=$tab read -r id name role; do
-        [ -n "$id" ] || continue
-        # log includes prompts and answers filed on the lane and messages sent to it.
-        log=$(ledger --json log "$id" --limit 1) || { printf 'herdr-lead: read log %s failed\n' "$id" >&2; exit 1; }
-        printf '%s\n' "$log" | jq -sr --arg id "$id" --arg name "$name" --arg role "$role" --argjson hours "$hours" '
-            [.[] | select(.record == "event")] | last // empty
-            | ((now - (.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 3600 | floor) as $age
-            | select($age >= $hours) | "idle \($id) \($name) \($role) \($age) last_event=\(.id)"' ||
+        | [.id, .name, .role, "h:\(.host // "")"] | join("\u001f")') || { printf 'herdr-lead: read lanes of %s failed\n' "$root" >&2; exit 1; }
+    [ -n "$lanes" ] || exit 0
+    # The ledger names a lane's host as it saw the launching caller ('' on the ledger host).
+    glance=$(ledger --json glance) && caller_host=h:$(printf '%s\n' "$glance" | jq -er '.caller_host | strings') ||
+        { printf 'herdr-lead: read caller host failed\n' >&2; exit 1; }
+    printf '%s\n' "$lanes" | while IFS=$us read -r id name role lane_host; do
+        # log includes prompts and answers filed on the lane and messages sent to it, and every launch.
+        log=$(ledger --json log "$id" --limit 1) &&
+            row=$(printf '%s\n' "$log" | jq -sr '([.[] | select(.record == "event")] | last) as $e
+                | ([.[] | select(.record == "launch")] | last // {}) as $l
+                | if $e == null then empty else
+                  [((now - ($e.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 3600 | floor), $e.id,
+                   $l.provider // "", $l.native_home // "", $l.session_ref // ""] | map(tostring) | join("\u001f") end') ||
             { printf 'herdr-lead: read log %s failed\n' "$id" >&2; exit 1; }
+        [ -n "$row" ] || continue
+        IFS=$us read -r age event provider home_dir ref <<ROW
+$row
+ROW
+        session_tokens
+        reason=
+        [ "$age" -lt "$hours" ] || reason=inactive
+        if [ -n "$tokens" ] && [ "$tokens" -ge "$cap" ]; then reason=${reason:+both}; reason=${reason:-tokens}; fi
+        [ -z "$cause" ] || printf 'unread %s %s %s cause=%s\n' "$id" "$name" "$role" "$cause"
+        [ -z "$reason" ] || printf 'idle %s %s %s %s last_event=%s tokens=%s reason=%s\n' \
+            "$id" "$name" "$role" "$age" "$event" "${tokens:-unknown($cause)}" "$reason"
     done
     exit
 fi
