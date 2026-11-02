@@ -36,7 +36,22 @@ pub(super) fn snapshot(db: &Connection, root: i64) -> Result<Value> {
         ),
         vec![root.into(), LIMIT.into()],
     )?;
+    // Edges live only in the current revision's contract; a dependency's state is its
+    // current one (a missing item reads as no state, never done).
+    let dependencies = rows(
+        db,
+        &format!(
+            "{SELECTED}select w.id as work_id,cast(json_extract(j.value,'$.work') as integer) as work,json_extract(j.value,'$.revision') as revision,d.state from selected w join work_revisions v on v.work_id=w.id and v.revision=w.revision join json_each(v.contract,'$.dependencies') j left join work_items d on d.id=cast(json_extract(j.value,'$.work') as integer) where json_type(v.contract,'$.dependencies')='array' order by w.id,j.key"
+        ),
+        vec![root.into(), LIMIT.into()],
+    )?;
     for w in &mut items {
+        let deps: Vec<Value> = dependencies
+            .iter()
+            .filter(|d| d["work_id"] == w["work_id"])
+            .map(|d| json!({"work":d["work"],"revision":d["revision"],"state":d["state"]}))
+            .collect();
+        w["dependencies"] = json!(deps);
         let current: Vec<Value> = assignments
             .iter()
             .filter(|a| a["work_id"] == w["work_id"])
@@ -77,7 +92,20 @@ pub(super) fn snapshot(db: &Connection, root: i64) -> Result<Value> {
         w["assignments"] = json!(current);
     }
     let truncated = total > items.len() as i64;
-    Ok(json!({"items":items,"total":total,"limit":LIMIT,"truncated":truncated}))
+    // Latest non-empty `work` ref per lane in this campaign (`taskr set LANE work=12`).
+    let lane_work: serde_json::Map<String, Value> = rows(
+        db,
+        &format!(
+            "{TREE}select e.task_id,json_extract(e.data,'$.value') as value from events e where e.task_id in (select id from tree) and e.kind='ref' and json_extract(e.data,'$.key')='work' and e.id=(select max(x.id) from events x where x.task_id=e.task_id and x.kind='ref' and json_extract(x.data,'$.key')='work') and coalesce(json_extract(e.data,'$.value'),'')!=''"
+        ),
+        vec![root.into()],
+    )?
+    .into_iter()
+    .map(|r| (n(&r, "task_id").to_string(), json!(s(&r, "value"))))
+    .collect();
+    Ok(
+        json!({"items":items,"total":total,"limit":LIMIT,"truncated":truncated,"lane_work":lane_work}),
+    )
 }
 
 /// One grouped read per glance, never work show/list per row or per rendered frame.
@@ -317,5 +345,60 @@ mod tests {
         assert_eq!(w["proof"], "stale; recheck required");
         assert_eq!(w["review"], "stale; recheck required");
         assert_eq!(w["run_revision"], 1);
+    }
+
+    #[test]
+    fn dependencies_carry_current_state_and_lanes_carry_work_refs() {
+        let db = db(true);
+        for id in 1..=5 {
+            item(&db, id);
+        }
+        let contract = |id: i64, c: Value| {
+            db.execute(
+                "insert into work_revisions(work_id,revision,contract,creator,created_at) values(?,1,?,'{}','t')",
+                params![id, c.to_string()],
+            )
+            .unwrap();
+        };
+        db.execute("update work_items set state='done' where id=2", [])
+            .unwrap();
+        contract(
+            1,
+            json!({"dependencies":[{"work":2,"revision":1},{"work":3,"revision":1}]}),
+        );
+        // A spec-only contract: no profile, so proof stays as for no checks.
+        contract(
+            4,
+            json!({"intent":"i","acceptance":"a","scope":["src"],"dependencies":[]}),
+        );
+        contract(5, json!({"intent":"no dependency field"}));
+        let view = snapshot(&db, 1).unwrap();
+        let by = |id: i64| {
+            view["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|w| w["work_id"] == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            by(1)["dependencies"],
+            json!([{"work":2,"revision":1,"state":"done"},{"work":3,"revision":1,"state":"backlog"}])
+        );
+        for id in [2, 4, 5] {
+            assert_eq!(by(id)["dependencies"], json!([]), "W{id}");
+        }
+        assert_eq!(by(4)["proof"], "no contract");
+        assert_eq!(view["lane_work"], json!({}));
+        db.execute("insert into tasks(id,parent_id,name,role,status,created_at,updated_at) values(2,1,'impl','implementer','open','t','t'),(3,1,'rev','reviewer','open','t','t')",[]).unwrap();
+        let set = |task: i64, value: &str| {
+            db.execute("insert into events(task_id,recipient_task_id,kind,summary,data,created_at) values(?,?,'ref','x',?,'t')",params![task,task,json!({"key":"work","value":value}).to_string()]).unwrap();
+        };
+        set(2, "9");
+        set(2, "12");
+        set(3, "4");
+        set(3, "");
+        assert_eq!(snapshot(&db, 1).unwrap()["lane_work"], json!({"2":"12"}));
     }
 }

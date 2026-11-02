@@ -142,7 +142,14 @@ pub(crate) fn lane_line(
         lane_mark(t, lane),
         sp(format!(" {}", lane.name), fg),
     ];
-    let mut out = ui::spread(name, vec![], name_w);
+    // A lane's `work=` ref, right-aligned in the name column so widths hold.
+    let work = c
+        .work
+        .as_ref()
+        .and_then(|w| w.lane_work.get(&lane.id.to_string()))
+        .map(|r| vec![sp(format!(" W{r}"), t.accent)])
+        .unwrap_or_default();
+    let mut out = ui::spread(name, work, name_w);
     let model = if lane.model.is_empty() {
         "—".to_string()
     } else {
@@ -356,6 +363,30 @@ fn work_status(w: &WorkItem) -> String {
     )
 }
 
+/// `ready` when every dependency is done (or there are none) and the item is still open;
+/// otherwise `waits W3` naming the first open dependency (`W3+2` when more). Empty for
+/// done/cancelled items.
+fn readiness(w: &WorkItem) -> String {
+    if matches!(w.state.as_str(), "done" | "cancelled") {
+        return String::new();
+    }
+    let open: Vec<i64> = w
+        .dependencies
+        .iter()
+        .filter(|d| d.state != "done")
+        .map(|d| d.work)
+        .collect();
+    match open.as_slice() {
+        [] => "ready".into(),
+        [one] => format!("waits W{one}"),
+        [one, rest @ ..] => format!("waits W{one}+{}", rest.len()),
+    }
+}
+
+fn gap(s: String) -> String {
+    if s.is_empty() { s } else { s + " " }
+}
+
 fn tasks(f: &mut Frame, app: &App, area: Rect) -> (usize, usize, usize) {
     let t = &app.theme;
     let Some(work) = &app.data.campaign.work else {
@@ -403,6 +434,7 @@ fn tasks(f: &mut Frame, app: &App, area: Rect) -> (usize, usize, usize) {
             let spans = if width < 80 {
                 vec![
                     sp(format!("W{} {} ", w.work_id, w.state), t.accent),
+                    sp(gap(readiness(w)), t.sub),
                     sp(w.title.clone(), t.text),
                 ]
             } else {
@@ -411,6 +443,7 @@ fn tasks(f: &mut Frame, app: &App, area: Rect) -> (usize, usize, usize) {
                         format!("W{} p{} r{} ", w.work_id, w.priority, w.revision),
                         t.accent,
                     ),
+                    sp(gap(readiness(w)), t.sub),
                     sp(format!("{} · {}", w.title, work_status(w)), t.text),
                 ]
             };

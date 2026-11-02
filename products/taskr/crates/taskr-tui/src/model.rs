@@ -280,6 +280,8 @@ pub struct WorkSnapshot {
     pub items: Vec<WorkItem>,
     pub total: usize,
     pub limit: usize,
+    /// Lane id (as a string key) to its latest `work=` ref.
+    pub lane_work: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -300,6 +302,15 @@ pub struct WorkItem {
     pub proof: Option<String>,
     pub review: Option<String>,
     pub acceptance_id: Option<i64>,
+    pub dependencies: Vec<WorkDependency>,
+}
+
+/// A contract dependency and the dependency's current state (empty when unknown).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct WorkDependency {
+    pub work: i64,
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
