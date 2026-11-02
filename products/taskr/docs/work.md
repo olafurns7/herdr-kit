@@ -19,7 +19,7 @@ Every controller mutation requires `--as ROOT --generation GEN`, where GEN is
 The store checks root identity, authenticated caller host and generation in the
 mutation transaction. A stale generation exits 6; stop and refresh authority
 before another tick. Only the campaign or existing designated hub can add,
-revise, cancel or configure its work. Other controller mutations require the
+revise, mark done, cancel or configure its work. Other controller mutations require the
 campaign itself. Workers submit only as current `TASKR_TASK`/`TASKR_LAUNCH`.
 
 Campaigns start disabled. `list` returns configuration, parked state and current
@@ -32,7 +32,7 @@ taskr work configure 42 --as 42 --generation 0 \
   --enabled on --workspace w1 --max-active 2 --max-review-pending 1
 # Equivalent JSON: {"enabled":true,"max_active":2,"max_review_pending":1,"workspace":"w1","no_slotr":false}
 taskr work add --as 42 --generation 0 \
-  --data '{"campaign":42,"title":"A backlog item"}'
+  --data '{"campaign":42,"title":"A backlog item","contract":{"intent":"Why and what, in two sentences","acceptance":"review READY at head and gate green","scope":["src"],"dependencies":[]}}'
 taskr work list 42
 taskr work show 1
 ```
@@ -41,9 +41,28 @@ Limits are 1..64. Lower limits prevent new claims without cancelling existing
 assignments. Disabled and parked campaigns cannot claim. Creating a backlog
 item does not assign a lane or reserve a checkout.
 
+## Ticket spec
+
+A ticket starts as a short spec. `work add` and `work revise` need a title and
+a contract with at least `intent` (why and what), `acceptance` (how to check it),
+`scope` (paths it may touch; an empty list for read-only work) and
+`dependencies` (`[{"work":W,"revision":R}]`, may be empty). A title-only
+`work add` is refused. The other contract fields below are optional until queue.
+Native jobs `work_add` still files title-only tickets; it has no contract field yet.
+
+`work done W --note TEXT` marks a ticket done by hand when it was done outside
+the queue: the ticket must be in backlog and never have had a run. The note
+becomes its reason. It writes no acceptance receipt, so a hand-done ticket never
+satisfies a full contract's dependency: `queue` refuses a full contract that
+depends on one, naming the dependency. Use `work cancel` to drop a ticket.
+
+```sh
+taskr work done 3 --as 42 --generation 0 --note "landed by hand in #41"
+```
+
 ## Contract
 
-Queue requires a complete typed contract. `revise` accepts `expected_revision`
+Queue requires a complete typed contract; a spec-only ticket stays in backlog. `revise` accepts `expected_revision`
 and optional `title`, `priority`, `contract`. Title/priority edits preserve the
 semantic revision; a changed contract creates a new immutable revision.
 
@@ -101,7 +120,7 @@ checks have approved argv (1..128 arguments) and timeout (1..3600000 ms).
 | Verb | ID | JSON input / result |
 | --- | --- | --- |
 | configure | campaign root | enabled, max_active, max_review_pending (or flags above) |
-| add | none | campaign, title, optional priority/contract; returns work_id |
+| add | none | campaign, title, contract (spec or full), optional priority; returns work_id |
 | campaigns | none | thin enabled root/configuration/generation snapshots for authenticated host |
 | dispatch | campaign | thin nonterminal work summaries; --limit defaults 32, bounded 1..64 |
 | list / show | campaign / work | compatibility/detail reads; show includes revision, runs, assignments, immutable results |
@@ -121,6 +140,7 @@ checks have approved argv (1..128 arguments) and timeout (1..3600000 ms).
 | submit | launch | launch-bound typed submission below; returns immutable result_id/digest |
 | advance | run | computes reserve/review/check/rework/adjudicate/accepted/escalation |
 | cancel | work | reason; active dispatches retain checkout reservation |
+| done | work | no JSON; `--note TEXT`; unrun backlog only, no acceptance receipt |
 | recover | campaign | derives missing starts and returns durable work for reconciliation |
 
 ```sh

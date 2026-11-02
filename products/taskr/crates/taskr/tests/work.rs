@@ -10,6 +10,11 @@ fn clean_process_scan() -> Value {
     json!({"method":"local-user-session-cwd-v1","uid":501,"shell_pid":123,"session_id":123,"scanned":40,"deleted_cwd":0,"privileged_cwd":0,"session_remaining":[],"checkout_remaining":[],"exempt":[{"pid":123,"reason":"workspace-shell","pane":"w1:p2","session_id":123,"foreground_pgid":123,"session_pids":[123]},{"pid":456,"reason":"observer","observer_pid":456,"parent_chain":[456]}]})
 }
 
+/// The short ticket spec: the four fields add/revise require.
+fn spec() -> Value {
+    json!({"intent":"describe the change","acceptance":"review READY","scope":[],"dependencies":[]})
+}
+
 struct Work {
     h: Harness,
     root: String,
@@ -42,7 +47,10 @@ impl Work {
     }
     fn call(&self, verb: &str, id: Option<&str>, mut data: Option<Value>) -> Value {
         if let Some(data) = data.as_mut() {
-            if let Some(contract) = data.get_mut("contract").filter(|c| !c.is_null()) {
+            if let Some(contract) = data
+                .get_mut("contract")
+                .filter(|c| c.get("profile").is_some())
+            {
                 self.seal(contract);
             }
             if verb == "configure" && data["enabled"] == true && data.get("workspace").is_none() {
@@ -66,7 +74,7 @@ impl Work {
             .ok(&[], &argv.iter().map(String::as_str).collect::<Vec<_>>())
     }
     fn source(&self) -> Value {
-        let digest:Option<String>=self.h.conn().query_row("select json_extract(contract,'$.base.input_digest') from work_revisions where contract is not null order by rowid desc limit 1",[],|r|r.get(0)).optional().unwrap();
+        let digest:Option<String>=self.h.conn().query_row("select json_extract(contract,'$.base.input_digest') from work_revisions where json_extract(contract,'$.base.input_digest') is not null order by rowid desc limit 1",[],|r|r.get(0)).optional().unwrap();
         json!({"commit":"a".repeat(40),"tree":"b".repeat(40),"input_digest":digest.unwrap_or("c".repeat(64))})
     }
     fn seal(&self, c: &mut Value) {
@@ -187,7 +195,7 @@ impl Work {
 #[test]
 fn backlog_disabled_parked_claim_replay_conflict_and_generation() {
     let w = Work::new();
-    let backlog = w.add(None);
+    let backlog = w.add(Some(spec()));
     w.reject("queue", &backlog, json!({"expected_revision":1}), 6);
     let id = w.queued(w.contract(false));
     w.reject(
@@ -498,7 +506,7 @@ fn wrong_source_and_model_and_dependency_fail_without_results() {
 #[test]
 fn compatible_notices_are_self_addressed_and_parked_roots_get_audit_only() {
     let w = Work::new();
-    let id = w.add(None);
+    let id = w.add(Some(spec()));
     w.call("block", Some(&id), Some(json!({"reason":"fixture block"})));
     let (sender,to,reason):(i64,i64,String)=w.h.conn().query_row("select task_id,recipient_task_id,json_extract(data,'$.notice.reason') from events where kind='message' order by id desc limit 1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
     assert_eq!(sender, to);
@@ -512,7 +520,7 @@ fn compatible_notices_are_self_addressed_and_parked_roots_get_audit_only() {
                 |r| r.get(0),
             )
             .unwrap();
-    w.add(None);
+    w.add(Some(spec()));
     assert_eq!(
         before,
         w.h.conn()
@@ -769,7 +777,7 @@ fn no_hook_got_receipt_can_be_reconciled_but_wrong_launch_cannot_start() {
 #[test]
 fn self_notice_exhaustion_does_not_alarm_and_old_filtered_waits_see_it() {
     let w = Work::new();
-    let id = w.add(None);
+    let id = w.add(Some(spec()));
     w.call("block", Some(&id), Some(json!({"reason":"fixture block"})));
     let event: i64 =
         w.h.conn()
@@ -1270,13 +1278,11 @@ fn block_is_idempotent_and_reports_before_submit_stay_quiet() {
 #[test]
 fn creation_key_is_canonical_durable_and_conflicting_reuse_is_refused() {
     let w = Work::new();
-    let data =
-        json!({"campaign":w.root.parse::<i64>().unwrap(),"title":"keyed","key":"native-add-1"});
+    let data = json!({"campaign":w.root.parse::<i64>().unwrap(),"title":"keyed","key":"native-add-1","contract":spec()});
     let first = w.call("add", None, Some(data.clone()));
     let replay = w.call("add", None, Some(data));
     assert_eq!(first["work_id"], replay["work_id"]);
-    let changed =
-        json!({"campaign":w.root.parse::<i64>().unwrap(),"title":"changed","key":"native-add-1"});
+    let changed = json!({"campaign":w.root.parse::<i64>().unwrap(),"title":"changed","key":"native-add-1","contract":spec()});
     assert_eq!(
         w.h.output(
             &[],
@@ -1554,7 +1560,7 @@ fn daemon_reads_stay_thin_bounded_and_leave_detail_history_compatible() {
     let rid = run["run_id"].to_string();
     w.review(&rid, &exec, "clear");
     w.call("advance", Some(&rid), None);
-    w.add(None); // unassigned backlog is not dispatchable
+    w.add(Some(spec())); // unassigned backlog is not dispatchable
     let mut queued = Vec::new();
     for priority in [1, 3, 2] {
         let id = w.queued(w.contract(false));
@@ -2217,5 +2223,139 @@ fn privileged_cwd_accepts_scanned_boundary_and_overlaps_deleted_count() {
     assert_eq!(
         stopped["stopped"]["observation"]["process_scan"]["deleted_cwd"],
         2
+    );
+}
+
+#[test]
+fn spec_tickets_need_four_fields_and_hand_done_never_satisfies_a_full_contract() {
+    let w = Work::new();
+    let campaign = w.root.parse::<i64>().unwrap();
+    let out = |args: &[&str]| {
+        let mut argv = vec!["work"];
+        argv.extend_from_slice(args);
+        argv.extend(["--as", &w.root, "--generation", "0"]);
+        let o = w.h.output(&[], &argv, b"");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        (o.status.code(), text)
+    };
+    let add = |data: Value| {
+        let data = data.to_string();
+        out(&["add", "--data", &data])
+    };
+    // Title-only add is refused with the four field names.
+    let (code, text) = add(json!({"campaign":campaign,"title":"bare"}));
+    assert_eq!(code, Some(2), "{text}");
+    assert!(
+        text.contains("intent, acceptance, scope and dependencies"),
+        "{text}"
+    );
+    // Each of the four is required.
+    for field in ["intent", "acceptance", "scope", "dependencies"] {
+        let mut c = spec();
+        c.as_object_mut().unwrap().remove(field);
+        let (code, text) = add(json!({"campaign":campaign,"title":"partial","contract":c}));
+        assert_eq!(code, Some(2), "{field}: {text}");
+        assert!(text.contains(field), "{field}: {text}");
+    }
+    // A spec-only ticket is accepted and stored without the full contract fields.
+    let a = w.add(Some(spec()));
+    let shown = w.h.ok(&[], &["work", "show", &a]);
+    assert_eq!(shown["state"], "backlog");
+    assert_eq!(
+        shown["revisions"][0]["contract"]["intent"],
+        "describe the change"
+    );
+    assert!(shown["revisions"][0]["contract"].get("authority").is_none());
+    // Revise accepts a spec, and the dependency edge keeps its cycle check.
+    let b = w.add(Some(spec()));
+    let mut on_b = spec();
+    on_b["dependencies"] = json!([{"work":b.parse::<i64>().unwrap(),"revision":1}]);
+    on_b["scope"] = json!(["docs"]);
+    let revised = w.call(
+        "revise",
+        Some(&a),
+        Some(json!({"expected_revision":1,"contract":on_b})),
+    );
+    assert_eq!(revised["revision"], 2);
+    let mut on_a = spec();
+    on_a["dependencies"] = json!([{"work":a.parse::<i64>().unwrap(),"revision":2}]);
+    w.reject(
+        "revise",
+        &b,
+        json!({"expected_revision":1,"contract":on_a}),
+        6,
+    );
+    // Queue keeps refusing an incomplete contract.
+    let (code, text) = out(&["queue", &a, "--data", r#"{"expected_revision":2}"#]);
+    assert_eq!(code, Some(6), "{text}");
+    assert!(text.contains("incomplete"), "{text}");
+    // Hand-done needs a note, writes the note as reason and no acceptance receipt.
+    assert_eq!(out(&["done", &a]).0, Some(2));
+    let done = w.h.ok(
+        &[],
+        &[
+            "work",
+            "done",
+            &a,
+            "--note",
+            "shipped by hand",
+            "--as",
+            &w.root,
+            "--generation",
+            "0",
+        ],
+    );
+    assert_eq!(done["state"], "done");
+    assert_eq!(done["reason"], "shipped by hand");
+    let receipts = |id: &str| -> i64 {
+        w.h.conn()
+            .query_row(
+                "select count(*) from work_acceptances where work_id=?",
+                [id.parse::<i64>().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(receipts(&a), 0);
+    // Refused when already done, cancelled, queued or with a run.
+    let done_again = |id: &str| out(&["done", id, "--note", "again"]).0;
+    assert_eq!(done_again(&a), Some(6));
+    w.call("cancel", Some(&b), Some(json!({"reason":"dropped"})));
+    assert_eq!(done_again(&b), Some(6));
+    w.configure();
+    let queued = w.queued(w.contract(false));
+    assert_eq!(done_again(&queued), Some(6));
+    let ran = w.queued(w.contract(false));
+    w.claim(&ran, "hand-done-run");
+    assert_eq!(done_again(&ran), Some(6));
+    // A full contract may not queue on a hand-done dependency.
+    let dep = w.add(Some(w.contract(false)));
+    w.h.ok(
+        &[],
+        &[
+            "work",
+            "done",
+            &dep,
+            "--note",
+            "by hand",
+            "--as",
+            &w.root,
+            "--generation",
+            "0",
+        ],
+    );
+    assert_eq!(receipts(&dep), 0);
+    let mut full = w.contract(false);
+    full["dependencies"] = json!([{"work":dep.parse::<i64>().unwrap(),"revision":1}]);
+    let dependent = w.add(Some(full));
+    let (code, text) = out(&["queue", &dependent, "--data", r#"{"expected_revision":1}"#]);
+    assert_eq!(code, Some(6), "{text}");
+    assert!(
+        text.contains(&format!("dependency work {dep} was marked done by hand")),
+        "{text}"
     );
 }

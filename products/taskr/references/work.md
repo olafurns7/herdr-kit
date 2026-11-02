@@ -2,7 +2,11 @@
 
 Load for `taskr work` or a work-bound assignment. The lead or designated hub adds
 unassigned work to the existing ledger; backlog is not authority to execute.
-Before queueing, approve the complete typed contract: intent, acceptance, scope,
+A ticket starts as a short spec: title plus `intent`, `acceptance`, `scope`
+(empty for read-only) and `dependencies` (may be empty); a title-only add is
+refused. Mark a ticket done outside the queue with `taskr work done W --note
+TEXT` (unrun backlog only); it gets no acceptance receipt, so `queue` refuses a
+full contract that depends on it. Before queueing, approve the complete typed contract: intent, acceptance, scope,
 checkout/host, source/input identity, dependency revisions, local authority,
 proof profile and permitted independent lanes. Missing contract fields keep work
 in backlog. The installed local lane table and private overlay govern models;
