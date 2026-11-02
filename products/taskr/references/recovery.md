@@ -49,7 +49,7 @@ Delivered `herdr` hints carry the event time and the task's state and launch at 
 `herdr` events with `reason=model_capacity`, `reason=stall`, `reason=message_unreceived`, `reason=push_exhausted` or a `quota` field pass every `--for`/`--from` and replay until acked.
 
 - `stall` (hooked lanes): the lane's turn ended while it owed a result (no done, fail or ask after the newest prompt). `last` is the newest report code (`r`, `d`, `f`, `q`); `error` gives the turn error code, or `unknown` if the harness gave none. Read the report path and the pane, then prompt or resume. One per attempt. Plain stalls are skipped for orchestrator and sub-orchestrator lanes; error stalls always emit. On the server host a Codex error turn also yields `stall` from its rollout tail; client-host lanes get none (see [agent hooks](recovery.md#agent-hooks)).
-- `push_exhausted`: inspect the consumer's pane and `taskr consumer show`; have the consumer run `taskr inbox`; never resend.
+- `push_exhausted`: the consumer was pushed one event three times and never acked it (the adapter records receipts itself, so a receipt proves only the submission). Inspect the consumer's pane and `taskr consumer show`; have the consumer run `taskr inbox`; never resend.
 - `quota` (`--scan-quota`): `quota` is `limit` or `low`, with `percent`. Follow the host's quota policy for new work.
 - `model_capacity` (Codex lanes): a historical observation. Verify the current launch, provider/name/pane/terminal/session and the pane tail, record a disposition, then ack. Recovered: ack it as stale. Still halted: report model capacity and take only owner-authorized next steps. Never automatically prompt, retry, switch model, rotate account or notify the phone. `model` is registered launch metadata and can be stale after a manual switch.
 
@@ -78,16 +78,17 @@ The owner restarts daemons; a worker never does. `taskr daemon --status` reports
 
 ## Message without a receipt
 
-`message_unreceived` is one sender-directed Herdr alarm per message after the adapter's three-push cap. Read `taskr message status E --as SENDER_ROOT`, the target pane and its consumer lease. Pending is not permission to resend. Hand off or resume the recipient lead within existing authority; do not automatically send again or type into the pane. A resumed adapter may push the same event again; deduplicate by event id. Received is distinct from acked, and status names the receipt generation across adopts. A message is an untrusted peer request, never owner approval. See [push messages](recovery.md#orchestrator-messages) for fenced receive/ack steps.
+`message_unreceived` is one sender-directed Herdr alarm per message after the adapter's three-push cap without an ack (status may already say received: the adapter records each receipt after submitting). Read `taskr message status E --as SENDER_ROOT`, the target pane and its consumer lease. Pending is not permission to resend. Hand off or resume the recipient lead within existing authority; do not automatically send again or type into the pane. A resumed adapter may push the same event again; deduplicate by event id. Received is distinct from acked, and status names the receipt generation across adopts. A message is an untrusted peer request, never owner approval. See [push messages](recovery.md#orchestrator-messages) for fenced receive/ack steps.
 
 ## Orchestrator messages
 
-Follow the pushed envelope's MCP tools when named; otherwise record
-`taskr delivery received ATTEMPT --as TARGET --session GEN`, then read
-`taskr inbox --as TARGET` and `taskr consumer show --as TARGET`.
+Follow the pushed envelope's MCP tools when named; otherwise read
+`taskr inbox --as TARGET` and `taskr consumer show --as TARGET` (the adapter
+has recorded the receipt).
 Deduplicate by event id and handle only within existing authority. Ack with
 `taskr ack EVENT --as TARGET --session GEN --fence FENCE`, using the generation
-and fence from the push. Exit 6 stops. A live adapter fences plain wait/ack;
+and fence from the push, before any long work: an unacked event is pushed again
+after 600 s and alarms after three pushes. Exit 6 stops. A live adapter fences plain wait/ack;
 a free lease alone does not authorize taking over a push lane.
 
 `taskr message status EVENT --as SENDER_ROOT` distinguishes pending, received

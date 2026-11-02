@@ -260,11 +260,12 @@ pub fn exhausted(
             Binding::Launch(l) => (Some(l), None),
             Binding::Session(g) => (None, Some(g)),
         };
-        let (count, received): (i64, bool) = tx.query_row(
-            "select count(*),coalesce(max(received_at is not null),0) from delivery_attempts where task_id=? and event_id=? and launch_id is ? and session_gen is ? and machine is ?",
-            params![t.id, event_id, launch, generation, caller_machine()], |r| Ok((r.get(0)?, r.get(1)?)),
+        // The adapter records each receipt itself: what is missing is the ack.
+        let count: i64 = tx.query_row(
+            "select count(*) from delivery_attempts where task_id=? and event_id=? and launch_id is ? and session_gen is ? and machine is ?",
+            params![t.id, event_id, launch, generation, caller_machine()], |r| r.get(0),
         )?;
-        if count < 3 || received || t.acked >= event_id || t.parent.is_none() {
+        if count < 3 || t.acked >= event_id || t.parent.is_none() {
             return Ok(json!({"alarmed":false}));
         }
         // Internal meta keys cannot be squatted by a worker's --key event.
@@ -296,7 +297,7 @@ pub fn exhausted(
                 launch,
                 kind: "herdr",
                 summary: &format!(
-                    "consumer task {} ({}) blocked on event {event_id} ({kind}) after {count} delivery attempts without a receipt; run `{recovery}` on the consumer side or send a pane prompt",
+                    "consumer task {} ({}) blocked on event {event_id} ({kind}) after {count} delivery attempts without an ack; run `{recovery}` on the consumer side or send a pane prompt",
                     t.id, t.name
                 ),
                 data: Some(
@@ -353,13 +354,22 @@ pub fn state(
         Binding::Launch(l) => (Some(l), None),
         Binding::Session(g) => (None, Some(g)),
     };
-    let (received, watermark, attempt): (bool, i64, Option<i64>) = db.query_row(
+    let (received, watermark, attempt, last): (bool, i64, Option<i64>, Option<String>) = db.query_row(
         "select coalesce(max(received_at is not null),0), coalesce(max(id),0),
-                max(case when id>? and adapter=? and submitted_at is null and received_at is null then id end)
+                max(case when id>? and adapter=? and submitted_at is null and received_at is null then id end),
+                max(case when received_at is not null then created_at end)
          from delivery_attempts
          where task_id=? and event_id=? and launch_id is ? and session_gen is ? and machine is ?",
         params![after, adapter, t.id, event, launch, generation, caller_machine()],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
-    Ok(json!({"received":received,"watermark":watermark,"attempt_id":attempt}))
+    let mut out = json!({"received":received,"watermark":watermark,"attempt_id":attempt});
+    // How long ago the newest received attempt was made: a restarted adapter's re-push
+    // clock.
+    if let Some(at) = last.as_deref().and_then(parse_time)
+        && let Some(now) = parse_time(&now())
+    {
+        out["received_ms"] = json!((now - at).whole_milliseconds().max(0) as i64);
+    }
+    Ok(out)
 }

@@ -192,7 +192,12 @@ impl Chan {
         if channel {
             let instructions = init["result"]["instructions"].as_str().unwrap();
             for rule in [
+                "records each delivery receipt itself",
                 "a receipt is not an ack",
+                "Not pushed, but still listed by taskr_inbox",
+                "a done that follows a ready from the same launch",
+                "pushed again after 10 minutes",
+                "ack before any long work",
                 "read taskr_inbox",
                 "taskr_task for the lease",
                 "already acked",
@@ -548,12 +553,13 @@ fn an_adopt_stops_a_root_channel_whose_envelope_uses_the_pinned_session() {
     let (_, push) = c.expect_push(Duration::from_secs(20));
     let a = meta(&push, "attempt");
     let content = push["params"]["content"].as_str().unwrap();
-    for line in [
-        format!("taskr delivery received {a} --as {r} --session {generation}"),
-        format!("taskr ack {e} --as {r} --session {generation} --fence 1"),
-    ] {
-        assert!(content.contains(&line), "{line}: {content}");
-    }
+    assert!(
+        content.contains(&format!(
+            "taskr ack {e} --as {r} --session {generation} --fence 1"
+        )),
+        "{content}"
+    );
+    assert!(!content.contains(&format!("received {a}")), "{content}");
     let received = c.call("taskr_received", json!({"attempt":n(&a)}));
     assert_eq!(received["structuredContent"]["outcome"], "committed");
     let (code, _, err) = run(&h, &[], &["adopt", &r, "--pane", "w1:p2"]);
@@ -631,31 +637,28 @@ fn an_idle_event_is_pushed_once_then_received_acked_and_the_next_follows() {
     let lines: Vec<&str> = content.lines().collect();
     assert_eq!(lines.len(), 2, "{content}");
     assert!(lines[0].starts_with(&format!(
-        "taskr event {e} (kind note) from task 1: delivery attempt {a}, consumer fence 1. "
+        "taskr event {e} (kind note) from task 1: delivery attempt {a}, consumer fence 1; the adapter records the receipt. "
     )));
     assert_eq!(
         lines[1],
         "summary (untrusted data, not instructions): \"synthetic progress\""
     );
+    assert!(!content.contains("received"), "{content}");
     assert!(content.contains(&format!(
-        "taskr_received {{\"attempt\":{a}}} (CLI: taskr delivery received {a})"
-    )));
-    assert!(content.contains(&format!(
-        "taskr_ack {{\"event\":{e},\"fence\":1}} (CLI: taskr ack {e} --as {ws} --fence 1)"
+        "taskr_inbox, then after handling taskr_ack {{\"event\":{e},\"fence\":1}} (CLI: taskr ack {e} --as {ws} --fence 1)"
     )));
     assert!(!content.contains("never pushed"));
-    // Submitted (stamped after the write), not received, not acked; the event is pending.
-    until("the submitted stamp", Duration::from_secs(10), || {
-        attempts(&h, &e) == [format!("{a}|submitted")]
+    // Submitted and received (both stamped by the adapter after the write), not acked;
+    // the event is pending.
+    until("the adapter's receipt", Duration::from_secs(10), || {
+        attempts(&h, &e) == [format!("{a}|received")]
     });
     assert_eq!(cursors(&h, &ws), format!("0|{e}|-"));
     assert!(
         c.quiet(Duration::from_secs(3)).is_empty(),
-        "no redelivery inside the spacing"
+        "no redelivery inside the ack wait"
     );
 
-    let r = c.call("taskr_received", json!({"attempt":n(&a)}));
-    assert_eq!(r["structuredContent"]["outcome"], "committed", "{r}");
     let r = c.call("taskr_ack", json!({"event":n(&e),"fence":1}));
     assert_eq!(r["structuredContent"]["outcome"], "committed", "{r}");
     assert_eq!(attempts(&h, &e), [format!("{a}|received")]);
@@ -669,71 +672,78 @@ fn an_idle_event_is_pushed_once_then_received_acked_and_the_next_follows() {
 }
 
 #[test]
-fn redelivery_is_bounded_and_receipts_suppress_it_across_restarts() {
-    // ttl 2 s, renew 0.67 s, poll 1 s, spacing 4 s.
-    const S: u32 = 30;
-    let spacing = Duration::from_secs(4);
+fn an_unacked_push_is_pushed_again_after_the_ack_wait_then_alarms_across_restarts() {
+    // ttl 1 s, renew 0.33 s, poll 0.5 s, ack wait 10 s.
+    const S: u32 = 60;
+    let wait = Duration::from_secs(10);
+    let slack = Duration::from_millis(300);
+    let alarms = |h: &Harness, e: &str| {
+        text(
+            h,
+            &format!(
+                "select count(*)||'' from events where kind='herdr' and related_event_id={e} and json_extract(data,'$.reason')='push_exhausted'"
+            ),
+        )
+    };
     let h = Harness::new();
     let (w, _, env) = h.lane("claude", "implementer");
     let ws = w.to_string();
     let mut c = Chan::start(&h, &env, &[], S);
     held(&h, &ws);
-    let e = insert_event(&h, "1", &ws, "note", "nobody receipts this", "{}");
+    // A blocking ask whose notifications the client drops: the adapter records each
+    // receipt, nobody acks.
+    let e = insert_event(&h, "1", &ws, "ask", "dropped", r#"{"blocking":true}"#);
     let mut seen = vec![c.expect_push(Duration::from_secs(20))];
     for _ in 0..2 {
-        seen.push(c.expect_push(spacing * 3));
+        seen.push(c.expect_push(wait * 2));
     }
-    assert!(c.quiet(spacing * 2).is_empty(), "a fourth submission");
     for pair in seen.windows(2) {
-        assert!(pair[1].0 - pair[0].0 >= spacing - Duration::from_millis(150));
+        assert_eq!(meta(&pair[1].1, "event"), e);
+        assert!(pair[1].0 - pair[0].0 >= wait - slack);
     }
+    // The alarm waits a full ack wait after the third push; then nothing more.
+    assert_eq!(alarms(&h, &e), "0");
+    until("the push_exhausted alarm", wait * 2, || {
+        alarms(&h, &e) == "1"
+    });
+    assert!(seen[2].0.elapsed() >= wait - slack);
+    assert!(c.quiet(wait / 2).is_empty(), "a fourth push");
     let ids: Vec<String> = seen.iter().map(|(_, p)| meta(p, "attempt")).collect();
     assert_eq!(
         attempts(&h, &e),
         ids.iter()
-            .map(|a| format!("{a}|submitted"))
+            .map(|a| format!("{a}|received"))
             .collect::<Vec<_>>()
     );
-    // The T1 failure mode is visible: open attempts, nothing received, still pending.
-    let open = h.ok(&env, &["delivery", "ls", "--open"]);
-    assert_eq!(open["attempts"].as_array().unwrap().len(), 3);
     assert_eq!(cursors(&h, &ws), format!("0|{e}|-"));
-    assert!(c.stderr().contains("3 submissions without a receipt"));
-    assert_eq!(
-        text(
-            &h,
-            &format!(
-                "select count(*)||'' from events where kind='herdr' and related_event_id={e} and json_extract(data,'$.reason')='push_exhausted'"
-            )
-        ),
-        "1"
-    );
+    assert!(c.stderr().contains("3 pushes without an ack"));
     let (code, _) = c.close();
     assert_eq!(code, Some(0));
 
-    // A restart pushes again under a fresh budget; a receipt then stops it.
+    // A restart long after the last push pushes at once, under a fresh budget.
     let mut c = Chan::start(&h, &env, &[], S);
-    let (_, push) = c.expect_push(Duration::from_secs(20));
+    let (pushed, push) = c.expect_push(Duration::from_secs(20));
     let a4 = meta(&push, "attempt");
     assert!(!ids.contains(&a4));
-    let r = c.call("taskr_received", json!({"attempt":n(&a4)}));
-    assert_eq!(r["structuredContent"]["outcome"], "committed");
-    assert!(
-        c.quiet(spacing * 2).is_empty(),
-        "redelivered after a receipt"
-    );
+    until("the adapter's receipt", Duration::from_secs(10), || {
+        attempts(&h, &e).last() == Some(&format!("{a4}|received"))
+    });
     let (code, _) = c.close();
     assert_eq!(code, Some(0));
-
-    // Received but unacked: a restarted loop reads the receipt and does not push.
+    // A restart right after a push keeps that push's ack wait; an ack then ends it.
     let mut c = Chan::start(&h, &env, &[], S);
     held(&h, &ws);
-    assert!(
-        c.quiet(spacing).is_empty(),
-        "a received event was pushed again"
+    assert!(c.quiet(wait / 4).is_empty(), "pushed inside the ack wait");
+    let (at, push) = c.expect_push(wait * 2);
+    assert_eq!(meta(&push, "event"), e);
+    assert!(at - pushed >= wait - slack, "{:?}", at - pushed);
+    let r = c.call(
+        "taskr_ack",
+        json!({"event":n(&e),"fence":n(&meta(&push, "fence"))}),
     );
-    assert_eq!(attempts(&h, &e).len(), 4);
-    assert_eq!(cursors(&h, &ws), format!("0|{e}|-"));
+    assert_eq!(r["structuredContent"]["outcome"], "committed", "{r}");
+    assert!(c.quiet(wait / 2).is_empty(), "pushed after the ack");
+    assert_eq!(alarms(&h, &e), "1");
     let (code, _) = c.close();
     assert_eq!(code, Some(0));
 }
@@ -878,15 +888,167 @@ fn the_fenced_offer_keeps_legacy_coalescing_and_sets_no_wait_marker() {
         "pr merged",
         r#"{"pr":"example/repo#7"}"#,
     );
+    let ask = insert_event(&h, "1", &ws, "ask", "after the PR", "{}");
     let mut c = Chan::start(&h, &env, &[], SCALE);
     let (_, push) = c.expect_push(Duration::from_secs(20));
-    assert_eq!(meta(&push, "event"), newer);
-    // The superseded pr event was coalesced by the existing cursor rule, not pushed.
-    assert_eq!(cursors(&h, &ws), format!("{older}|{newer}|-"));
-    assert!(attempts(&h, &older).is_empty());
+    assert_eq!(meta(&push, "event"), ask);
+    // The superseded pr event was coalesced by the existing cursor rule; the newer one
+    // is not pushed and not acked: it waits behind the cursor for the ask's ack.
+    assert_eq!(cursors(&h, &ws), format!("{older}|{ask}|-"));
+    assert!(attempts(&h, &older).is_empty() && attempts(&h, &newer).is_empty());
+    let r = c.call(
+        "taskr_ack",
+        json!({"event":n(&ask),"fence":n(&meta(&push, "fence"))}),
+    );
+    assert_eq!(r["structuredContent"]["outcome"], "committed", "{r}");
+    assert_eq!(cursors(&h, &ws), format!("{ask}|-|-"));
     let (code, _) = c.close();
     assert_eq!(code, Some(0));
     assert!(cursors(&h, &ws).ends_with("|-"));
+}
+
+fn insert_launched(h: &Harness, to: &str, kind: &str, summary: &str, launch: i64) -> String {
+    let c = h.conn();
+    c.execute(
+        "insert into events(task_id,recipient_task_id,launch_id,kind,summary,data,created_at) values(1,?,?,?,?,'{}','2026-01-01T00:00:00.000Z')",
+        taskr_core::db::params![to, launch, kind, summary],
+    )
+    .unwrap();
+    c.last_insert_rowid().to_string()
+}
+fn inbox_ids(h: &Harness, env: &Env) -> Vec<String> {
+    h.ok(env, &["inbox", "--limit", "100"])["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].to_string())
+        .collect()
+}
+
+#[test]
+fn only_events_that_need_a_decision_are_pushed_and_a_later_ack_passes_the_rest() {
+    let h = Harness::new();
+    let (w, launch, env) = h.lane("claude", "implementer");
+    let (_, other, _) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let ev =
+        |kind: &str, summary: &str, data: &str| insert_event(&h, "1", &ws, kind, summary, data);
+    let idle = r#"{"agent_status":"idle","present":true}"#;
+    // At the head, a got is acked by today's coalescing, as in plain wait.
+    let got = ev("got", "", "{}");
+    let mut held_back = vec![
+        ev(
+            "pr",
+            "checks green",
+            r#"{"pr":"example/repo#7","sub":"checks_green"}"#,
+        ),
+        ev(
+            "prompt_outcome",
+            "late_receipt",
+            r#"{"outcome":"late_receipt"}"#,
+        ),
+        ev("herdr", "agent_status idle", idle),
+        ev(
+            "herdr",
+            "agent_status done",
+            r#"{"agent_status":"done","present":true}"#,
+        ),
+        ev(
+            "herdr",
+            "agent_status unknown",
+            r#"{"agent_status":"unknown","present":true}"#,
+        ),
+        ev(
+            "herdr",
+            "missing from herdr agent list",
+            r#"{"present":false}"#,
+        ),
+        ev("got", "", "{}"),
+    ];
+    let mut pushed = vec![insert_launched(&h, &ws, "ready", "slice", launch)];
+    held_back.push(insert_launched(&h, &ws, "done", "after its ready", launch));
+    pushed.extend([
+        ev("ask", "non-blocking", r#"{"blocking":false}"#),
+        ev("ask", "blocking", r#"{"blocking":true}"#),
+        ev("answer", "A: yes", "{}"),
+        ev("owner_answer", "A: merge", "{}"),
+        ev(
+            "owner_ask",
+            "Merge?",
+            r#"{"ask":1,"root":1,"blocking":true}"#,
+        ),
+        ev(
+            "owner_closed",
+            "closed",
+            r#"{"ask":1,"answer":2,"withdrawn":false}"#,
+        ),
+        ev("fail", "broke", "{}"),
+        ev("message", "peer request", "{}"),
+        ev(
+            "prompt_outcome",
+            "no_receipt",
+            r#"{"outcome":"no_receipt","async":true}"#,
+        ),
+        ev(
+            "herdr",
+            "agent_status blocked",
+            r#"{"agent_status":"blocked","present":true}"#,
+        ),
+        ev(
+            "herdr",
+            "agent_status working",
+            r#"{"agent_status":"working","present":true}"#,
+        ),
+        ev("herdr", "worker turn stalled", r#"{"reason":"stall"}"#),
+        ev("herdr", "push exhausted", r#"{"reason":"push_exhausted"}"#),
+        ev("herdr", "capacity", r#"{"reason":"model_capacity"}"#),
+        ev(
+            "herdr",
+            "quota limit hit",
+            r#"{"quota":"limit","percent":0}"#,
+        ),
+        ev(
+            "herdr",
+            "message unreceived",
+            r#"{"reason":"message_unreceived"}"#,
+        ),
+        ev("after", "task 42 done", "{}"),
+        insert_launched(&h, &ws, "done", "no ready before it", other),
+        ev("mystery_kind", "unclassified", "{}"),
+    ]);
+    let tail = ev("herdr", "agent_status idle", idle);
+    let mut c = Chan::start(&h, &env, &[], 60);
+    for (i, e) in pushed.iter().enumerate() {
+        let (_, push) = c.expect_push(Duration::from_secs(20));
+        assert_eq!(&meta(&push, "event"), e, "push {i}");
+        if i == 0 {
+            // Passed over, not acked: every held-back event is still in the inbox.
+            assert_eq!(cursors(&h, &ws), format!("{got}|{e}|-"));
+            let inbox = inbox_ids(&h, &env);
+            assert!(
+                held_back[..7].iter().all(|x| inbox.contains(x)),
+                "{inbox:?}"
+            );
+            assert!(!inbox.contains(&got));
+        }
+        let a = meta(&push, "attempt");
+        until("the adapter's receipt", Duration::from_secs(10), || {
+            attempts(&h, e) == [format!("{a}|received")]
+        });
+        let r = c.call(
+            "taskr_ack",
+            json!({"event":n(e),"fence":n(&meta(&push, "fence"))}),
+        );
+        assert_eq!(r["structuredContent"]["outcome"], "committed", "{r}");
+    }
+    assert!(c.quiet(Duration::from_secs(2)).is_empty());
+    // Each ack passed the held-back events before it; the last one stays readable.
+    assert_eq!(cursors(&h, &ws), format!("{}|-|-", pushed.last().unwrap()));
+    assert_eq!(inbox_ids(&h, &env), [tail.clone()]);
+    for e in held_back.iter().chain([&got, &tail]) {
+        assert!(attempts(&h, e).is_empty(), "{e} was pushed");
+    }
+    assert_eq!(c.close().0, Some(0));
 }
 
 #[test]
@@ -1305,7 +1467,8 @@ fn lost_replies_reconcile_with_their_own_keys_and_a_receipt_may_precede_submitte
     });
     let (_, push) = c.expect_push(Duration::from_secs(20));
     let a = meta(&push, "attempt");
-    // The model's receipt lands before the dropped `submitted` is retried.
+    // The adapter's receipt (and a manual one) lands before the dropped `submitted` is
+    // retried.
     let r = c.call("taskr_received", json!({"attempt":n(&a)}));
     assert_eq!(r["structuredContent"]["outcome"], "committed", "{r}");
     until("the submitted retry", Duration::from_secs(20), || {
@@ -1607,7 +1770,7 @@ fn an_uncertain_local_new_never_claims_an_older_attempt() {
     let a = meta(&push, "attempt");
     assert_ne!(a, old);
     until("the stamp", Duration::from_secs(10), || {
-        attempts(&h, &e) == [format!("{old}|attempted"), format!("{a}|submitted")]
+        attempts(&h, &e) == [format!("{old}|attempted"), format!("{a}|received")]
     });
     let (code, _) = c.close();
     assert_eq!(code, Some(0));
@@ -2040,7 +2203,8 @@ fn orchestrator_messages_receive_ack_restart_generation_and_alarm() {
         ) == "1"
     });
     assert!(c.quiet(Duration::from_secs(3)).is_empty(), "fourth push");
-    assert_eq!(status(&e2)["state"], "pending");
+    // Received by the adapter, never acked.
+    assert_eq!(status(&e2)["state"], "received");
     assert_eq!(status(&e2)["attempts"], 3);
     let alarm = h.ok(
         &[],
@@ -2053,14 +2217,14 @@ fn orchestrator_messages_receive_ack_restart_generation_and_alarm() {
     assert_eq!(log.0, Some(0));
     assert!(
         log.1
-            .contains(&format!("message {e2} to root {target} has no receipt")),
+            .contains(&format!("message {e2} to root {target} has no ack")),
         "{log:?}"
     );
     let campaign = h.ok(&[], &["campaign", &sender]);
     assert!(
         campaign
             .to_string()
-            .contains(&format!("message {e2} to root {target} has no receipt")),
+            .contains(&format!("message {e2} to root {target} has no ack")),
         "{campaign}"
     );
     assert_eq!(c.close().0, Some(0));
@@ -2357,6 +2521,56 @@ fn orchestrator_server_pane_decision_survives_a_new_push_lease() {
         "0"
     );
     assert!(h.home.join("pane-called").exists());
+}
+
+#[test]
+fn a_server_without_wait_push_stops_the_adapter_loudly() {
+    let h = Harness::new();
+    let (_hub, url, _) = start_hub(&h);
+    let direct = client(&h, &url);
+    let (w, worker) = client_lane(&h, &direct);
+    let refused = Arc::new(AtomicUsize::new(0));
+    let seen = refused.clone();
+    let (proxy_port, _) = proxy(
+        port(&url),
+        Arc::new(move |argv| {
+            if argv.iter().any(|a| a == "--push") {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Act::Reply(
+                    json!({"exit":2,"stdout":"{\"error\":\"flag provided but not defined: -push\"}\n","stderr":""}),
+                )
+            } else {
+                Act::Pass
+            }
+        }),
+    );
+    client(&h, &format!("http://[::1]:{proxy_port}"));
+    let e = insert_event(
+        &h,
+        "1",
+        &w,
+        "ask",
+        "needs an answer",
+        r#"{"blocking":true}"#,
+    );
+    let mut c = Chan::start(&h, &worker, &[], SCALE);
+    until("the loud stop", Duration::from_secs(20), || {
+        c.stderr()
+            .contains("stopped: the ledger refused `wait --push`")
+    });
+    assert!(
+        c.stderr().contains("upgrade the taskr server first"),
+        "{}",
+        c.stderr()
+    );
+    // No fallback: nothing pushed, nothing skipped or acked, and the tools keep serving.
+    assert!(c.quiet(Duration::from_secs(3)).is_empty());
+    assert_eq!(refused.load(Ordering::SeqCst), 1, "the refusal was retried");
+    assert!(attempts(&h, &e).is_empty());
+    assert_eq!(cursors(&h, &w), "0|-|-");
+    let task = c.call("taskr_task", json!({}));
+    assert_eq!(task["structuredContent"]["outcome"], "committed", "{task}");
+    assert_eq!(c.close().0, Some(0));
 }
 
 #[test]

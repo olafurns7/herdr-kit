@@ -104,7 +104,7 @@ assert.equal(answer.ok, true);
   await until("the worker push", () => m.sent.length === 1);
   const { content, options } = m.sent[0];
   assert.deepEqual(options, { deliverAs: "followUp" });
-  assert.match(content, new RegExp(`^taskr event ${answerEvent} \\(kind answer\\) from task 2: delivery attempt \\d+, consumer fence 1\\. taskr_received `));
+  assert.match(content, new RegExp(`^taskr event ${answerEvent} \\(kind answer\\) from task 2: delivery attempt \\d+, consumer fence 1; the adapter records the receipt\\. taskr_inbox, then after handling taskr_ack `));
   assert.ok(content.includes(`(CLI: taskr ack ${answerEvent} --as 2 --fence 1)`), content);
   const lease = cli(worker, "consumer", "show");
   assert.equal(lease.live, true);
@@ -115,8 +115,8 @@ assert.equal(answer.ok, true);
   assert.ok(m.noted("already running"));
   await sleep(300);
   assert.equal(cli(worker, "consumer", "show").holder, lease.holder);
-  // No receipt is made for the model.
-  await until("the submitted stamp", () => cli(worker, "delivery", "ls").attempts.every((a) => a.state === "submitted"));
+  // The child records the receipt after the write; the model only acks.
+  await until("the adapter's receipt", () => cli(worker, "delivery", "ls").attempts.every((a) => a.state === "received"));
   assert.equal(cli(worker, "delivery", "ls").attempts.length, 1);
   const started = Date.now();
   await m.stop();

@@ -270,6 +270,11 @@ pub fn flags(cmd: &str, json: bool) -> FlagSet {
                 "also scan children's visible panes for quota lines",
             )
             .int("ack", 0, "ack this pending handled event, then wait")
+            .bool(
+                "push",
+                false,
+                "with --fence, for a push adapter: offer only events the push table pushes; the rest stay in the inbox",
+            )
             .strings(
                 "for",
                 "only return these event kinds (comma-separated; repeatable)",

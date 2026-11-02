@@ -205,6 +205,85 @@ pub fn offer_fenced(
         Ok((Some(ev), replay, false))
     })
 }
+/// The push table: false for an event that needs no decision. A push adapter does not
+/// push it; it stays in the inbox until the ack of a later event passes it. Anything
+/// not named here is pushed.
+pub fn pushed(db: &Connection, ev: &Value) -> Result<bool> {
+    let d = &ev["data"];
+    Ok(match ev["kind"].as_str().unwrap_or("") {
+        "got" | "pr" => false,
+        "prompt_outcome" => ev["summary"] != "late_receipt",
+        "herdr" if d.get("reason").is_none() && d.get("quota").is_none() => {
+            !(d["present"] == false
+                || matches!(
+                    d["agent_status"].as_str(),
+                    Some("idle" | "done" | "unknown")
+                ))
+        }
+        "done" => match ev["launch_id"].as_i64() {
+            Some(lid) => !db.query_row(
+                "select exists(select 1 from events where kind='ready' and launch_id=? and id<?)",
+                params![lid, ev["id"].as_i64()],
+                |r| r.get::<_, bool>(0),
+            )?,
+            None => true,
+        },
+        _ => true,
+    })
+}
+/// `wait --fence F --push`: the head passes today's unfiltered coalescing, then the
+/// oldest event the push table keeps becomes pending. The events passed over are not
+/// acked: they stay in `inbox` until the ack of the pending event moves the cursor past
+/// them.
+pub fn offer_push(
+    db: &mut Connection,
+    as_id: i64,
+    fence: Option<&Fence>,
+) -> Result<(Option<Value>, bool, bool)> {
+    transaction(db, |tx| {
+        let t = task(tx, as_id)?;
+        check_host(tx, as_id)?;
+        guard(tx, as_id, fence)?;
+        let head = tx
+            .query_row(
+                "select id from events where recipient_task_id=? and id>? order by id limit 1",
+                params![as_id, t.acked],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(head) = head else {
+            return Ok((None, false, false));
+        };
+        let ev = load_event(tx, head)?;
+        if coalesce(tx, as_id, &ev, t.pending, false)? {
+            tx.execute(
+                "update tasks set acked_event_id=?,pending_event_id=null where id=?",
+                params![head, as_id],
+            )?;
+            return Ok((None, false, true));
+        }
+        // got and pr are never pushed: leave them out of the scan.
+        let ids = tx
+            .prepare("select id from events where recipient_task_id=? and id>? and kind not in('got','pr') order by id")?
+            .query_map(params![as_id, t.acked], |r| r.get::<_, i64>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for eid in ids {
+            let ev = load_event(tx, eid)?;
+            if !pushed(tx, &ev)? {
+                continue;
+            }
+            let replay = t.pending == Some(eid);
+            if !replay {
+                tx.execute(
+                    "update tasks set pending_event_id=? where id=?",
+                    params![eid, as_id],
+                )?;
+            }
+            return Ok((Some(ev), replay, false));
+        }
+        Ok((None, false, false))
+    })
+}
 pub fn counts(db: &Connection, as_id: i64) -> Result<(i64, i64)> {
     let owed=db.query_row("select count(*) from tasks t where parent_id=? and current_launch_id is not null and status!='closed' and coalesce((select max(id) from events where launch_id=t.current_launch_id and kind='prompt'),0)>coalesce((select max(id) from events where launch_id=t.current_launch_id and kind in('done','fail')),0)",[as_id],|r|r.get(0))?;
     let due=db.query_row("select count(*) from meta where key>='receipt_due:' and key<'receipt_due;' and json_valid(value) and json_extract(value,'$.recipient')=?",[as_id],|r|r.get(0))?;
