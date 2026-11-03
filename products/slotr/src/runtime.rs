@@ -264,6 +264,32 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
     }
     result
 }
+fn request_stop(run: &str, stopped: &mut bool, stop_failed: &mut bool) {
+    if manager::cancelled() != 0
+        && !*stopped
+        && state::read(&state::root()).is_ok_and(|s| {
+            s.holders
+                .iter()
+                .find(|other| other.run == run)
+                .is_none_or(|other| other.started)
+        })
+    {
+        match manager::ctl(&["stop", "--no-block", run]) {
+            Ok(output) if output.status.success() => *stopped = true,
+            Ok(output) => {
+                *stop_failed = true;
+                eprintln!(
+                    "slotr: stop request: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )
+            }
+            Err(error) => {
+                *stop_failed = true;
+                eprintln!("slotr: stop request: {error:#}")
+            }
+        }
+    }
+}
 fn launch(h: &Holder, cmd: &[String], cfg: &Config, memory_max: u64) -> Result<(i32, bool)> {
     let mut nonce = [0u8; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut nonce)?;
@@ -348,35 +374,17 @@ fn launch(h: &Holder, cmd: &[String], cfg: &Config, memory_max: u64) -> Result<(
         // Cancellation is checked after try_wait, so a launcher that exits on the
         // same group HUP cannot leave the unit running.
         let exited = child.try_wait()?;
-        if manager::cancelled() != 0
-            && !stopped
-            && state::read(&state::root()).is_ok_and(|s| {
-                s.holders
-                    .iter()
-                    .find(|other| other.run == h.run)
-                    .is_none_or(|other| other.started)
-            })
-        {
-            match manager::ctl(&["stop", "--no-block", &h.run]) {
-                Ok(output) if output.status.success() => stopped = true,
-                Ok(output) => {
-                    stop_failed = true;
-                    eprintln!(
-                        "slotr: stop request: {}",
-                        String::from_utf8_lossy(&output.stderr).trim()
-                    )
-                }
-                Err(error) => {
-                    stop_failed = true;
-                    eprintln!("slotr: stop request: {error:#}")
-                }
-            }
-        }
+        request_stop(&h.run, &mut stopped, &mut stop_failed);
         if let Some(status) = exited {
             break status;
         }
         thread::sleep(Duration::from_millis(20));
     };
+    // A signal can land after the launcher's last check while the unit holds the relay open.
+    while !relay.is_finished() && (stopped || !stop_failed) {
+        request_stop(&h.run, &mut stopped, &mut stop_failed);
+        thread::sleep(Duration::from_millis(20));
+    }
     // A unit that would not stop may hold the relay pipe open for ever.
     let tail = if stop_failed && !stopped {
         eprintln!(
