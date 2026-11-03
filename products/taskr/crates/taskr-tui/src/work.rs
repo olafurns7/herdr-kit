@@ -2,14 +2,18 @@
 use serde_json::Value;
 
 fn text(v: &Value, key: &str) -> String {
-    let s = v[key].as_str().unwrap_or("unavailable");
+    clip(v[key].as_str().unwrap_or("unavailable"))
+}
+fn clip(s: &str) -> String {
     s.chars().take(1024).collect()
 }
 fn rows(v: &Value) -> &[Value] {
     v.as_array().map(Vec::as_slice).unwrap_or_default()
 }
 
-pub(crate) fn document(id: i64, v: &Value) -> Result<String, String> {
+/// `deps` are the item's dependencies from the campaign read, with whether each is done;
+/// `work show` carries the edges but not their states.
+pub(crate) fn document(id: i64, v: &Value, deps: &[(i64, bool)]) -> Result<String, String> {
     if v["work_id"].as_i64() != Some(id) {
         return Err("the ledger sent another work item".into());
     }
@@ -32,13 +36,27 @@ pub(crate) fn document(id: i64, v: &Value) -> Result<String, String> {
         out.extend([
             format!("Intent: {}", text(contract, "intent")),
             format!("Acceptance: {}", text(contract, "acceptance")),
-            format!(
-                "Required profile: {} · digest {} · {} checks",
-                text(&contract["profile"], "id"),
-                text(&contract["profile"], "digest"),
-                rows(&contract["profile"]["checks"]).len()
-            ),
         ]);
+        let scope: Vec<&str> = rows(&contract["scope"])
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        if !scope.is_empty() {
+            out.push(format!("Scope: {}", clip(&scope.join(", "))));
+        }
+        if !deps.is_empty() {
+            let list: Vec<String> = deps
+                .iter()
+                .map(|(w, done)| format!("W{w} {}", if *done { "done" } else { "open" }))
+                .collect();
+            out.push(format!("Dependencies: {}", list.join(", ")));
+        }
+        out.extend([format!(
+            "Required profile: {} · digest {} · {} checks",
+            text(&contract["profile"], "id"),
+            text(&contract["profile"], "digest"),
+            rows(&contract["profile"]["checks"]).len()
+        )]);
     } else {
         out.push("No contract for current revision".into());
     }
@@ -173,11 +191,11 @@ mod tests {
     #[test]
     fn pending_and_settled_results_do_not_invent_acceptance_or_process_stops() {
         let mut v = json!({"work_id":7,"revision":2,"state":"backlog","runs":[]});
-        assert!(document(7, &v).unwrap().contains("Unassigned"));
-        assert!(document(8, &v).is_err());
+        assert!(document(7, &v, &[]).unwrap().contains("Unassigned"));
+        assert!(document(8, &v, &[]).is_err());
         v["current_run"] = json!(4);
         v["runs"] = json!([{"run_id":4,"revision":1,"round":0,"assignments":[{"round":0,"stage":"gate","launch_id":9,"state":"settled","process_state":"running"}],"results":[{"launch_id":9,"payload":{"kind":"proof","result":{"checks":[]}}}]}]);
-        let doc = document(7, &v).unwrap();
+        let doc = document(7, &v, &[]).unwrap();
         for expected in [
             "RECHECK",
             "Process: running",
@@ -192,7 +210,7 @@ mod tests {
     #[test]
     fn review_findings_and_receipts_remain_distinct() {
         let v = json!({"work_id":7,"revision":1,"current_run":4,"runs":[{"run_id":4,"revision":1,"round":1,"acceptance_id":12,"assignments":[{"round":1,"stage":"reviewer","launch_id":9,"stop_event":11}],"results":[{"result_id":8,"launch_id":9,"payload":{"kind":"review","result":{"verdict":"rework","findings":[{"id":"F1","reason":"incorrect exit","evidence":"exit 1"}]}}}]}]});
-        let doc = document(7, &v).unwrap();
+        let doc = document(7, &v, &[]).unwrap();
         for expected in [
             "Acceptance receipt 12",
             "Source review: rework",
@@ -202,5 +220,27 @@ mod tests {
         ] {
             assert!(doc.contains(expected), "{doc}");
         }
+    }
+
+    #[test]
+    fn spec_only_contract_shows_scope_and_dependency_states() {
+        let v = json!({"work_id":7,"revision":1,"revisions":[{"revision":1,"contract":{"intent":"why","acceptance":"cmd","scope":["src/a.rs","docs"],"dependencies":[{"work":3,"revision":1},{"work":4,"revision":2}]}}]});
+        let doc = document(7, &v, &[(3, true), (4, false)]).unwrap();
+        for expected in [
+            "Intent: why",
+            "Acceptance: cmd",
+            "Scope: src/a.rs, docs",
+            "Dependencies: W3 done, W4 open",
+            "Required profile: unavailable · digest unavailable · 0 checks",
+        ] {
+            assert!(doc.contains(expected), "{doc}");
+        }
+        let bare = json!({"work_id":7,"revision":1,"revisions":[{"revision":1,"contract":{"intent":"why"}}]});
+        let doc = document(7, &bare, &[]).unwrap();
+        assert!(
+            !doc.contains("Scope") && !doc.contains("Dependencies"),
+            "{doc}"
+        );
+        assert!(doc.contains("Acceptance: unavailable"), "{doc}");
     }
 }

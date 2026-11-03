@@ -399,7 +399,8 @@ frame is marked stale and keeps the last data.
 `l` on a campaign opens it. Six panes, numbered in their titles:
 
 1. **Lanes:** the tree of workers under the lead, with role, model, host,
-   pane and age. Closed lanes show their outcome.
+   pane and age. Closed lanes show their outcome. A lane with a `work` ref
+   (`taskr set LANE work=12`) shows `W12` at the end of its name column.
 2. **Asks and decisions:** open and answered questions, and the decisions in
    force.
 3. **Docs:** captured briefs, reports, the goal and the plan. `o` reads one.
@@ -407,10 +408,15 @@ frame is marked stale and keeps the last data.
 5. **Log:** the newest events.
 6. **Tasks:** durable work IDs (`W…`), including unassigned backlog, separate
    from agent lanes. The list shows backlog, queued, active, verifying, done
-   and cancelled states. Select with `j`/`k`, arrows or the mouse; the strip
+   and cancelled states. Each open row says `ready` when every dependency is
+   done (or it has none), else `waits W3` naming the first open dependency
+   (`waits W3+2` when more); done and cancelled rows say neither. Dependencies
+   come from the current revision's contract, with each one's current state.
+   Select with `j`/`k`, arrows or the mouse; the strip
    shows the current revision/run/round, stage, required proof and review
    status, process state, acceptance receipt and blocked/recheck reason.
-   `Enter`, `o` or `I` reads current-run source identities, check/case receipts,
+   `Enter`, `o` or `I` reads the intent, acceptance, scope (when present) and
+   dependencies (`W3 done`, `W4 open`), then current-run source identities, check/case receipts,
    artifact hashes and review findings in the existing document pager.
    Evidence bodies load only on request, with a 10-second deadline and a
    1 MiB cap on each of stdout and stderr before JSON parsing. Oversized output

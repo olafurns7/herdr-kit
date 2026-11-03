@@ -359,7 +359,14 @@ fn open(app: &mut App, root: i64, name: &str) -> Effect {
 fn report(app: &mut App) -> Effect {
     if app.pane == campaign::TASKS {
         return match campaign::selected_work(&app.view()) {
-            Some(w) => Effect::Run(Job::Work { id: w.work_id }),
+            Some(w) => Effect::Run(Job::Work {
+                id: w.work_id,
+                deps: w
+                    .dependencies
+                    .iter()
+                    .map(|d| (d.work, d.state == "done"))
+                    .collect(),
+            }),
             None => say(app, "no durable task selected"),
         };
     }
@@ -985,7 +992,7 @@ pub fn done(app: &mut App, job: &Job, result: Result<Done, String>) {
         return campaign_done(app, (*root, name.as_str(), *open, *seq), showing, result);
     }
     app.status = match (job, result) {
-        (Job::Work { id }, Ok(Done::Doc(body))) => {
+        (Job::Work { id, .. }, Ok(Done::Doc(body))) => {
             app.data.doc = Doc {
                 id: *id,
                 kind: "Task evidence".into(),
@@ -1608,7 +1615,10 @@ mod tests {
             assert!(p.text().contains("unassigned"));
             assert_eq!(
                 press(&mut p.app, KeyCode::Enter),
-                Effect::Run(Job::Work { id: 701 })
+                Effect::Run(Job::Work {
+                    id: 701,
+                    deps: vec![]
+                })
             );
             p.keys("j");
             let shown = p.text();
@@ -1617,7 +1627,10 @@ mod tests {
             }
             assert_eq!(
                 press(&mut p.app, KeyCode::Char('I')),
-                Effect::Run(Job::Work { id: 702 })
+                Effect::Run(Job::Work {
+                    id: 702,
+                    deps: vec![]
+                })
             );
             let lane = p.app.lane;
             assert_eq!(press(&mut p.app, KeyCode::Char('y')), Effect::None);
@@ -1629,11 +1642,17 @@ mod tests {
             }
             assert_eq!(
                 press(&mut p.app, KeyCode::Char('o')),
-                Effect::Run(Job::Work { id: 703 })
+                Effect::Run(Job::Work {
+                    id: 703,
+                    deps: vec![]
+                })
             );
             done(
                 &mut p.app,
-                &Job::Work { id: 703 },
+                &Job::Work {
+                    id: 703,
+                    deps: vec![],
+                },
                 Ok(Done::Doc("# Accepted evidence\n\nreceipt 99".into())),
             );
             assert_eq!(p.app.screen, Screen::Pager);
@@ -1646,6 +1665,66 @@ mod tests {
             assert_eq!(p.app.pane, 0);
             p.code(KeyCode::BackTab);
             assert_eq!(p.app.pane, campaign::TASKS);
+        }
+    }
+
+    #[test]
+    fn tasks_show_readiness_and_lanes_show_work_refs() {
+        for width in [46, 120] {
+            let mut p = Pane::new(width, 40);
+            p.app.screen = Screen::Campaign;
+            let lanes = &p.app.data.campaign.lanes;
+            let (with, without) = (lanes[0].id, lanes[1].id);
+            let name = |id: i64| lanes.iter().find(|l| l.id == id).unwrap().name.clone();
+            let (name_with, name_without) = (name(with), name(without));
+            p.app.data.campaign.work = Some(serde_json::from_value(serde_json::json!({
+                "total":5,"items":[
+                    {"work_id":1,"title":"no deps","state":"backlog"},
+                    {"work_id":2,"title":"all done","state":"queued","dependencies":[{"work":1,"state":"done"},{"work":5,"state":"done"}]},
+                    {"work_id":3,"title":"one open","state":"backlog","dependencies":[{"work":1,"state":"done"},{"work":4,"state":"active"}]},
+                    {"work_id":4,"title":"two open","state":"active","dependencies":[{"work":7,"state":"backlog"},{"work":8,"state":""},{"work":9,"state":"queued"}]},
+                    {"work_id":5,"title":"finished","state":"done"}
+                ],
+                "lane_work":{with.to_string():"12"}
+            })).unwrap());
+            let lanes_text = p.text();
+            let row = |name: &str| {
+                lanes_text
+                    .lines()
+                    .find(|l| l.contains(name))
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            assert!(row(&name_with).contains("W12"), "{lanes_text}");
+            assert!(!row(&name_without).contains(" W"), "{lanes_text}");
+            let work = p.app.data.campaign.work.as_ref().unwrap();
+            assert!(!work.lane_work.contains_key(&without.to_string()));
+            p.keys("6");
+            let shown = p.text();
+            let line = |title: &str| {
+                shown
+                    .lines()
+                    .find(|l| l.contains(title))
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            assert!(line("no deps").contains("ready"), "{shown}");
+            assert!(line("all done").contains("ready"), "{shown}");
+            assert!(line("one open").contains("waits W4 "), "{shown}");
+            assert!(line("two open").contains("waits W7+2"), "{shown}");
+            let finished = line("finished");
+            assert!(
+                !finished.contains("ready") && !finished.contains("waits"),
+                "{shown}"
+            );
+            p.keys("jj");
+            assert_eq!(
+                press(&mut p.app, KeyCode::Enter),
+                Effect::Run(Job::Work {
+                    id: 3,
+                    deps: vec![(1, true), (4, false)]
+                })
+            );
         }
     }
 
@@ -1681,7 +1760,10 @@ mod tests {
         assert_eq!(campaign::selected_work(&p.app.view()).unwrap().work_id, 3);
         done(
             &mut p.app,
-            &Job::Work { id: 3 },
+            &Job::Work {
+                id: 3,
+                deps: vec![],
+            },
             Ok(Done::Doc("# Evidence".into())),
         );
         p.app.scroll = 7;
@@ -1694,7 +1776,10 @@ mod tests {
         assert_eq!(campaign::selected_work(&p.app.view()).unwrap().work_id, 3);
         assert_eq!(
             press(&mut p.app, KeyCode::Enter),
-            Effect::Run(Job::Work { id: 3 })
+            Effect::Run(Job::Work {
+                id: 3,
+                deps: vec![]
+            })
         );
     }
 

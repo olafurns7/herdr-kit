@@ -40,7 +40,8 @@ pub enum Job {
     /// `taskr doc get ID`: the text of a document the campaign read listed.
     Doc { row: DocRow },
     /// `taskr work show ID`: selected work evidence, read lazily.
-    Work { id: i64 },
+    /// `deps`: the selected item's dependencies and whether each is done.
+    Work { id: i64, deps: Vec<(i64, bool)> },
     /// `taskr --json slotr`: slotr's pools, read on the hub.
     Slotr,
 }
@@ -79,7 +80,7 @@ impl Job {
             Job::Park { name, .. } => format!("unpark {name}"),
             Job::Campaign { name, .. } => format!("read {name}"),
             Job::Doc { row } => format!("read {} {}", row.kind, row.id),
-            Job::Work { id } => format!("read W{id}"),
+            Job::Work { id, .. } => format!("read W{id}"),
             Job::Slotr => "read slotr".into(),
         }
     }
@@ -124,7 +125,7 @@ impl Job {
             }
             Job::Campaign { root, .. } => args(&["--json", "campaign", &root.to_string(), "--all"]),
             Job::Doc { row } => args(&["doc", "get", &row.id.to_string()]),
-            Job::Work { id } => args(&["--json", "work", "show", &id.to_string()]),
+            Job::Work { id, .. } => args(&["--json", "work", "show", &id.to_string()]),
             Job::Slotr => args(&["--json", "slotr"]),
         }
     }
@@ -203,10 +204,10 @@ impl Job {
                     .map_err(|e| format!("unreadable slotr read: {e}"))?;
                 Ok(Done::Slotr(Box::new(slotr)))
             }
-            Job::Work { id } => {
+            Job::Work { id, deps } => {
                 let value = serde_json::from_slice(&out.text()?)
                     .map_err(|e| format!("unreadable work read: {e}"))?;
-                crate::work::document(*id, &value).map(Done::Doc)
+                crate::work::document(*id, &value, deps).map(Done::Doc)
             }
             Job::Doc { .. } => Ok(Done::Doc(
                 String::from_utf8_lossy(&out.text()?).into_owned(),
@@ -310,7 +311,12 @@ mod tests {
                 "-c".into(),
                 format!("head -c {} /dev/zero{redirect}", WORK_READ_LIMIT + 1),
             ];
-            let error = Job::Work { id: 7 }.run(&command).unwrap_err();
+            let error = Job::Work {
+                id: 7,
+                deps: vec![],
+            }
+            .run(&command)
+            .unwrap_err();
             assert!(error.contains("1048576 byte read limit"), "{error}");
             assert!(
                 !error.contains("unreadable work read"),
