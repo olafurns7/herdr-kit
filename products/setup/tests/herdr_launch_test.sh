@@ -1367,6 +1367,87 @@ for bad_deny in 'null' 'false' '[]' '{"model":"bad"}' '{"model":["["]}' '{"model
     expect_no_calls
 done
 
+# --work: ticket W12 of campaign 42, depending on W3. ticket_list [JQ_FILTER]
+# writes the `taskr --json work list 42` reply the stub prints.
+ticket_list() {
+    jq -n '{campaign:42,generation:1,parked:false,configuration:null,work:[
+        {work_id:12,campaign:42,title:"Cart totals",revision:2,state:"queued",revisions:[
+            {revision:1,contract:null},
+            {revision:2,contract:{intent:"Fix the cart total.",acceptance:"cart test passes\nreview READY",scope:["src/cart","tests/cart"],dependencies:[{work:3,revision:1}]}}]},
+        {work_id:3,campaign:42,title:"Prices",revision:1,state:"done",revisions:[]}]}' \
+        | jq "${1:-.}" >"$STUB_RESERVED"
+}
+work_list_call='taskr|--json|work|list|42'
+
+new_case '--work with --reserved is refused before any call'
+ticket_list
+run_launch sh "$launch_sh" --work W12 --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+expect_rc 2
+expect_err '--work does not combine with --reserved'
+expect_no_calls
+
+for refused in 'missing:.work |= map(select(.work_id != 12)):W12 is not a ticket in campaign 42' \
+    'done:.work[0].state = "done":W12 is done' \
+    'cancelled:.work[0].state = "cancelled":W12 is cancelled' \
+    'no spec:.work[0].revisions[1].contract = null:W12 spec lacks intent, acceptance, scope, dependencies' \
+    'intent:del(.work[0].revisions[1].contract.intent):W12 spec lacks intent' \
+    'acceptance:.work[0].revisions[1].contract.acceptance = "":W12 spec lacks acceptance' \
+    'scope:del(.work[0].revisions[1].contract.scope):W12 spec lacks scope' \
+    'dependencies:del(.work[0].revisions[1].contract.dependencies):W12 spec lacks dependencies' \
+    'open dependency:.work[1].state = "active":W12 depends on W3, which is active' \
+    'foreign dependency:.work |= map(select(.work_id != 3)):W12 depends on W3, which is not in campaign 42'; do
+    new_case "--work refuses a ticket: ${refused%%:*}"
+    filter=${refused#*:}
+    ticket_list "${filter%:*}"
+    run_launch sh "$launch_sh" --work 12 opus-medium impl-cart "$brief" "$report" 42
+    expect_rc 2
+    expect_err "${refused##*:}"
+    expect_calls "$work_list_call"
+    [ ! -e "$work/brief.W12.md" ] || fail 'refused ticket wrote a work brief'
+done
+
+new_case '--work writes the ticket into a W12 brief, sends it and sets work=12'
+ticket_list
+cp "$brief" "$case_dir/brief.orig"
+run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 work_brief=$work/brief.W12.md"
+cmp -s "$brief" "$case_dir/brief.orig" || fail 'the lead brief was modified'
+{
+    sed -n '1,3p' "$brief"
+    printf '%s\n' 'Work: W12 Cart totals' 'Intent: Fix the cart total.' 'Acceptance:' \
+        '- cart test passes' '- review READY' 'Scope: src/cart, tests/cart'
+    sed '1,3d' "$brief"
+} >"$case_dir/want-brief"
+cmp -s "$case_dir/want-brief" "$work/brief.W12.md" || fail "work brief differs: $(diff "$case_dir/want-brief" "$work/brief.W12.md" | tr '\n' ' ')"
+expect_calls "$work_list_call" "$(tab_calls impl-cart)" \
+    "$(brief=$work/brief.W12.md; tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium \
+        "$claude_setup" "|$(claude_flags medium)" | sed '1a\
+taskr|set|2468|work=12')"
+
+new_case '--work refuses an existing W12 brief before any tab'
+ticket_list
+printf '%s\n' 'earlier' >"$work/brief.W12.md"
+run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 2
+expect_err "work brief '$work/brief.W12.md' already exists"
+expect_calls "$work_list_call"
+[ "$(cat "$work/brief.W12.md")" = earlier ] || fail 'existing work brief was overwritten'
+
+new_case '--work: a failed taskr set is a step 2 failure'
+ticket_list
+STUB_FAIL='taskr set'
+run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 1
+expect_err "step 2 (taskr set 2468 work=12) failed; so far: workspace=wA task=2468 launch=- tab=wA:t7 pane=wA:p7 work_brief=$work/brief.W12.md"
+if grep -E '^taskr\|launch\|' "$case_dir/calls" >/dev/null; then fail 'launch after a failed taskr set'; fi
+
+new_case '--work rejects a malformed id'
+run_launch sh "$launch_sh" --work W0x opus-medium impl-cart "$brief" "$report" 42
+expect_rc 2
+expect_err "--work 'W0x' is not W<id> or <id>"
+expect_no_calls
+
 fi
 
 reserved_snapshot() {

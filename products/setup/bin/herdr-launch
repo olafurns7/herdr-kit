@@ -4,7 +4,7 @@
 # herdr agent start, taskr prompt --confirm (one Enter when no receipt
 # comes; the final line then ends submit_retry=enter). The first failed step
 # stops the run.
-# Usage: herdr-launch [--workspace W] [--cwd DIR] [--push] LANE NAME BRIEF REPORT PARENT [PANE]
+# Usage: herdr-launch [--workspace W] [--cwd DIR] [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]
 #        herdr-launch --reserved TASK LAUNCH LANE NAME BRIEF REPORT PARENT PANE
 #        herdr-launch --lanes
 #        herdr-launch [--push] --check [LANE...]
@@ -17,9 +17,16 @@
 # the taskr development channel, whose start dialog step 6 answers; codex gets a
 # step 8 that runs `taskr push codex --codex-bin $HERDR_PUSH_CODEX_BIN` in its
 # own tab once the session has run `taskr start`.
+# --work W12 (or 12) starts the lane from PARENT's ticket W12. Before step 1
+# it refuses (exit 2) a ticket that is missing, done or cancelled, lacks
+# intent/acceptance/scope/dependencies, or has a dependency not done. It
+# writes BRIEF's sibling <brief>.W12.md (never overwritten): BRIEF with a
+# Work/Intent/Acceptance/Scope block after its three header lines, which steps
+# 2 and 7 register and send. Step 2 adds `taskr set TASK work=12`; the final
+# line adds work_brief=<path>. Not with --reserved.
 set -u
 
-usage='usage: herdr-launch --lanes | herdr-launch [--push] --check [LANE...] | herdr-launch [--workspace W] [--cwd DIR] [--push] LANE NAME BRIEF REPORT PARENT [PANE]'
+usage='usage: herdr-launch --lanes | herdr-launch [--push] --check [LANE...] | herdr-launch [--workspace W] [--cwd DIR] [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
 
 herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 2
 . "$herdr_bin_dir/herdr-lanes.sh"
@@ -75,11 +82,12 @@ die() {
     exit 2
 }
 
-workspace= tab= pane= task= launch= push_tab= mcp_config= reserved_setup_file=
+workspace= tab= pane= task= launch= push_tab= mcp_config= reserved_setup_file= work_brief=
 step_fail() {
-    printf 'herdr-launch: step %s failed; so far: workspace=%s task=%s launch=%s tab=%s pane=%s%s%s\n' \
+    printf 'herdr-launch: step %s failed; so far: workspace=%s task=%s launch=%s tab=%s pane=%s%s%s%s\n' \
         "$1" "${workspace:--}" "${task:--}" "${launch:--}" "${tab:--}" "${pane:--}" \
-        "${push_tab:+ push_tab=$push_tab}" "${mcp_config:+ mcp_config=$mcp_config}" >&2
+        "${push_tab:+ push_tab=$push_tab}" "${mcp_config:+ mcp_config=$mcp_config}" \
+        "${work_brief:+ work_brief=$work_brief}" >&2
     [ -z "$reserved_setup_file" ] || printf 'herdr-launch: setup artifact=%s; inspect before retry\n' "$reserved_setup_file" >&2
     exit 1
 }
@@ -151,7 +159,7 @@ check_lanes() {
     return "$check_status"
 }
 
-workspace= cwd= push= reserved_task= reserved_launch=
+workspace= cwd= push= reserved_task= reserved_launch= work_id=
 while :; do
     case ${1-} in
         --lanes)
@@ -186,9 +194,18 @@ while :; do
             esac
             shift 3
             ;;
+        --work)
+            [ -z "$work_id" ] && [ -n "${2-}" ] || die '--work needs W<id> or <id> once'
+            work_id=${2#W}
+            case $work_id in
+                '' | *[!0-9]* | 0*) die "--work '$2' is not W<id> or <id>" ;;
+            esac
+            shift 2
+            ;;
         *) break ;;
     esac
 done
+[ -z "$work_id" ] || [ -z "$reserved_task" ] || die '--work does not combine with --reserved'
 [ $# -eq 5 ] || [ $# -eq 6 ] || die "$usage"
 lane=$1 name=$2 brief=$3 report=$4 parent=$5 given_pane=${6-}
 [ -z "$reserved_task" ] || [ -n "$given_pane" ] || die '--reserved requires PANE'
@@ -285,6 +302,48 @@ fi
 
 # Compact output is what the parsers below read.
 unset TASKR_FORMAT
+
+# --work: PARENT's tickets as `taskr --json work list` prints them (.work[]
+# entries from show(), taskr-core/src/store/work/mod.rs:402-437). The ticket's
+# spec is the contract of its current revision.
+if [ -n "$work_id" ]; then
+    tickets=$(taskr --json work list "$parent") || die "W$work_id: taskr work list $parent failed"
+    refusal=$(printf '%s\n' "$tickets" | jq -r --argjson id "$work_id" --argjson root "$parent" '
+        def spec: . as $w | [$w.revisions[]? | select(.revision == $w.revision) | .contract][0];
+        def nonempty: (type == "string" or type == "array") and length > 0;
+        (.work // []) as $all | [$all[] | select(.work_id == $id and .campaign == $root)][0] as $w |
+        if $w == null then "W\($id) is not a ticket in campaign \($root)"
+        elif $w.state == "done" or $w.state == "cancelled" then "W\($id) is \($w.state)"
+        else ($w | spec) as $c |
+            [if ($c.intent | type) == "string" and ($c.intent | length) > 0 then empty else "intent" end,
+             if $c.acceptance | nonempty then empty else "acceptance" end,
+             if ($c.scope | type) == "array" then empty else "scope" end,
+             if ($c.dependencies | type) == "array" then empty else "dependencies" end] as $missing |
+            if $missing != [] then "W\($id) spec lacks \($missing | join(", "))"
+            else first($c.dependencies[] | (.work? // .) as $d | [$all[] | select(.work_id == $d)][0] as $dw |
+                    select($dw.state != "done" and $dw.state != "accepted") |
+                    "W\($id) depends on W\($d), which is \($dw.state // "not in campaign \($root)")") // empty
+            end
+        end') || die "W$work_id: unreadable taskr work list $parent"
+    [ -z "$refusal" ] || die "$refusal"
+    work_brief=${brief%.md}.W$work_id.md
+    [ ! -e "$work_brief" ] && [ ! -L "$work_brief" ] || die "work brief '$work_brief' already exists"
+    # The ticket block goes after the brief's three header lines; newlines in
+    # one-line fields become spaces so they cannot add header lines.
+    (set -C; {
+        sed -n '1,3p' "$brief" &&
+        printf '%s\n' "$tickets" | jq -r --argjson id "$work_id" '
+            def line: tostring | gsub("[\r\n]+"; " ");
+            .work[] | select(.work_id == $id) | . as $w |
+            [$w.revisions[] | select(.revision == $w.revision) | .contract][0] as $c |
+            "Work: W\($id) \($w.title | line)", "Intent: \($c.intent | line)", "Acceptance:",
+            (if ($c.acceptance | type) == "array" then $c.acceptance[] | line
+             else $c.acceptance | split("\n")[] | select(length > 0) end | "- \(.)"),
+            "Scope: \(if $c.scope == [] then "none (read-only)" else $c.scope | map(line) | join(", ") end)"' &&
+        sed '1,3d' "$brief"
+    } >"$work_brief") || die "could not write work brief '$work_brief'"
+    brief=$work_brief
+fi
 
 # Reserved starts are controller-owned. Connect before any Herdr CLI, whose
 # ordinary missing-server path may auto-start a server. Failure is closed.
@@ -399,6 +458,8 @@ task=$(printf '%s\n' "$out" | sed -n 's/^n1 \([0-9][0-9]*\)$/\1/p')
 case $task in
     '' | *[!0-9]*) task=; step_fail "2 (no single 'n1 <task>' line in: $out)" ;;
 esac
+[ -z "$work_id" ] || taskr set "$task" "work=$work_id" >/dev/null \
+    || step_fail "2 (taskr set $task work=$work_id)"
 
 # Step 3: launch. Compact output is 'l1 {"launch_id":<launch>,...}'.
 out=$(taskr launch "$task" --provider "$kind" --model "$model" --effort "$effort") \
@@ -579,4 +640,5 @@ if [ -n "$push" ] && [ "$kind" = codex ]; then
 fi
 [ -z "$mcp_config" ] || extra=" mcp_config=$mcp_config"
 
-printf 'task=%s launch=%s tab=%s pane=%s%s%s\n' "$task" "$launch" "$tab" "$pane" "$extra" "$submit_retry"
+printf 'task=%s launch=%s tab=%s pane=%s%s%s%s\n' "$task" "$launch" "$tab" "$pane" "$extra" \
+    "${work_brief:+ work_brief=$work_brief}" "$submit_retry"
