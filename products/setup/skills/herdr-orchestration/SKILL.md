@@ -158,6 +158,7 @@ Never loop short waits, shell `sleep` for a lane, or put this wait in an `&` bac
 - Implementer report read and the worktree diff inspected by the orchestrator.
 - Independent review of a gated head under the brief and operator policy, then the repository's review skill on the final diff.
 - A green head gate at the final head that ran the repository's full gate command after `git clean -ffdx` is the publish gate. Else run the full gate once at the final head, under the host's heavy-command lock if it has one. Then publish with the repository's PR workflow from the task worktree. Publication stays with the orchestrator.
+- Stacks, under the repository's publish workflow: before opening a PR, check open PRs for file overlap with the repository's tool. Base an overlapping or dependent PR on that PR (its implementer brief names that branch as the base) and link it into a stack. Restack with `gh stack rebase` and `gh stack push` (lease-protected) only on stack branches you or your lanes own; never force-push a branch you do not own. A stack lands from the top as one merge group. A lead's handover lists its open stacks bottom to top.
 - Merge only when verified, evaled where a runtime lane applies, CI green where the repository has CI, and every review comment resolved.
 
 Only the hub and the campaign leads write to the owner (`owner.md`).
