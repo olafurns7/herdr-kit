@@ -92,12 +92,22 @@ case $1 in
             else printf '%s\n' '{"launch_id":3579,"task_id":2468,"native_session":"synthetic-native","dispatch":{"pane":"wA:p5"}}'; fi ;;
         *) exit 1 ;; esac ;;
     new) printf '%s\n' "${STUB_NEW:-n1 2468}" ;;
+    # STUB_PROMPT: got (default), no_receipt or rejected, as --confirm reports them.
+    prompt) case ${STUB_PROMPT:-got} in
+        no_receipt) printf '%s\n' '{"error":"prompt attempt 9: activity observed but no taskr got receipt within 60000 ms","kind":"no_receipt","outcome":"no_receipt","receipt":false}'; exit 5 ;;
+        rejected) printf '%s\n' '{"error":"prompt attempt 9: rejected; inspect the agent before any resend","kind":"herdr","outcome":"rejected"}'; exit 5 ;;
+        esac ;;
+    # A got from another launch never counts; STUB_LOG_GOT=1 adds this launch's.
+    log) printf '%s\n' '{"kind":"got","launch_id":1,"task_id":2468}'
+        [ "${STUB_LOG_GOT:-0}" != 1 ] || printf '%s\n' '{"kind":"got","launch_id":3579,"task_id":2468}' ;;
     launch) printf '%s\n' "${STUB_LAUNCH:-l1 {\"launch_id\":3579,\"status\":\"open\"}}" ;;
 esac
 exit 0
 EOF
 ln -s "$(command -v jq)" "$stub_dir/jq"
-chmod 0755 "$stub_dir/herdr" "$stub_dir/taskr"
+# Step 7's receipt poll sleeps; the stub returns at once and logs nothing.
+printf '%s\n' '#!/bin/sh' 'exit 0' >"$stub_dir/sleep"
+chmod 0755 "$stub_dir/herdr" "$stub_dir/taskr" "$stub_dir/sleep"
 # Reserved-mode socket preflight is isolated too; no connection to a live server.
 printf '%s\n' '#!/bin/sh' 'cat >/dev/null' 'exit "${STUB_SERVER_RC:-0}"' >"$stub_dir/python3"
 chmod 0755 "$stub_dir/python3"
@@ -137,7 +147,7 @@ new_case() {
     STUB_FAIL= STUB_CURRENT= STUB_TAB= STUB_PANE_WS= STUB_PANE_CWD= STUB_PANE_GET= STUB_FG= STUB_ENV_OK= STUB_NEW= STUB_LAUNCH=
     STUB_SCREEN= STUB_START_OK= STUB_PUSH_FAIL= STUB_SERVER_RC=0 STUB_NATIVE= STUB_OBSERVE=
     STUB_INIT_RC=0 STUB_INIT_NATIVE=synthetic-native
-    STUB_SOURCE_PROBE=0
+    STUB_SOURCE_PROBE=0 STUB_PROMPT= STUB_LOG_GOT=
     STUB_RESERVED=$case_dir/reserved.json
     printf '%s\n' "case: $case_name"
 }
@@ -154,7 +164,7 @@ run_launch() {
         STUB_RESERVED="$STUB_RESERVED" STUB_SERVER_RC="$STUB_SERVER_RC" \
         STUB_NATIVE="$STUB_NATIVE" STUB_OBSERVE="$STUB_OBSERVE" \
         STUB_INIT_RC="$STUB_INIT_RC" STUB_INIT_NATIVE="$STUB_INIT_NATIVE" \
-        STUB_SOURCE_PROBE="$STUB_SOURCE_PROBE" \
+        STUB_SOURCE_PROBE="$STUB_SOURCE_PROBE" STUB_PROMPT="$STUB_PROMPT" STUB_LOG_GOT="$STUB_LOG_GOT" \
         TASKR_FORMAT=json "$@" \
         >"$case_dir/out" 2>"$case_dir/err") || run_status=$?
     out=$(cat "$case_dir/out")
@@ -209,7 +219,7 @@ tail_calls() {
         "herdr|pane|run|$3|$env_check" \
         "herdr|pane|wait-output|$3|--match|herdr-launch-env=2468/3579/worker/3579|--timeout|15000" \
         "herdr|agent|start|$1|--kind|$5|--pane|$3|--timeout|90000|--$9" \
-        "taskr|prompt|2468|--file|$brief"
+        "taskr|prompt|2468|--file|$brief|--confirm|--confirm-timeout|60000"
 }
 tab_calls() {
     [ -n "${2-}" ] || printf '%s\n' "herdr|pane|current|--current"
@@ -573,6 +583,47 @@ check_stop 'herdr pane wait-output' 5 'workspace=wA task=2468 launch=3579 tab=wA
 check_stop 'herdr agent start' 6 'workspace=wA task=2468 launch=3579 tab=wA:t7 pane=wA:p7' 8
 check_stop 'taskr prompt' 7 'workspace=wA task=2468 launch=3579 tab=wA:t7 pane=wA:p7' 9
 
+# Step 7 presses Enter once, only after a --confirm no_receipt; the brief goes once.
+step7_calls() {
+    printf '%s\n' "$(tab_calls impl-cart)" \
+        "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" "|$(claude_flags medium)")" "$@"
+}
+step7_count() { grep -c -F -x -- "$1" "$case_dir/calls" || true; }
+enter='herdr|pane|send-keys|wA:p7|Enter'
+log_call='taskr|log|2468|--json|--limit|5'
+
+new_case 'step 7: got within the first wait presses no Enter'
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7'
+expect_calls "$(step7_calls)"
+
+new_case 'step 7: no_receipt, then a got after one Enter'
+STUB_PROMPT=no_receipt STUB_LOG_GOT=1 STUB_SCREEN='pasted brief, not submitted'
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 submit_retry=enter'
+expect_err 'pasted brief, not submitted'
+expect_calls "$(step7_calls 'herdr|pane|read|wA:p7|--source|recent-unwrapped|--lines|40' "$enter" "$log_call")"
+
+new_case 'step 7: no_receipt and no got after one Enter fails, never resends'
+STUB_PROMPT=no_receipt
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 1
+[ -z "$out" ] || fail "stdout not empty: $out"
+expect_err 'step 7 (no receipt 60 s after one Enter; inspect the pane, never resend) failed'
+[ "$(step7_count "$enter")" -eq 1 ] || fail "Enter pressed $(step7_count "$enter") times"
+[ "$(grep -c '^taskr|prompt|' "$case_dir/calls")" -eq 1 ] || fail 'brief sent more than once'
+n=$(step7_count "$log_call")
+[ "$n" -ge 1 ] && [ "$n" -le 30 ] || fail "$n receipt polls, expected 1 to 30"
+
+new_case 'step 7: rejected presses no Enter'
+STUB_PROMPT=rejected
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 1
+expect_err 'step 7 (taskr prompt) failed'
+expect_calls "$(step7_calls)"
+
 new_case 'env verification failure stops before agent start'
 STUB_ENV_OK=0
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
@@ -836,7 +887,7 @@ expect_calls "$(tab_calls impl-cart)" \
     "herdr|pane|read|wA:p7|--source|visible|--lines|40" \
     "herdr|pane|send-keys|wA:p7|Enter" \
     "herdr|agent|wait|impl-cart|--until|idle|--timeout|90000" \
-    "taskr|prompt|2468|--file|$brief"
+    "taskr|prompt|2468|--file|$brief|--confirm|--confirm-timeout|60000"
 
 new_case 'claude --push: a failed start without the dialog stops at step 6'
 STUB_START_OK=0 STUB_SCREEN='Error: something else'
@@ -1445,7 +1496,7 @@ expect_rc 0
 expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p5'
 if grep -E '^taskr\|(new|launch)\|' "$case_dir/calls" >/dev/null; then fail 'reserved mode created another task or launch'; fi
 grep -F 'herdr|agent|start|impl-cart|' "$case_dir/calls" >/dev/null || fail 'reserved mode did not start'
-grep -F "taskr|prompt|2468|--file|$brief" "$case_dir/calls" >/dev/null || fail 'reserved brief not captured'
+grep -F "taskr|prompt|2468|--file|$brief|--confirm|--confirm-timeout|60000" "$case_dir/calls" >/dev/null || fail 'reserved brief not captured'
 grep -F 'TASKR_LAUNCH=3579 DISABLE_AUTO_UPDATE=true' "$case_dir/calls.setup" >/dev/null || fail 'reserved identity/update environment missing'
 grep -F 'unset TASKR_DB && export PATH=' "$case_dir/calls.setup" >/dev/null || fail 'reserved default context did not clear stale ledger override'
 python3 - "$case_dir/calls" <<'PY' || fail 'reserved observation identity/order mismatch'
