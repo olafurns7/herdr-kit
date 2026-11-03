@@ -148,7 +148,7 @@ case "$1 $2" in
         fi ;;
     'close 43') printf '{"task_id":43}\n' ;;
     'campaign 50') cat "$CASE/campaign" ;;
-    'log 5'[0-9]) cat "$CASE/log-$2" ;;
+    'log '[56][0-9]) cat "$CASE/log-$2" ;;
     *) exit 1 ;;
 esac
 EOF
@@ -853,20 +853,52 @@ LEASE=bad
 run check 42
 expect_rc 2
 has out unknown
-# Session cap: idle lists worker lanes whose newest ledger event is old enough, and writes nothing.
+# Session cap: idle lists worker lanes inactive 12 h or more, or whose session read 150 M tokens or more,
+# and writes nothing.
 stamp() { jq -nr --argjson h "$1" 'now - $h * 3600 | strftime("%Y-%m-%dT%H:%M:%S.123Z")'; }
+# A Claude session of $2 tokens: message m1 is written over two lines and must count once.
+claude_session() {
+    dir=$home/claude/projects/-work
+    mkdir -p "$dir"
+    jq -nc --argjson t "$2" '($t / 2 | floor) as $a | ($t / 4 | floor) as $b
+        | {type:"user",message:{role:"user"}},
+          ({type:"assistant",message:{id:"m1",usage:{input_tokens:1,cache_read_input_tokens:$a,cache_creation_input_tokens:$b,output_tokens:9}}} | ., .),
+          {type:"assistant",message:{id:"m2",usage:{input_tokens:($t - $a - $b - 1),output_tokens:9}}}' >"$dir/sess-$1.jsonl"
+}
+# A Codex rollout whose last token_count totals $2 input tokens.
+codex_session() {
+    dir=$home/codex/sessions/2026/11/01
+    mkdir -p "$dir"
+    jq -nc --argjson t "$2" '{type:"session_meta",payload:{id:"sess-x"}},
+        {type:"event_msg",payload:{type:"token_count",info:{total_token_usage:{input_tokens:1,cached_input_tokens:1}}}},
+        {type:"event_msg",payload:{type:"token_count",info:null}},
+        {type:"event_msg",payload:{type:"token_count",info:{total_token_usage:{input_tokens:$t,cached_input_tokens:1}}}}' \
+        >"$dir/rollout-2026-11-01T00-00-00-sess-$1.jsonl"
+}
+# Each spec is ID:NAME:ROLE:AGE_HOURS:SESSION[:HOST]; SESSION is cTOKENS (Claude), xTOKENS (Codex),
+# o (OpenCode), m (Claude, file missing) or n (no launch).
 idle_fixture() {
+    [ $# -gt 0 ] || set -- 51:impl:implementer:13:c1000 52:fresh:implementer:11:c1000 53:prompted:implementer:13:c1000 \
+        54:lead:orchestrator:13:c1000 55:sub:sub-orchestrator:13:c1000 56:check:gate:13:c1000
     printf '{"lanes":[' >"$case_dir/campaign"
     sep=
-    for spec in 51:impl:implementer:13 52:fresh:implementer:11 53:prompted:implementer:13 \
-        54:lead:orchestrator:13 55:sub:sub-orchestrator:13 56:check:gate:13; do
-        IFS=: read -r id lname lrole age <<SPEC
+    for spec; do
+        IFS=: read -r id lname lrole age session lhost <<SPEC
 $spec
 SPEC
-        printf '%s{"id":%s,"name":"%s","role":"%s","status":"open"}' "$sep" "$id" "$lname" "$lrole" >>"$case_dir/campaign"
+        printf '%s{"id":%s,"name":"%s","role":"%s","status":"open","host":"%s"}' "$sep" "$id" "$lname" "$lrole" "$lhost" >>"$case_dir/campaign"
         sep=,
+        case $session in
+            c*) provider=claude; claude_session "$id" "${session#c}" ;;
+            x*) provider=codex; codex_session "$id" "${session#x}" ;;
+            o) provider=opencode ;;
+            m) provider=claude ;;
+        esac
+        native=$home/$provider
         {
-            printf '{"record":"launch","task_id":%s}\n' "$id"
+            # An older launch of another provider is not the current one.
+            [ "$session" = n ] || printf '{"record":"launch","id":1,"task_id":%s,"provider":"codex","native_home":"/missing","session_ref":"old"}\n%s\n' \
+                "$id" "$(printf '{"record":"launch","id":2,"task_id":%s,"provider":"%s","native_home":"%s","session_ref":"sess-%s"}' "$id" "$provider" "$native" "$id")"
             printf '{"record":"event","id":%s0,"kind":"note","created_at":"%s"}\n' "$id" "$(stamp "$age")"
             # The prompt is newer steering text and resets the clock.
             [ "$id" != 53 ] || printf '{"record":"event","id":%s1,"kind":"prompt","created_at":"%s"}\n' "$id" "$(stamp 1)"
@@ -875,25 +907,27 @@ SPEC
     printf ']}\n' >>"$case_dir/campaign"
 }
 read_only() {
-    if grep -v '^taskr|campaign|50|env=/$' "$case_dir/calls" | grep -v '^taskr|log|5[0-9]|--limit|1|env=/$' | grep . >/dev/null; then
+    if grep -v '^taskr|campaign|50|env=/$' "$case_dir/calls" | grep -v '^taskr|glance|env=/$' |
+        grep -v '^taskr|log|[56][0-9]|--limit|1|env=/$' | grep . >/dev/null; then
         fail "idle made a non-read call: $(cat "$case_dir/calls")"
     fi
     [ ! -e "$home/.local/state" ] || fail 'idle created state'
 }
+out_is() { [ "$(cat "$case_dir/out")" = "$1" ] || fail "out: $(cat "$case_dir/out")"; }
 
 new_case 'idle lists only a worker lane inactive 12 h or more'
 idle_fixture
 run idle 50
 expect_rc 0
-[ "$(cat "$case_dir/out")" = 'idle 51 impl implementer 13 last_event=510' ] || fail "out: $(cat "$case_dir/out")"
+out_is 'idle 51 impl implementer 13 last_event=510 tokens=1000 reason=inactive'
 read_only
 
 new_case 'idle --hours 1 lowers the threshold'
 idle_fixture
 run idle 50 --hours 1
 expect_rc 0
-has out 'idle 51 impl implementer 13 last_event=510'
-has out 'idle 52 fresh implementer 11 last_event=520'
+has out 'idle 51 impl implementer 13 last_event=510 tokens=1000 reason=inactive'
+has out 'idle 52 fresh implementer 11 last_event=520 tokens=1000 reason=inactive'
 lacks out 'orchestrator'
 lacks out ' gate '
 read_only
@@ -903,6 +937,57 @@ idle_fixture
 run idle 50 --hours 14
 expect_rc 0
 [ ! -s "$case_dir/out" ] || fail "out: $(cat "$case_dir/out")"
+
+new_case 'idle lists a session at 150 M tokens, counting a split message once, and not one below'
+idle_fixture 61:big:implementer:1:c150000000 62:under:implementer:1:c149999999 63:both:researcher:13:c200000000
+run idle 50
+expect_rc 0
+out_is 'idle 61 big implementer 1 last_event=610 tokens=150000000 reason=tokens
+idle 63 both researcher 13 last_event=630 tokens=200000000 reason=both'
+read_only
+
+new_case 'idle --tokens 10M lowers the token threshold'
+idle_fixture 61:small:implementer:1:c10000000 62:smaller:implementer:1:c9999999
+run idle 50 --tokens 10M
+expect_rc 0
+out_is 'idle 61 small implementer 1 last_event=610 tokens=10000000 reason=tokens'
+run idle 50 --tokens 9999999 --hours 2
+expect_rc 0
+has out 'idle 62 smaller implementer 1 last_event=620 tokens=9999999 reason=tokens'
+
+new_case 'idle reports an unreadable session and lists it only when inactive'
+idle_fixture 61:gone:implementer:13:m 62:gonefresh:implementer:1:m 63:nolaunch:implementer:1:n \
+    64:remote:implementer:1:c200000000:dev-b.example
+mkdir -p "$home/claude/projects/-work"
+printf '{"type":"assistant","message":' >"$home/claude/projects/-work/sess-65.jsonl"
+jq -c '.lanes += [{"id":65,"name":"torn","role":"implementer","status":"open","host":""}]' "$case_dir/campaign" >"$case_dir/c2"
+mv "$case_dir/c2" "$case_dir/campaign"
+sed 's/62/65/g; s/gonefresh/torn/' "$case_dir/log-62" >"$case_dir/log-65"
+run idle 50
+expect_rc 0
+out_is 'unread 61 gone implementer cause=missing
+idle 61 gone implementer 13 last_event=610 tokens=unknown(missing) reason=inactive
+unread 62 gonefresh implementer cause=missing
+unread 63 nolaunch implementer cause=no-launch
+unread 64 remote implementer cause=other-host
+unread 65 torn implementer cause=parse'
+read_only
+
+new_case 'idle reads Codex totals and reports OpenCode as unread'
+idle_fixture 61:cx:implementer:1:x150000001 62:cxlow:implementer:1:x5 63:oc:implementer:13:o
+run idle 50
+expect_rc 0
+out_is 'idle 61 cx implementer 1 last_event=610 tokens=150000001 reason=tokens
+unread 63 oc implementer cause=provider-opencode
+idle 63 oc implementer 13 last_event=630 tokens=unknown(provider-opencode) reason=inactive'
+read_only
+
+new_case 'idle never lists orchestrator, sub-orchestrator or gate lanes over the token cap'
+idle_fixture 54:lead:orchestrator:13:c900000000 55:sub:sub-orchestrator:13:c900000000 56:check:gate:13:c900000000
+run idle 50
+expect_rc 0
+[ ! -s "$case_dir/out" ] || fail "out: $(cat "$case_dir/out")"
+read_only
 
 new_case 'idle failed status read exits nonzero'
 idle_fixture
@@ -917,10 +1002,13 @@ rm "$case_dir/log-52"
 run idle 50
 [ "$rc" != 0 ] || fail 'exit 0 on a failed read'
 
-new_case 'idle refuses a bad --hours'
-run idle 50 --hours 0
-expect_rc 2
-[ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+for bad in '--hours 0' '--tokens 0' '--tokens M' '--tokens 10G' '--tokens' '--days 1'; do
+    new_case "idle refuses $bad"
+    # shellcheck disable=SC2086 # split the flag and its value
+    run idle 50 $bad
+    expect_rc 2
+    [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+done
 
 # Review 7908 F1: A reads a dead owner and pauses mid-reclaim while B and then C start. Only one may enter.
 for script in herdr-lead herdr-hub; do
