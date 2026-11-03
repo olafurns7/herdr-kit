@@ -40,7 +40,7 @@ herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 2
 start_agent() {
     case $kind in
         claude) set -- --model "$model" --effort "$effort" --dangerously-skip-permissions \
-            --settings '{"agentPushNotifEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}}'
+            --settings '{"agentPushNotifEnabled":false,"autoMemoryEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}}'
             [ -z "$push" ] || set -- "$@" --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr ;;
         codex) set -- -m "$model" -c "model_reasoning_effort=\"$effort\"" \
             --dangerously-bypass-approvals-and-sandbox \

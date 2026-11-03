@@ -9,7 +9,7 @@ Load `local.md` if it exists beside this file
 (`~/.agents/skills/herdr-fleet/local.md`). It contains the operator's private
 policy, accounts, host names, and restrictions. The installer detects this
 overlay without reading or replacing it. Never copy it into a public artifact.
-`--fleet` appends private `~/.config/herdr-fleet/instructions.local.md` (operator model policy and bans) to the public global instructions for existing Claude/Codex directories.
+Private `~/.config/herdr-fleet/instructions.local.md` is the one source of operator model policy and bans. With it present, `--fleet` regenerates the global instructions of existing Claude/Codex directories as public base plus overlay on every run; a hand-edited copy is saved once as `<file>.herdr-setup-prev` and replaced, and a 0444 file stays 0444.
 
 ## Installation
 
@@ -34,7 +34,8 @@ Use `--keep .codex/hooks.json`, for example, to preserve a machine's settings.
 `herdr-launch`, `herdr-lead` and `herdr-hub` read the same generic `lanes.json`.
 An optional `~/.config/herdr-fleet/lanes.json` replaces the entire table.
 The installer never reads or writes the private table. Configure model choices,
-role prefixes, and restrictions there, and describe narrative policy in `local.md`.
+role prefixes, and restrictions there; it is the only list of models
+(`herdr-launch --lanes`). Write per-model policy in the instructions overlay.
 Unknown or malformed lanes fail before registration or agent startup.
 
 ## Optional tools

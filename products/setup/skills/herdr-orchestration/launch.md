@@ -210,7 +210,7 @@ The launch helpers run coding agents with full permissions, no sandbox, and hook
 
 Codex trusts a hook by its file path and command hash. A worktree uses its main checkout's `.codex/hooks.json`, so a Codex profile that has not trusted the repository's current hooks shows "Hooks need review" at every launch. A worker that continues without trusting runs with the repository's hooks off, including any worktree guard. The bypass flag runs the enabled hooks for that launch only, and it gives no access that a full-access worker does not already have.
 
-Every Claude worker launch's `--settings` also sets `"agentPushNotifEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}` so that it cannot push to the owner's phone and starts without the PostHog plugin's skill list. Allowed prefixes and efforts per lane come from the resolved lane table (`lanes.md`, `herdr-launch --lanes`).
+Every Claude worker launch's `--settings` also sets `"agentPushNotifEnabled":false,"autoMemoryEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}` so that it cannot push to the owner's phone, neither reads nor writes Claude auto memory, and starts without the PostHog plugin's skill list. `herdr-lead` and `herdr-hub` omit `autoMemoryEnabled`, so orchestrator sessions keep auto memory. Allowed prefixes and efforts per lane come from the resolved lane table (`lanes.md`, `herdr-launch --lanes`).
 
 ## Launch matrix
 

@@ -94,9 +94,14 @@ The public fleet skill includes it when present; the installer detects it
 without opening, sourcing, copying, or printing its contents.
 
 `--fleet` places global instructions in existing `~/.claude` and `~/.codex`
-directories. Keep operator model policy and bans in the optional private
-`~/.config/herdr-fleet/instructions.local.md`; the installer appends its text
-to the public base using the same keep, record, and sidecar rules.
+directories. Operator model policy and bans have one source, the optional
+private `~/.config/herdr-fleet/instructions.local.md`. With it present, every
+run regenerates each global file as the public base, a blank line, and the
+overlay, even over hand edits; a keep-listed file or a symlink is left alone.
+A file that differs from both the new content and the last recorded install is
+first saved as `<file>.herdr-setup-prev` (mode 0600). A read-only (0444) file
+is replaced through a temporary sibling and stays 0444. Without the overlay the
+usual keep, record, and sidecar rules apply.
 
 `herdr-launch`, `herdr-lead` and `herdr-hub` read `~/.config/herdr-fleet/lanes.json`
 when present; this
@@ -118,15 +123,8 @@ for exact matches. An OpenCode lane uses a qualified `provider/model` model;
 its `provider` is the model prefix, and an explicit value must match. Keep operator policy in
 the private table; the public deny list is empty.
 
-The public OpenCode lanes are `minimax-free` (`opencode/minimax-m3.1-flash-free`),
-`glm-free` (`opencode/glm-5.3-flash-free`), and `glm-flash` (`opencode/glm-5.3-flash`).
-All accept `glm-` and `gather-` names. These OpenCode lanes are for simple,
-bounded tasks with an exact validation gate: read-only gathering, source-grounded digests, mechanical edits, lint or
-format fixes, and doc copy. Prefer `minimax-free`, then `glm-free`; use paid
-`glm-flash` when both free lanes fail or are unavailable. Free lanes may read
-and edit private repository code within these limits. Never use these lanes
-for critical work, review or approval, a recommendation or adjudication,
-diagnosis, or a write path without an exact validation gate.
+The lane table is the only list of models; `herdr-launch --lanes` prints the
+resolved lanes, and the private instructions overlay holds per-model policy.
 
 `herdr-launch` runs OpenCode directly, resolving PATH or `~/.opencode/bin/opencode`.
 With v2.1.1 it uses `--standalone --auto` and process-local `OPENCODE_CONFIG_CONTENT`

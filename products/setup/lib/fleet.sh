@@ -35,8 +35,48 @@ elif [ -f "$instructions_overlay" ]; then
 elif [ -e "$instructions_overlay" ] || [ -L "$instructions_overlay" ]; then
     printf '%s\n' 'WARN: instructions.local.md is not a regular file; ignored' >&2
 fi
-[ "$have_claude" -eq 0 ] || place "$instructions_src" "$home_dir/.claude/CLAUDE.md"
-[ "$have_codex" -eq 0 ] || place "$instructions_src" "$home_dir/.codex/AGENTS.md"
+# With an overlay, the global file is generated output (base + overlay): it
+# is rewritten every run, hand edits included, so no stale copy survives. A
+# file that differs from both the new content and the last recorded install
+# is saved once as <file>.herdr-setup-prev (0600) first. Keep-listed files,
+# symlinks and non-regular files still follow place().
+regenerate() {
+    regen_dest=$2
+    regen_prev=$regen_dest.herdr-setup-prev
+    regen_rel=${regen_dest#"$home_dir"/}
+    if is_kept "$regen_dest" || [ -L "$regen_dest" ] || [ ! -f "$regen_dest" ] \
+        || cmp -s "$1" "$regen_dest"; then
+        place "$1" "$regen_dest"
+        return 0
+    fi
+    regen_recorded=$(record_get "$regen_rel")
+    if [ -z "$regen_recorded" ] || [ "$(file_hash "$regen_dest")" != "$regen_recorded" ]; then
+        if [ -L "$regen_prev" ] || { [ -e "$regen_prev" ] && [ ! -f "$regen_prev" ]; }; then
+            printf 'MERGE %s differs; %s is a symlink or not a regular file, nothing written\n' \
+                "$regen_dest" "$regen_prev"
+            return 0
+        fi
+        # ponytail: one prev slot; a later hand edit replaces the earlier copy.
+        regen_tmp=$(mktemp "$(dirname "$regen_dest")/.herdr-setup.XXXXXX") \
+            && chmod 0600 "$regen_tmp" && cat "$regen_dest" >"$regen_tmp" \
+            && mv -f "$regen_tmp" "$regen_prev" || {
+            rm -f "${regen_tmp:-}"
+            printf 'MERGE %s differs; could not save %s, nothing written\n' "$regen_dest" "$regen_prev"
+            return 0
+        }
+        printf 'SAVE %s (previous content of %s)\n' "$regen_prev" "$regen_dest"
+    fi
+    if replace_file "$1" "$regen_dest" 0644; then
+        printf 'UPDATE %s (regenerated from base + overlay)\n' "$regen_dest"
+        record_set "$regen_rel" "$(file_hash "$1")"
+    else
+        printf 'WARN: could not regenerate %s\n' "$regen_dest" >&2
+    fi
+}
+instructions_place=place
+[ "$instructions_src" = "$setup_dir/claude/CLAUDE.md" ] || instructions_place=regenerate
+[ "$have_claude" -eq 0 ] || "$instructions_place" "$instructions_src" "$home_dir/.claude/CLAUDE.md"
+[ "$have_codex" -eq 0 ] || "$instructions_place" "$instructions_src" "$home_dir/.codex/AGENTS.md"
 if [ "$notifications" -eq 0 ]; then
     place "$setup_dir/claude/settings.json" "$home_dir/.claude/settings.json"
     place "$setup_dir/codex/hooks.json" "$home_dir/.codex/hooks.json"

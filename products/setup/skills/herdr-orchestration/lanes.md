@@ -1,8 +1,10 @@
 # Lane selection
 
 Load before choosing or resuming a lane, or before splitting work into small
-verified tasks (Loop verification, below). Lane tables hold model assignments; the
-model rules below apply to every table.
+verified tasks (Loop verification, below). The lane table is the only list of
+models: read it with `herdr-launch --lanes`. Which model may take which work is
+operator policy in the private `~/.config/herdr-fleet/instructions.local.md`,
+which `--fleet` merges into the global instructions; public text names no models.
 
 `herdr-launch`, `herdr-lead` and `herdr-hub` resolve the optional private table at
 `~/.config/herdr-fleet/lanes.json`, else the checkout's `products/setup/lanes.json` when run from
@@ -17,23 +19,8 @@ before any control-plane call. `herdr-launch --lanes` lists resolved lanes, pref
 and the table path without launching.
 
 Use `gather-` with a `role=researcher` brief for read-only gathering, such as
-scraping, docs, or release notes. The public table has Haiku 5.5, OpenCode,
-and Codex Luna gather lanes. Haiku 5.5 and Codex Luna run only on `gather-` lanes,
-never analysis, review, implementation, or orchestration.
-
-| Lane | OpenCode model | Prefixes |
-| --- | --- | --- |
-| `minimax-free` | `opencode/minimax-m3.1-flash-free` | `glm gather` |
-| `glm-free` | `opencode/glm-5.3-flash-free` | `glm gather` |
-| `glm-flash` | `opencode/glm-5.3-flash` | `glm gather` |
-
-These OpenCode lanes are for simple, bounded tasks with an exact validation
-gate: read-only gathering, source-grounded digests, mechanical edits, lint or
-format fixes, and doc copy. Prefer `minimax-free`, then `glm-free`; use paid
-`glm-flash` when both free lanes fail or are unavailable. Free lanes may read
-and edit private repository code within these limits. Never use these lanes
-for critical work, review or approval, a recommendation or adjudication,
-diagnosis, or a write path without an exact validation gate.
+scraping, docs, or release notes. A lane's prefixes say which roles it may
+take; the operator overlay may narrow that further for a model.
 
 OpenCode models use `provider/model` syntax. Its v2.1.1 root TUI has no model or
 reasoning-effort flag: the launcher selects the model through process-local
@@ -47,8 +34,8 @@ regular expressions. A match denies the lane. Optional `deny.except` maps known
 prefixes to objects with the same regex fields. An exception clears a field's
 denial only if every prefix of that lane has an exception matching that field's
 value. It has no effect without a matching deny rule. For example,
-`"except":{"gather":{"model":["(?i)^(claude-)?haiku", "(?i)luna"]}}`
-can exempt gather-only Haiku and Luna lanes, but not a lane with both `gather`
+`"except":{"gather":{"model":["^example-small-model$"]}}`
+can exempt a gather-only lane on that model, but not a lane with both `gather`
 and `rs` prefixes. Invalid exception keys, shapes, and patterns fail closed.
 Keep operator-specific rules in the private table; the public `deny` is empty.
 
