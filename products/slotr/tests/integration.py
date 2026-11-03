@@ -271,6 +271,17 @@ class AdmissionTest(unittest.TestCase):
                 self.fail(f'freeze timed out: pid {pid} not stopped outside {lock} within {timeout}s')
             threading.Event().wait(0.01)
 
+    def occupy_with_dir(self, path):
+        # A live slotr can recreate path between unlink and mkdir; os.replace cannot put a directory over a file.
+        def attempt():
+            path.unlink(missing_ok=True)
+            try:
+                path.mkdir()
+                return True
+            except FileExistsError:
+                return False
+        self.wait(attempt)
+
     def lock_free(self, path):
         # True when an exclusive flock on path succeeds now; it is released at once.
         with open(path, 'a') as f:
@@ -2337,14 +2348,11 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(data['campaigns'],{'job'+str(i):i for i in range(12)})
         self.assertEqual(data['generation'],16)
         self.assertEqual(policy.stat().st_mode & 0o777,0o600)
-        before = {str(p):p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        # Live waiters rewrite state files and their .tmp siblings, so only the audit log can be compared.
+        events = self.root/'state/slotr/events.jsonl'
+        before = events.read_bytes()
         self.managed('list','--json'); self.status()
-        after = {str(p):p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
-        for key in before:
-            if key.endswith(('priority.json','state.json','scheduling.json')):
-                # Live waiters may heartbeat; the read-only check freezes them below.
-                continue
-            if key.endswith('events.jsonl'): self.assertEqual(before[key],after[key])
+        self.assertEqual(before,events.read_bytes())
 
     def test_policy_fault_closes_admission_but_not_cached_pressure(self):
         self.cfg['recovery_healthy_seconds']=10
@@ -2718,8 +2726,8 @@ class AdmissionTest(unittest.TestCase):
         self.managed('set','low',0)
         (self.root/'state/slotr/priority.json').write_text('{bad')
         scheduling=self.runtime/'slotr/scheduling.json'
-        scheduling.unlink(); scheduling.mkdir() # makes both read and persistence fail
-        events=self.root/'state/slotr/events.jsonl'; events.unlink(); events.mkdir()
+        self.occupy_with_dir(scheduling) # makes both read and persistence fail
+        events=self.root/'state/slotr/events.jsonl'; self.occupy_with_dir(events)
         self.set_stats(1000)
         self.wait(lambda: low.poll() is not None)
         self.assertEqual(low.returncode,75)
