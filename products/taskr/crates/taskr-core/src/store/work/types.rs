@@ -79,6 +79,42 @@ pub struct Contract {
     pub require_adjudicator: bool,
     pub profile: Profile,
 }
+/// Ticket spec accepted by add/revise: intent, acceptance, scope and dependencies are
+/// required; the rest of [`Contract`] stays optional until queue and claim require it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Spec {
+    pub intent: String,
+    pub acceptance: String,
+    pub scope: Vec<String>,
+    pub dependencies: Vec<Dependency>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<Checkout>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<Source>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_scope: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<Lane>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<Lane>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjudicator: Option<Lane>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rework: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_adjudicator: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<Profile>,
+}
+impl Spec {
+    /// The full contract when every required field is present.
+    pub fn full(&self) -> Option<Contract> {
+        serde_json::from_value(serde_json::to_value(self).ok()?).ok()
+    }
+}
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Configure {
@@ -98,7 +134,7 @@ pub struct Add {
     pub title: String,
     #[serde(default)]
     pub priority: i32,
-    pub contract: Option<Contract>,
+    pub contract: Option<Spec>,
 }
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -106,7 +142,7 @@ pub struct Revise {
     pub expected_revision: i64,
     pub title: Option<String>,
     pub priority: Option<i32>,
-    pub contract: Option<Contract>,
+    pub contract: Option<Spec>,
 }
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

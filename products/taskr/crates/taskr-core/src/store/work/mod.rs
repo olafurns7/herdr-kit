@@ -115,7 +115,9 @@ fn contract_revision(db: &Connection, work: i64, revision: i64) -> Result<Contra
         params![work, revision],
         |r| r.get(0),
     )?;
-    parse(&raw.ok_or_else(|| reject("work contract is incomplete"))?)
+    let raw = raw.ok_or_else(|| reject(format!("work {work} contract is incomplete")))?;
+    serde_json::from_str(&raw)
+        .map_err(|e| reject(format!("work {work} contract is incomplete: {e}")))
 }
 fn expected(w: &Item, revision: i64) -> Result<()> {
     if w.revision != revision {
@@ -143,7 +145,7 @@ fn validate_contract(
     {
         return Err(usage("checkout cwd must be canonical absolute client path"));
     }
-    if c.max_rework > 8 || c.dependencies.len() > 64 {
+    if c.max_rework > 8 {
         return Err(usage("rework/dependency limit exceeded"));
     }
     if c.require_adjudicator && c.adjudicator.is_none() {
@@ -215,8 +217,33 @@ fn validate_contract(
         }
         unique(check.cases.iter().map(String::as_str), "case ID")?;
     }
+    validate_dependencies(db, campaign, work, &c.dependencies)
+}
+/// Validates a spec, or the full contract when complete, and returns the stored JSON.
+fn validate_spec(db: &Connection, campaign: i64, work: Option<i64>, s: &Spec) -> Result<String> {
+    if let Some(c) = s.full() {
+        validate_contract(db, campaign, work, &c)?;
+        return encoded(&c);
+    }
+    text(&s.intent, 16384, "intent")?;
+    text(&s.acceptance, 16384, "acceptance")?;
+    if !s.scope.is_empty() {
+        paths(&s.scope)?;
+    }
+    validate_dependencies(db, campaign, work, &s.dependencies)?;
+    encoded(s)
+}
+fn validate_dependencies(
+    db: &Connection,
+    campaign: i64,
+    work: Option<i64>,
+    deps: &[Dependency],
+) -> Result<()> {
+    if deps.len() > 64 {
+        return Err(usage("rework/dependency limit exceeded"));
+    }
     let mut seen = std::collections::BTreeSet::new();
-    for d in &c.dependencies {
+    for d in deps {
         if d.work <= 0 || d.revision <= 0 || Some(d.work) == work || !seen.insert(d.work) {
             return Err(usage("invalid/self/duplicate dependency"));
         }
@@ -309,9 +336,11 @@ pub fn add(db: &mut Connection, a: Authority, input: Add) -> Result<Value> {
                 return show(tx, id);
             }
         }
-        if let Some(c) = &input.contract {
-            validate_contract(tx, input.campaign, None, c)?;
-        }
+        let contract = input
+            .contract
+            .as_ref()
+            .map(|s| validate_spec(tx, input.campaign, None, s))
+            .transpose()?;
         let creator = json!({"root":a.root,"generation":a.generation,"host":machine_name(caller_machine().as_deref())});
         tx.execute("insert into work_items(root_id,title,priority,revision,state,creator,created_at) values(?,?,?,1,'backlog',?,?)",params![input.campaign,input.title,input.priority,encoded(&creator)?,now()])?;
         let id = tx.last_insert_rowid();
@@ -321,7 +350,7 @@ pub fn add(db: &mut Connection, a: Authority, input: Add) -> Result<Value> {
                 params![a.root, key, canonical, id],
             )?;
         }
-        tx.execute("insert into work_revisions(work_id,revision,contract,creator,created_at) values(?,1,?,?,?)",params![id,input.contract.as_ref().map(encoded).transpose()?,encoded(&creator)?,now()])?;
+        tx.execute("insert into work_revisions(work_id,revision,contract,creator,created_at) values(?,1,?,?,?)",params![id,contract,encoded(&creator)?,now()])?;
         audit(
             tx,
             input.campaign,
@@ -347,8 +376,7 @@ pub fn revise(db: &mut Connection, a: Authority, id: i64, input: Revise) -> Resu
             return Err(reject("cancelled work cannot be revised"));
         }
         if let Some(c) = &input.contract {
-            validate_contract(tx, w.root, Some(id), c)?;
-            let raw = encoded(c)?;
+            let raw = validate_spec(tx, w.root, Some(id), c)?;
             let old: Option<String> = tx.query_row(
                 "select contract from work_revisions where work_id=? and revision=?",
                 params![id, w.revision],
@@ -390,6 +418,15 @@ pub fn queue(db: &mut Connection, a: Authority, id: i64, input: Revision) -> Res
             return Err(reject("prior run still owns checkout; reconcile first"));
         }
         let c = contract(tx, &w)?;
+        for d in &c.dependencies {
+            let hand_done: bool = tx.query_row("select exists(select 1 from work_items i where i.id=? and i.state='done' and not exists(select 1 from work_acceptances a where a.work_id=i.id and a.revision=i.revision))", [d.work], |r| r.get(0))?;
+            if hand_done {
+                return Err(reject(format!(
+                    "dependency work {} was marked done by hand and has no acceptance receipt; a full contract cannot depend on it",
+                    d.work
+                )));
+            }
+        }
         validate_contract(tx, w.root, Some(id), &c)?;
         tx.execute(
             "update work_items set state='queued',current_run=null,reason=null where id=?",

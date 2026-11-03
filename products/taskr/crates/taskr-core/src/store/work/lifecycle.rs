@@ -500,6 +500,41 @@ pub fn cancel(db: &mut Connection, a: Authority, id: i64, input: Reason) -> Resu
         show(tx, id)
     })
 }
+/// Marks unrun backlog work done by hand. It writes no acceptance receipt, so it never
+/// satisfies a full-contract dependency.
+pub fn done(db: &mut Connection, a: Authority, id: i64, input: Reason) -> Result<Value> {
+    text(&input.reason, 4096, "done note")?;
+    transaction(db, |tx| {
+        let w = item(tx, id)?;
+        authority(tx, a, w.root, true)?;
+        let ran: bool = tx.query_row(
+            "select exists(select 1 from work_runs where work_id=?)",
+            [id],
+            |r| r.get(0),
+        )?;
+        if w.state != "backlog" || ran {
+            return Err(reject(format!(
+                "only backlog work without a run can be marked done by hand (state {}{})",
+                w.state,
+                if ran { ", has a run" } else { "" }
+            )));
+        }
+        tx.execute(
+            "update work_items set state='done',reason=? where id=?",
+            params![input.reason, id],
+        )?;
+        audit(
+            tx,
+            w.root,
+            "done by hand",
+            Some(id),
+            None,
+            None,
+            a.root != w.root,
+        )?;
+        show(tx, id)
+    })
+}
 pub fn recover(db: &mut Connection, a: Authority, campaign: i64) -> Result<Value> {
     transaction(db, |tx| {
         authority(tx, a, campaign, false)?;

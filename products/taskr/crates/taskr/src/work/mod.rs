@@ -23,6 +23,7 @@ const VERBS: &[&str] = &[
     "submit",
     "advance",
     "cancel",
+    "done",
     "recover",
     "campaigns",
     "dispatch",
@@ -45,13 +46,16 @@ fn flags(json: bool, verb: &str) -> store::Result<FlagSet> {
     }
     if !matches!(
         verb,
-        "list" | "show" | "inputs" | "campaigns" | "dispatch" | "advance" | "recover"
+        "list" | "show" | "inputs" | "campaigns" | "dispatch" | "advance" | "recover" | "done"
     ) {
         f.string("data", "", "bounded typed JSON").string(
             "file",
             "",
             "UTF-8 JSON file captured on client",
         );
+    }
+    if verb == "done" {
+        f.string("note", "", "why the unrun ticket is done (required)");
     }
     if verb == "dispatch" {
         f.int("limit", 32, "thin nonterminal rows, 1..64");
@@ -223,7 +227,15 @@ fn invoke(
             };
             api::configure(db, a, id, input)
         }
-        "add" => api::add(db, a, api::parse(&raw(f)?)?),
+        "add" => {
+            let input: api::Add = api::parse(&raw(f)?)?;
+            if input.contract.is_none() {
+                return Err(store::usage(
+                    "work add requires a contract with intent, acceptance, scope and dependencies",
+                ));
+            }
+            api::add(db, a, input)
+        }
         "campaigns" => api::campaigns(db),
         "dispatch" => api::dispatch(
             db,
@@ -261,6 +273,14 @@ fn invoke(
         "submit" => api::submit(db, id, api::parse(&raw(f)?)?),
         "advance" => api::advance(db, a, id),
         "cancel" => api::cancel(db, a, id, api::parse(&raw(f)?)?),
+        "done" => api::done(
+            db,
+            a,
+            id,
+            api::Reason {
+                reason: f.get_string("note").into(),
+            },
+        ),
         "recover" => api::recover(db, a, id),
         _ => Err(store::usage("unknown work verb")),
     }
