@@ -382,7 +382,10 @@ impl std::fmt::Display for Done {
         let unconfirmed = "unconfirmed, it may have been queued";
         match &self.how {
             How::Spawn(e) => write!(f, "codex queue could not start ({e}): nothing was queued")?,
-            How::Exit(0) => write!(f, "codex queue exited 0: submitted, not received")?,
+            How::Exit(0) => write!(
+                f,
+                "codex queue exited 0: submitted; the adapter records the receipt"
+            )?,
             How::Exit(n) => write!(f, "codex queue exited {n}: {unconfirmed}")?,
             How::Signal => write!(f, "codex queue died by a signal: {unconfirmed}")?,
             How::Timeout => write!(

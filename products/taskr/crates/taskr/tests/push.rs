@@ -389,7 +389,7 @@ fn the_worker_binding_comes_from_the_launch_and_codex_sees_only_it() {
     assert_eq!(
         lines[0],
         format!(
-            "taskr event {e} (kind note) from task 1: delivery attempt {a}, consumer fence 1. taskr delivery received {a}; taskr inbox; ack after handling: taskr ack {e} --as {w} --fence 1"
+            "taskr event {e} (kind note) from task 1: delivery attempt {a}, consumer fence 1; the adapter records the receipt. taskr inbox; ack after handling: taskr ack {e} --as {w} --fence 1"
         )
     );
     assert!(
@@ -397,21 +397,17 @@ fn the_worker_binding_comes_from_the_launch_and_codex_sees_only_it() {
         "{m}"
     );
     assert!(!m.contains("taskr_") && !m.contains("never pushed"), "{m}");
-    // Exit 0 is a submission, stamped after the exit; not a receipt, not an ack.
-    until("the submitted stamp", Duration::from_secs(10), || {
-        attempts(&h, &e) == [format!("{a}|codex-queue|submitted")]
+    // Exit 0 is a submission: stamped, then the adapter records its receipt; not an ack.
+    until("the adapter's receipt", Duration::from_secs(10), || {
+        attempts(&h, &e) == [format!("{a}|codex-queue|received")]
     });
-    assert!(
-        p.stderr()
-            .contains("codex queue exited 0: submitted, not received")
-    );
+    assert!(p.stderr().contains("codex queue exited 0: submitted; "));
     assert!(p.stderr().contains("Queued message"), "{}", p.stderr());
     assert_eq!(cursors(&h, &w), format!("0|{e}|-"));
     std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(calls(&h).len(), 1, "no redelivery inside the spacing");
+    assert_eq!(calls(&h).len(), 1, "no redelivery inside the ack wait");
 
-    // The model's CLI steps, as the message gives them.
-    h.ok(&env, &["delivery", "received", &a]);
+    // The model's CLI step, as the message gives it.
     h.ok(&env, &["ack", &e, "--as", &w, "--fence", "1"]);
     assert_eq!(attempts(&h, &e), [format!("{a}|codex-queue|received")]);
     assert_eq!(cursors(&h, &w), format!("{e}|-|-"));
@@ -638,7 +634,7 @@ fn an_unreadable_binding_suspends_and_a_change_mid_submission_kills_it() {
     let call = wait_calls(&h, 1, Duration::from_secs(20)).remove(0);
     let a = attempt_of(&call.argv[4]);
     until("the submitted stamp", Duration::from_secs(10), || {
-        attempts(&h, &e) == [format!("{a}|codex-queue|submitted")]
+        attempts(&h, &e) == [format!("{a}|codex-queue|received")]
     });
     h.ok(&env, &["delivery", "received", &a]);
     h.ok(&env, &["ack", &e, "--as", &w, "--fence", "1"]);
@@ -756,11 +752,12 @@ fn a_root_binding_is_the_operators_and_an_adopt_stops_it() {
     let m = &call.argv[4];
     let a = attempt_of(m);
     assert_eq!(m.lines().count(), 2, "{m}");
+    assert!(!m.contains("delivery received"), "{m}");
     assert!(m.contains(&format!(
-        "taskr delivery received {a} --as {r} --session {generation}; taskr inbox --as {r}; ack after handling: taskr ack {e} --as {r} --session {generation} --fence 1"
+        "consumer fence 1; the adapter records the receipt. taskr inbox --as {r}; ack after handling: taskr ack {e} --as {r} --session {generation} --fence 1"
     )), "{m}");
     until("the submitted stamp", Duration::from_secs(10), || {
-        attempts(&h, &e) == [format!("{a}|codex-queue|submitted")]
+        attempts(&h, &e) == [format!("{a}|codex-queue|received")]
     });
     let (code, _, err) = run(&h, &[], &["adopt", &r, "--pane", "w1:p2"]);
     assert_eq!(code, Some(0), "{err}");
@@ -808,8 +805,8 @@ fn a_refused_take_is_retried_never_forced_and_a_killed_sidecar_expires() {
 }
 
 #[test]
-fn failed_submissions_are_bounded_and_a_receipt_suppresses_them_across_restarts() {
-    // ttl 2 s, renew 0.67 s, poll 1 s, spacing 4 s, queue deadline 2 s.
+fn failed_submissions_are_bounded_and_a_receipt_waits_for_an_ack_across_restarts() {
+    // ttl 2 s, renew 0.67 s, poll 1 s, spacing 4 s, ack wait 20 s, queue deadline 2 s.
     const S: u32 = 30;
     let spacing = Duration::from_secs(4);
     let h = Harness::new();
@@ -842,7 +839,7 @@ fn failed_submissions_are_bounded_and_a_receipt_suppresses_them_across_restarts(
         "{err}"
     );
     assert!(err.contains("synthetic refusal"), "{err}");
-    assert!(err.contains("3 submissions without a receipt"), "{err}");
+    assert!(err.contains("3 pushes without an ack"), "{err}");
     assert_eq!(
         text(
             &h,
@@ -856,20 +853,21 @@ fn failed_submissions_are_bounded_and_a_receipt_suppresses_them_across_restarts(
     let (code, _) = p.close();
     assert_eq!(code, Some(0));
 
-    // A restart pushes again under a fresh budget; a receipt then stops it.
+    // A restart pushes again under a fresh budget; the adapter's receipt then holds it
+    // for the ack wait.
     mode(&h, "");
     let p = Push::start(&h, &env, &[], S);
     let call = wait_calls(&h, 4, Duration::from_secs(20)).remove(3);
     let a = attempt_of(&call.argv[4]);
     until("the submitted stamp", Duration::from_secs(10), || {
-        attempts(&h, &e).last().unwrap() == &format!("{a}|codex-queue|submitted")
+        attempts(&h, &e).last().unwrap() == &format!("{a}|codex-queue|received")
     });
-    h.ok(&env, &["delivery", "received", &a]);
     std::thread::sleep(spacing * 2);
-    assert_eq!(calls(&h).len(), 4, "resubmitted after a receipt");
+    assert_eq!(calls(&h).len(), 4, "resubmitted inside the ack wait");
     let (code, _) = p.close();
     assert_eq!(code, Some(0));
-    // Received but unacked: a restarted sidecar reads the receipt and queues nothing.
+    // Received but unacked: a restarted sidecar reads the receipt's time and queues
+    // nothing inside the ack wait.
     let p = Push::start(&h, &env, &[], S);
     held(&h, &w);
     std::thread::sleep(spacing);
@@ -930,7 +928,7 @@ fn a_spawn_failure_and_a_timeout_stay_unsubmitted_and_count() {
     let rows = attempts(&h, &e);
     assert_eq!(rows.len(), 3, "{rows:?}");
     assert!(rows.iter().all(|r| r.ends_with("|attempted")), "{rows:?}");
-    assert!(p.stderr().contains("3 submissions without a receipt"));
+    assert!(p.stderr().contains("3 pushes without an ack"));
     let (code, _) = p.close();
     assert_eq!(code, Some(0));
 }
@@ -1092,7 +1090,7 @@ fn eof_or_a_takeover_during_a_submission_kills_it_and_bounds_its_pipes() {
     let call = wait_calls(&h, 4, Duration::from_secs(20)).remove(3);
     let a2 = attempt_of(&call.argv[4]);
     until("the flood's stamp", Duration::from_secs(10), || {
-        attempts(&h, &e2) == [format!("{a2}|codex-queue|submitted")]
+        attempts(&h, &e2) == [format!("{a2}|codex-queue|received")]
     });
     let (code, err) = p.close();
     assert_eq!(code, Some(0));
@@ -1106,9 +1104,16 @@ fn eof_or_a_takeover_during_a_submission_kills_it_and_bounds_its_pipes() {
     // EOF while an exit-0 parent's output is still held in its group: cancelled,
     // unconfirmed, the holder killed, then the release.
     mode(&h, "orphan");
+    // The flood's push is older than the ack wait: the new process pushes its still
+    // unacked event again at once.
+    h.conn()
+        .execute(
+            "update delivery_attempts set created_at='2000-01-01T00:00:00.000Z' where event_id=?",
+            [&e2],
+        )
+        .unwrap();
     let p = Push::start(&h, &env, &[], SCALE);
     assert_eq!(held(&h, &w), "5");
-    // The flood's event, still unacked, is pushed again by the new process.
     let call = wait_calls(&h, 5, Duration::from_secs(20)).remove(4);
     until("the orphan's pid", Duration::from_secs(5), || {
         call.dir.join("pid").exists()
@@ -1286,7 +1291,8 @@ fn hostile_summaries_stay_one_escaped_string_in_the_cli_message() {
         marker,
         format!("the first {} of {} bytes]", kept.len(), hostile.len())
     );
-    assert!(lines[0].contains("taskr delivery received "));
+    assert!(lines[0].contains("; the adapter records the receipt. taskr inbox; "));
+    assert!(!lines[0].contains("delivery received"));
     let (code, _) = p.close();
     assert_eq!(code, Some(0));
 }
@@ -1508,7 +1514,7 @@ fn push_itself_never_goes_over_rpc_and_its_steps_route() {
     let call = wait_calls(&h, 1, Duration::from_secs(30)).remove(0);
     let a = attempt_of(&call.argv[4]);
     until("the submitted stamp", Duration::from_secs(10), || {
-        attempts(&h, &e) == [format!("{a}|codex-queue|submitted")]
+        attempts(&h, &e) == [format!("{a}|codex-queue|received")]
     });
     let (code, err) = p.close();
     assert_eq!(code, Some(0), "{err}");

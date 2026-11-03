@@ -6,7 +6,7 @@
  * the MCP initialize handshake. Each `notifications/claude/channel` becomes
  * `pi.sendUserMessage(params.content, {deliverAs: "followUp"})`; nothing else the child
  * writes reaches the model, and the event itself is never parsed or acted on. The child
- * owns the lease, the attempts and the envelope; receipts and acks are the model's own
+ * owns the lease, the attempts, the envelope and the receipts; acks are the model's own
  * acts (taskr CLI, or a separately configured plain `taskr mcp`). This shim adds no tool
  * and no socket.
  *

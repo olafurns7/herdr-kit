@@ -151,6 +151,13 @@ pub fn wait(f: &FlagSet) -> Result<Value> {
     }
     let fence = fence(f)?;
     let fence = fence.as_ref();
+    let push = f.get_bool("push");
+    if push && fence.is_none() {
+        return Err(store::usage("--push needs --fence N"));
+    }
+    if push && (f.was_set("for") || f.was_set("from")) {
+        return Err(store::usage("--push takes no --for or --from"));
+    }
     let mut kinds = std::collections::BTreeSet::new();
     for s in f.get_strings("for") {
         for k in s.split(',') {
@@ -245,7 +252,11 @@ pub fn wait(f: &FlagSet) -> Result<Value> {
                 observe::capacity(&mut db, as_id, budget.saturating_sub(start.elapsed()))?;
             }
             let _ = ledger::expire(&mut db);
-            let (ev, replay, coalesced) = ledger::offer_fenced(&mut db, as_id, filtered, fence)?;
+            let (ev, replay, coalesced) = if push {
+                ledger::offer_push(&mut db, as_id, fence)?
+            } else {
+                ledger::offer_fenced(&mut db, as_id, filtered, fence)?
+            };
             if coalesced {
                 skipped += 1;
                 continue;
@@ -288,7 +299,11 @@ pub fn wait(f: &FlagSet) -> Result<Value> {
                 f.get_bool("scan-quota"),
                 budget.saturating_sub(start.elapsed()),
             )?;
-            let (ev, replay, coalesced) = ledger::offer_fenced(&mut db, as_id, filtered, fence)?;
+            let (ev, replay, coalesced) = if push {
+                ledger::offer_push(&mut db, as_id, fence)?
+            } else {
+                ledger::offer_fenced(&mut db, as_id, filtered, fence)?
+            };
             if coalesced {
                 skipped += 1;
                 continue;

@@ -136,8 +136,9 @@ pub fn unreceived(
         if sender == to.id {
             return Ok(json!({"alarmed":false}));
         }
-        let (count, received): (i64, bool) = tx.query_row("select count(*),coalesce(max(received_at is not null),0) from delivery_attempts where event_id=? and task_id=? and session_gen is ?", params![event_id,to.id,session], |r|Ok((r.get(0)?,r.get(1)?)))?;
-        if count < 3 || received || to.acked >= event_id {
+        // The adapter records each receipt itself: what is missing is the ack.
+        let count: i64 = tx.query_row("select count(*) from delivery_attempts where event_id=? and task_id=? and session_gen is ?", params![event_id,to.id,session], |r|r.get(0))?;
+        if count < 3 || to.acked >= event_id {
             return Ok(json!({"alarmed":false}));
         }
         if let Some(e) = tx
@@ -155,7 +156,7 @@ pub fn unreceived(
                 to: Some(sender),
                 kind: "herdr",
                 summary: &format!(
-                    "message {event_id} to root {} has no receipt after 3 pushes; inspect its pane and consumer lease before handoff or resume",
+                    "message {event_id} to root {} has no ack after 3 pushes; inspect its pane and consumer lease before handoff or resume",
                     to.id
                 ),
                 data: Some(
