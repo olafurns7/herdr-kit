@@ -282,6 +282,11 @@ class AdmissionTest(unittest.TestCase):
                 return False
         self.wait(attempt)
 
+    def launcher_pid(self):
+        # The stub records the launcher after starting the unit, so admission can win the race.
+        path = self.runtime / 'launcher'
+        return int(self.wait(lambda: path.exists() and path.read_text()))
+
     def lock_free(self, path):
         # True when an exclusive flock on path succeeds now; it is released at once.
         with open(path, 'a') as f:
@@ -1081,11 +1086,27 @@ class AdmissionTest(unittest.TestCase):
         (self.runtime / 'detached').touch()
         holder, p1 = self.start('holder', start_new_session=True)
         self.admitted('holder', p1)
-        launcher = int((self.runtime / 'launcher').read_text())
+        launcher = self.launcher_pid()
         os.kill(holder.pid, signal.SIGSTOP)           # the launcher handles the tab's HUP first
         os.killpg(holder.pid, signal.SIGHUP)
         self.wait(lambda: Path('/proc/%d/stat' % launcher).read_text().split()[2] == 'Z')
         os.kill(holder.pid, signal.SIGCONT)
+        holder.wait(timeout=30)
+        self.assertEqual(holder.returncode, 129, (self.root / 'holder.log').read_text()[-300:])
+        self.assertTrue(p1.with_suffix('.term').exists())
+        self.assertEqual(self.status()['pools']['runtime']['holders'], [])
+
+    def test_hup_after_launcher_exit_during_relay_wait_stops_unit(self):
+        (self.runtime / 'detached').touch()
+        holder, p1 = self.start('holder')
+        self.admitted('holder', p1)
+        launcher = self.launcher_pid()
+        os.kill(launcher, signal.SIGKILL)
+        # Reaping happens in the frontend's last loop pass; the pause lets it pass its final cancel check.
+        self.wait(lambda: not Path('/proc/%d' % launcher).exists())
+        self.pause(0.2)
+        self.assertIsNone(holder.poll())              # the live unit still holds the relay open
+        holder.send_signal(signal.SIGHUP)
         holder.wait(timeout=30)
         self.assertEqual(holder.returncode, 129, (self.root / 'holder.log').read_text()[-300:])
         self.assertTrue(p1.with_suffix('.term').exists())
