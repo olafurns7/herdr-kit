@@ -89,10 +89,12 @@ GitHub pull requests and tell the lead when one changes. It is off unless
 `~/.local/state/taskr/watch.json` turns it on:
 
 ```json
-{"github": {"enabled": true, "default_repo": "example-org/example-repo"}}
+{"github": {"enabled": true, "default_repo": "example-org/example-repo", "checks": ["Kami review"]}}
 ```
 
-The file is read at each poll, so no restart is needed. Link a PR with
+The file is read at each poll, so no restart is needed. `checks` is optional:
+the names of check runs (or status contexts) whose result at the PR's head the
+poller keeps for [the board](#the-board). Link a PR with
 `taskr set TASK pr=31` (the default repo) or `pr=owner/repo#31`, and unlink it
 with `pr=`. Without `default_repo`, only `owner/repo#N` links are followed.
 
@@ -101,9 +103,10 @@ with `pr=`. Without `default_repo`, only `owner/repo#N` links are followed.
   PRs, rotating through the rest; past 20 PRs the interval stretches to 60 s
   per 20. `gh` runs in a worker thread with a 20-second deadline; the result is
   applied in one short ledger transaction, never across the network call.
-- **What is followed:** PRs whose linked task is not closed, or that an
-  unfired `taskr after pr:` subscription of an open root targets, until they
-  merge or close. A task linked later to a merged or closed PR gets its refs from
+- **What is followed:** PRs whose linked task is not closed or closed in the
+  last 7 days, or that an unfired `taskr after pr:` subscription of an open
+  root targets, until they merge or close. A PR still open 7 days after its
+  lane closed stops being followed and keeps its last state. A task linked later to a merged or closed PR gets its refs from
   the cached state, with no query and no event.
 - **Events:** kind `pr` (compact code `pu`), on change only, to the linked
   task's lead (a linked root gets its own); a closed lead's inbox is skipped.
@@ -131,7 +134,9 @@ with `pr=`. Without `default_repo`, only `owner/repo#N` links are followed.
   line per change of state.
 
 The last-seen state of each PR lives in the ledger's `meta` table as
-`pr_state:owner/repo#N`. Wait for these events with `taskr wait --for pr`.
+`pr_state:owner/repo#N`: state, merge state, draft, head, the `checks` names'
+results at that head (`success`, `failure`, `in_progress`, `no run`, ...) and
+the PR's position in the merge queue of `main`, read in the same batched query. Wait for these events with `taskr wait --for pr`.
 A root in another tree can follow a PR with `taskr after pr:owner/repo#N --as ROOT`
 ([cli.md](cli.md)); while that subscription is unfired, the PR stays polled
 even after its linked task closes.
@@ -181,6 +186,39 @@ Who may call the hub: a request from the tailnet is admitted only if
 `tailscale whois` says the node belongs to the same Tailscale user as the hub
 and has no tags. Other nodes get 403. Traffic is plain HTTP inside the
 encrypted tailnet.
+
+### The board
+
+The hub also serves a read-only board for your other tailnet nodes, such as
+a phone with the Tailscale app on:
+`http://HUB.example.ts.net:7788/board` (or the hub's tailnet IP).
+
+- **Paths:** `GET /board`, `/board.js`, `/board.css` (the page, built into the
+  binary) and `/api/board` (its JSON, the output of `taskr --json board`).
+  Other methods get 405. The page loads `/api/board` once a minute and renders
+  every string as text, under `Content-Security-Policy: default-src 'none';
+  script-src 'self'; style-src 'self'; connect-src 'self'`.
+- **Who:** admitted tailnet nodes (same user, no tags) other than the hub
+  itself. Loopback and the hub's own node, by node id or machine name, get
+  403, as `/api/rpc` refuses them, so the board adds no local exposure.
+- **Cost:** `/api/board` runs `taskr --json board` as a child process, killed
+  after 10 seconds, and keeps one result for 15 seconds for every listener;
+  concurrent loads wait for that one read. A failed read answers 503 and is
+  kept just as long. The daemon writes nothing for the board except the usage
+  counters: `/board*` count as `page`, `/api/board` as `state_tailnet` in
+  `taskr daemon --status`.
+- **What it shows:** each ticket (`taskr work`) of every root that has one,
+  grouped by campaign and the title's tag letter (`A`, `F`, `U`, `P`, `S`);
+  done, in progress (a working or ready lane with `work=W` set, or an open PR
+  on one of its lanes) or not done; blocked by a `blocked:` intent segment or
+  an open blocking owner ask naming `W<id>`; the lanes, the PR (`pr=N` on a
+  lane) with the poller's state, draft, watched checks and queue position
+  ("no state yet" before the poller has read it); open owner asks; and root
+  notes of the last 3 hours that start with `ALARM`, written as
+  `taskr note --as ROOT "ALARM 18:20Z EVENT detail"`. A group's wait line is
+  the `parked:` text every ticket not done in it shares.
+
+Deploy state and the production head are not on the board.
 
 On Linux, run the hub's daemon at boot with `taskr daemon --stay`, which keeps
 serving while Herdr is down:

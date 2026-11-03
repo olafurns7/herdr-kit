@@ -623,3 +623,106 @@ fn an_unfired_subscription_keeps_a_closed_tasks_pr_polled() {
     f.poll();
     assert_eq!(f.calls(), 1);
 }
+
+fn pr_state(f: &Fixture, key: &str) -> Value {
+    serde_json::from_str(&meta(&f.db, &format!("pr_state:{key}")).unwrap().unwrap()).unwrap()
+}
+
+#[test]
+fn draft_named_checks_and_queue_position_are_kept() {
+    let mut f = fixture("board");
+    fs::write(
+        f.dir.join("watch.json"),
+        r#"{"github":{"enabled":true,"default_repo":"demo-org/demo","checks":["Kami review"]}}"#,
+    )
+    .unwrap();
+    f.link(2, "31");
+    let node = |head: &str, kami: Option<&str>| {
+        let mut n = pr(head, "BLOCKED", &["SUCCESS"], 0);
+        n["isDraft"] = json!(true);
+        if let Some(status) = kami {
+            let (status, conclusion) = match status {
+                "IN_PROGRESS" => ("IN_PROGRESS", Value::Null),
+                c => ("COMPLETED", json!(c)),
+            };
+            n["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"__typename":"CheckRun","name":"Kami review","status":status,"conclusion":conclusion,"isRequired":false}));
+        }
+        n
+    };
+    let reply = |f: &Fixture, node: Value, queue: Value| {
+        let mut v: Value = serde_json::from_str(&data(&[node])).unwrap();
+        match queue {
+            Value::Null => v["errors"] = json!([{"path":["q0"],"type":"FORBIDDEN","message":"no"}]),
+            q => v["data"]["q0"] = json!({"mergeQueue":{"entries":{"nodes":q}}}),
+        }
+        f.reply(&v.to_string(), 0);
+    };
+    reply(
+        &f,
+        node(HEAD, Some("SUCCESS")),
+        json!([{"position":3,"pullRequest":{"number":31}}]),
+    );
+    f.poll();
+    let args = fs::read_to_string(f.dir.join("args")).unwrap();
+    assert!(args.contains("{state isDraft merged headRefOid"), "{args}");
+    assert!(args.contains(r#"q0:repository(owner:"demo-org",name:"demo"){mergeQueue(branch:"main"){entries(first:50){nodes{position pullRequest{number}}}}}"#), "{args}");
+    let s = pr_state(&f, "demo-org/demo#31");
+    assert_eq!(
+        (s["draft"].clone(), s["named"].clone(), s["queue"].clone()),
+        (json!(true), json!({"Kami review":"success"}), json!(3))
+    );
+    // A failed queue read keeps the position; a queue without the PR clears it.
+    reply(&f, node(HEAD, Some("IN_PROGRESS")), Value::Null);
+    f.poll();
+    let s = pr_state(&f, "demo-org/demo#31");
+    assert_eq!(
+        (s["named"].clone(), s["queue"].clone()),
+        (json!({"Kami review":"in_progress"}), json!(3))
+    );
+    reply(
+        &f,
+        node(HEAD, Some("FAILURE")),
+        json!([{"position":1,"pullRequest":{"number":99}}]),
+    );
+    f.poll();
+    let s = pr_state(&f, "demo-org/demo#31");
+    assert_eq!(
+        (s["named"].clone(), s["queue"].clone()),
+        (json!({"Kami review":"failure"}), Value::Null)
+    );
+    // A new head without the check reads `no run`; ready for review clears draft.
+    let mut ready = node("6635105aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", None);
+    ready["isDraft"] = json!(false);
+    reply(&f, ready, json!([]));
+    f.poll();
+    let s = pr_state(&f, "demo-org/demo#31");
+    assert_eq!(
+        (s["draft"].clone(), s["named"].clone()),
+        (json!(false), json!({"Kami review":"no run"}))
+    );
+}
+
+#[test]
+fn a_closed_lane_is_followed_for_seven_days() {
+    let mut f = fixture("window");
+    f.link(2, "31");
+    f.reply(&data(&[pr(HEAD, "CLEAN", &[], 0)]), 0);
+    let close = |f: &Fixture, days: i64| {
+        let at = store::stamp(time::OffsetDateTime::now_utc() - time::Duration::days(days));
+        f.db.execute(
+            "update tasks set status='closed',closed_at=? where id=2",
+            [at],
+        )
+        .unwrap();
+    };
+    close(&f, 6);
+    f.poll();
+    assert_eq!(f.calls(), 1, "closed 6 days ago: still followed");
+    assert_eq!(f.latest_ref(2, "pr.state").as_deref(), Some("open"));
+    close(&f, 8);
+    f.poll();
+    assert_eq!(f.calls(), 1, "closed 8 days ago: no longer followed");
+}

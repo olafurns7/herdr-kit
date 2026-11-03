@@ -127,6 +127,7 @@ These are safe to run yourself; they change nothing.
 | `taskr inbox [--as ROOT] [--limit N]` | The caller's own inbox raw, in one snapshot: `acked_event_id`, `pending_event_id` and up to N events after the ack cursor, oldest first (default 20, 1 to 200; `more:true` when cut). A worker uses `TASKR_TASK`/`TASKR_LAUNCH`. It never offers, receipts or acks, and it neither coalesces nor filters, so the first row is not necessarily what `wait` returns next. A fresh read over RPC, never stored or queued. |
 | `taskr doc ls ID`, `taskr doc get DOC_ID` | Captured briefs, reports, goals and plans. |
 | `taskr search QUERY` | Documents, decisions, asks, answers and notes. |
+| `taskr board` | The hub board as JSON, read live: `tickets` (each ticket's column, lanes, PR and its poller state, waits, asks, idle hours), `groups` (campaign and tag letter, with the shared `parked:` line), open owner `asks`, and `alarms` (root notes of the last 3 h starting `ALARM`). The hub serves it at `/api/board` and the page at `/board` ([daemon.md](daemon.md#the-board)). Takes no arguments. |
 | `taskr slotr` | slotr's pools, holders and queue as the hub sees them, as JSON with the campaign root of each row's task; `{"available":false,"error":...}` when slotr cannot be read. It adds `available`, `host` and `now`, and exits 0 either way. Takes no arguments. |
 | `taskr daemon --status` | The daemon on this host. See [daemon.md](daemon.md). |
 

@@ -2,25 +2,7 @@
 use super::*;
 
 fn hub() -> Arc<Hub> {
-    let (_, shutdown) = watch::channel(false);
-    Arc::new(Hub {
-        cfg: HubConfig {
-            listeners: vec![],
-            db_path: PathBuf::from(":memory:"),
-            clock: time::OffsetDateTime::now_utc,
-            log: Arc::new(crate::daemon::Log::open(std::path::Path::new("/dev/null"))),
-            identity: None,
-            hosts: BTreeSet::new(),
-            home: PathBuf::new(),
-            tailscale_bin: PathBuf::new(),
-        },
-        whois: Mutex::default(),
-        usage: usage::Usage::default(),
-        events: Arc::new(Events::new()),
-        shutdown,
-        stored_requests: StdMutex::default(),
-        reapers: Arc::default(),
-    })
+    crate::hub::test_hub()
 }
 
 #[tokio::test]

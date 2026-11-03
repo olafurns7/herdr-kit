@@ -35,6 +35,28 @@ fn document(db: &Connection, root: i64, kind: &str) -> Result<Option<Value>> {
     }
     Ok(d)
 }
+/// A lane's state as `taskr campaign` shows it, from its task row (status, host) and
+/// current launch (observed_status, present).
+pub(super) fn lane_state(db: &Connection, lane: &Value) -> Result<&'static str> {
+    let mut state = mark(lane);
+    if state == "working" && matches!(s(lane, "observed_status"), "idle" | "done" | "unknown") {
+        state = match s(lane, "observed_status") {
+            "idle" => "idle",
+            "done" => "done",
+            _ => "unknown",
+        };
+    }
+    if lane["status"] == "closed" {
+        state = "closed";
+    }
+    if !s(lane, "host").is_empty()
+        && matches!(s(lane, "status"), "open" | "ready")
+        && !host_fresh(db, s(lane, "host"))?
+    {
+        state = "unknown";
+    }
+    Ok(state)
+}
 pub(super) fn snapshot(db: &Connection, root: i64, page: i64, all: bool) -> Result<Value> {
     let t = one(db,"select id,name,role,status,coalesce(machine,'') as host,machine,coalesce(pane_id,'') as pane,created_at,coalesce(closed_at,'') as closed_at,pane_id,lead_status,lead_present,lead_observed_at,coalesce(waiting_until>?,0) as waiting from tasks where id=? and parent_id is null",vec![super::queries::now().into(),root.into()])?.ok_or_else(||reject(format!("campaign {root} does not exist or is not a root")))?;
     let (status, _) = lead(db, &t)?;
@@ -82,24 +104,7 @@ pub(super) fn snapshot(db: &Connection, root: i64, page: i64, all: bool) -> Resu
         vec![root.into(), i64::from(all).into()],
     )?;
     for lane in &mut lanes {
-        let mut state = mark(lane);
-        if state == "working" && matches!(s(lane, "observed_status"), "idle" | "done" | "unknown") {
-            state = match s(lane, "observed_status") {
-                "idle" => "idle",
-                "done" => "done",
-                _ => "unknown",
-            };
-        }
-        if lane["status"] == "closed" {
-            state = "closed";
-        }
-        if !s(lane, "host").is_empty()
-            && matches!(s(lane, "status"), "open" | "ready")
-            && !host_fresh(db, s(lane, "host"))?
-        {
-            state = "unknown";
-        }
-        lane["state"] = json!(state);
+        lane["state"] = json!(lane_state(db, lane)?);
         lane["age_ms"] = json!(elapsed(s(lane, "activity")));
         lane["summary"] = json!(clip(s(lane, "summary"), 300));
         for kind in ["brief", "report"] {

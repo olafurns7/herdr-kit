@@ -87,6 +87,7 @@ pub(super) fn stored(argv: &[String]) -> bool {
                 | "version"
                 | "help"
                 | "glance"
+                | "board"
                 | "campaign"
                 | "slotr"
                 | "tmp"

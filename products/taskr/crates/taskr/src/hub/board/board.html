@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hub board</title>
+<link rel="stylesheet" href="/board.css">
+<script src="/board.js" defer></script>
+<div class="hb">
+  <header>
+    <h1>Hub board</h1>
+    <p class="lede" id="lede">Loading…</p>
+  </header>
+
+  <section class="strip" aria-label="Now">
+    <div class="panel"><h3>Owner asks</h3><ul id="s-asks"></ul></div>
+    <div class="panel"><h3>Alarms, last 3 h</h3><ul id="s-alarms"></ul></div>
+    <div class="panel"><h3>Data</h3><div class="big" id="s-at">—</div><p class="note" id="s-load"></p></div>
+  </section>
+
+  <div id="groups"></div>
+
+  <footer class="panel">
+    <h2>Totals and waits</h2>
+    <table id="totals"><thead><tr><th>Group</th><th>Not done</th><th>In progress</th><th>Done</th><th>Blocked</th></tr></thead><tbody></tbody></table>
+    <ul class="chain" id="chain"></ul>
+    <p class="note">Read live from the taskr ledger every minute (cached 15 s). Deploy and the production head are not on this page.</p>
+  </footer>
+</div>
