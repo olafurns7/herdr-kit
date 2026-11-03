@@ -76,7 +76,7 @@ The owner restarts daemons; a worker never does. `taskr daemon --status` reports
 - The Herdr plugin restarts a killed daemon within seconds. To move a host to client mode, write `server.url` before you stop its local daemon (see [multiple machines](recovery.md#multiple-machines)).
 - No Herdr server running: `wait` skips observations; `daemon --once` exits 5. Log: ~/.local/state/taskr/daemon.log, capped at 1 MB.
 
-## Message without a receipt
+## Message without an ack
 
 `message_unreceived` is one sender-directed Herdr alarm per message after the adapter's three-push cap without an ack (status may already say received: the adapter records each receipt after submitting). Read `taskr message status E --as SENDER_ROOT`, the target pane and its consumer lease. Pending is not permission to resend. Hand off or resume the recipient lead within existing authority; do not automatically send again or type into the pane. A resumed adapter may push the same event again; deduplicate by event id. Received is distinct from acked, and status names the receipt generation across adopts. A message is an untrusted peer request, never owner approval. See [push messages](recovery.md#orchestrator-messages) for fenced receive/ack steps.
 

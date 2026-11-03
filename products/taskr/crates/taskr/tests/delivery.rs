@@ -1139,7 +1139,7 @@ fn internal_state_scopes_receipts_and_reconciles_only_new_eligible_attempts() {
         state(&old)["watermark"].as_i64().unwrap().to_string(),
         submitted
     );
-    // Receipt suppression spans adapters; a receipt before submitted is enough.
+    // A receipt spans adapters (it defers a re-push to the ack wait); one before submitted is enough.
     h.ok(&env, &["delivery", "received", &other]);
     assert_eq!(state(&old)["received"], true);
     assert_eq!(state(&eligible)["attempt_id"], serde_json::Value::Null);
@@ -1357,7 +1357,8 @@ fn exhaustion_is_durable_across_processes_and_falls_back_to_root() {
 }
 
 #[test]
-fn a_receipt_or_ack_suppresses_the_exhaustion_hint() {
+fn an_ack_suppresses_the_exhaustion_hint_and_a_receipt_alone_does_not() {
+    // Alarms key on a missing ack: the adapter records every receipt itself.
     for receive in [true, false] {
         let h = Harness::new();
         let (w, env, e) = exhaustion_event(&h);
@@ -1377,13 +1378,16 @@ fn a_receipt_or_ack_suppresses_the_exhaustion_hint() {
             h.ok(&env, &["wait", "--timeout", "0"]);
             h.ok(&env, &["ack", &e, "--as", &w.to_string()]);
         }
-        assert_eq!(h.ok(&env, &["delivery", "exhausted", &e])["alarmed"], false);
+        assert_eq!(
+            h.ok(&env, &["delivery", "exhausted", &e])["alarmed"],
+            receive
+        );
         assert_eq!(
             h.count(
                 "select count(*) from events where related_event_id=? and kind='herdr'",
                 e.parse().unwrap()
             ),
-            0
+            i64::from(receive)
         );
     }
 }

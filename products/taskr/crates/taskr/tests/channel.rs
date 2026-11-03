@@ -1044,7 +1044,7 @@ fn only_events_that_need_a_decision_are_pushed_and_a_later_ack_passes_the_rest()
     assert!(c.quiet(Duration::from_secs(2)).is_empty());
     // Each ack passed the held-back events before it; the last one stays readable.
     assert_eq!(cursors(&h, &ws), format!("{}|-|-", pushed.last().unwrap()));
-    assert_eq!(inbox_ids(&h, &env), [tail.clone()]);
+    assert_eq!(inbox_ids(&h, &env), [tail.as_str()]);
     for e in held_back.iter().chain([&got, &tail]) {
         assert!(attempts(&h, e).is_empty(), "{e} was pushed");
     }
