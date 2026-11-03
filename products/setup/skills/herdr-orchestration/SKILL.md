@@ -91,14 +91,14 @@ herdr tab rename "$helper_tab_id" <agent-name>
 
 The agent name keeps its role prefix and the task slug (`impl-cart-price`), matches `[a-z][a-z0-9_-]{0,31}`, and is unique among live agents; `herdr-launch` checks the prefix and the pattern.
 
-**2. Write the brief** (below) with that workspace, tab, and pane, in the campaign folder on the host that runs `taskr new`.
+**2. File the ticket and write the brief.** Before a slice's first lane, file one ticket for the slice: `taskr work add --as ROOT --generation GEN` with title, intent, acceptance (checkable lines), scope, and dependencies (the slices it waits for). The ticket owns those facts; the brief (below) adds only lane things (model, ownership, report, validation); herdr-launch --work inserts the ticket's intent, acceptance and scope, so the brief does not repeat them. Every implement, fix, review, and research lane in a campaign has a ticket, and one ticket can have many lanes; gate shells and hub-to-lead prompts have none. A PR has one writing lane at a time and one lead; a second campaign ships its half as a stacked PR. Write the brief with that workspace, tab, and pane, in the campaign folder on the host that runs `taskr new`.
 
-**3. Launch:** `herdr-launch [--push] LANE NAME BRIEF REPORT PARENT [PANE]` (without PANE it creates the tab itself in the caller's workspace or `--workspace W`). It refuses a lane that does not launch as NAME's prefix, checks that a given PANE (in any workspace) is at its shell prompt, registers the task and launch, exports `FLEET_ROLE=worker`, `TASKR_TASK`, and `TASKR_LAUNCH` (for Claude also `CLAUDE_CODE_SANDBOXED=1`, the folder-trust bypass; with Codator installed, its forwarding functions), verifies the export before `herdr agent start` with the lane's flags: full permissions, no sandbox, folder and hook trust (`launch.md` "Unattended flags and trust"), then sends the brief with `taskr prompt --file`. It prints `task= launch= tab= pane=`.
+**3. Launch:** `herdr-launch [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]`; `--work W` puts ticket W in the brief and sets `work=` on the lane (without PANE it creates the tab itself in the caller's workspace or `--workspace W`). It refuses a lane that does not launch as NAME's prefix, checks that a given PANE (in any workspace) is at its shell prompt, registers the task and launch, exports `FLEET_ROLE=worker`, `TASKR_TASK`, and `TASKR_LAUNCH` (for Claude also `CLAUDE_CODE_SANDBOXED=1`, the folder-trust bypass; with Codator installed, its forwarding functions), verifies the export before `herdr agent start` with the lane's flags: full permissions, no sandbox, folder and hook trust (`launch.md` "Unattended flags and trust"), then sends the brief with `taskr prompt --file`. It prints `task= launch= tab= pane=`.
 
 On a failure it prints the failed step and the ids obtained so far. Inspect those (`taskr status`, the pane) before any manual step in `launch.md`; never repeat a completed registration, start, or prompt.
 
 ```sh
-herdr-launch LANE impl-SLUG BRIEF REPORT PARENT [PANE]
+herdr-launch --work W LANE impl-SLUG BRIEF REPORT PARENT [PANE]
 ```
 
 The lane's allowed prefixes and settings come from the resolved table. Optional
@@ -119,7 +119,7 @@ Non-goals: <explicitly excluded outcomes>
 Ownership: <files or module you may edit>   Forbidden: <files you must not touch>
 Context: <current behavior, evidence, decisions already made>
 Skills to load: <repository skills mapped to this work; code-reviewers also name taskr references/review.md>
-Acceptance: <observable conditions>
+Acceptance: <observable conditions> (a --work brief gets the ticket's lines from herdr-launch)
 Validation: <exact commands, one per acceptance item>: leaf checks only (the Leaf checks slot); no build, suite, or gate
   Gate: parent at head (implementer or fixer)
 Progress: taskr SKILL.md worker rules
@@ -150,7 +150,7 @@ Collect with one long wait (default 540000 ms timeout, Codex orchestrators inclu
 taskr wait --as <me> --for ready,ask,answer,owner_answer,done,fail,prompt_outcome,herdr,message [--ack <handled>]
 ```
 
-Never loop short waits, shell `sleep` for a lane, or put this wait in an `&` background job: it dies with the tool call. On a timeout, `w1` with `"owed":0` means no lane owes a result. After `ready`, read the report and the diff, not the pane, and record each decision, sha, and next step as it lands (`workflow.md`). Without a ledger, stalls, gates, and blocked agents: `workflow.md`. After accepting a result: `teardown.md`. Process lane results as they land; never leave a `ready` or `done` unread. When idle with nothing to do, leave a root note that says why, or park after your final note (`owner.md`).
+Never loop short waits, shell `sleep` for a lane, or put this wait in an `&` background job: it dies with the tool call. On a timeout, `w1` with `"owed":0` means no lane owes a result. At each settled wait, read `taskr work list ROOT` for ready and waiting tickets. After `ready`, read the report and the diff, not the pane, and record each decision, sha, next step, and done ticket as it lands (`workflow.md`). Without a ledger, stalls, gates, and blocked agents: `workflow.md`. After accepting a result: `teardown.md`. Process lane results as they land; never leave a `ready` or `done` unread. When idle with nothing to do, leave a root note that says why, or park after your final note (`owner.md`).
 
 ## Gates before publishing
 
