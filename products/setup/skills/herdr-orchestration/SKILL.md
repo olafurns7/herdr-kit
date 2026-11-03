@@ -91,7 +91,7 @@ herdr tab rename "$helper_tab_id" <agent-name>
 
 The agent name keeps its role prefix and the task slug (`impl-cart-price`), matches `[a-z][a-z0-9_-]{0,31}`, and is unique among live agents; `herdr-launch` checks the prefix and the pattern.
 
-**2. File the ticket and write the brief.** Before a slice's first lane, file one ticket for the slice: `taskr work add` with title, intent, acceptance (checkable lines), scope, and dependencies (the slices it waits for). The ticket owns those facts; the brief (below) adds only lane things (model, report, validation) and does not repeat them. Every implement, fix, review, and research lane in a campaign has a ticket, and one ticket can have many lanes; gate shells and hub-to-lead prompts have none. A PR has exactly one lane and one lead; a second campaign ships its half as a stacked PR. Write the brief with that workspace, tab, and pane, in the campaign folder on the host that runs `taskr new`.
+**2. File the ticket and write the brief.** Before a slice's first lane, file one ticket for the slice: `taskr work add --as ROOT --generation GEN` with title, intent, acceptance (checkable lines), scope, and dependencies (the slices it waits for). The ticket owns those facts; the brief (below) adds only lane things (model, ownership, report, validation); herdr-launch --work inserts the ticket's intent, acceptance and scope, so the brief does not repeat them. Every implement, fix, review, and research lane in a campaign has a ticket, and one ticket can have many lanes; gate shells and hub-to-lead prompts have none. A PR has one writing lane at a time and one lead; a second campaign ships its half as a stacked PR. Write the brief with that workspace, tab, and pane, in the campaign folder on the host that runs `taskr new`.
 
 **3. Launch:** `herdr-launch [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]`; `--work W` puts ticket W in the brief and sets `work=` on the lane (without PANE it creates the tab itself in the caller's workspace or `--workspace W`). It refuses a lane that does not launch as NAME's prefix, checks that a given PANE (in any workspace) is at its shell prompt, registers the task and launch, exports `FLEET_ROLE=worker`, `TASKR_TASK`, and `TASKR_LAUNCH` (for Claude also `CLAUDE_CODE_SANDBOXED=1`, the folder-trust bypass; with Codator installed, its forwarding functions), verifies the export before `herdr agent start` with the lane's flags: full permissions, no sandbox, folder and hook trust (`launch.md` "Unattended flags and trust"), then sends the brief with `taskr prompt --file`. It prints `task= launch= tab= pane=`.
 
@@ -119,7 +119,7 @@ Non-goals: <explicitly excluded outcomes>
 Ownership: <files or module you may edit>   Forbidden: <files you must not touch>
 Context: <current behavior, evidence, decisions already made>
 Skills to load: <repository skills mapped to this work; code-reviewers also name taskr references/review.md>
-Acceptance: <observable conditions>
+Acceptance: <observable conditions> (a --work brief gets the ticket's lines from herdr-launch)
 Validation: <exact commands, one per acceptance item>: leaf checks only (the Leaf checks slot); no build, suite, or gate
   Gate: parent at head (implementer or fixer)
 Progress: taskr SKILL.md worker rules
