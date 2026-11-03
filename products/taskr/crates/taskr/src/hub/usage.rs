@@ -30,10 +30,14 @@ fn hour(at: OffsetDateTime) -> String {
 }
 
 impl Usage {
-    pub(super) fn record(&self, status: u16, at: OffsetDateTime) {
+    pub(super) fn record(&self, path: &str, status: u16, at: OffsetDateTime) {
         let mut pending = self.pending.lock().expect("usage mutex");
         let class = if matches!(status, 403 | 421) {
             "refused"
+        } else if path == "/api/board" {
+            "state_tailnet"
+        } else if path.starts_with("/board") {
+            "page"
         } else {
             "other"
         };
@@ -161,17 +165,21 @@ mod tests {
         )
         .unwrap();
         let usage = Usage::default();
-        usage.record(200, at);
-        usage.record(403, at);
-        usage.record(421, at);
+        usage.record("/api/rpc", 200, at);
+        usage.record("/board", 403, at);
+        usage.record("/api/rpc", 421, at);
+        usage.record("/board", 200, at);
+        usage.record("/board.js", 200, at);
+        usage.record("/api/board", 200, at);
         usage.flush(&mut db, at).unwrap();
         usage.flush(&mut db, at).unwrap();
         let result = status(&db, at).unwrap();
         assert_eq!(result["h24"]["other"], 1);
         assert_eq!(result["h24"]["refused"], 2);
-        assert_eq!(result["h24"]["page"], 0);
-        assert_eq!(result["d7"]["page"], 3);
-        assert_eq!(result["visible_minutes_d7"], 1.0);
+        assert_eq!(result["h24"]["page"], 2);
+        assert_eq!(result["h24"]["state_tailnet"], 1);
+        assert_eq!(result["d7"]["page"], 5);
+        assert_eq!(result["visible_minutes_d7"], 1.1);
         assert_eq!(
             db.query_row("select count(*) from meta", [], |r| r.get::<_, i64>(0))
                 .unwrap(),

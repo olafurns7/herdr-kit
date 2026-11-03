@@ -6,6 +6,7 @@ use taskr_core::{
     db::{self, Connection, OptionalExtension, params, params_from_iter, rusqlite},
     goflag::{self, FlagSet},
 };
+mod board;
 mod campaign;
 mod glance;
 mod queries;
@@ -190,6 +191,7 @@ pub fn dispatch(json: bool, args: &[String]) -> Option<ExitCode> {
             | "log"
             | "search"
             | "glance"
+            | "board"
             | "campaign"
             | "slotr"
             | "inbox"
@@ -242,6 +244,7 @@ pub fn dispatch(json: bool, args: &[String]) -> Option<ExitCode> {
         "doc ls" => queries::doc_ls(&f),
         "doc get" => queries::doc_get(&f),
         "glance" => glance::run(&f),
+        "board" => board::run(&f),
         "campaign" => campaign::run(&f),
         "slotr" => slotr::run(&f),
         "inbox" => inbox(&f),

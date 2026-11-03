@@ -20,6 +20,7 @@ hooks:        hook <harness> <event> (JSON on stdin)
 read:         status [--tree ID] [--all] | asks [--open] [--tree ID] [--owner] [--limit N] [--all] | log ID [--tree] [--since EVENT_ID] [--before EVENT_ID] [--limit N]
               campaign ID [--page N] [--all]   (campaign detail; --all includes closed lanes)
               glance [--watch [--every 5s]] | glance --brief [--since EVENT|DURATION]   (owner snapshot; --watch is the live split-pane view; --brief prints it once as text for the hub)
+              board   (the hub board as JSON: tickets with columns, lanes and PR state, groups, open owner asks, ALARM root notes of the last 3 h; the hub serves it at /board)
               slotr   (the hub's slotr pools, holders and queue as JSON; available:false when slotr cannot be read)
               notes [--owner] [--root ID] [--since EVENT|DURATION] [--limit N]   (root notes, newest first; default 48h, 50)
 tmp:          tmp ID [--mkdir]   (this host's lane tmp dir <base>/<root-id>/<task-id>, base $TASKR_TMP_BASE or /tmp/taskr-<uid>; --mkdir makes them 0700)

@@ -12,6 +12,9 @@ const PER_MINUTE: usize = 20;
 const TIMEOUT: Duration = Duration::from_secs(20);
 const MINUTE: Duration = Duration::from_secs(60);
 const CAP: Duration = Duration::from_secs(15 * 60);
+/// A closed task's PR is still followed this long after the close, so a merge after
+/// the lane closed is seen.
+const CLOSED_WINDOW: time::Duration = time::Duration::days(7);
 /// SQL predicate for poller bookkeeping that is not campaign activity: `pr` events
 /// other than sub `merged`, their generated `after` notifications (a `pr:` target
 /// whose sub is not material; `merged` stays activity, as does a task target), and
@@ -63,17 +66,41 @@ pub(super) fn parse(value: &str, default: &str) -> Option<Pr> {
 /// An `after pr:` target as stored: `pr:owner/repo#N`. `N` and `#N` need the
 /// hub's default repo in watch.json.
 pub(crate) fn target(value: &str) -> Result<String> {
-    let default = state_dir()
-        .ok()
-        .and_then(|dir| config(&dir))
-        .unwrap_or_default();
-    parse(value, &default)
+    parse(value, &default_repo())
         .map(|pr| format!("pr:{}", pr.key()))
         .ok_or_else(|| {
             store::usage(format!(
                 "after: pr:{value} is not a PR; use pr:owner/repo#N, or pr:N with default_repo in watch.json"
             ))
         })
+}
+/// The hub's default repo from watch.json; "" when the poller is off or has none.
+pub(crate) fn default_repo() -> String {
+    state_dir()
+        .ok()
+        .and_then(|dir| config(&dir))
+        .unwrap_or_default()
+}
+/// For `taskr board`: a `pr` ref value's repo ("" when it cannot be polled), number
+/// and the poller's last state (None before its first poll of that PR).
+pub(crate) fn lookup(
+    db: &db::Connection,
+    value: &str,
+    default: &str,
+) -> Result<Option<(String, u64, Option<Value>)>> {
+    let Some(pr) = parse(value, default) else {
+        let bare = value.trim().trim_start_matches('#');
+        return Ok(bare
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| bare.parse::<u64>().ok())
+            .flatten()
+            .filter(|n| *n > 0)
+            .map(|n| (String::new(), n, None)));
+    };
+    let state = meta(db, &format!("pr_state:{}", pr.key()))?
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    Ok(Some((pr.repo, pr.number, state)))
 }
 /// `~/.local/state/taskr/watch.json` with `"github": {"enabled": true}`; returns the
 /// default repo ("" when unset, so only `owner/repo#N` links are polled).
@@ -82,25 +109,41 @@ pub(super) fn config(dir: &Path) -> Option<String> {
     (v["github"]["enabled"] == true)
         .then(|| v["github"]["default_repo"].as_str().unwrap_or("").into())
 }
+/// watch.json `github.checks`: check names whose result at the head the poller keeps.
+fn checks(dir: &Path) -> Vec<String> {
+    fs::read(dir.join("watch.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| {
+            v["github"]["checks"].as_array().map(|a| {
+                a.iter()
+                    .filter_map(|c| c.as_str().filter(|s| !s.is_empty()).map(String::from))
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
 pub(super) struct Link {
     task: i64,
     pr: Pr,
 }
-/// Tasks whose latest `pr` ref parses: open tasks, and closed ones whose PR an
-/// unfired `after pr:` subscription of an open waiter still targets.
+/// Tasks whose latest `pr` ref parses: open tasks, tasks closed in the last 7 days,
+/// and older closed ones whose PR an unfired `after pr:` subscription of an open
+/// waiter still targets.
 fn links(db: &db::Connection, default: &str) -> Result<Vec<Link>> {
+    let since = store::stamp(taskr_core::frozen_now().map_err(database)? - CLOSED_WINDOW);
     let subs = db
         .prepare("select distinct substr(s.target,4) from subscriptions s join tasks w on w.id=s.waiter_task_id where s.fired_at is null and s.target like 'pr:%' and w.status!='closed'")?
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<std::result::Result<std::collections::HashSet<_>, _>>()?;
     let open = if subs.is_empty() {
-        "t.status!='closed'"
+        "(t.status!='closed' or coalesce(t.closed_at,'')>=?1)"
     } else {
-        "1"
+        "?1=?1"
     };
-    let mut stmt = db.prepare(&format!("select t.id,t.status='closed',json_extract(e.data,'$.value') from tasks t join events e on e.id=(select max(x.id) from events x where x.task_id=t.id and x.kind='ref' and json_extract(x.data,'$.key')='pr') where {open} order by t.id"))?;
+    let mut stmt = db.prepare(&format!("select t.id,t.status='closed' and coalesce(t.closed_at,'')<?1,json_extract(e.data,'$.value') from tasks t join events e on e.id=(select max(x.id) from events x where x.task_id=t.id and x.kind='ref' and json_extract(x.data,'$.key')='pr') where {open} order by t.id"))?;
     let rows = stmt
-        .query_map([], |r| {
+        .query_map([&since], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, bool>(1)?,
@@ -110,9 +153,9 @@ fn links(db: &db::Connection, default: &str) -> Result<Vec<Link>> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows
         .into_iter()
-        .filter_map(|(task, closed, v)| {
+        .filter_map(|(task, stale, v)| {
             parse(&v?, default)
-                .filter(|pr| !closed || subs.contains(&pr.key()))
+                .filter(|pr| !stale || subs.contains(&pr.key()))
                 .map(|pr| Link { task, pr })
         })
         .collect())
@@ -131,6 +174,12 @@ struct State {
     seen: String,
     stable: u32,
     done: bool,
+    draft: bool,
+    /// watch.json `checks` at this head: the conclusion, the status while it runs, or
+    /// `no run`; lowercase.
+    named: BTreeMap<String, String>,
+    /// Position in the base branch's merge queue; None when not queued.
+    queue: Option<u64>,
 }
 fn state(db: &db::Connection, pr: &Pr) -> Result<State> {
     Ok(meta(db, &format!("pr_state:{}", pr.key()))?
@@ -144,10 +193,77 @@ pub(super) fn query(batch: &[Pr]) -> String {
     for (i, pr) in batch.iter().enumerate() {
         let (owner, name) = pr.repo.split_once('/').expect("validated repo");
         let n = pr.number;
-        q.push_str(&format!("p{i}:repository(owner:\"{owner}\",name:\"{name}\"){{pullRequest(number:{n}){{state merged headRefOid mergeStateStatus mergeCommit{{oid}} commits(last:1){{nodes{{commit{{statusCheckRollup{{contexts(first:50){{pageInfo{{hasNextPage}} nodes{{__typename ...on CheckRun{{name status conclusion isRequired(pullRequestNumber:{n})}} ...on StatusContext{{context state isRequired(pullRequestNumber:{n})}}}}}}}}}}}}}} reviewThreads(first:50){{pageInfo{{hasNextPage}} nodes{{isResolved}}}}}}}}"));
+        q.push_str(&format!("p{i}:repository(owner:\"{owner}\",name:\"{name}\"){{pullRequest(number:{n}){{state isDraft merged headRefOid mergeStateStatus mergeCommit{{oid}} commits(last:1){{nodes{{commit{{statusCheckRollup{{contexts(first:50){{pageInfo{{hasNextPage}} nodes{{__typename ...on CheckRun{{name status conclusion isRequired(pullRequestNumber:{n})}} ...on StatusContext{{context state isRequired(pullRequestNumber:{n})}}}}}}}}}}}}}} reviewThreads(first:50){{pageInfo{{hasNextPage}} nodes{{isResolved}}}}}}}}"));
+    }
+    for (j, repo) in repos(batch).iter().enumerate() {
+        let (owner, name) = repo.split_once('/').expect("validated repo");
+        // shortcut: the queue of `main` only; read the base branch if a repo merges elsewhere.
+        q.push_str(&format!("q{j}:repository(owner:\"{owner}\",name:\"{name}\"){{mergeQueue(branch:\"main\"){{entries(first:50){{nodes{{position pullRequest{{number}}}}}}}}}}"));
     }
     q.push('}');
     q
+}
+/// The batch's repos, sorted, once each: alias `qJ` is the J-th.
+fn repos(batch: &[Pr]) -> Vec<&str> {
+    let mut repos: Vec<&str> = batch.iter().map(|p| p.repo.as_str()).collect();
+    repos.sort();
+    repos.dedup();
+    repos
+}
+/// The PR's merge-queue position from alias `qJ`: None (keep the last) when that
+/// read failed, Some(None) when the PR is not queued or the branch has no queue.
+fn queue_position(v: &Value, batch: &[Pr], pr: &Pr) -> Option<Option<u64>> {
+    let alias = format!("q{}", repos(batch).iter().position(|r| *r == pr.repo)?);
+    let failed = v["errors"]
+        .as_array()
+        .is_some_and(|e| e.iter().any(|e| e["path"][0] == alias.as_str()));
+    let repo = &v["data"][&alias];
+    if failed || !repo.is_object() {
+        return None;
+    }
+    Some(
+        repo["mergeQueue"]["entries"]["nodes"]
+            .as_array()
+            .and_then(|nodes| {
+                nodes
+                    .iter()
+                    .find(|e| e["pullRequest"]["number"].as_u64() == Some(pr.number))
+            })
+            .and_then(|e| e["position"].as_u64()),
+    )
+}
+/// The watched checks' results at the head; None when the context list is incomplete.
+fn named(node: &Value, names: &[String]) -> Option<BTreeMap<String, String>> {
+    let contexts = &node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"];
+    if names.is_empty() || contexts["pageInfo"]["hasNextPage"] != false {
+        return None;
+    }
+    let nodes = contexts["nodes"].as_array()?;
+    Some(
+        names
+            .iter()
+            .map(|name| {
+                let found = nodes.iter().find_map(|c| match c["__typename"].as_str() {
+                    Some("CheckRun") if c["name"] == name.as_str() => {
+                        Some(if c["status"] == "COMPLETED" {
+                            c["conclusion"].as_str().unwrap_or("")
+                        } else {
+                            c["status"].as_str().unwrap_or("")
+                        })
+                    }
+                    Some("StatusContext") if c["context"] == name.as_str() => c["state"].as_str(),
+                    _ => None,
+                });
+                (
+                    name.clone(),
+                    found
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("no run")
+                        .to_lowercase(),
+                )
+            })
+            .collect(),
+    )
 }
 /// `green`, `failed` or `pending` over the required contexts (all of them when none
 /// is required); None when GitHub has no rollup or no contexts yet, or more than one
@@ -199,7 +315,7 @@ fn verdict(node: &Value) -> Option<&'static str> {
     })
 }
 /// The next state and the subs (name, summary text) that changed.
-fn diff(prev: &State, node: &Value) -> (State, Vec<(&'static str, String)>) {
+fn diff(prev: &State, node: &Value, names: &[String]) -> (State, Vec<(&'static str, String)>) {
     let mut next = prev.clone();
     let mut subs = vec![];
     let head = node["headRefOid"].as_str().unwrap_or("");
@@ -208,8 +324,13 @@ fn diff(prev: &State, node: &Value) -> (State, Vec<(&'static str, String)>) {
         next.checks.clear();
         next.seen.clear();
         next.stable = 0;
+        next.named.clear();
     }
     next.state = node["state"].as_str().unwrap_or("").into();
+    next.draft = node["isDraft"] == true;
+    if let Some(named) = named(node, names) {
+        next.named = named;
+    }
     if node["merged"] == true || next.state == "MERGED" {
         let commit = node["mergeCommit"]["oid"].as_str().unwrap_or("");
         next.done = true;
@@ -341,6 +462,7 @@ pub(super) fn apply(
     db: &mut db::Connection,
     batch: &[Pr],
     default: &str,
+    names: &[String],
     v: &Value,
 ) -> Result<usize> {
     let errors = v["errors"].as_array().cloned().unwrap_or_default();
@@ -384,7 +506,10 @@ pub(super) fn apply(
                 tx.execute("delete from meta where key=?", [&key])?;
                 continue;
             }
-            let (next, subs) = diff(&prev, node);
+            let (mut next, subs) = diff(&prev, node, names);
+            if let Some(queue) = queue_position(v, batch, pr) {
+                next.queue = queue;
+            }
             set_meta(tx, &key, &serde_json::to_string(&next)?)?;
             for &task in &tasks {
                 for (sub, text) in &subs {
@@ -448,7 +573,7 @@ fn fetch(query: &str, path: Option<&str>, timeout: Duration) -> Fetch {
         )),
     }
 }
-type Inflight = (Vec<Pr>, String, mpsc::Receiver<Fetch>);
+type Inflight = (Vec<Pr>, String, Vec<String>, mpsc::Receiver<Fetch>);
 pub(super) struct Poller {
     dir: PathBuf,
     /// Tests put a fake `gh` first on this PATH; the daemon inherits its own.
@@ -483,18 +608,18 @@ impl Poller {
     }
     /// Called each resident iteration: apply a finished fetch, or start one when due.
     pub(super) fn tick(&mut self, db: &mut db::Connection, log: &Log) {
-        if let Some((_, _, recv)) = &self.inflight {
+        if let Some((_, _, _, recv)) = &self.inflight {
             let fetched = match recv.try_recv() {
                 Err(mpsc::TryRecvError::Empty) => return,
                 Err(mpsc::TryRecvError::Disconnected) => Fetch::Failed("gh worker exited".into()),
                 Ok(f) => f,
             };
-            let (batch, default, _) = self.inflight.take().expect("inflight");
+            let (batch, default, names, _) = self.inflight.take().expect("inflight");
             match fetched {
                 Fetch::Json(v) => {
                     self.failures = 0;
                     self.health(log, "ok", &format!("github poll ok ({} PRs)", batch.len()));
-                    if let Err(e) = apply(db, &batch, &default, &v) {
+                    if let Err(e) = apply(db, &batch, &default, &names, &v) {
                         log.line(&format!("github poll apply failed: {}", e.message));
                     }
                 }
@@ -571,7 +696,7 @@ impl Poller {
         std::thread::spawn(move || {
             let _ = send.send(fetch(&query, path.as_deref(), timeout));
         });
-        self.inflight = Some((batch, default, recv));
+        self.inflight = Some((batch, default, checks(&self.dir), recv));
     }
 }
 #[cfg(test)]

@@ -1,4 +1,6 @@
-//! HTTP hub. Browser routes and peer push are retired by the migration scope.
+//! HTTP hub. Browser routes and peer push are retired by the migration scope, except
+//! the read-only board (`board.rs`).
+mod board;
 mod child;
 mod documents;
 mod events;
@@ -159,9 +161,10 @@ async fn handle(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     req: Request<Body>,
 ) -> Response {
+    let path = req.uri().path().to_owned();
     let mut result = handle_inner(&hub, peer, req).await;
     hub.usage
-        .record(result.status().as_u16(), (hub.cfg.clock)());
+        .record(&path, result.status().as_u16(), (hub.cfg.clock)());
     for (name, value) in [
         ("cache-control", "no-store"),
         ("x-content-type-options", "nosniff"),
@@ -222,6 +225,12 @@ async fn handle_inner(hub: &Arc<Hub>, peer: SocketAddr, req: Request<Body>) -> R
         }
         return events::handle(hub, req, ip, loopback).await;
     }
+    if board::PATHS.contains(&req.uri().path()) {
+        let path = req.uri().path().to_owned();
+        let get = req.method() == axum::http::Method::GET;
+        drop(req);
+        return board::handle(hub, &path, get, identity.as_ref()).await;
+    }
     if req.uri().path() != "/api/rpc" {
         return (StatusCode::NOT_FOUND, "404 page not found\n").into_response();
     }
@@ -236,14 +245,8 @@ async fn handle_inner(hub: &Arc<Hub>, peer: SocketAddr, req: Request<Body>) -> R
     let (Some(identity), Some(server)) = (identity, hub.cfg.identity.as_ref()) else {
         return http_error(StatusCode::FORBIDDEN, "rpc needs a tailnet identity");
     };
-    if identity.node_id == server.node_id {
-        return http_error(StatusCode::FORBIDDEN, "this node is the server");
-    }
-    if identity.machine.is_empty() || identity.machine == store::local_machine() {
-        return http_error(
-            StatusCode::FORBIDDEN,
-            "the node's name is the server's name",
-        );
+    if let Some(refused) = not_this_node(&identity, server) {
+        return refused;
     }
     if !header("origin").is_empty() || !header("sec-fetch-site").is_empty() {
         return http_error(StatusCode::FORBIDDEN, "browser requests are refused");
@@ -349,6 +352,43 @@ async fn handle_inner(hub: &Arc<Hub>, peer: SocketAddr, req: Request<Body>) -> R
         ),
     )
         .into_response()
+}
+
+/// 403 for the server's own tailnet node, by node id or machine name.
+fn not_this_node(identity: &HubIdentity, server: &HubIdentity) -> Option<Response> {
+    if identity.node_id == server.node_id {
+        return Some(http_error(StatusCode::FORBIDDEN, "this node is the server"));
+    }
+    if identity.machine.is_empty() || identity.machine == store::local_machine() {
+        return Some(http_error(
+            StatusCode::FORBIDDEN,
+            "the node's name is the server's name",
+        ));
+    }
+    None
+}
+
+#[cfg(test)]
+fn test_hub() -> Arc<Hub> {
+    let (_, shutdown) = watch::channel(false);
+    Arc::new(Hub {
+        cfg: HubConfig {
+            listeners: vec![],
+            db_path: PathBuf::from(":memory:"),
+            clock: time::OffsetDateTime::now_utc,
+            log: Arc::new(crate::daemon::Log::open(std::path::Path::new("/dev/null"))),
+            identity: None,
+            hosts: BTreeSet::new(),
+            home: PathBuf::new(),
+            tailscale_bin: PathBuf::new(),
+        },
+        whois: Mutex::default(),
+        usage: usage::Usage::default(),
+        events: Arc::new(events::Events::new()),
+        shutdown,
+        stored_requests: StdMutex::default(),
+        reapers: Arc::default(),
+    })
 }
 
 #[cfg(feature = "contract")]
