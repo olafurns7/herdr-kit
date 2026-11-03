@@ -1675,7 +1675,8 @@ mod tests {
             p.app.screen = Screen::Campaign;
             let lanes = &p.app.data.campaign.lanes;
             let (with, without) = (lanes[0].id, lanes[1].id);
-            let (name_with, name_without) = (lanes[0].name.clone(), lanes[1].name.clone());
+            let name = |id: i64| lanes.iter().find(|l| l.id == id).unwrap().name.clone();
+            let (name_with, name_without) = (name(with), name(without));
             p.app.data.campaign.work = Some(serde_json::from_value(serde_json::json!({
                 "total":5,"items":[
                     {"work_id":1,"title":"no deps","state":"backlog"},
@@ -1696,6 +1697,8 @@ mod tests {
             };
             assert!(row(&name_with).contains("W12"), "{lanes_text}");
             assert!(!row(&name_without).contains(" W"), "{lanes_text}");
+            let work = p.app.data.campaign.work.as_ref().unwrap();
+            assert!(!work.lane_work.contains_key(&without.to_string()));
             p.keys("6");
             let shown = p.text();
             let line = |title: &str| {
