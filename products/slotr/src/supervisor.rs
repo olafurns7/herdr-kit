@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{
     collections::BTreeMap,
-    os::unix::process::CommandExt,
+    os::unix::process::{CommandExt, ExitStatusExt},
     process::Command,
     thread,
     time::{Duration, Instant},
@@ -288,11 +288,13 @@ fn supervise_child(run: &str, invocation: &str, cmd: &[String], cfg: &Config) ->
                 .map_err(std::io::Error::from)
         });
     }
+    let started_at = Instant::now();
     let mut child = command.spawn()?;
+    let mut stop_reason: Option<String> = None;
     eprintln!("slotr: admitted {}", h.run);
     let result = (|| {
         let _ = manager::event(
-            json!({"event":"admit","run":h.run,"pool":h.request.pool,"campaign":h.request.campaign,"cost_mib":h.request.cost_mib,"weight":h.request.level,"level":h.request.level,"policy_generation":h.request.policy_generation,"waited_ms":((h.admitted_at - h.request.since) * 1000.0).max(0.0) as u64}),
+            json!({"event":"admit","run":h.run,"pool":h.request.pool,"kind":h.request.kind,"cmd":cmd,"campaign":h.request.campaign,"cost_mib":h.request.cost_mib,"weight":h.request.level,"level":h.request.level,"policy_generation":h.request.policy_generation,"waited_ms":((h.admitted_at - h.request.since) * 1000.0).max(0.0) as u64}),
         );
         manager::hook(cfg, "on_admit", &h, "admitted");
         let mut memory_count: u32 = 0;
@@ -488,6 +490,7 @@ fn supervise_child(run: &str, invocation: &str, cmd: &[String], cfg: &Config) ->
                 }
                 if let Some((holder, reason, snapshot)) = action.stop {
                     manager::kill_group(&child, rustix::process::Signal::TERM)?;
+                    stop_reason = Some(reason.clone());
                     eprintln!("slotr: stopped {}: {}", holder.run, reason);
                     let deadline =
                         Instant::now() + Duration::from_secs_f64(cfg.watchdog.term_grace_seconds);
@@ -520,9 +523,83 @@ fn supervise_child(run: &str, invocation: &str, cmd: &[String], cfg: &Config) ->
             }
         }
     })();
+    let wall_ms = started_at.elapsed().as_millis() as u64;
+    let status = child.try_wait().ok().flatten();
+    if stop_reason.is_none() && manager::cancelled() != 0 {
+        stop_reason = Some(
+            if crate::stops::status().is_ok_and(|intents| {
+                intents.get(run).is_some_and(|intent| {
+                    matches!(
+                        intent["phase"].as_str(),
+                        Some("requested" | "submitted" | "completed")
+                    )
+                })
+            }) {
+                "manual"
+            } else {
+                "cancelled"
+            }
+            .into(),
+        );
+    }
+    // This supervisor keeps the unit alive while querying it, before --collect
+    // can discard accounting. These are unit totals, including the supervisor.
+    let (memory_peak_bytes, cpu_usage_nsec, accounting_error) = unit_usage(run);
+    if let Err(error) = manager::event(json!({
+        "event":"end", "run":h.run, "pool":h.request.pool, "kind":h.request.kind,
+        "exit_code":status.and_then(|s| s.code()),
+        "exit_signal":status.and_then(|s| s.signal()),
+        "slotr_exit_code":result.as_ref().ok(),
+        "stopped":stop_reason.is_some(), "stop_reason":stop_reason,
+        "wall_ms":wall_ms, "memory_peak_bytes":memory_peak_bytes,
+        "cpu_usage_nsec":cpu_usage_nsec, "accounting_error":accounting_error,
+        "error":result.as_ref().err().map(|e| format!("{e:#}")),
+    })) {
+        eprintln!("slotr: end audit gap for {run}: {error:#}");
+    }
     // Retain the record until systemd confirms the unit has gone. A unit still
     // owns descendants after its supervisor exits (KillMode=control-group).
     result
+}
+
+fn unit_usage(run: &str) -> (Option<u64>, Option<u64>, Option<String>) {
+    let output = match manager::ctl(&[
+        "show",
+        "--property=MemoryPeak",
+        "--property=CPUUsageNSec",
+        run,
+    ]) {
+        Ok(output) if output.status.success() => output,
+        Ok(_) => return (None, None, Some("unit accounting query failed".into())),
+        Err(error) => {
+            return (
+                None,
+                None,
+                Some(format!("unit accounting query: {error:#}")),
+            );
+        }
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let value = |property: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(property))
+            .and_then(|value| value.parse::<u64>().ok())
+            // systemd uses UINT64_MAX for unavailable accounting.
+            .filter(|value| *value != u64::MAX)
+    };
+    let memory = value("MemoryPeak=");
+    let cpu = value("CPUUsageNSec=");
+    let missing: Vec<_> = [("MemoryPeak", memory), ("CPUUsageNSec", cpu)]
+        .into_iter()
+        .filter_map(|(name, value)| value.is_none().then_some(name))
+        .collect();
+    let error = (!missing.is_empty()).then(|| {
+        format!(
+            "unavailable or invalid unit properties: {}",
+            missing.join(", ")
+        )
+    });
+    (memory, cpu, error)
 }
 
 fn report_tick_error(run: &str, error: &anyhow::Error, previous: &mut Option<String>) {
@@ -550,6 +627,7 @@ fn warn_once_when_an_effective_head_returns() {
         pane: String::new(),
         cwd: String::new(),
         cost_mib: 0,
+        kind: None,
         lease_seconds: 1.0,
         since: 0.0,
         seen_at: 10.0,
