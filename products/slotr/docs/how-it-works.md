@@ -166,6 +166,34 @@ systemd-run receives only valid environment variable names via
   Each `admit` event carries `waited_ms`, the whole milliseconds from entering
   the queue to admission, clamped at 0; a request cancelled while queued writes
   no admit event, so it is not counted.
+- `admit` also records `kind`, the requested `--kind` name, or null for
+  explicit `--cost` and default-cost requests. `cost_mib` remains the resolved
+  admission cost. The requested kind is retained in queue and holder state.
+  `cmd` is the payload argv, so a run can be attributed to a package or command;
+  the events file is readable by its owner only.
+- An `end` event repeats `run`, `pool`, and `kind`. `exit_code` and
+  `exit_signal` describe the payload's actual wait status (one is null);
+  `slotr_exit_code` is the supervisor's result, including 75 for automatic
+  stops. `stopped` and `stop_reason` distinguish slotr stops from payload
+  failures: reasons are the automatic stop reason, `manual` for `slotr stop`,
+  or `cancelled` for other supervisor cancellation signals. `wall_ms` measures
+  elapsed whole milliseconds from payload startup through supervision and
+  payload reaping, excluding the accounting query and terminal audit append.
+  `memory_peak_bytes` and `cpu_usage_nsec` come from the unit's `MemoryPeak`
+  and `CPUUsageNSec` properties. Missing, unsupported, invalid, or unset values
+  are null with an explanation in `accounting_error`; zero remains zero.
+  `memory_peak_bytes` is the cgroup high-water mark and includes page cache
+  charged to the unit, so a peak near the cap alone does not show a memory kill;
+  those show as `exit_signal` 9.
+  `error` describes a supervisor error, otherwise null; unavailable payload
+  status and supervisor result are also null. Both events have UTC `at`.
+  All fields are additive; consumers should ignore unknown fields and events.
+- Terminal accounting is sampled after payload reaping, while the supervisor
+  keeps the unit alive, before `systemd-run --collect` discards it. These are
+  unit totals, including supervisor overhead, before final supervisor and
+  remaining-descendant teardown. A supervisor killed by SIGKILL cannot write
+  `end`; an `admit` without a matching `end` means unknown outcome. Audit I/O
+  failures can also leave gaps and do not replace the workload's exit status.
 - Managed weights live in `${XDG_STATE_HOME:-~/.local/state}/slotr/priority.json`.
   Scheduling clocks and manual stop intent use `scheduling.json` and `stops.json`
   beside runtime state, under the existing lock. Runtime schema is 1.

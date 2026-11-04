@@ -24,6 +24,8 @@ pub struct Request {
     pub pane: String,
     pub cwd: String,
     pub cost_mib: u64,
+    #[serde(default)]
+    pub kind: Option<String>,
     pub lease_seconds: f64,
     #[serde(with = "crate::timestamp::required")]
     pub since: f64,

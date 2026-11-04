@@ -91,6 +91,11 @@ pool defines `tsc`, `oxlint`, `vitest`, `build`, and `install`. Select only
 kinds defined in your chosen pool. Unknown kinds exit 2 and list that pool's
 configured keys, or `none` when it has no kinds.
 
+The requested kind is recorded separately from the resolved `cost_mib` in
+admission events and repeated in terminal events. Explicit and default costs
+record a null kind. Terminal `memory_peak_bytes` and `cpu_usage_nsec` are null
+when the manager cannot supply them. See [event fields and accounting limits](how-it-works.md#state-and-events).
+
 ### Priority
 
 | Priority key (`priority`) | Default | Meaning |

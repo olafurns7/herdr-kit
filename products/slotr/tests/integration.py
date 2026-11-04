@@ -21,6 +21,18 @@ STUB = r'''#!/usr/bin/env python3
 import fcntl, json, os, pathlib, signal, sys
 root = pathlib.Path(os.environ['XDG_RUNTIME_DIR'])
 args = sys.argv[1:]
+
+def terminate_children(pid):
+    for proc in pathlib.Path('/proc').iterdir():
+        if not proc.name.isdecimal():
+            continue
+        try:
+            fields = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+            if int(fields[1]) == pid:
+                os.kill(int(proc.name), signal.SIGTERM)
+        except (FileNotFoundError, IndexError, OSError, ValueError):
+            continue
+
 lock_path = root / 'slotr/state.lock'
 if lock_path.exists():
     with lock_path.open('r') as lock:
@@ -42,6 +54,7 @@ if pathlib.Path(sys.argv[0]).name == 'systemctl':
         import time
         try:
             pid = int((root / args[-1]).read_text())
+            terminate_children(pid)
             os.kill(pid, signal.SIGTERM)
         except (OSError, ValueError):
             sys.exit(0)
@@ -106,7 +119,17 @@ if 'is-active' in args:
     sys.exit(0 if live else 3)
 if 'stop' in args:
     if live:
+        terminate_children(pid)
         os.kill(pid, signal.SIGTERM)
+    sys.exit(0)
+if '--property=MemoryPeak' in args:
+    with (root / 'accounting-queries').open('a') as log:
+        log.write(json.dumps(dict(unit=unit, live=live)) + '\n')
+    if (root / 'accounting-fail').exists() or not live:
+        sys.exit(1)
+    accounting = root / 'accounting'
+    print(accounting.read_text() if accounting.exists() else
+          'MemoryPeak=12345678\nCPUUsageNSec=987654321')
     sys.exit(0)
 print('/' + unit)
 '''
@@ -492,7 +515,12 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertEqual(notes[0]['task'], 'test-task')
         self.assertEqual(notes[0]['launch'], 'test-launch')
-        self.assertEqual(events[-1]['exit'], int(self.env.get('NOTE_EXIT', 0)))
+        self.assertEqual([e for e in events if e['event'] == 'hook'][-1]['exit'],
+                         int(self.env.get('NOTE_EXIT', 0)))
+        end = next(e for e in events if e['event'] == 'end' and e['run'] == stops[0]['run'])
+        self.assertTrue(end['stopped'])
+        self.assertEqual(end['stop_reason'], expected)
+        self.assertEqual(end['slotr_exit_code'], 75)
         return events
 
     def test_watchdog_only_newest_and_recovery(self):
@@ -673,6 +701,67 @@ class AdmissionTest(unittest.TestCase):
     def events(self, kind):
         path = self.root / "state/slotr/events.jsonl"
         return [e for line in path.read_text().splitlines() if (e := json.loads(line))["event"] == kind] if path.exists() else []
+
+    def test_run_events_record_kind_status_and_unit_usage(self):
+        cases = [(['--kind', 'dev-stack'], 'dev-stack', 7680, 0, None),
+                 (['--cost', '1234'], None, 1234, 17, None),
+                 ([], None, 7680, 239, None),
+                 (['--kind', 'dev-stack'], 'dev-stack', 7680, None, signal.SIGTERM)]
+        for options, kind, cost, code, sig in cases:
+            with self.subTest(options=options, code=code, signal=sig):
+                payload = ('import os,signal;os.kill(os.getpid(),signal.SIGTERM)' if sig else
+                           'import sys;sys.exit(%d)' % code)
+                result = self.invoke('run', *options, '--', sys.executable, '-c', payload)
+                self.assertEqual(result.returncode, 128 + sig if sig else code, result.stderr)
+                admit, end = self.events('admit')[-1], self.events('end')[-1]
+                self.assertEqual(admit['kind'], kind)
+                self.assertEqual(admit['cmd'], [sys.executable, '-c', payload])
+                self.assertEqual(admit['cost_mib'], cost)
+                self.assertEqual(end['kind'], kind)
+                self.assertEqual(end['pool'], 'runtime')
+                self.assertEqual(end['run'], admit['run'])
+                self.assertEqual(len([e for e in self.events('end') if e['run'] == admit['run']]), 1)
+                self.assertEqual(end['exit_code'], code)
+                self.assertEqual(end['exit_signal'], sig)
+                self.assertEqual(end['slotr_exit_code'], result.returncode)
+                self.assertFalse(end['stopped'])
+                self.assertIsNone(end['stop_reason'])
+                self.assertIs(type(end['wall_ms']), int)
+                self.assertGreaterEqual(end['wall_ms'], 0)
+                self.assertEqual(end['memory_peak_bytes'], 12345678)
+                self.assertEqual(end['cpu_usage_nsec'], 987654321)
+                self.assertIsNone(end['accounting_error'])
+                self.assertIsNone(end['error'])
+                self.assertTrue(end['at'].endswith('Z'))
+                self.assertTrue(json.loads((self.runtime / 'accounting-queries').read_text().splitlines()[-1])['live'])
+                # Both the existing status reader and old runtime records remain usable.
+                state_path = self.runtime / 'slotr/state.json'
+                state = json.loads(state_path.read_text())
+                del state['holders'][-1]['kind']
+                state_path.write_text(json.dumps(state))
+                self.assertEqual(self.invoke('status', '--json').returncode, 0)
+        flags = json.loads((self.runtime / 'launches').read_text().splitlines()[-1])
+        self.assertIn('--property=MemoryAccounting=yes', flags)
+
+    def test_end_event_keeps_missing_accounting_null(self):
+        cases = [('MemoryPeak=18446744073709551615\nCPUUsageNSec=0', None, 0, 'MemoryPeak'),
+                 ('MemoryPeak=0\nCPUUsageNSec=[not set]', 0, None, 'CPUUsageNSec'),
+                 ('MemoryPeak=bogus', None, None, 'MemoryPeak, CPUUsageNSec'),
+                 (None, None, None, 'query failed')]
+        for text, memory, cpu, error in cases:
+            with self.subTest(text=text):
+                if text is None:
+                    (self.runtime / 'accounting-fail').touch()
+                else:
+                    (self.runtime / 'accounting').write_text(text)
+                result = self.invoke('run', '--', 'true')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                end = self.events('end')[-1]
+                self.assertEqual(end['memory_peak_bytes'], memory)
+                self.assertEqual(end['cpu_usage_nsec'], cpu)
+                self.assertIn(error, end['accounting_error'])
+                self.assertEqual(end['exit_code'], 0)
+                self.assertIsNone(end['error'])
 
     def advance(self, seconds):
         path = self.root / "clock"
@@ -1071,6 +1160,11 @@ class AdmissionTest(unittest.TestCase):
         holder.terminate()
         holder.wait(timeout=30)
         self.assertEqual(holder.returncode, 143, (self.root / 'holder.log').read_text()[-300:])
+        end = self.events('end')[-1]
+        self.assertTrue(end['stopped'])
+        self.assertEqual(end['stop_reason'], 'cancelled')
+        # A control-group TERM can reap a handler that exits 0 before cancellation is read.
+        self.assertIn(end['slotr_exit_code'], (0, 143))
 
     def test_sighup_frontend_stops_unit_and_releases_holder(self):
         holder, p1 = self.start('holder')
@@ -2519,6 +2613,9 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         self.wait(lambda: child.poll() is not None)
         requested=[e for e in self.events('stop') if e['phase']=='requested'][-1]
+        end = self.events('end')[-1]
+        self.assertTrue(end['stopped'])
+        self.assertEqual(end['stop_reason'], 'manual')
         self.assertEqual(requested['reason'],'manual'); self.assertEqual(requested['reason_text'],'owned cancellation')
         self.assertEqual(requested['caller']['uid'],os.getuid()); self.assertEqual(requested['caller']['actor'],'cli')
         self.assertIsInstance(requested['caller']['pid'],int)

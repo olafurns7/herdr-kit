@@ -55,6 +55,11 @@ slotr --version
   directly. Otherwise the pool's `default_cost_mib` applies. You cannot pass
   both `--kind` and `--cost`. Kinds are per-pool; an unknown name exits 2
   before admission and lists the selected pool's valid keys (or `none`).
+  Admission and terminal events preserve that requested kind; explicit and
+  default costs record `kind: null`. See the
+  [event fields and accounting limits](how-it-works.md#state-and-events)
+  before aggregating per-kind memory peaks. A missing terminal event means
+  unknown outcome.
 - `--lease 30m` requests a shorter lease; the pool's `max_lease` caps it.
   Duration suffixes are `s`, `m`, `h`, and `d`; a bare number is seconds and
   `"0"` means unlimited.

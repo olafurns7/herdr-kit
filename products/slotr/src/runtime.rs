@@ -101,6 +101,7 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
             pane: args.pane.clone(),
             cwd: std::env::current_dir()?.display().to_string(),
             cost_mib: cost,
+            kind: args.kind.clone(),
             lease_seconds: lease,
             since: manager::now(),
             seen_at: manager::now(),
