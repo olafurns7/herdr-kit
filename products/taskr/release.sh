@@ -13,7 +13,7 @@ gh=${TASKR_RELEASE_GH:-gh}
 work=.scratch/release
 
 usage() {
-	printf '%s\n' 'usage: ./release.sh <tag> [--dry-run] [--darwin-from DIR]' \
+	printf '%s\n' 'usage: ./release.sh <tag> [--dry-run] [--gate] [--darwin-from DIR]' \
 		'       ./release.sh <tag> --darwin-only [--dry-run]' \
 		'       ./release.sh <tag> --promote' >&2
 	exit 2
@@ -35,10 +35,12 @@ tag=$1
 shift
 mode=release
 dry_run=0
+gate=0
 darwin_from=
 while [ "$#" -gt 0 ]; do
 	case $1 in
 	--dry-run) dry_run=1 ;;
+	--gate) gate=1 ;;
 	--darwin-from) [ "$#" -ge 2 ] || usage; darwin_from=$2; shift ;;
 	--darwin-only) [ "$mode" = release ] || usage; mode=darwin ;;
 	--promote) [ "$mode" = release ] || usage; mode=promote ;;
@@ -48,6 +50,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$mode" != promote ] || { [ "$dry_run" -eq 0 ] && [ -z "$darwin_from" ]; } || usage
 [ "$mode" != darwin ] || [ -z "$darwin_from" ] || usage
+[ "$gate" -eq 0 ] || [ "$mode" = release ] || usage
 # Repository tags and runtime/plugin versions are distinct.
 version=${tag#taskr/}
 printf '%s\n' "$version" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || usage
@@ -115,11 +118,19 @@ if [ "$dry_run" -eq 0 ]; then
 	dirty=$(git status --porcelain) || die 'could not inspect git status'
 	[ -z "$dirty" ] || die 'refusing to release with a dirty worktree'
 fi
-if [ "$mode" = release ] && [ "$dry_run" -eq 0 ]; then
-	! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag already exists"
-	check_release_version
-	git fetch -q origin main
-	git merge-base --is-ancestor HEAD origin/main || die 'HEAD is not in origin/main; push it to main first'
+run_gate=1
+if [ "$mode" = release ]; then
+	if [ "$dry_run" -eq 0 ]; then
+		! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag already exists"
+		check_release_version
+		git fetch -q origin main
+		git merge-base --is-ancestor HEAD origin/main || die 'HEAD is not in origin/main; push it to main first'
+		[ "$gate" -eq 1 ] || run_gate=0
+	elif [ "$gate" -eq 0 ]; then
+		if git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+			run_gate=0
+		fi
+	fi
 fi
 if [ -z "$darwin_from" ]; then
 	on_mac true || die "cannot reach the Mac ($remote); build darwin by hand and pass --darwin-from DIR"
@@ -194,23 +205,27 @@ fi
 
 # --- Gate (decision 1A, the interim gate) --------------------------------------
 
-cargo fmt --all --check
-(
-	# Tests get a scratch HOME and ledger and no task identity; the build caches stay put.
-	export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
-	export HOME="$PWD/$work/home" TASKR_DB="$PWD/$work/home/gate.db"
-	unset TASKR_TASK TASKR_LAUNCH TASKR_BIN TASKR_FROZEN_NOW
-	# Clear inherited contract fixture switches before running the gate.
-	for var in $(env | sed -n 's/^\(TASKR_CONTRACT_[A-Za-z0-9_]*\)=.*/\1/p'); do
-		unset "$var"
-	done
-	for features in '' '--features taskr/contract'; do
-		# shellcheck disable=SC2086 # $features is empty or two words
-		cargo clippy --locked --workspace --all-targets $features -- -D warnings
-		# shellcheck disable=SC2086
-		cargo test --locked --workspace $features
-	done
-)
+if [ "$run_gate" -eq 1 ]; then
+	cargo fmt --all --check
+	(
+		# Tests get a scratch HOME and ledger and no task identity; the build caches stay put.
+		export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+		export HOME="$PWD/$work/home" TASKR_DB="$PWD/$work/home/gate.db"
+		unset TASKR_TASK TASKR_LAUNCH TASKR_BIN TASKR_FROZEN_NOW
+		# Clear inherited contract fixture switches before running the gate.
+		for var in $(env | sed -n 's/^\(TASKR_CONTRACT_[A-Za-z0-9_]*\)=.*/\1/p'); do
+			unset "$var"
+		done
+		for features in '' '--features taskr/contract'; do
+			# shellcheck disable=SC2086 # $features is empty or two words
+			cargo clippy --locked --workspace --all-targets $features -- -D warnings
+			# shellcheck disable=SC2086
+			cargo test --locked --workspace $features
+		done
+	)
+else
+	printf '%s\n' 'release.sh: skipping gate: HEAD is in origin/main; pass --gate to force it'
+fi
 
 # --- Build ---------------------------------------------------------------------
 

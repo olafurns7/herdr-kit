@@ -20,7 +20,8 @@ empty or whitespace-only, release builds (including `--dry-run` and
 `--darwin-only`) exit 2 before building. `--darwin-from DIR` and `--promote` do not need it.
 
 ```sh
-./release.sh taskr/v1.2.3 --dry-run         # build and check everything; publish nothing
+./release.sh taskr/v1.2.3 --dry-run         # build and check the artifacts; publish nothing
+./release.sh taskr/v1.2.3 --gate --dry-run  # also run the gate for uncommitted edits
 ./release.sh taskr/v1.2.3                   # build, tag, push the tag, create a stable release
 ./release.sh taskr/v1.2.3 --darwin-only     # only build the darwin binaries on the Mac, into dist-darwin/
 ./release.sh taskr/v1.2.3 --darwin-from DIR # release with darwin binaries built by hand
@@ -35,12 +36,17 @@ or other build version is refused. The script runs on Linux and:
    `origin/main`. It checks the tools below and, unless `--darwin-from` is
    supplied, the Mac's ssh login. On a missing tool it prints the install block
    from `tools/contract/README.md`.
-2. **Gate.** `cargo fmt --all --check`, then `cargo clippy --locked --workspace
-   --all-targets -- -D warnings` and `cargo test --locked --workspace`, each
-   with default features and with `--features taskr/contract`. Tests run with a
-   scratch HOME and ledger under
-   `.scratch/release/`, without task identity or any inherited `TASKR_CONTRACT_*`
-   filter.
+2. **Gate.** A `HEAD` in `origin/main` skips the gate because it already passed
+   before merging; the script says so. Pass `--gate` to run it anyway, including
+   when testing uncommitted edits with `--dry-run`. A dry run whose local
+   `origin/main` is unavailable runs the gate; it does not fetch. Other heads
+   run it in a dry run and are refused for a release. The gate is `cargo fmt
+   --all --check`, then `cargo clippy --locked --workspace --all-targets -- -D
+   warnings` and `cargo test --locked --workspace`, each with default features
+   and with `--features taskr/contract`. Tests run with a scratch HOME and ledger
+   under `.scratch/release/`, without task identity or any inherited
+   `TASKR_CONTRACT_*` filter. `--gate` cannot be combined with `--darwin-only`
+   or `--promote`.
 3. **Linux half.** `tools/release-rust.sh` with the release version: static
    `taskr` and `taskr-tui` musl binaries for x86_64 and aarch64 through
    `cargo zigbuild`, a refusal of any test-only hook, and a version smoke of
@@ -130,7 +136,7 @@ Copy `dist-rust/taskr-rust-aarch64-apple-darwin`,
 `dist-rust/taskr-tui-rust-x86_64-apple-darwin` and `dist-rust/SHA256SUMS` into a
 directory and pass it with `--darwin-from DIR`. It is checked (checksums,
 Mach-O type, release version for `taskr` only, no test-only hook or
-`/home/` or `/Users/` builder path) before the gate.
+`/home/` or `/Users/` builder path) before the possible gate.
 `./release.sh <tag> --darwin-only` does the same build over ssh into
 `dist-darwin/`.
 
