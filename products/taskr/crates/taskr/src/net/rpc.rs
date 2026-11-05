@@ -384,18 +384,11 @@ impl Client {
                 .map_err(|e| Error::transport(e.to_string(), true, true))?;
             let (status, body) = response(stream, deadline)?;
             let parsed: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-            if status == 400 && fallback {
-                let msg = parsed["error"].as_str().unwrap_or("");
-                let fields = ["capabilities", "document", "queued_at", "queued_age_ms"];
-                if let Some(field) = fields.into_iter().find(|f| {
-                    request.get(*f).is_some() && msg.contains(&format!("unknown field \"{f}\""))
-                }) {
-                    request.as_object_mut().unwrap().remove(field);
-                    if field == "capabilities" {
-                        request.as_object_mut().unwrap().remove("document");
-                    }
-                    continue;
-                }
+            if status == 400
+                && fallback
+                && strip_unknown_field(&mut request, parsed["error"].as_str().unwrap_or(""))
+            {
+                continue;
             }
             if status != 200 {
                 let text = String::from_utf8_lossy(&body);
@@ -425,6 +418,26 @@ impl Client {
             return Ok(parsed);
         }
     }
+}
+fn strip_unknown_field(request: &mut Value, msg: &str) -> bool {
+    let fields = [
+        "capabilities",
+        "document",
+        "queued_at",
+        "queued_age_ms",
+        "git",
+    ];
+    let Some(field) = fields
+        .into_iter()
+        .find(|f| request.get(*f).is_some() && msg.contains(&format!("unknown field \"{f}\"")))
+    else {
+        return false;
+    };
+    request.as_object_mut().unwrap().remove(field);
+    if field == "capabilities" {
+        request.as_object_mut().unwrap().remove("document");
+    }
+    true
 }
 fn reply_shape(v: &Value) -> bool {
     v["exit"].is_i64() && v["stdout"].is_string() && v["stderr"].is_string()
@@ -626,6 +639,32 @@ pub fn request(argv: &[String], cwd: &str, key: &str, env: Value, doc: Option<Va
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_hub_git_fallback_preserves_registration_and_request_key() {
+        let original = request(
+            &["new".into(), "impl-ticket".into()],
+            "/checkout",
+            "registration-key",
+            json!({}),
+            None,
+        );
+        let mut with_git = original.clone();
+        with_git["git"] = json!(["demo-org/demo", "feature/ticket"]);
+        assert!(strip_unknown_field(
+            &mut with_git,
+            "json: unknown field \"git\""
+        ));
+        assert_eq!(with_git, original);
+        assert!(!strip_unknown_field(
+            &mut with_git,
+            "json: unknown field \"git\""
+        ));
+        assert!(!strip_unknown_field(
+            &mut with_git,
+            "json: unknown field \"argv\""
+        ));
+        assert_eq!(with_git, original);
+    }
     fn reply(bytes: &'static [u8]) -> Result<(u16, Vec<u8>)> {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
