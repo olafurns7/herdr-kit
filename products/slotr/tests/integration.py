@@ -2957,8 +2957,8 @@ mode = "exclusive"
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_native_file_directory_shell_and_byte_preservation(self):
-        self.assertEqual(subprocess.run(['/usr/bin/flock', '--version'], capture_output=True).stdout,
-                         b'flock from util-linux 2.39.3\n')
+        self.assertIn(subprocess.run(['/usr/bin/flock', '--version'], capture_output=True).stdout,
+                      {b'flock from util-linux 2.39.3\n', b'flock from util-linux 2.41.3\n'})
         directory = self.root / 'directory'
         directory.mkdir()
         dangling = self.root / 'dangling'
