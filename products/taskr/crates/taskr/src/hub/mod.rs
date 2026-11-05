@@ -42,6 +42,7 @@ use tokio::{
 
 pub(crate) use child::dispatch as child_dispatch;
 pub(crate) use child::document_set_input;
+pub(crate) use child::git_identity;
 
 #[derive(Clone)]
 pub(crate) struct HubIdentity {

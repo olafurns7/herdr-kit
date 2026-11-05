@@ -519,21 +519,34 @@ pub fn done(db: &mut Connection, a: Authority, id: i64, input: Reason) -> Result
                 if ran { ", has a run" } else { "" }
             )));
         }
-        tx.execute(
-            "update work_items set state='done',reason=? where id=?",
-            params![input.reason, id],
-        )?;
-        audit(
-            tx,
-            w.root,
-            "done by hand",
-            Some(id),
-            None,
-            None,
-            a.root != w.root,
-        )?;
+        finish_unrun(tx, &w, &input.reason, a.root != w.root)?;
         show(tx, id)
     })
+}
+
+fn finish_unrun(db: &Connection, w: &Item, note: &str, notify: bool) -> Result<()> {
+    db.execute(
+        "update work_items set state='done',reason=? where id=?",
+        params![note, w.id],
+    )?;
+    audit(db, w.root, "done by hand", Some(w.id), None, None, notify)
+}
+
+/// Daemon-only completion inside the PR poll transaction; no acceptance receipt.
+/// Call only after all of the ticket's linked PRs have settled, including a merge.
+pub fn done_on_merge(db: &Connection, id: i64, note: &str) -> Result<bool> {
+    text(note, 4096, "done note")?;
+    let w = item(db, id)?;
+    let ran: bool = db.query_row(
+        "select exists(select 1 from work_runs where work_id=?)",
+        [id],
+        |r| r.get(0),
+    )?;
+    if w.state != "backlog" || ran {
+        return Ok(false);
+    }
+    finish_unrun(db, &w, note, false)?;
+    Ok(true)
 }
 pub fn recover(db: &mut Connection, a: Authority, campaign: i64) -> Result<Value> {
     transaction(db, |tx| {

@@ -1028,7 +1028,13 @@ fn run(cmd: &str, f: &FlagSet) -> Result<Value> {
                 ));
             }
             orch::validate_location(f)?;
-            orch::new(&mut open()?, f)
+            let dir = orch::absolute(&store::caller_cwd()?, f.get_string("cwd"));
+            let git = if store::rpc_context().is_some() {
+                crate::hub::git_identity()
+            } else {
+                crate::git::identity(&dir)
+            };
+            orch::new(&mut open()?, f, git)
         }
         "launch" => {
             let id = store::id(&p[0], "task id")?;

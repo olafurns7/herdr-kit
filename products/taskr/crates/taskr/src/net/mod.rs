@@ -594,7 +594,14 @@ pub fn route(mut json_mode: bool, raw_args: &[String]) -> Option<ExitCode> {
         } else {
             None
         };
-        let request = rpc::request(&argv, &cwd_text, &key, env.clone(), doc);
+        let mut request = rpc::request(&argv, &cwd_text, &key, env.clone(), doc);
+        if cmd == "new" {
+            let dir = flag(&cargs, "cwd").map_or(cwd_text.as_ref(), |(dir, _, _)| dir);
+            let dir = taskr_core::store::orch::absolute(&cwd_text, dir);
+            if let Some(git) = crate::git::identity(&dir) {
+                request["git"] = json!(git);
+            }
+        }
         let saved = if cmd == "ready" {
             doc::ready_payload(&cargs, &env)
         } else {

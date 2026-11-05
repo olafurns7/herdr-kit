@@ -110,7 +110,7 @@ pub fn machine(
         "--machine {value:?} is not this host, the server, or a host with a fresh daemon; hosts: {labels}"
     )))
 }
-pub fn new(db: &mut Connection, fs: &FlagSet) -> Result<Value> {
+pub fn new(db: &mut Connection, fs: &FlagSet, git: Option<(String, String)>) -> Result<Value> {
     let cwd = caller_cwd()?;
     let dir = absolute(
         &cwd,
@@ -167,6 +167,22 @@ pub fn new(db: &mut Connection, fs: &FlagSet) -> Result<Value> {
         let at = now();
         tx.execute("insert into tasks(parent_id,name,role,status,workspace_id,tab_id,pane_id,cwd,brief_path,report_path,machine,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?)",params![if parent==0{None}else{Some(parent)},fs.positional[0],fs.get_string("role"),status,null(fs.get_string("workspace")),null(fs.get_string("tab")),null(fs.get_string("pane")),dir,null(&brief),null(&report),host,at,at])?;
         let id = tx.last_insert_rowid();
+        if let Some((repo, branch)) = &git
+            && host == caller_machine()
+        {
+            for (key, value) in [("repo", repo), ("branch", branch)] {
+                event(
+                    tx,
+                    Event {
+                        task: id,
+                        kind: "ref",
+                        summary: &format!("{key}={value}"),
+                        data: Some(json!({"key":key,"value":value})),
+                        ..Event::default()
+                    },
+                )?;
+            }
+        }
         documents::capture_brief(tx, id, input.as_ref())?;
         Ok(json!({"ok":true,"task_id":id,"name":fs.positional[0],"status":status}))
     })?;
@@ -563,11 +579,11 @@ pub fn set(db: &mut Connection, id: i64, pairs: &[(String, String)]) -> Result<V
                 have.insert(k.clone(), v.clone());
             }
         }
-        // PR, glance and per-host tmp bookkeeping stay outside the ordinary ref budget.
+        // Checkout, PR, glance and per-host tmp bookkeeping stay outside the ordinary ref budget.
         let ordinary: Vec<_> = have
             .keys()
             .filter(|k| {
-                !["pr.state", "pr.ci", "glance.state"].contains(&k.as_str())
+                !["repo", "branch", "pr.state", "pr.ci", "glance.state"].contains(&k.as_str())
                     && super::tmp::host(k).is_none()
             })
             .map(String::as_str)
