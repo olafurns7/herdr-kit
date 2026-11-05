@@ -198,14 +198,14 @@ expect_no_calls() {
 
 # The lane flags: full permissions, no sandbox (owner decision, 2026-10-07).
 claude_flags() {
-    printf '%s' "--model|claude-opus-5-5|--effort|$1|--dangerously-skip-permissions|--settings|{\"agentPushNotifEnabled\":false,\"autoMemoryEnabled\":false,\"enabledPlugins\":{\"posthog@claude-plugins-official\":false}}"
+    printf '%s' "--model|claude-opus-5-5|--effort|$1|--dangerously-skip-permissions|--settings|{\"agentPushNotifEnabled\":false,\"autoMemoryEnabled\":false,\"promptSuggestionEnabled\":false,\"awaySummaryEnabled\":false,\"idleCompaction\":false,\"enabledPlugins\":{\"posthog@claude-plugins-official\":false,\"cc-plugin-you-should-know@builtin\":false,\"slack@claude-plugins-official\":false,\"stripe@claude-plugins-official\":false}}"
 }
 # codex_flags MODEL EFFORT TRUST
 codex_flags() {
     printf '%s' "|-m|$1|-c|model_reasoning_effort=\"$2\"|--dangerously-bypass-approvals-and-sandbox|-c|projects={$3}|--dangerously-bypass-hook-trust"
 }
 setup=' export FLEET_ROLE=worker TASKR_TASK=2468 TASKR_LAUNCH=3579'
-claude_setup="$setup CLAUDE_CODE_SANDBOXED=1"
+claude_setup="$setup CLAUDE_CODE_SANDBOXED=1 CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1"
 forward=' && codex() { "$HOME/.local/bin/codator" codex "$@"; } && claude() { "$HOME/.local/bin/codator" claude "$@"; }'
 env_check='echo "herdr-launch-env=$TASKR_TASK/$TASKR_LAUNCH/$FLEET_ROLE/$herdr_launch_ok"'
 
@@ -314,7 +314,7 @@ run_launch sh "$launch_sh" haiku-gather gather-x "$brief" "$report" 42
 expect_rc 0
 expect_calls "$(tab_calls gather-x)" \
     "$(tail_calls gather-x researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$claude_setup" \
-        '|--model|claude-haiku-5-5|--effort|medium|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"autoMemoryEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}}')"
+        '|--model|claude-haiku-5-5|--effort|medium|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"autoMemoryEnabled":false,"promptSuggestionEnabled":false,"awaySummaryEnabled":false,"idleCompaction":false,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false,"slack@claude-plugins-official":false,"stripe@claude-plugins-official":false}}')"
 
 new_case 'Luna gather launches as a researcher' researcher
 run_launch sh "$launch_sh" luna-gather gather-x "$brief" "$report" 42
@@ -379,6 +379,8 @@ pane_setup=$(sed -n 's/^herdr|pane|run|wA:p7|\( export .*\)$/\1/p' "$case_dir/ca
 want='herdr-launch-env=2468/3579/worker/3579'
 got=$(bash --noprofile --norc -c "$pane_setup; $env_check")
 [ "$got" = "$want" ] || fail "a clean shell echoed '$got', expected '$want'"
+got=$(bash --noprofile --norc -c "$pane_setup; printenv CLAUDE_CODE_DISABLE_ADVISOR_TOOL")
+[ "$got" = 1 ] || fail "advisor disable flag was not exported to a child process: $got"
 got=$(bash --noprofile --norc -c "claude() { :; }; readonly -f claude; $pane_setup; $env_check" 2>/dev/null)
 [ "$got" != "$want" ] || fail 'a readonly claude() still produced the step-5 marker'
 
