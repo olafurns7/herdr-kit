@@ -20,7 +20,7 @@ empty or whitespace-only, release builds (including `--dry-run` and
 `--darwin-only`) exit 2 before building. `--darwin-from DIR` and `--promote` do not need it.
 
 ```sh
-./release.sh taskr/v1.2.3 --dry-run         # build and check everything; publish nothing
+./release.sh taskr/v1.2.3 --dry-run         # build and check the artifacts; publish nothing
 ./release.sh taskr/v1.2.3 --gate --dry-run  # also run the gate for uncommitted edits
 ./release.sh taskr/v1.2.3                   # build, tag, push the tag, create a stable release
 ./release.sh taskr/v1.2.3 --darwin-only     # only build the darwin binaries on the Mac, into dist-darwin/
