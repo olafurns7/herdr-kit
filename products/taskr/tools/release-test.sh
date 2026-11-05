@@ -183,6 +183,8 @@ cp references/format.md "$t/full/references/"
 pair "$t/mac" 'stub v0.17.0'
 cat > "$t/fake-bin/cargo" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_CARGO_LOG"
+[ "${FAKE_CARGO_FAIL:-0}" -eq 0 ] || exit 9
 exit 0
 EOF
 cp "$t/fake-bin/cargo" "$t/fake-bin/zig"
@@ -191,8 +193,14 @@ cat > "$t/fake-bin/git" <<'EOF'
 #!/bin/sh
 # A Mac build needs the root workspace, not git archive's current subdirectory.
 printf '%s\n' "$*" >> "$FAKE_GIT_LOG"
+if [ "$1" = merge-base ]; then
+	[ "${FAKE_ON_MAIN:-}" = 1 ]
+	exit $?
+fi
 case $* in
-'-C ../.. archive --format=tar HEAD'|'status --porcelain'|'fetch -q origin main'|'merge-base --is-ancestor HEAD origin/main'|'tag -a '*|'push origin '*) ;;
+'-C ../.. archive --format=tar HEAD'|'tag -a '*|'push origin '*) ;;
+'status --porcelain') [ "${FAKE_DIRTY:-}" != 1 ] || printf '%s\n' dirty ;;
+'fetch -q origin main') [ "${FAKE_FETCH_FAIL:-}" != 1 ] || exit 9 ;;
 'rev-parse -q --verify refs/tags/'*) exit 1 ;;
 *) exit 9 ;;
 esac
@@ -227,6 +235,7 @@ EOF
 cat > "$t/full/tools/release-rust.sh" <<'EOF'
 #!/bin/sh
 set -eu
+printf '%s\n' build >> "$FAKE_RELEASE_BUILD_LOG"
 mkdir -p dist-rust
 for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
   printf '#!/bin/sh\nprintf '\''{"version":"%s"}\n'\''\n' "$TASKR_VERSION" > "dist-rust/taskr-rust-$target"
@@ -235,6 +244,67 @@ done
 EOF
 chmod +x "$t/fake-bin/"*
 export FAKE_MAC="$t/mac" FAKE_FILE_LOG="$t/file.log" FAKE_GIT_LOG="$t/git.log"
+export FAKE_CARGO_LOG="$t/cargo.log" FAKE_RELEASE_BUILD_LOG="$t/release-build.log"
+
+# The gate decision is observable through cargo, so these checks do not depend
+# on a status message.  Each case uses imported Darwin binaries to avoid SSH.
+run_gate_case() { # NAME EXPECT_GATE EXPECT_STATUS [release.sh arguments...]
+	case_name=$1
+	expect_gate=$2
+	expect_status=$3
+	shift 3
+	: > "$t/cargo.log"
+	: > "$t/git.log"
+	: > "$t/release-build.log"
+	: > "$t/gh.log"
+	rm -rf "$t/full/dist" "$t/full/dist-rust" "$t/full/.scratch"
+	if (cd "$t/full" && HOME="$t/home" PATH="$t/fake-bin:$PATH" FAKE_LATEST=taskr/v0.16.1 FAKE_ON_MAIN="$FAKE_ON_MAIN" FAKE_CARGO_FAIL="${FAKE_CARGO_FAIL:-0}" ./release.sh taskr/v0.17.0 "$@") > "$t/out" 2>&1; then
+		got=0
+	else
+		got=$?
+	fi
+	[ "$got" -eq "$expect_status" ] || { cat "$t/out"; no "$case_name: expected exit $expect_status, got $got"; }
+	if [ "$expect_gate" != no ]; then
+		grep -qx 'fmt --all --check' "$t/cargo.log" || { cat "$t/cargo.log"; no "$case_name: fmt did not run"; }
+		if [ "$expect_gate" = yes ]; then
+			grep -qx 'clippy --locked --workspace --all-targets -- -D warnings' "$t/cargo.log" || no "$case_name: default clippy did not run"
+			grep -qx 'test --locked --workspace --features taskr/contract' "$t/cargo.log" || no "$case_name: contract test did not run"
+		fi
+	else
+		[ ! -s "$t/cargo.log" ] || { cat "$t/out" "$t/cargo.log" "$t/git.log"; no "$case_name: gate ran"; }
+	fi
+	ok "$case_name"
+}
+
+FAKE_ON_MAIN=1; export FAKE_ON_MAIN
+run_gate_case 'main dry run skips gate' no 0 --dry-run --darwin-from "$t/mac"
+grep -Fqx 'release.sh: skipping gate: HEAD is in origin/main; pass --gate to force it' "$t/out" || no 'main dry run: missing skip explanation'
+run_gate_case 'main release skips gate and publishes' no 0 --darwin-from "$t/mac"
+grep -q '^release create taskr/v0.17.0 ' "$t/gh.log" || no 'main release: stable release was not created'
+FAKE_ON_MAIN=0; export FAKE_ON_MAIN
+run_gate_case 'non-main dry run runs gate' yes 0 --dry-run --darwin-from "$t/mac"
+run_gate_case 'non-main release is refused before gate' no 1 --darwin-from "$t/mac"
+FAKE_ON_MAIN=1; export FAKE_ON_MAIN
+run_gate_case 'forced gate on main runs' yes 0 --dry-run --gate --darwin-from "$t/mac"
+FAKE_CARGO_FAIL=1; export FAKE_CARGO_FAIL
+run_gate_case 'forced gate failure stops before build' fmt 9 --dry-run --gate --darwin-from "$t/mac"
+unset FAKE_CARGO_FAIL
+[ ! -s "$t/release-build.log" ] || no 'forced gate failure reached build'
+for incompatible in '--darwin-only' '--promote'; do
+	if (cd "$t/full" && HOME="$t/home" PATH="$t/fake-bin:$PATH" ./release.sh taskr/v0.17.0 --gate $incompatible) > "$t/out" 2>&1; then
+		no "--gate $incompatible accepted"
+	fi
+	grep -q '^usage:' "$t/out" || { cat "$t/out"; no "--gate $incompatible: missing usage"; }
+	done
+ok '--gate rejects darwin-only and promote'
+FAKE_ON_MAIN=0 FAKE_FETCH_FAIL=1; export FAKE_ON_MAIN FAKE_FETCH_FAIL
+run_gate_case 'dry run with unavailable fetch runs gate' yes 0 --dry-run --darwin-from "$t/mac"
+! grep -qx 'fetch -q origin main' "$t/git.log" || no 'dry run attempted fetch'
+unset FAKE_FETCH_FAIL
+run_gate_case 'dry run without origin/main runs gate' yes 0 --dry-run --darwin-from "$t/mac"
+FAKE_ON_MAIN=1 FAKE_DIRTY=1; export FAKE_ON_MAIN FAKE_DIRTY
+run_gate_case 'dirty dry run remains allowed' no 0 --dry-run --darwin-from "$t/mac"
+unset FAKE_DIRTY
 : > "$t/gh.log"
 : > "$t/git.log"
 if (cd "$t/full" && HOME="$t/home" PATH="$t/fake-bin:$PATH" FAKE_LATEST=taskr/v0.24.0 ./release.sh taskr/v0.17.0 --darwin-from "$t/mac") > "$t/out" 2>&1; then
