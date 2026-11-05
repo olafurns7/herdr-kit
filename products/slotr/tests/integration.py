@@ -3149,7 +3149,7 @@ exec 9<>"$2"
                     outputs.append([line for line in result.stdout.splitlines()
                                     if line.startswith((b'SigBlk:', b'SigIgn:', b'SigPnd:', b'ShdPnd:'))])
                 self.assertEqual(outputs[0], outputs[1], (ignore, block))
-        # Compare host printf's EPIPE behavior; SigIgn above checks the SIGPIPE disposition.
+        # Compare host printf's EPIPE behavior; the actual-source harness below checks SIGPIPE at exec.
         outputs = []
         for tool in ['/usr/bin/flock', str(self.shim)]:
             read, write = os.pipe()
@@ -3236,6 +3236,7 @@ static const char *mode;
 static int actions, waits, killed, native_called;
 static pid_t checker_child;
 static struct sigaction expected;
+static struct sigaction expected_pipe;
 static sigset_t expected_mask;
 static int real_child(void) { return !strncmp(mode, "real-", 5); }
 static int action(int sig, const struct sigaction *a, struct sigaction *old)
@@ -3293,11 +3294,14 @@ static int execute(const char *path, char *const argv[])
     if (strcmp(path, "/usr/bin/flock")) return execv(path, argv);
     native_called++;
     struct sigaction restored;
+    struct sigaction pipe_restored;
     sigset_t mask, pending;
     assert(sigaction(SIGCHLD, NULL, &restored) == 0);
+    assert(sigaction(SIGPIPE, NULL, &pipe_restored) == 0);
     assert(sigprocmask(SIG_SETMASK, NULL, &mask) == 0);
     assert(sigpending(&pending) == 0);
     assert(restored.sa_handler == expected.sa_handler && restored.sa_flags == expected.sa_flags);
+    assert(pipe_restored.sa_handler == expected_pipe.sa_handler);
     for (int s = 1; s < 65; s++) {
         assert(sigismember(&restored.sa_mask, s) == sigismember(&expected.sa_mask, s));
         assert(sigismember(&mask, s) == sigismember(&expected_mask, s));
@@ -3332,6 +3336,11 @@ int main(int argc, char **argv)
     assert(sigemptyset(&initial.sa_mask) == 0 && sigaddset(&initial.sa_mask, SIGUSR2) == 0);
     assert(sigaction(SIGCHLD, &initial, NULL) == 0);
     assert(sigaction(SIGCHLD, NULL, &expected) == 0);
+    struct sigaction initial_pipe = {0};
+    initial_pipe.sa_handler = strstr(mode, "pipe-ignore") ? SIG_IGN : SIG_DFL;
+    assert(sigemptyset(&initial_pipe.sa_mask) == 0);
+    assert(sigaction(SIGPIPE, &initial_pipe, NULL) == 0);
+    assert(sigaction(SIGPIPE, NULL, &expected_pipe) == 0);
     assert(!(initial.sa_flags & SA_NOCLDWAIT) || (expected.sa_flags & SA_NOCLDWAIT));
     assert(sigemptyset(&expected_mask) == 0 && sigaddset(&expected_mask, SIGUSR1) == 0);
     if (strstr(mode, "block") || strstr(mode, "pending") || !real_child())
@@ -3366,6 +3375,7 @@ int main(int argc, char **argv)
         self.assertEqual(result.returncode, 0, result.stderr)
         for mode in ['malloc', 'snapshot', 'prepare', 'fork', 'wait', 'wrong', 'restore', 'stop',
                      'signal', 'unknown', 'eintr', 'real-block', 'real-pending', 'real-ignore-block',
+                     'real-pipe-ignore', 'real-pipe-default',
                      'real-nocldwait', 'real-nocldwait-block', 'real-nocldwait-fail',
                      'real-nocldwait-block-fail', 'real-nocldwait-stop', 'real-nocldwait-block-stop']:
             checker.unlink()
