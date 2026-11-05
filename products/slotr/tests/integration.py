@@ -3149,7 +3149,8 @@ exec 9<>"$2"
                     outputs.append([line for line in result.stdout.splitlines()
                                     if line.startswith((b'SigBlk:', b'SigIgn:', b'SigPnd:', b'ShdPnd:'))])
                 self.assertEqual(outputs[0], outputs[1], (ignore, block))
-        # printf is executed directly; its EPIPE diagnostic/exit proves ignored SIGPIPE behavior.
+        # Compare host printf's EPIPE behavior; SigIgn above checks the SIGPIPE disposition.
+        outputs = []
         for tool in ['/usr/bin/flock', str(self.shim)]:
             read, write = os.pipe()
             os.close(read)
@@ -3157,10 +3158,10 @@ exec 9<>"$2"
                 result = subprocess.run([tool, '-F', str(self.runtime), '/usr/bin/printf', 'data'],
                                         env=self.env, stdout=write, stderr=subprocess.PIPE, timeout=4,
                                         restore_signals=False, preexec_fn=state(False, []))
-                self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn(b'Broken pipe', result.stderr)
+                outputs.append((result.returncode, result.stderr))
             finally:
                 os.close(write)
+        self.assertEqual(outputs[0], outputs[1])
         for fd in range(3):
             outputs = []
             for tool in ['/usr/bin/flock', str(self.shim)]:
