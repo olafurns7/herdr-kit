@@ -223,8 +223,8 @@ if [ "$run_gate" -eq 1 ]; then
 			cargo test --locked --workspace $features
 		done
 	)
-	else
-		printf '%s\n' 'release.sh: skipping gate: HEAD is in origin/main; pass --gate to force it'
+else
+	printf '%s\n' 'release.sh: skipping gate: HEAD is in origin/main; pass --gate to force it'
 fi
 
 # --- Build ---------------------------------------------------------------------
