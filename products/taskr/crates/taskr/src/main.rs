@@ -26,6 +26,7 @@ fn print_stdout(args: std::fmt::Arguments<'_>) {
 
 mod cli;
 mod daemon;
+mod git;
 mod hub;
 mod jobs;
 mod mcp;

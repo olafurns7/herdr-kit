@@ -98,6 +98,14 @@ poller keeps for [the board](#the-board). Link a PR with
 `taskr set TASK pr=31` (the default repo) or `pr=owner/repo#31`, and unlink it
 with `pr=`. Without `default_repo`, only `owner/repo#N` links are followed.
 
+`taskr new` records a GitHub origin's `repo` and checkout `branch` on the caller
+host; for a never-run backlog lane tagged `work=W` without an explicit `pr` ref,
+the poller automatically links a unique open or merged PR from that repository and
+branch (older lanes need these refs or an explicit link).
+Once a ticket has a linked merged PR and all its linked PRs across all lanes are
+merged or closed, it is marked done with `merged owner/repo#N SHA`, once, using
+the same never-run backlog rules as `work done` and writing no acceptance receipt.
+
 - **Read-only, through `gh`.** Every 60 seconds one batched `gh api graphql`
   query (as the hub user, so taskr never holds a token) reads at most 30 linked
   PRs, rotating through the rest; past 20 PRs the interval stretches to 60 s

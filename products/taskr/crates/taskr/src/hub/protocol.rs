@@ -14,6 +14,8 @@ pub(crate) struct RpcRequest {
     #[serde(deserialize_with = "null_default")]
     pub env: BTreeMap<String, String>,
     pub request_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git: Option<(String, String)>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[serde(deserialize_with = "null_default")]
     pub capabilities: Vec<String>,
@@ -405,6 +407,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<RpcRequest, String> {
             "cwd",
             "env",
             "request_key",
+            "git",
             "capabilities",
             "document",
             "queued_at",
@@ -826,5 +829,18 @@ mod tests {
         for mkdir in ["--mkdir", "-mkdir", "--mkdir=true"] {
             assert!(check_args(&argv(&["tmp", "7", mkdir])).is_err());
         }
+    }
+
+    #[test]
+    fn github_checkout_identity_survives_rpc_decoding() {
+        let req =
+            decode(br#"{"argv":["new","impl-ticket"],"git":["demo-org/demo","feature/ticket"]}"#)
+                .unwrap();
+        assert_eq!(
+            req.git,
+            Some(("demo-org/demo".into(), "feature/ticket".into()))
+        );
+        assert!(decode(br#"{"git":["demo-org/demo"]}"#).is_err());
+        assert_eq!(decode(br#"{}"#).unwrap().git, None);
     }
 }

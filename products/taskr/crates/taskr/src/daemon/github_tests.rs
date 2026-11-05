@@ -56,6 +56,19 @@ fn fixture(name: &str) -> Fixture {
     }
 }
 impl Fixture {
+    fn ticket(&self, task: i64, work: i64) {
+        self.db.execute("insert or ignore into work_items(id,root_id,title,priority,revision,state,creator,created_at) values(?,1,'ticket',0,1,'backlog','{}',?)", params![work,store::now()]).unwrap();
+        refs(&self.db, task, &[("work", &work.to_string())]).unwrap();
+    }
+    fn ticket_state(&self, work: i64) -> (String, Option<String>) {
+        self.db
+            .query_row(
+                "select state,reason from work_items where id=?",
+                [work],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    }
     fn link(&self, task: i64, value: &str) {
         self.db.execute("insert into events(task_id,kind,summary,data,created_at) values(?,'ref',?,json_object('key','pr','value',?),?)",params![task,format!("pr={value}"),value,store::now()]).unwrap();
     }
@@ -125,6 +138,277 @@ fn data(nodes: &[Value]) -> String {
     json!({"data":d}).to_string()
 }
 const HEAD: &str = "5635105aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+fn merged() -> Value {
+    let mut node = pr(HEAD, "CLEAN", &[], 0);
+    node["state"] = json!("MERGED");
+    node["merged"] = json!(true);
+    node["mergeCommit"] = json!({"oid":HEAD});
+    node
+}
+
+#[test]
+fn github_checkout_identity_is_recorded_when_registering_a_lane() {
+    let mut f = fixture("github-checkout");
+    let git = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .current_dir(&f.dir)
+                .args(args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-b", "feature/ticket"]);
+    git(&[
+        "remote",
+        "add",
+        "origin",
+        "git@github.com:demo-org/demo.git",
+    ]);
+    let identity = crate::git::identity(f.dir.to_str().unwrap());
+    assert_eq!(
+        identity,
+        Some(("demo-org/demo".into(), "feature/ticket".into()))
+    );
+    let mut flags = crate::write::flags("new", false);
+    flags
+        .parse(
+            &[
+                "impl-checkout".into(),
+                "--parent".into(),
+                "1".into(),
+                "--cwd".into(),
+                f.dir.to_string_lossy().into_owned(),
+            ],
+            1,
+            1,
+        )
+        .unwrap();
+    let out = store::orch::new(&mut f.db, &flags, identity).unwrap();
+    let task = out["task_id"].as_i64().unwrap();
+    assert_eq!(
+        f.latest_ref(task, "branch").as_deref(),
+        Some("feature/ticket")
+    );
+    assert_eq!(f.latest_ref(task, "repo").as_deref(), Some("demo-org/demo"));
+    let pairs = (0..20)
+        .map(|i| (format!("custom{i}"), "value".into()))
+        .collect::<Vec<_>>();
+    store::orch::set(&mut f.db, task, &pairs).unwrap();
+}
+
+#[test]
+fn merged_pr_finishes_shared_ticket_once_across_polls_and_restart() {
+    let mut f = fixture("work-merged");
+    f.db.execute("update tasks set parent_id=1 where id=3", [])
+        .unwrap();
+    for task in [2, 3] {
+        f.ticket(task, 1);
+        f.link(task, "31");
+    }
+    f.reply(&data(&[merged()]), 0);
+    f.poll();
+    assert_eq!(
+        f.ticket_state(1),
+        (
+            "done".into(),
+            Some(format!("merged demo-org/demo#31 {HEAD}"))
+        )
+    );
+    f.poll();
+    f.db = db::open(&f.dir.join("taskr.db")).unwrap();
+    f.poller = Poller::new(&f.dir, true).unwrap();
+    f.poll();
+    assert_eq!(f.calls(), 1);
+    assert_eq!(
+        f.db.query_row("select count(*) from events where kind='work'", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        f.db.query_row("select count(*) from work_acceptances", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn cached_merge_before_upgrade_finishes_a_later_ticket_without_another_fetch() {
+    let mut f = fixture("work-cached-upgrade");
+    f.link(2, "31");
+    f.reply(&data(&[merged()]), 0);
+    f.poll();
+    let key = "pr_state:demo-org/demo#31";
+    let mut cached: Value = serde_json::from_str(&meta(&f.db, key).unwrap().unwrap()).unwrap();
+    cached.as_object_mut().unwrap().remove("merge_commit");
+    set_meta(&f.db, key, &cached.to_string()).unwrap();
+    f.ticket(2, 1);
+    f.poll();
+    assert_eq!(f.calls(), 1);
+    assert_eq!(
+        f.ticket_state(1),
+        (
+            "done".into(),
+            Some(format!("merged demo-org/demo#31 {HEAD}"))
+        )
+    );
+}
+
+#[test]
+fn closed_unmerged_done_cancelled_and_unlinked_tickets_stay_unchanged() {
+    for (name, state, linked) in [
+        ("closed", "backlog", true),
+        ("already-done", "done", true),
+        ("cancelled", "cancelled", true),
+        ("unlinked", "backlog", false),
+    ] {
+        let mut f = fixture(name);
+        f.ticket(2, 1);
+        f.db.execute("update work_items set state=? where id=1", [state])
+            .unwrap();
+        if linked {
+            f.link(2, "31");
+        }
+        let mut node = merged();
+        if name == "closed" {
+            node["state"] = json!("CLOSED");
+            node["merged"] = json!(false);
+        }
+        f.reply(&data(&[node]), 0);
+        f.poll();
+        assert_eq!(f.ticket_state(1), (state.into(), None), "{name}");
+    }
+}
+
+#[test]
+fn work_waits_for_last_linked_pr_including_unknown_and_old_closed_lanes() {
+    let mut f = fixture("work-multiple-prs");
+    f.db.execute(
+        "update tasks set parent_id=1,status='closed',closed_at='2000-01-01T00:00:00Z' where id=3",
+        [],
+    )
+    .unwrap();
+    for (task, number) in [(2, "31"), (3, "32")] {
+        f.ticket(task, 1);
+        f.link(task, number);
+    }
+    f.reply(&data(&[merged()]), 0);
+    f.poll();
+    assert_eq!(
+        f.ticket_state(1).0,
+        "backlog",
+        "unknown PR blocks even on an old lane"
+    );
+    f.db.execute("update tasks set status='open' where id=3", [])
+        .unwrap();
+    f.reply(&data(&[pr(HEAD, "CLEAN", &[], 0)]), 0);
+    f.poll();
+    assert_eq!(
+        f.ticket_state(1).0,
+        "backlog",
+        "first merge leaves the open PR"
+    );
+    f.reply(&data(&[merged()]), 0);
+    f.poll();
+    assert_eq!(
+        f.ticket_state(1),
+        (
+            "done".into(),
+            Some(format!("merged demo-org/demo#32 {HEAD}"))
+        )
+    );
+}
+
+#[test]
+fn github_discovers_branch_pr_then_finishes_without_manual_link() {
+    let mut f = fixture("work-discovery");
+    f.ticket(2, 1);
+    refs(
+        &f.db,
+        2,
+        &[("repo", "demo-org/demo"), ("branch", "feature/ticket")],
+    )
+    .unwrap();
+    f.reply(&json!({"data":{"d0":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[{"number":31,"state":"OPEN","headRefName":"feature/ticket","headRepository":{"nameWithOwner":"demo-org/demo"}}]}}}}).to_string(), 0);
+    f.poll();
+    assert_eq!(f.latest_ref(2, "pr").as_deref(), Some("demo-org/demo#31"));
+    assert!(
+        fs::read_to_string(f.dir.join("args"))
+            .unwrap()
+            .contains("headRefName:\"feature/ticket\"")
+    );
+    assert_eq!(f.ticket_state(1).0, "backlog");
+    f.reply(&data(&[merged()]), 0);
+    f.poll();
+    assert_eq!(f.ticket_state(1).0, "done");
+}
+
+#[test]
+fn github_discovery_requires_unique_same_repo_branch_and_preserves_explicit_link() {
+    let mut f = fixture("work-discovery-refusal");
+    f.ticket(2, 1);
+    refs(
+        &f.db,
+        2,
+        &[("repo", "demo-org/demo"), ("branch", "feature/ticket")],
+    )
+    .unwrap();
+    let candidate = work_lanes(&f.db).unwrap();
+    let node = json!({"number":31,"state":"OPEN","headRefName":"feature/ticket","headRepository":{"nameWithOwner":"demo-org/demo"}});
+    for nodes in [
+        vec![],
+        vec![node.clone(), node.clone()],
+        vec![
+            json!({"number":31,"headRefName":"feature/other","headRepository":{"nameWithOwner":"demo-org/demo"}}),
+        ],
+        vec![
+            json!({"number":31,"headRefName":"feature/ticket","headRepository":{"nameWithOwner":"fork/demo"}}),
+        ],
+    ] {
+        discover(&mut f.db, &candidate, &json!({"data":{"d0":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":nodes}}}})).unwrap();
+        assert_eq!(f.latest_ref(2, "pr"), None);
+    }
+    f.link(2, "99");
+    discover(
+        &mut f.db,
+        &candidate,
+        &json!({"data":{"d0":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[node]}}}}),
+    )
+    .unwrap();
+    assert_eq!(f.latest_ref(2, "pr").as_deref(), Some("99"));
+}
+
+#[test]
+fn github_discovery_can_find_a_merge_between_polls_but_not_an_old_branch_merge() {
+    let mut f = fixture("work-merged-discovery");
+    f.ticket(2, 1);
+    refs(
+        &f.db,
+        2,
+        &[("repo", "demo-org/demo"), ("branch", "feature/ticket")],
+    )
+    .unwrap();
+    let candidates = work_lanes(&f.db).unwrap();
+    let mut node = json!({"number":31,"state":"MERGED","mergedAt":"2000-01-01T00:00:00Z","headRefName":"feature/ticket","headRepository":{"nameWithOwner":"Demo-Org/Demo"}});
+    discover(&mut f.db, &candidates, &json!({"data":{"d0":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[node.clone()]}}}})).unwrap();
+    assert_eq!(f.latest_ref(2, "pr"), None);
+    node["mergedAt"] = json!(store::now());
+    discover(
+        &mut f.db,
+        &candidates,
+        &json!({"data":{"d0":{"pullRequests":{"pageInfo":{"hasNextPage":false},"nodes":[node]}}}}),
+    )
+    .unwrap();
+    assert_eq!(f.latest_ref(2, "pr").as_deref(), Some("demo-org/demo#31"));
+}
 
 #[test]
 fn parses_links() {

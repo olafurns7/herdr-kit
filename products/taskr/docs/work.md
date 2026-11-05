@@ -56,6 +56,11 @@ becomes its reason. It writes no acceptance receipt, so a hand-done ticket never
 satisfies a full contract's dependency: `queue` refuses a full contract that
 depends on one, naming the dependency. Use `work cancel` to drop a ticket.
 
+With GitHub polling enabled, a never-run backlog ticket with lanes tagged
+`work=W` is also marked done once at least one linked PR has merged and every
+linked PR across its lanes is merged or closed; its note is `merged owner/repo#N SHA`,
+with the same no-acceptance-receipt effect as `work done`.
+
 ```sh
 taskr work done 3 --as 42 --generation 0 --note "landed by hand in #41"
 ```

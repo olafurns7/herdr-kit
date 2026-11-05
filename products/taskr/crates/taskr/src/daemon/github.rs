@@ -166,6 +166,7 @@ fn links(db: &db::Connection, default: &str) -> Result<Vec<Link>> {
 struct State {
     head: String,
     state: String,
+    merge_commit: String,
     merge: String,
     threads: u64,
     /// The checks verdict last reported (or settled on pending) for this head.
@@ -332,7 +333,9 @@ fn diff(prev: &State, node: &Value, names: &[String]) -> (State, Vec<(&'static s
         next.named = named;
     }
     if node["merged"] == true || next.state == "MERGED" {
+        next.state = "MERGED".into();
         let commit = node["mergeCommit"]["oid"].as_str().unwrap_or("");
+        next.merge_commit = commit.into();
         next.done = true;
         subs.push(("merged", format!("merged as {}", seven(commit))));
         return (next, subs);
@@ -523,8 +526,157 @@ pub(super) fn apply(
                 task_refs(tx, task, &next)?;
             }
         }
+        complete_work(tx, default)?;
         Ok(n)
     })
+}
+
+#[derive(Clone)]
+struct WorkLane {
+    work: i64,
+    task: i64,
+    repo: String,
+    branch: String,
+    created_at: String,
+    followed: bool,
+    pr: Option<String>,
+}
+
+fn work_lanes(db: &db::Connection) -> Result<Vec<WorkLane>> {
+    let since = store::stamp(taskr_core::frozen_now().map_err(database)? - CLOSED_WINDOW);
+    let mut stmt = db.prepare(
+        "select w.id,t.id,
+          coalesce((select json_extract(data,'$.value') from events
+            where task_id=t.id and kind='ref' and json_extract(data,'$.key')='repo'
+            order by id desc limit 1),''),
+          coalesce((select json_extract(data,'$.value') from events
+            where task_id=t.id and kind='ref' and json_extract(data,'$.key')='branch'
+            order by id desc limit 1),''),
+          t.created_at,
+          (select json_extract(data,'$.value') from events
+            where task_id=t.id and kind='ref' and json_extract(data,'$.key')='pr'
+            order by id desc limit 1),
+          t.status!='closed' or coalesce(t.closed_at,'')>=?1
+        from tasks t
+        join events e on e.id=(select max(id) from events where task_id=t.id
+          and kind='ref' and json_extract(data,'$.key')='work')
+        join work_items w on w.id=json_extract(e.data,'$.value') and w.root_id=t.parent_id
+        where w.state='backlog' and not exists(select 1 from work_runs where work_id=w.id)
+        order by t.id",
+    )?;
+    Ok(stmt
+        .query_map([since], |r| {
+            Ok(WorkLane {
+                work: r.get(0)?,
+                task: r.get(1)?,
+                repo: r.get(2)?,
+                branch: r.get(3)?,
+                created_at: r.get(4)?,
+                pr: r.get(5)?,
+                followed: r.get(6)?,
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?)
+}
+
+fn complete_work(db: &db::Connection, default: &str) -> Result<()> {
+    let mut tickets = BTreeMap::<i64, Vec<String>>::new();
+    for lane in work_lanes(db)? {
+        if let Some(pr) = lane.pr.filter(|s| !s.is_empty()) {
+            tickets.entry(lane.work).or_default().push(pr);
+        }
+    }
+    for (work, prs) in tickets {
+        let mut merged = None;
+        let mut settled = true;
+        for value in prs {
+            let Some(pr) = parse(&value, default) else {
+                settled = false;
+                break;
+            };
+            let s = state(db, &pr)?;
+            match s.state.as_str() {
+                "MERGED" => {
+                    let sha = if s.merge_commit.is_empty() {
+                        db.query_row("select json_extract(data,'$.merge_commit') from events where kind='pr' and json_extract(data,'$.pr')=? and json_extract(data,'$.sub')='merged' order by id desc limit 1", [pr.key()], |r| r.get::<_, Option<String>>(0)).optional()?.flatten().unwrap_or_default()
+                    } else {
+                        s.merge_commit
+                    };
+                    if !sha.is_empty() {
+                        merged = Some(format!("merged {} {sha}", pr.key()));
+                    }
+                }
+                "CLOSED" => {}
+                _ => {
+                    settled = false;
+                    break;
+                }
+            }
+        }
+        if settled && let Some(note) = merged {
+            store::work::done_on_merge(db, work, &note)?;
+        }
+    }
+    Ok(())
+}
+
+fn discover(db: &mut db::Connection, candidates: &[WorkLane], v: &Value) -> Result<()> {
+    store::transaction(db, |tx| {
+        let current = work_lanes(tx)?;
+        for (i, lane) in candidates.iter().enumerate() {
+            if !current.iter().any(|l| {
+                l.task == lane.task
+                    && l.work == lane.work
+                    && l.pr.is_none()
+                    && l.repo == lane.repo
+                    && l.branch == lane.branch
+            }) {
+                continue;
+            }
+            let connection = &v["data"][format!("d{i}")]["pullRequests"];
+            let Some(nodes) = connection["nodes"].as_array() else {
+                continue;
+            };
+            if connection["pageInfo"]["hasNextPage"] != false || nodes.len() != 1 {
+                continue;
+            }
+            let node = &nodes[0];
+            if node["headRefName"] != lane.branch
+                || !node["headRepository"]["nameWithOwner"]
+                    .as_str()
+                    .is_some_and(|repo| repo.eq_ignore_ascii_case(&lane.repo))
+            {
+                continue;
+            }
+            // A reused branch must not link a PR merged before this lane existed.
+            if node["state"] != "OPEN"
+                && !(node["state"] == "MERGED"
+                    && node["mergedAt"]
+                        .as_str()
+                        .and_then(store::parse_time)
+                        .zip(store::parse_time(&lane.created_at))
+                        .is_some_and(|(merged, created)| merged >= created))
+            {
+                continue;
+            }
+            if let Some(number) = node["number"].as_u64().filter(|n| *n > 0) {
+                refs(tx, lane.task, &[("pr", &format!("{}#{number}", lane.repo))])?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn discovery_query(batch: &[Pr], candidates: &[WorkLane]) -> String {
+    let mut q = query(batch);
+    q.pop();
+    for (i, lane) in candidates.iter().enumerate() {
+        let (owner, name) = lane.repo.split_once('/').expect("validated repo");
+        let branch = serde_json::to_string(&lane.branch).expect("branch JSON");
+        q.push_str(&format!("d{i}:repository(owner:\"{owner}\",name:\"{name}\"){{pullRequests(headRefName:{branch},states:[OPEN,MERGED],first:2){{pageInfo{{hasNextPage}} nodes{{number state mergedAt headRefName headRepository{{nameWithOwner}}}}}}}}"));
+    }
+    q.push('}');
+    q
 }
 pub(super) enum Fetch {
     Json(Value),
@@ -573,7 +725,13 @@ fn fetch(query: &str, path: Option<&str>, timeout: Duration) -> Fetch {
         )),
     }
 }
-type Inflight = (Vec<Pr>, String, Vec<String>, mpsc::Receiver<Fetch>);
+type Inflight = (
+    Vec<Pr>,
+    Vec<WorkLane>,
+    String,
+    Vec<String>,
+    mpsc::Receiver<Fetch>,
+);
 pub(super) struct Poller {
     dir: PathBuf,
     /// Tests put a fake `gh` first on this PATH; the daemon inherits its own.
@@ -608,18 +766,20 @@ impl Poller {
     }
     /// Called each resident iteration: apply a finished fetch, or start one when due.
     pub(super) fn tick(&mut self, db: &mut db::Connection, log: &Log) {
-        if let Some((_, _, _, recv)) = &self.inflight {
+        if let Some((_, _, _, _, recv)) = &self.inflight {
             let fetched = match recv.try_recv() {
                 Err(mpsc::TryRecvError::Empty) => return,
                 Err(mpsc::TryRecvError::Disconnected) => Fetch::Failed("gh worker exited".into()),
                 Ok(f) => f,
             };
-            let (batch, default, names, _) = self.inflight.take().expect("inflight");
+            let (batch, candidates, default, names, _) = self.inflight.take().expect("inflight");
             match fetched {
                 Fetch::Json(v) => {
                     self.failures = 0;
                     self.health(log, "ok", &format!("github poll ok ({} PRs)", batch.len()));
-                    if let Err(e) = apply(db, &batch, &default, &names, &v) {
+                    if let Err(e) = discover(db, &candidates, &v)
+                        .and_then(|_| apply(db, &batch, &default, &names, &v))
+                    {
                         log.line(&format!("github poll apply failed: {}", e.message));
                     }
                 }
@@ -666,6 +826,7 @@ impl Poller {
                     prs.push(l.pr);
                 }
             }
+            complete_work(tx, &default)?;
             Ok(prs)
         }) {
             Ok(prs) => prs,
@@ -676,27 +837,56 @@ impl Poller {
         };
         prs.sort();
         prs.dedup();
-        if prs.is_empty() {
+        let candidates = match work_lanes(db) {
+            Ok(lanes) => lanes
+                .into_iter()
+                .filter(|l| {
+                    l.followed && l.pr.is_none() && repo_ok(&l.repo) && !l.branch.is_empty()
+                })
+                .collect::<Vec<_>>(),
+            Err(e) => {
+                log.line(&format!("github discovery failed: {}", e.message));
+                return;
+            }
+        };
+        if prs.is_empty() && candidates.is_empty() {
             return;
         }
         // At most 30 per poll, rotating through the rest; 60 s per 20 PRs polled.
-        let start = self.cursor % prs.len();
+        let limit = if candidates.is_empty() {
+            BATCH
+        } else {
+            BATCH / 2
+        };
+        let start = self.cursor % prs.len().max(1);
         let batch: Vec<Pr> = prs
             .iter()
             .cycle()
             .skip(start)
-            .take(BATCH.min(prs.len()))
+            .take(limit.min(prs.len()))
             .cloned()
             .collect();
-        self.cursor = start + batch.len();
-        self.due = Instant::now() + MINUTE * batch.len().div_ceil(PER_MINUTE) as u32;
+        let candidates: Vec<_> = if candidates.is_empty() {
+            vec![]
+        } else {
+            let len = candidates.len();
+            candidates
+                .into_iter()
+                .cycle()
+                .skip(self.cursor % len)
+                .take((BATCH - batch.len()).min(len))
+                .collect()
+        };
+        self.cursor += batch.len().max(candidates.len());
+        self.due =
+            Instant::now() + MINUTE * (batch.len() + candidates.len()).div_ceil(PER_MINUTE) as u32;
         let (send, recv) = mpsc::channel();
-        let query = query(&batch);
+        let query = discovery_query(&batch, &candidates);
         let (path, timeout) = (self.path.clone(), self.timeout);
         std::thread::spawn(move || {
             let _ = send.send(fetch(&query, path.as_deref(), timeout));
         });
-        self.inflight = Some((batch, default, checks(&self.dir), recv));
+        self.inflight = Some((batch, candidates, default, checks(&self.dir), recv));
     }
 }
 #[cfg(test)]

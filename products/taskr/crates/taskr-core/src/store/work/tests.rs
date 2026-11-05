@@ -1,5 +1,53 @@
 use super::*;
 
+#[test]
+fn done_on_merge_only_finishes_never_run_backlog_once() {
+    let mut db = Connection::open_in_memory().unwrap();
+    crate::schema::migrate(&mut db).unwrap();
+    db.execute_batch("insert into tasks(id,name,role,created_at,updated_at) values(1,'root','orchestrator','t','t');").unwrap();
+    for (id, state) in [
+        (1, "backlog"),
+        (2, "done"),
+        (3, "cancelled"),
+        (4, "backlog"),
+    ] {
+        db.execute("insert into work_items(id,root_id,title,priority,revision,state,creator,created_at) values(?,1,'ticket',0,1,?,'{}','t')", params![id,state]).unwrap();
+        db.execute(
+            "insert into work_revisions(work_id,revision,creator,created_at) values(?,1,'{}','t')",
+            [id],
+        )
+        .unwrap();
+    }
+    db.execute_batch("insert into work_runs(id,work_id,revision,root_id,generation,claim_key,claim_input,dependencies,action,created_at) values(1,4,1,1,0,'claim','{}','[]','execute','t');").unwrap();
+    let note = "merged demo-org/demo#31 abcdef123";
+    assert!(done_on_merge(&db, 1, note).unwrap());
+    for id in 1..=4 {
+        assert!(!done_on_merge(&db, id, "must not replace note").unwrap());
+    }
+    assert_eq!(
+        db.query_row("select reason from work_items where id=1", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        note
+    );
+    assert_eq!(
+        db.query_row("select count(*) from events where kind='work'", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("select count(*) from work_acceptances", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(item(&db, 3).unwrap().state, "cancelled");
+    assert_eq!(item(&db, 4).unwrap().state, "backlog");
+}
+
 fn src() -> Source {
     Source {
         commit: "a".repeat(40),

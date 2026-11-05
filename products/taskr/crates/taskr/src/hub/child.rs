@@ -140,6 +140,10 @@ pub(super) fn open() -> store::Result<db::Connection> {
     })
 }
 
+pub(crate) fn git_identity() -> Option<(String, String)> {
+    REQUEST.with(|r| r.borrow().as_ref().and_then(|r| r.git.clone()))
+}
+
 pub(crate) fn document_set_input(
     id: i64,
     kind: &str,
