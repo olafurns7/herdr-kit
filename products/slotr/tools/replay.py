@@ -211,6 +211,8 @@ def main():
     parser.add_argument('--since', required=True, help='inclusive ISO timestamp with timezone')
     parser.add_argument('--until', required=True, help='exclusive ISO timestamp with timezone')
     parser.add_argument('--slice-limit-mib', required=True, type=int)
+    parser.add_argument('--available-mib', type=float,
+                        help='assumed MemAvailable before modeled runs; default is the slice limit')
     parser.add_argument('--no-journal', action='store_true', help='skip journal query for offline fixtures')
     args = parser.parse_args()
     since, until = timestamp(args.since), timestamp(args.until)
@@ -219,14 +221,16 @@ def main():
     cfg = tomllib.loads(args.config.read_text())
     pool = cfg['pools'][args.pool]
     reserve = cfg.get('admission', {}).get('reserve_mib', 5120)
-    budget = args.slice_limit_mib - reserve
+    available = args.slice_limit_mib if args.available_mib is None else args.available_mib
+    budget = available - reserve
     if budget <= 0:
-        parser.error('slice limit must exceed reserve_mib')
+        parser.error('assumed available memory must exceed reserve_mib')
     all_runs = read_runs(args.events, args.pool)
     window = [run for run in all_runs if since <= run.start < until]
     groups, proposed = proposals(window, pool.get('kinds', {}))
     print(f'Window: {args.since} <= admission < {args.until}; pool={args.pool}')
-    print(f'Slice limit={args.slice_limit_mib} MiB; reserve={reserve} MiB; static admission budget={budget} MiB')
+    print(f'Slice limit={args.slice_limit_mib} MiB; assumed available={available} MiB; '
+          f'reserve={reserve} MiB; static admission budget={budget} MiB')
     print('Peaks are cgroup totals, nearest-rank percentiles, all measured outcomes including censored OOMs.')
     print('| kind | admitted | measured n | p50 MiB | p95 MiB | max MiB | current cost MiB | proposed reservation MiB |')
     print('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
@@ -267,7 +271,8 @@ def main():
         new['mean_concurrency'] - base['mean_concurrency'],
         new['makespan_seconds'] - base['makespan_seconds']))
     print('Replay is an approximation: fixed recorded arrivals/runtimes/weights, campaign caps and aged '
-          'fair turns with eight backfills; static slice budget, held charge=max(reservation, peak), '
+          'fair turns with eight backfills; assumed static available memory (historical MemAvailable '
+          'is not logged), held charge=max(reservation, peak), '
           'peak treated as anonymous memory; no PSI/load/quiet tails, '
           'cancellations, cross-pool jobs, dependency feedback or time-varying memory profiles. '
           'An overrun is modeled peak overlap, not a predicted OOM; missing/censored peaks limit conclusions.')

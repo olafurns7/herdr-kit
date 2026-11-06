@@ -2658,7 +2658,10 @@ class AdmissionTest(unittest.TestCase):
         self.set_stats(30 * 1024)
         self.wait(large.exists); self.wait(ninth.exists)
         admitted = [e['campaign'] for e in self.events('admit')]
-        self.assertEqual(admitted, ['small' + str(i) for i in range(8)] + ['head', 'ninth'])
+        self.assertEqual(admitted[:8], ['small' + str(i) for i in range(8)])
+        self.assertEqual(set(admitted[8:]), {'head', 'ninth'})
+        holders = sorted(self.status()['pools']['runtime']['holders'], key=lambda h: h['admit_seq'])
+        self.assertEqual([h['campaign'] for h in holders], ['head', 'ninth'])
         self.assertIsNone(head.poll())
 
     def test_fitting_fair_turn_head_is_admitted_before_small_ticket(self):
@@ -2678,7 +2681,8 @@ class AdmissionTest(unittest.TestCase):
         finally:
             os.kill(head.pid, signal.SIGCONT); os.kill(small.pid, signal.SIGCONT)
         self.wait(large.exists); self.wait(output.exists)
-        self.assertEqual([e['campaign'] for e in self.events('admit')], ['head', 'small'])
+        holders = sorted(self.status()['pools']['runtime']['holders'], key=lambda h: h['admit_seq'])
+        self.assertEqual([h['campaign'] for h in holders], ['head', 'small'])
         self.assertTrue(all(e['backfill_for'] is None for e in self.events('admit')))
 
     def test_fair_turn_reserves_memory_and_bypasses_quiet_priority(self):

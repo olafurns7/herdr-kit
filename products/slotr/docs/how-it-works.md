@@ -173,6 +173,12 @@ then proposes p95 rounded up to 256 MiB, clamped to the configured cost. Kinds
 with no measured runs stay unset. Untyped mixed commands keep their recorded
 reservations.
 
+Historical host MemAvailable is not logged. `--available-mib MIB` specifies an
+assumed static amount available before modeled runs; it defaults to the slice
+limit. This default is a slice-sized scenario, not a reconstruction of the
+host admission budget. A host-total scenario omits other host memory use and
+is an upper bound on admission capacity. Report this assumption with results.
+
 The replay compares recorded overlap with static-budget baseline and proposed
 reservations, using the configured slots, reserve, campaign caps, recorded
 weights, fair-wait age and eight-admission backfill bound. Held runs charge the
