@@ -127,11 +127,13 @@ def eventually(check, timeout=12):
 
 def env(home, fake):
     return {'TASKR_TMP_BASE':str(home/'taskr-tmp'), 'HOME':str(home), 'TASKR_DB':str(home/'ledger.db'), 'PATH':str(home/'bin')+':/usr/bin:/bin',
+            # Keep git inside the scratch tree, even when it is in a checkout.
+            'GIT_CEILING_DIRECTORIES':str(home.parent),
             'HERDR_SOCKET_PATH':str(fake.path), 'TASKR_FROZEN_NOW':'2026-10-08T00:00:00Z', 'TASKR_CONTRACT_ORACLE':'1', 'LANG':'C.UTF-8', 'TZ':'UTC'}
 
 
 def invoke(binary, environment, *args):
-    p = subprocess.run([str(binary), *args], env=environment, capture_output=True, timeout=20)
+    p = subprocess.run([str(binary), *args], cwd=environment['HOME'], env=environment, capture_output=True, timeout=20)
     return p.returncode, p.stdout, p.stderr
 
 
@@ -142,7 +144,7 @@ def record(binary, environment, *args):
 
 
 def start(binary, environment, *args):
-    p = subprocess.Popen([str(binary), 'daemon', *args], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p = subprocess.Popen([str(binary), 'daemon', *args], cwd=environment['HOME'], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     sel = selectors.DefaultSelector()
     sel.register(p.stdout, selectors.EVENT_READ)
     assert sel.select(15), 'daemon startup timed out'
@@ -260,6 +262,9 @@ def run(go, rust, output):
             # Rust owner sound is P1a: claim only blocking owner asks, once.
             top=record(rust,e,'new','top','--role','orchestrator')['task_id']
             worker=record(rust,e,'new','worker','--role','implementer','--parent',str(top),'--pane','w1:p1')['task_id']
+            with sqlite3.connect(e['TASKR_DB']) as db:
+                refs = db.execute("select data from events where task_id=? and kind='ref' and json_extract(data,'$.key') in ('repo','branch')", (top,)).fetchall()
+                assert refs == [], ('root inherited checkout refs', refs)
             launch=record(rust,e,'launch',str(worker),'--provider','fixture','--model','fixture','--effort','medium')['launch_id']
             we={**e,'TASKR_TASK':str(worker),'TASKR_LAUNCH':str(launch)}
             silent=record(rust,we,'ask','silent owner','--owner')['ask_id']
