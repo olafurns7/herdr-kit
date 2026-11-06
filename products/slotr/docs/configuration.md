@@ -87,7 +87,7 @@ at least one protected file; runtime locks may stay false. See [flock.md](flock.
 for fixed config selection, compatibility limits and migration requirements.
 
 Kinds belong to each pool; they are not global aliases. The example `heavy`
-pool defines `tsc`, `oxlint`, `vitest`, `build`, and `install`. Select only
+pool defines `tsc`, `oxlint`, `vitest`, `vitest-lane`, `build`, and `install`. Select only
 kinds defined in your chosen pool. Unknown kinds exit 2 and list that pool's
 configured keys, or `none` when it has no kinds.
 

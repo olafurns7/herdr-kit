@@ -121,7 +121,11 @@ slotr run --pool heavy --kind tsc --campaign team-a --purpose "type check" \
   -- pnpm tsc --noEmit
 ```
 
-The example heavy kinds are `tsc`, `oxlint`, `vitest`, `build`, and `install`.
+The example heavy kinds are `tsc`, `oxlint`, `vitest`, `vitest-lane`, `build`, and `install`.
+Use `vitest` for one test file or a few, and `vitest-lane` for a whole test lane or an
+eval suite: a lane run can need several times the memory of a single file.
+The example `vitest-lane` reserves 20 GiB and the example keeps 5 GiB free, so
+one such run needs at least 25 GiB available plus any outstanding reservations.
 For Cargo checks on a host with that configuration, use `--kind build`.
 `tests` and `lint` are not aliases and are rejected unless your pool
 explicitly defines them.
