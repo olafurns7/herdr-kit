@@ -129,6 +129,8 @@ pub struct Legacy {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Kind {
     pub cost_mib: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation_mib: Option<u64>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Admission {
@@ -215,6 +217,7 @@ fn schema(path: &str) -> Result<Value> {
         )?),
         ["pools", _, "kinds"] => Ok(Value::Table(Default::default())),
         ["pools", _, "kinds", _] => Ok(toml::from_str("cost_mib=7680")?),
+        ["pools", _, "kinds", _, "reservation_mib"] => Ok(Value::Integer(0)),
         _ => bail!("config {path}: unknown key"),
     }
 }
@@ -347,6 +350,14 @@ fn load_with_env(
         "config pools: at least one pool required"
     );
     for (name, pool) in &cfg.pools {
+        for (kind, value) in &pool.kinds {
+            ensure!(
+                value
+                    .reservation_mib
+                    .is_none_or(|mib| mib <= value.cost_mib),
+                "config pools.{name}.kinds.{kind}.reservation_mib: must not exceed cost_mib"
+            );
+        }
         ensure!(
             pool.slots > 0,
             "config pools.{name}.slots: must be positive"
