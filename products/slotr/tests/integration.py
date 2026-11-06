@@ -195,9 +195,7 @@ class AdmissionTest(unittest.TestCase):
                    campaign_cap=self.cfg.get("campaign_cap", 1),
                    ports=dict(self.cfg["ports"], probe=7),
                    legacy_lock=dict(path=self.cfg["legacy_runtime_lock"], mode="shared"),
-                   kinds={"dev-stack": dict(cost_mib=7680, **(
-                       {"reservation_mib": self.cfg['reservation_mib']}
-                       if 'reservation_mib' in self.cfg else {}))})),
+                   kinds={"dev-stack": dict(cost_mib=7680)})),
                    admission=dict(queue_poll_ms=self.cfg["queue_poll_ms"],
                                   recovery_healthy_seconds=self.cfg["recovery_healthy_seconds"]),
                    watchdog=dict(interval_ms=self.cfg["watchdog_ms"],
@@ -719,7 +717,6 @@ class AdmissionTest(unittest.TestCase):
                 self.assertEqual(admit['kind'], kind)
                 self.assertEqual(admit['cmd'], [sys.executable, '-c', payload])
                 self.assertEqual(admit['cost_mib'], cost)
-                self.assertEqual(admit['reservation_mib'], cost)
                 self.assertEqual(end['kind'], kind)
                 self.assertEqual(end['pool'], 'runtime')
                 self.assertEqual(end['run'], admit['run'])
@@ -746,62 +743,73 @@ class AdmissionTest(unittest.TestCase):
         flags = json.loads((self.runtime / 'launches').read_text().splitlines()[-1])
         self.assertIn('--property=MemoryAccounting=yes', flags)
 
-    def test_kind_reservation_admits_without_lowering_memory_cap(self):
-        self.set_stats(6000)  # 5120 reserve leaves room for 512, not 7680.
-        old, output = self.start('legacy')
-        queue = self.wait(lambda: self.status()['queue'])
-        self.assertEqual(queue[0]['wait_reason'], 'memory_budget')
-        self.assertEqual(queue[0]['reservation_mib'], 7680)
-        self.assertFalse(output.exists())
-        old.terminate(); old.wait(timeout=3)
-        self.cfg['reservation_mib'] = 512; self.write_config()
-        _, output = self.start('reserved')
-        holder = self.admitted('reserved', output)
-        self.assertEqual(holder['cost_mib'], 7680)
-        self.assertEqual(holder['reservation_mib'], 512)
-        self.assertEqual(self.status()['budget']['outstanding_mib'], 512)
-        flags = json.loads((self.runtime / 'launches').read_text().splitlines()[-1])
-        self.assertIn('--property=MemoryMax=7680M', flags)
-        event = self.events('admit')[-1]
-        self.assertEqual((event['cost_mib'], event['reservation_mib']), (7680, 512))
-        self.assertIn('cost=7680 reservation=512', self.invoke('status').stdout)
-        # Pre-change state has no reservation field and retains its original cost.
-        path = self.runtime / 'slotr/state.json'
-        raw = json.loads(path.read_text())
-        del raw['holders'][0]['reservation_mib']
-        path.write_text(json.dumps(raw))
-        self.assertEqual(self.status()['slots'][0]['reservation_mib'], 7680)
-
-    def test_kind_reservation_cannot_exceed_cost(self):
-        self.cfg['reservation_mib'] = 7681; self.write_config()
-        result = self.invoke('status', '--json')
-        self.assertEqual(result.returncode, 2)
-        self.assertIn('reservation_mib: must not exceed cost_mib', result.stderr)
-
     def test_kernel_oom_evidence_records_one_event_and_names_stderr(self):
-        for source in ('result', 'counter', 'both', 'signal-only'):
+        for source in ('counter', 'signal-only', 'result-only'):
             with self.subTest(source=source):
                 cg = self.cgroup / 'oom-unit'; cg.mkdir(exist_ok=True)
-                (cg / 'memory.events').write_text('oom_kill %d\n' % (source in ('counter', 'both')))
+                (cg / 'memory.events').write_text('oom_kill %d\n' % (source == 'counter'))
                 (self.runtime / 'accounting').write_text(
                     'MemoryPeak=12345678\nCPUUsageNSec=987654321\nControlGroup=/oom-unit\nResult=' +
-                    ('oom-kill' if source in ('result', 'both') else 'signal') + '\n')
+                    ('oom-kill' if source == 'result-only' else 'signal') + '\n')
                 before = len(self.events('oom_kill'))
                 result = self.invoke('run', '--kind', 'dev-stack', '--', sys.executable,
                                      '-c', 'import os,signal;os.kill(os.getpid(),signal.SIGKILL)')
                 self.assertEqual(result.returncode, 137, result.stderr)
                 events = self.events('oom_kill')
-                self.assertEqual(len(events), before + (source != 'signal-only'))
-                if source == 'signal-only':
+                self.assertEqual(len(events), before + (source == 'counter'))
+                if source != 'counter':
                     self.assertNotIn('OOM-killed', result.stderr)
                     continue
                 event = events[-1]
                 self.assertEqual(event['unit'], event['run'] + '.service')
                 self.assertEqual((event['pool'], event['kind']), ('runtime', 'dev-stack'))
                 self.assertEqual((event['campaign'], event['purpose']), ('oneshot', 'test'))
-                self.assertEqual((event['cost_mib'], event['reservation_mib']), (7680, 7680))
+                self.assertEqual(event['cost_mib'], 7680)
                 self.assertEqual(event['memory_peak_bytes'], 12345678)
                 self.assertIn('slotr: OOM-killed ' + event['run'], result.stderr)
+                self.assertEqual(self.events('end')[-1]['oom_attribution'], 'oom_kill')
+
+    def test_supervisor_records_oom_after_client_is_killed(self):
+        cg = self.cgroup / 'oom-unit'; cg.mkdir()
+        counter = cg / 'memory.events'; counter.write_text('oom_kill 0\n')
+        (self.runtime / 'accounting').write_text(
+            'MemoryPeak=12345678\nCPUUsageNSec=987654321\nControlGroup=/oom-unit\nResult=exit-code\n')
+        client, output = self.start('orphaned-client')
+        holder = self.admitted('orphaned-client', output)
+        supervisor_pid = int((self.runtime / holder['run']).read_text())
+        client.kill(); client.wait(timeout=3)
+        counter.write_text('oom_kill 1\n')
+        os.kill(json.loads(output.read_text())['pid'], signal.SIGKILL)
+        events = self.wait(lambda: self.events('oom_kill'))
+        self.wait(lambda: self.events('end'))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['run'], holder['run'])
+        self.assertEqual(self.events('end')[-1]['oom_attribution'], 'oom_kill')
+
+        def finished():
+            try:
+                return Path(f'/proc/{supervisor_pid}/stat').read_text().split()[2] == 'Z'
+            except FileNotFoundError:
+                return True
+        self.wait(finished)
+
+    def test_oom_attribution_unknown_without_counter_or_receipt(self):
+        # A supervisor with no readable counter records unknown in its end event.
+        (self.runtime / 'accounting').write_text(
+            'MemoryPeak=12345678\nCPUUsageNSec=987654321\nControlGroup=\nResult=success\n')
+        result = self.invoke('run', '--', 'true')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('OOM attribution unknown', result.stderr)
+        self.assertIsNone(self.events('end')[-1]['oom_killed'])
+        self.assertEqual(self.events('end')[-1]['oom_attribution'], 'unknown')
+        self.assertEqual(self.events('oom_kill'), [])
+        # No supervisor receipt survives a collected unit. The client must say unknown.
+        stub = self.bin / 'systemd-run'
+        stub.write_text(stub.read_text().replace('os.execv(cmd[0], cmd)', 'sys.exit(0)'))
+        result = self.invoke('run', '--', 'true')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('OOM attribution unknown', result.stderr)
+        self.assertEqual(self.events('oom_kill'), [])
 
     def test_end_event_keeps_missing_accounting_null(self):
         cases = [('MemoryPeak=18446744073709551615\nCPUUsageNSec=0', None, 0, 'MemoryPeak'),
@@ -3536,36 +3544,36 @@ class ReplayTest(unittest.TestCase):
         sys.modules[spec.name] = cls.replay
         spec.loader.exec_module(cls.replay)
 
-    def test_peak_overlap_and_extra_concurrency(self):
+    def test_overlap_reports_both_admission_charges(self):
         m = self.replay
-        runs = [m.Run(str(i), 0, 0, 8, 8, 'test', str(i), 0, 10, 7) for i in range(3)]
-        baseline = m.metrics(runs, m.replay(runs, [8] * 3, 12, 3, 0), 12)
-        proposed = m.metrics(runs, m.replay(runs, [4] * 3, 12, 3, 0), 12)
-        self.assertEqual(baseline['maximum_concurrency'], 1)
-        self.assertEqual(baseline['overrun_admissions'], 0)
-        self.assertEqual(proposed['maximum_concurrency'], 2)
-        self.assertEqual(proposed['overrun_admissions'], 1)
-        self.assertEqual(proposed['overrun_intervals'], 1)
-        self.assertEqual(proposed['overrun_seconds'], 10)
-        self.assertEqual(proposed['peak_sum_mib'], 14)
+        runs = [m.Run(str(i), 0, 0, 4, 'test', str(i), 0, 10, 7) for i in range(3)]
+        cost = m.metrics(runs, m.replay(runs, 12, 3, 0, charge='cost'), 12)
+        peak = m.metrics(runs, m.replay(runs, 12, 3, 0, charge='max_cost_peak'), 12)
+        self.assertEqual(cost['maximum_concurrency'], 3)
+        self.assertEqual(cost['overrun_admissions'], 2)
+        self.assertEqual(cost['overrun_intervals'], 1)
+        self.assertEqual(cost['overrun_seconds'], 10)
+        self.assertEqual(cost['peak_sum_mib'], 21)
+        self.assertEqual(peak['maximum_concurrency'], 1)
+        self.assertEqual(peak['overrun_admissions'], 0)
 
     def test_replay_backfill_stops_at_eight_and_head_wins(self):
         m = self.replay
-        runs = [m.Run('holder', 0, 0, 4, 4, '', 'holder', 0, 10, 4),
-                m.Run('head', 1, 1, 10, 10, '', 'head', 0, 11, 10)]
-        runs += [m.Run(str(i), 1, 1, 1, 1, '', str(i), 0, 2, 1) for i in range(10)]
-        schedule = m.replay(runs, [r.cost for r in runs], 12, 20, 0)
+        runs = [m.Run('holder', 0, 0, 4, '', 'holder', 0, 10, 4),
+                m.Run('head', 1, 1, 10, '', 'head', 0, 11, 10)]
+        runs += [m.Run(str(i), 1, 1, 1, '', str(i), 0, 2, 1) for i in range(10)]
+        schedule = m.replay(runs, 12, 20, 0)
         self.assertEqual(sum(i >= 2 and start < 10 for start, _, i in schedule), 8)
         self.assertEqual(next(start for start, _, i in schedule if i == 1), 10)
         self.assertEqual(next(i for start, _, i in schedule if start == 10), 1)
 
-    def test_proposal_rounds_p95_up_and_clamps_to_cost(self):
+    def test_peak_table_uses_nearest_rank_without_a_config_proposal(self):
         m = self.replay
-        runs = [m.Run(str(i), 0, 0, 1000, 1000, 'test', '', 0, 1, peak)
+        runs = [m.Run(str(i), 0, 0, 1000, 'test', '', 0, 1, peak)
                 for i, peak in enumerate([256, 513, 900])]
-        groups, proposal = m.proposals(runs, {'test': {'cost_mib': 1000}})
-        self.assertEqual(proposal['test'], 1000)  # rounded 1024 is clamped.
+        groups = m.peak_groups(runs)
         self.assertEqual(m.percentile(groups['test'], .5), 513)
+        self.assertEqual(m.percentile(groups['test'], .95), 900)
 
     def test_reused_run_names_and_journal_deduplication(self):
         m = self.replay
@@ -3586,7 +3594,13 @@ class ReplayTest(unittest.TestCase):
                         MESSAGE="Failed with result 'oom-kill'."),
                    dict(USER_UNIT='slotr-heavy-2.service', __REALTIME_TIMESTAMP='11000000',
                         MESSAGE='code=killed, status=9/KILL')]
-        self.assertEqual(len(m.journal_ooms(records, runs)), 2)
+        records += [dict(USER_UNIT='slotr-tests.slice', __REALTIME_TIMESTAMP='12000000',
+                         MESSAGE='A process of this unit has been killed by the OOM killer.'),
+                    dict(UNIT='slotr.slice', __REALTIME_TIMESTAMP='12000000',
+                         MESSAGE='slotr.slice: A process of this unit has been killed by the OOM killer.')]
+        units, unattributed = m.journal_ooms(records, runs)
+        self.assertEqual(len(units), 2)
+        self.assertEqual(len(unattributed), 2)
 
 
 if __name__ == '__main__':

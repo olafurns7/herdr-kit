@@ -244,8 +244,7 @@ pub fn exit_path(run: &str, invocation: &str) -> std::path::PathBuf {
 #[derive(Default, serde::Deserialize, serde::Serialize)]
 pub struct ExitReceipt {
     pub code: i32,
-    pub memory_peak_bytes: Option<u64>,
-    pub oom_killed: bool,
+    pub oom_killed: Option<bool>,
 }
 pub fn supervise(run: &str, invocation: &str, cmd: &[String], cfg: &Config) -> Result<i32> {
     let mut receipt = ExitReceipt::default();
@@ -307,7 +306,7 @@ fn supervise_child(
     eprintln!("slotr: admitted {}", h.run);
     let result = (|| {
         let _ = manager::event(
-            json!({"event":"admit","run":h.run,"pool":h.request.pool,"kind":h.request.kind,"cmd":cmd,"campaign":h.request.campaign,"purpose":h.request.purpose,"backfill_for":h.backfill_for,"cost_mib":h.request.cost_mib,"reservation_mib":h.request.reservation(),"weight":h.request.level,"level":h.request.level,"policy_generation":h.request.policy_generation,"waited_ms":((h.admitted_at - h.request.since) * 1000.0).max(0.0) as u64}),
+            json!({"event":"admit","run":h.run,"pool":h.request.pool,"kind":h.request.kind,"cmd":cmd,"campaign":h.request.campaign,"backfill_for":h.backfill_for,"cost_mib":h.request.cost_mib,"weight":h.request.level,"level":h.request.level,"policy_generation":h.request.policy_generation,"waited_ms":((h.admitted_at - h.request.since) * 1000.0).max(0.0) as u64}),
         );
         manager::hook(cfg, "on_admit", &h, "admitted");
         let mut memory_count: u32 = 0;
@@ -558,12 +557,25 @@ fn supervise_child(
     // This supervisor keeps the unit alive while querying it, before --collect
     // can discard accounting. These are unit totals, including the supervisor.
     let (memory_peak_bytes, cpu_usage_nsec, accounting_error, oom_killed) = unit_usage(run);
-    receipt.memory_peak_bytes = memory_peak_bytes;
     receipt.oom_killed = oom_killed;
+    if oom_killed == Some(true)
+        && let Err(error) = manager::event(json!({
+            "event":"oom_kill", "run":h.run, "unit":format!("{}.service",h.run),
+            "pool":h.request.pool, "kind":h.request.kind, "campaign":h.request.campaign,
+            "purpose":h.request.purpose, "cost_mib":h.request.cost_mib,
+            "memory_peak_bytes":memory_peak_bytes,
+        }))
+    {
+        eprintln!("slotr: OOM audit gap for {run}: {error:#}");
+    }
     if let Err(error) = manager::event(json!({
         "event":"end", "run":h.run, "pool":h.request.pool, "kind":h.request.kind,
-        "cost_mib":h.request.cost_mib, "reservation_mib":h.request.reservation(),
         "oom_killed":oom_killed,
+        "oom_attribution":match oom_killed {
+            Some(true) => "oom_kill",
+            Some(false) => "not_observed",
+            None => "unknown",
+        },
         "exit_code":status.and_then(|s| s.code()),
         "exit_signal":status.and_then(|s| s.signal()),
         "slotr_exit_code":result.as_ref().ok(),
@@ -579,12 +591,11 @@ fn supervise_child(
     result
 }
 
-pub fn unit_usage(run: &str) -> (Option<u64>, Option<u64>, Option<String>, bool) {
+fn unit_usage(run: &str) -> (Option<u64>, Option<u64>, Option<String>, Option<bool>) {
     let output = match manager::ctl(&[
         "show",
         "--property=MemoryPeak",
         "--property=CPUUsageNSec",
-        "--property=Result",
         "--property=ControlGroup",
         run,
     ]) {
@@ -594,7 +605,7 @@ pub fn unit_usage(run: &str) -> (Option<u64>, Option<u64>, Option<String>, bool)
                 None,
                 None,
                 Some("unit accounting query failed".into()),
-                false,
+                None,
             );
         }
         Err(error) => {
@@ -602,7 +613,7 @@ pub fn unit_usage(run: &str) -> (Option<u64>, Option<u64>, Option<String>, bool)
                 None,
                 None,
                 Some(format!("unit accounting query: {error:#}")),
-                false,
+                None,
             );
         }
     };
@@ -616,29 +627,29 @@ pub fn unit_usage(run: &str) -> (Option<u64>, Option<u64>, Option<String>, bool)
     };
     let memory = value("MemoryPeak=");
     let cpu = value("CPUUsageNSec=");
-    let oom_killed = text.lines().any(|line| line == "Result=oom-kill")
-        || text
-            .lines()
-            .find_map(|line| line.strip_prefix("ControlGroup="))
-            .filter(|cg| !cg.is_empty())
-            .and_then(|cg| {
-                crate::files::read_to_string(
-                    std::path::PathBuf::from(stats::setting("CGROUP_ROOT", "/sys/fs/cgroup"))
-                        .join(cg.trim_start_matches('/'))
-                        .join("memory.events"),
-                )
-                .ok()
+    // OOMPolicy=continue does not set Result=oom-kill. A missing counter is
+    // unknown, including units already collected by systemd, never evidence of zero.
+    let oom_killed = text
+        .lines()
+        .find_map(|line| line.strip_prefix("ControlGroup="))
+        .filter(|cg| !cg.is_empty())
+        .and_then(|cg| {
+            crate::files::read_to_string(
+                std::path::PathBuf::from(stats::setting("CGROUP_ROOT", "/sys/fs/cgroup"))
+                    .join(cg.trim_start_matches('/'))
+                    .join("memory.events"),
+            )
+            .ok()
+        })
+        .and_then(|events| {
+            events.lines().find_map(|line| {
+                let mut fields = line.split_whitespace();
+                if fields.next()? != "oom_kill" {
+                    return None;
+                }
+                fields.next()?.parse::<u64>().ok().map(|n| n > 0)
             })
-            .is_some_and(|events| {
-                events.lines().any(|line| {
-                    let mut fields = line.split_whitespace();
-                    fields.next() == Some("oom_kill")
-                        && fields
-                            .next()
-                            .and_then(|n| n.parse::<u64>().ok())
-                            .is_some_and(|n| n > 0)
-                })
-            });
+        });
     let missing: Vec<_> = [("MemoryPeak", memory), ("CPUUsageNSec", cpu)]
         .into_iter()
         .filter_map(|(name, value)| value.is_none().then_some(name))
@@ -677,7 +688,6 @@ fn warn_once_when_an_effective_head_returns() {
         pane: String::new(),
         cwd: String::new(),
         cost_mib: 0,
-        reservation_mib: None,
         kind: None,
         lease_seconds: 1.0,
         since: 0.0,

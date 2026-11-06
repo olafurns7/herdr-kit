@@ -79,7 +79,6 @@ These tables match `config.example.toml`. Durations use the suffixes `s`,
 | `legacy_lock.mode` | absent | `shared` or `exclusive`; both are nonblocking probes |
 | `legacy_lock.queue_only` | `false` | Refuse native use of this existing absolute regular file through the opt-in flock guard |
 | `kinds.K.cost_mib` | absent | Optional named request cost |
-| `kinds.K.reservation_mib` | unset (uses `cost_mib`) | Optional admission reservation in MiB, from 0 through `cost_mib`; does not lower the unit's memory ceiling |
 
 Optional port tables default to base 31000, stride 32, and probe 7 when
 enabled. A legacy lock requires a path; its mode defaults to `shared`.
@@ -92,35 +91,8 @@ pool defines `tsc`, `oxlint`, `vitest`, `vitest-lane`, `build`, and `install`. S
 kinds defined in your chosen pool. Unknown kinds exit 2 and list that pool's
 configured keys, or `none` when it has no kinds.
 
-A kind can reserve less memory than its cap:
-
-```toml
-[pools.heavy.kinds.example-check]
-cost_mib = 4096
-reservation_mib = 2048
-```
-
-This reserves 2048 MiB for admission while the default `MemoryMax` remains
-4096 MiB (an explicit pool `memory_max_mib` still takes precedence). Unset
-`reservation_mib` preserves the previous cost-based admission behavior;
-explicit `--cost` and default-cost requests also keep reservation equal to cost.
-The resolved reservation is frozen when a ticket is queued. Existing records
-without it fall back to their stored cost. Status and admission events show
-both values. Backfill compares admission reservations when finding a smaller
-fitting request.
-
-Lower reservations permit memory overcommit: several runs can grow above their
-reservations together while each stays below its individual cap. Their slice
-or the host can run out of memory. A zero reservation reserves no future growth.
-Measure cgroup peaks, include failed and OOM-killed runs, and account for missing
-or censored peaks before opting in. Watchdog and reserve checks still apply,
-but do not guarantee against simultaneous growth. To roll back, remove
-`reservation_mib`; new tickets then reserve the full cost. Already queued or
-running tickets retain their resolved reservation.
-
 The requested kind is recorded separately from the resolved `cost_mib` in
-admission events and repeated in terminal events. `reservation_mib` records the
-resolved admission reservation, separately from `cost_mib`. Explicit and default costs
+admission events and repeated in terminal events. Explicit and default costs
 record a null kind. Terminal `memory_peak_bytes` and `cpu_usage_nsec` are null
 when the manager cannot supply them. See [event fields and accounting limits](how-it-works.md#state-and-events).
 

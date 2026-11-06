@@ -42,11 +42,6 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
     } else {
         args.cost.unwrap_or(pool.default_cost_mib)
     };
-    let reservation = args
-        .kind
-        .as_ref()
-        .and_then(|kind| pool.kinds[kind].reservation_mib)
-        .unwrap_or(cost);
     let memory_max = match (pool.memory_max_mib, cost) {
         (0, 0) => pool.default_cost_mib,
         (0, cost) => cost,
@@ -60,8 +55,8 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
         && let Some(total) = stats::read().total_mib
     {
         ensure!(
-            reservation as f64 <= (total - cfg.admission.reserve_mib as f64).max(0.0),
-            "reservation exceeds MemTotal minus admission.reserve_mib"
+            cost as f64 <= (total - cfg.admission.reserve_mib as f64).max(0.0),
+            "cost exceeds MemTotal minus admission.reserve_mib"
         );
     }
     let cap = config::duration(&pool.max_lease)?;
@@ -106,7 +101,6 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
             pane: args.pane.clone(),
             cwd: std::env::current_dir()?.display().to_string(),
             cost_mib: cost,
-            reservation_mib: Some(reservation),
             kind: args.kind.clone(),
             lease_seconds: lease,
             since: manager::now(),
@@ -441,28 +435,14 @@ fn launch(h: &Holder, cmd: &[String], cfg: &Config, memory_max: u64) -> Result<(
         })
         .filter(|receipt| (0..=255).contains(&receipt.code));
     let _ = std::fs::remove_file(&exit_file);
-    let (peak, oom_killed) = recorded.as_ref().map_or_else(
-        || {
-            let (peak, _, _, oom_killed) = crate::supervisor::unit_usage(&h.run);
-            (peak, oom_killed)
-        },
-        |receipt| (receipt.memory_peak_bytes, receipt.oom_killed),
-    );
-    if !collision && oom_killed {
-        eprintln!(
-            "slotr: OOM-killed {} (unit {}.service; cost={} MiB reservation={} MiB peak_bytes={peak:?})",
-            h.run,
-            h.run,
-            h.request.cost_mib,
-            h.request.reservation()
-        );
-        if let Err(error) = manager::event(json!({
-            "event":"oom_kill", "run":h.run, "unit":format!("{}.service",h.run),
-            "pool":h.request.pool, "kind":h.request.kind, "campaign":h.request.campaign,
-            "purpose":h.request.purpose, "cost_mib":h.request.cost_mib,
-            "reservation_mib":h.request.reservation(), "memory_peak_bytes":peak,
-        })) {
-            eprintln!("slotr: OOM audit gap for {}: {error:#}", h.run);
+    if !collision {
+        match recorded.as_ref().and_then(|receipt| receipt.oom_killed) {
+            Some(true) => eprintln!(
+                "slotr: OOM-killed {} (unit {}.service; cost={} MiB)",
+                h.run, h.run, h.request.cost_mib
+            ),
+            None => eprintln!("slotr: OOM attribution unknown for {}", h.run),
+            Some(false) => {}
         }
     }
     let rc = match recorded.map(|receipt| receipt.code) {
@@ -510,7 +490,6 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
             .filter(|h| h.request.pool == *name)
             .map(|h| {
                 let mut data = serde_json::to_value(h).unwrap();
-                data["reservation_mib"] = json!(h.request.reservation());
                 let _ = crate::timestamp::display(&mut data);
                 data["weight"] = json!(h.request.level);
                 data["weight_source"] = json!(
@@ -540,7 +519,6 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
                     reason = Some("priority_policy_error");
                 }
                 let mut data = serde_json::to_value(q).unwrap();
-                data["reservation_mib"] = json!(q.reservation());
                 let _ = crate::timestamp::display(&mut data);
                 data["weight"] = json!(q.level);
                 data["weight_source"] = json!(
@@ -599,7 +577,7 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
             );
             for h in pool["holders"].as_array().unwrap() {
                 println!(
-                    "  {} {} campaign={} weight={} weight_source={} purpose={} task={} pane={} cwd={} seq={} admitted={} lease_expires={} cost={} reservation={} anon={} ports={}-{} notify={}",
+                    "  {} {} campaign={} weight={} weight_source={} purpose={} task={} pane={} cwd={} seq={} admitted={} lease_expires={} cost={} anon={} ports={}-{} notify={}",
                     h["run"],
                     h["state"],
                     h["campaign"],
@@ -613,7 +591,6 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
                     h["admitted_at"],
                     h["lease_expires_at"],
                     h["cost_mib"],
-                    h["reservation_mib"],
                     h["anon_mib"],
                     h["port_base"],
                     h["port_end"],
@@ -622,14 +599,13 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
             }
             for q in pool["queue"].as_array().unwrap() {
                 println!(
-                    "  queue #{} campaign={} weight={} weight_source={} purpose={} cost={} reservation={} since={} reason={} priority_blocker={} fair_turn={} backfill_for={} backfill_admissions={}/{} fair_deferred={} holder_pid={}",
+                    "  queue #{} campaign={} weight={} weight_source={} purpose={} cost={} since={} reason={} priority_blocker={} fair_turn={} backfill_for={} backfill_admissions={}/{} fair_deferred={} holder_pid={}",
                     q["position"],
                     q["campaign"],
                     q["weight"],
                     q["weight_source"],
                     q["purpose"],
                     q["cost_mib"],
-                    q["reservation_mib"],
                     q["since"],
                     q["wait_reason"],
                     q["priority_blocker"],

@@ -25,8 +25,6 @@ pub struct Request {
     pub cwd: String,
     pub cost_mib: u64,
     #[serde(default)]
-    pub reservation_mib: Option<u64>,
-    #[serde(default)]
     pub kind: Option<String>,
     pub lease_seconds: f64,
     #[serde(with = "crate::timestamp::required")]
@@ -36,11 +34,6 @@ pub struct Request {
     // A consumed stop claim stays with this ticket, preventing eviction cascades.
     #[serde(default)]
     pub stop_claimed_by: Option<String>,
-}
-impl Request {
-    pub fn reservation(&self) -> u64 {
-        self.reservation_mib.unwrap_or(self.cost_mib)
-    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Holder {

@@ -8,11 +8,11 @@ A request is admitted when its pool has a free slot and, for memory-gated
 pools, both of these hold:
 
 ```text
-MemAvailable - sum(max(0, holder.reservation_mib - holder.anon_mib)) - request.reservation_mib >= reserve_mib
+MemAvailable - sum(max(0, holder.cost_mib - holder.anon_mib)) - request.cost_mib >= reserve_mib
 PSI full avg60 <= psi_full_avg60_max
 ```
 
-- In a memory-gated pool, when MemTotal can be read, reservations above MemTotal
+- In a memory-gated pool, when MemTotal can be read, requests above MemTotal
   minus the reserve are rejected before queueing.
 - Unknown anonymous memory gets zero resident credit; file cache gets none.
 - Missing memory or PSI data fails closed for admission.
@@ -58,7 +58,7 @@ earns the next safe admission before weight or quiet preference. Slot shortage
 reserves only its pool's next vacancy; memory shortage reserves the shared
 memory domain. When memory alone blocks that fair turn, up to **eight smaller
 tickets from the same pool** may backfill it. Each must fit the current budget
-including the reserve and all holders' outstanding reservations. Among fitting
+including the reserve and all holders' outstanding declared costs. Among fitting
 tickets, existing age/weight/enqueue ordering and campaign caps still apply.
 The counter belongs to the head ticket and persists across polls, stale/resumed
 heartbeats and changes of fair turn; completed backfill runs do not reset it.
@@ -109,15 +109,6 @@ cannot make a healthy, in-lease, active gate eligible for lifecycle cleanup.
 
 ## Memory pressure
 
-Admission uses each ticket's resolved `reservation_mib`, defaulting to its
-`cost_mib`. Outstanding memory is the positive remainder of that reservation
-after observed anonymous memory, so growth already reflected in available
-memory is not reserved twice. Lower per-kind reservations allow more concurrent
-runs without lowering their unit caps. This is deliberate overcommit: the sum
-of actual peaks may exceed the slice or host budget even when each run respects
-its cap. Remove the optional kind reservation to restore full-cost reservations
-for new tickets; queued and running tickets keep their original values.
-
 On pressure the lowest-weight evictable started holder stops itself. Within
 that weight, the newest admission goes first. A stop records live
 stats, holder costs and anonymous memory, and optional lock observations.
@@ -162,40 +153,36 @@ and FDs. This cooperative PATH launcher does not alter admission, supervision,
 or slotr's own legacy locks, and requires a stable policy/lock namespace.
 Direct native calls and deliberate namespace substitution can bypass it.
 
-## Reservation replay
+## Peak and overlap replay
 
 `python3 products/slotr/tools/replay.py EVENTS --config CONFIG --since ISO_TIME
 --until ISO_TIME --slice-limit-mib MIB` is a read-only analysis tool using Python
-3.11 or later and its standard library. Give it the heavy slice's actual
-`MemoryMax` in MiB; it does not change configuration, units or event logs.
-It prints per-kind measured counts and nearest-rank p50/p95/max cgroup peaks,
-then proposes p95 rounded up to 256 MiB, clamped to the configured cost. Kinds
-with no measured runs stay unset. Untyped mixed commands keep their recorded
-reservations.
+3.11 or later and its standard library. It prints per-kind measured counts and
+nearest-rank p50/p95/max cgroup peaks, with configured costs as context. It does
+not propose or change configuration.
 
 Historical host MemAvailable is not logged. `--available-mib MIB` specifies an
 assumed static amount available before modeled runs; it defaults to the slice
-limit. This default is a slice-sized scenario, not a reconstruction of the
-host admission budget. A host-total scenario omits other host memory use and
-is an upper bound on admission capacity. Report this assumption with results.
+limit. The tool reports observed overlap and two replay admission charges:
+`cost` (the declared admit-time cost), and `max_cost_peak` (the larger of cost
+and the future whole-run peak). The latter uses information unavailable at
+admission and serves as a comparison model. Both sum whole-run peaks throughout
+each modeled lifetime to report overlap overruns, intervals and seconds, along
+with concurrency and queue time. Exclusions are reported per charge model.
 
-The replay compares recorded overlap with static-budget baseline and proposed
-reservations, using the configured slots, reserve, campaign caps, recorded
-weights, fair-wait age and eight-admission backfill bound. Held runs charge the
-larger of reservation and peak, treating the whole peak as anonymous memory
-already used; the log cannot reconstruct the anonymous/cache split. It reports peak-sum
-overrun admissions, intervals and seconds, plus maximum/mean concurrency and
-queue time. Each run is charged its whole-run peak for its entire lifetime.
-Missing end/peak records and reservations above the model budget are reported
-as exclusions. Recorded arrivals and durations stay fixed; PSI/load, quiet tails,
-cross-pool demand, cancellations and dependency feedback are not reconstructed.
-An overlap overrun is a conservative model result, not a predicted kernel OOM.
+Neither the slice-sized nor the host-total static scenario reproduces observed
+queue time. These are not before/after forecasts. The replay uses configured
+slots, reserve, campaign caps, recorded weights, fair age and the eight-admission
+backfill bound. It does not reconstruct PSI/load, quiet tails, cross-pool demand,
+cancellations, dependency feedback or time-varying memory. Missing and censored
+peaks limit conclusions; an overlap overrun does not predict a kernel OOM.
 
 The tool separately queries `journalctl --user` for explicit slotr OOM evidence
-in the same window and deduplicates unit/admission episodes. SIGKILL alone does
-not count. An inaccessible journal is reported as unavailable, not zero; use
-`--no-journal` only for offline fixtures. Missing journal history and censored
-OOM peaks limit conclusions. Keep output containing host evidence private.
+in the same window. It deduplicates service unit/admission episodes and reports
+`slotr-tests.slice` and `slotr.slice` OOM records separately as **unattributed OOM
+records**, without assigning them to a job. SIGKILL alone does not count. An
+inaccessible journal is unavailable, not zero; `--no-journal` is for offline
+fixtures. Keep output containing host evidence private.
 
 ## Units
 
@@ -208,16 +195,21 @@ back to `default_cost_mib` for zero cost; a zero ceiling is rejected), and
 OOM-killed alone inside its own unit. The supervisor survives that kill and
 reports the payload's signal exit (137).
 
-Before the supervisor exits, it reads systemd's unit `Result` and the unit's
-`memory.events` `oom_kill` counter alongside peak accounting. OOM evidence travels
-in the current invocation's exit receipt, allowing the client to append one
-`oom_kill` event and print `slotr: OOM-killed RUN`. The event includes the unit,
-pool, kind, campaign, purpose, cost, reservation and memory peak (null if
-unavailable). The client also attempts the unit query when no receipt survives.
-An arbitrary SIGKILL or exit 137 alone is not evidence of a kernel OOM. If both
-the receipt and unit accounting are unavailable, OOM attribution is unknown;
-an event append failure is reported as an OOM audit gap. Payload exit-code
-handling remains unchanged.
+The supervisor reads its cgroup's `memory.events` `oom_kill` counter before
+exiting. With `OOMPolicy=continue`, systemd's `Result` is not a second OOM signal.
+A positive counter makes the supervisor append one `oom_kill` event next to
+`end`, even if the client was killed hard. It includes run, unit, pool, kind,
+campaign, purpose, declared cost and peak accounting (null if unavailable).
+The current invocation's exit receipt carries the attribution to the client,
+which prints `slotr: OOM-killed RUN` without appending a second event.
+
+Missing or unreadable counters are unknown, not evidence of no OOM. `end` records
+`oom_killed: null` and `oom_attribution: "unknown"` in that case. A known zero
+counter records false and `"not_observed"`; positive evidence records true and
+`"oom_kill"`. The client prints `OOM attribution unknown` when attribution is
+unavailable, including a missing receipt after collection. An arbitrary SIGKILL
+or exit 137 alone is not proof of OOM. Audit append failures are reported as gaps;
+payload exit-code handling is unchanged.
 
 The client passes a random invocation ID to the supervisor, which writes the
 payload's exit code to `exit-RUN-INVOCATION.json` beside the runtime state.
@@ -241,10 +233,11 @@ systemd-run receives only valid environment variable names via
   no admit event, so it is not counted.
 - `admit` also records `kind`, the requested `--kind` name, or null for
   explicit `--cost` and default-cost requests. `cost_mib` remains the resolved
-  cost used to choose the unit cap; `reservation_mib` is the admission reservation.
+  admission cost. The requested kind is retained in queue and holder state.
   `backfill_for` is the fair-turn head's enqueue sequence for a backfill admission,
-  or null for an ordinary admission. `purpose` is also recorded. The requested
-  kind and reservation are retained in queue and holder state.
+  or null for an ordinary admission. Older state writers may drop this added
+  holder field during an upgrade, so null does not prove absence of a backfill
+  when clients from different versions are writing state.
   `cmd` is the payload argv, so a run can be attributed to a package or command;
   the events file is readable by its owner only.
 - An `end` event repeats `run`, `pool`, and `kind`. `exit_code` and

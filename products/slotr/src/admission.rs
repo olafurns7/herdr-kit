@@ -12,9 +12,8 @@ pub fn outstanding(s: &State, obs: &BTreeMap<String, Observation>) -> f64 {
     s.holders
         .iter()
         .map(|h| {
-            (h.request.reservation() as f64
-                - obs.get(&h.run).and_then(|o| o.anon_mib).unwrap_or(0.0))
-            .max(0.0)
+            (h.request.cost_mib as f64 - obs.get(&h.run).and_then(|o| o.anon_mib).unwrap_or(0.0))
+                .max(0.0)
         })
         .sum()
 }
@@ -289,7 +288,7 @@ fn backfill_turn<'a>(
     }
     ordered(s, &first.pool, cfg, now).into_iter().find(|w| {
         fresh(w, cfg, now)
-            && w.reservation() < first.reservation()
+            && w.cost_mib < first.cost_mib
             && external_blocker(s, w, cfg).is_none()
             && decide(s, w, cfg, obs, sample, now, |slot| {
                 cfg.pools[&w.pool]
@@ -458,7 +457,7 @@ pub fn decide(
             return (None, Some("recovery"));
         }
         if sample.available_mib.is_none_or(|v| {
-            v - outstanding(s, obs) - (q.reservation() as f64) < cfg.admission.reserve_mib as f64
+            v - outstanding(s, obs) - (q.cost_mib as f64) < cfg.admission.reserve_mib as f64
         }) {
             return (None, Some("memory_budget"));
         }

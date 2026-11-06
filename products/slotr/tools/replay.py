@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only reservation proposals and conservative overlap replay (stdlib only)."""
+"""Read-only per-kind cgroup peaks and overlap replay (stdlib only)."""
 import argparse
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -32,7 +32,6 @@ class Run:
     start: float
     arrival: float
     cost: int
-    reservation: int
     kind: str
     campaign: str
     weight: int
@@ -51,9 +50,8 @@ def read_runs(path, pool):
             if event.get('event') == 'admit' and event.get('pool') == pool:
                 start = timestamp(event['at'])
                 cost = event['cost_mib']
-                reservation = event.get('reservation_mib')
                 run = Run(event['run'], start, start - event.get('waited_ms', 0) / 1000,
-                          cost, cost if reservation is None else reservation,
+                          cost,
                           event.get('kind') or '<untyped>', event.get('campaign', ''),
                           event.get('weight', event.get('level', 0)))
                 runs.append(run)
@@ -68,33 +66,27 @@ def read_runs(path, pool):
     return runs
 
 
-def proposals(runs, kinds):
+def peak_groups(runs):
     groups = defaultdict(list)
     for run in runs:
         if run.peak is not None:
             groups[run.kind].append(run.peak)
-    proposed = {}
-    for kind, peaks in groups.items():
-        if kind == '<untyped>':
-            continue
-        cost = kinds[kind]['cost_mib'] if kind in kinds else min(
-            run.cost for run in runs if run.kind == kind)
-        proposed[kind] = min(cost, math.ceil(percentile(peaks, .95) / 256) * 256)
-    return groups, proposed
+    return groups
 
 
-def replay(runs, reservations, budget, slots, fair_wait, campaign_cap=0):
+def replay(runs, budget, slots, fair_wait, campaign_cap=0, charge="cost"):
     """Static-budget model: recorded weights/caps, aged fair turns, 8 backfills."""
+    charges = [run.cost if charge == "cost" else max(run.cost, run.peak) for run in runs]
     arrivals = sorted(range(len(runs)), key=lambda i: (runs[i].arrival, i))
     pending, active, schedule = [], [], []
     backfills = Counter()
     held = Counter()
-    position, reserved = 0, 0
+    position, charged = 0, 0
     now = min((run.arrival for run in runs), default=0)
     while position < len(arrivals) or pending or active:
         while active and active[0][0] <= now:
             _, i = heapq.heappop(active)
-            reserved -= max(reservations[i], runs[i].peak)
+            charged -= charges[i]
             held[runs[i].campaign] -= 1
         while position < len(arrivals) and runs[arrivals[position]].arrival <= now:
             pending.append(arrivals[position])
@@ -116,10 +108,10 @@ def replay(runs, reservations, budget, slots, fair_wait, campaign_cap=0):
             if not eligible:
                 break
             first = eligible[0]
-            chosen = first if reserved + reservations[first] <= budget else None
+            chosen = first if charged + charges[first] <= budget else None
             if chosen is None and now - runs[first].arrival >= fair_wait and backfills[first] < 8:
-                chosen = next((i for i in eligible if reservations[i] < reservations[first]
-                               and reserved + reservations[i] <= budget), None)
+                chosen = next((i for i in eligible if runs[i].cost < runs[first].cost
+                               and charged + charges[i] <= budget), None)
                 if chosen is not None:
                     backfills[first] += 1
             if chosen is None:
@@ -127,9 +119,7 @@ def replay(runs, reservations, budget, slots, fair_wait, campaign_cap=0):
             duration = max(.001, runs[chosen].end - runs[chosen].start)
             schedule.append((now, now + duration, chosen))
             heapq.heappush(active, (now + duration, chosen))
-            # Treat each held whole-run peak as anonymous memory already used:
-            # available + outstanding accounting then charges max(peak, reservation).
-            reserved += max(reservations[chosen], runs[chosen].peak)
+            charged += charges[chosen]
             held[runs[chosen].campaign] += 1
             pending.remove(chosen)
         next_times = [finish for finish, _ in active]
@@ -139,7 +129,7 @@ def replay(runs, reservations, budget, slots, fair_wait, campaign_cap=0):
                           if runs[i].arrival + fair_wait > now)
         if not next_times:
             if pending:
-                raise ValueError('replay cannot admit a request; exclude reservations above the budget')
+                raise ValueError('replay cannot admit a request; exclude admission charges above the budget')
             break
         now = min(next_times)
     return schedule
@@ -183,6 +173,7 @@ def journal_ooms(records, runs):
     for run in runs:
         episodes[run.run + '.service'].append(run.start)
     found = set()
+    unattributed = []
     for record in records:
         message = record.get('MESSAGE', '')
         if not isinstance(message, str) or not re.search(r'oom-kill|OOM killer', message, re.I):
@@ -192,6 +183,9 @@ def journal_ooms(records, runs):
         unit = next((name for name in names if isinstance(name, str) and
                      re.fullmatch(r'slotr-[A-Za-z0-9_-]+\.service', name)), None)
         if unit is None:
+            slices = names + re.findall(r'slotr(?:-tests)?\.slice', message)
+            if any(name in ('slotr-tests.slice', 'slotr.slice') for name in slices):
+                unattributed.append(record)
             continue
         at = int(record.get('__REALTIME_TIMESTAMP', '0')) / 1000000
         invocation = record.get('USER_INVOCATION_ID') or record.get('INVOCATION_ID')
@@ -200,7 +194,7 @@ def journal_ooms(records, runs):
         starts = [start for start in episodes[unit] if start <= at + 2]
         key = max(starts) if starts else invocation or 'unmatched'
         found.add((unit, key))
-    return found
+    return found, unattributed
 
 
 def main():
@@ -227,57 +221,52 @@ def main():
         parser.error('assumed available memory must exceed reserve_mib')
     all_runs = read_runs(args.events, args.pool)
     window = [run for run in all_runs if since <= run.start < until]
-    groups, proposed = proposals(window, pool.get('kinds', {}))
+    groups = peak_groups(window)
     print(f'Window: {args.since} <= admission < {args.until}; pool={args.pool}')
     print(f'Slice limit={args.slice_limit_mib} MiB; assumed available={available} MiB; '
           f'reserve={reserve} MiB; static admission budget={budget} MiB')
     print('Peaks are cgroup totals, nearest-rank percentiles, all measured outcomes including censored OOMs.')
-    print('| kind | admitted | measured n | p50 MiB | p95 MiB | max MiB | current cost MiB | proposed reservation MiB |')
-    print('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+    print('| kind | admitted | measured n | p50 MiB | p95 MiB | max MiB | current cost MiB |')
+    print('| --- | ---: | ---: | ---: | ---: | ---: | ---: |')
     counts = Counter(run.kind for run in window)
     for kind in sorted(set(counts) | set(pool.get('kinds', {}))):
         peaks = groups.get(kind, [])
         cost = pool.get('kinds', {}).get(kind, {}).get('cost_mib', '-')
         stats = ([f'{percentile(peaks, p):.1f}' for p in (.5, .95)] + [f'{max(peaks):.1f}']
                  if peaks else ['-', '-', '-'])
-        print(f'| {kind} | {counts[kind]} | {len(peaks)} | {" | ".join(stats)} | {cost} | {proposed.get(kind, "unset")} |')
+        print(f'| {kind} | {counts[kind]} | {len(peaks)} | {" | ".join(stats)} | {cost} |')
     cohort = [run for run in all_runs if run.arrival < until and
               ((run.end is not None and run.end > since) or
                (run.end is None and run.start >= since))]
     unknown_earlier = sum(run.end is None and run.start < since for run in all_runs)
     complete = [run for run in cohort if run.end is not None and run.peak is not None]
-    def candidate_reservation(run):
-        return min(run.cost, proposed[run.kind]) if run.kind in proposed else run.reservation
-
-    jobs = [run for run in complete if max(run.reservation, candidate_reservation(run)) <= budget]
-    print(f'Overlap cohort={len(cohort)}; missing end/peak excluded={len(cohort)-len(complete)}; '
-          f'baseline/proposed reservation above static budget excluded={len(complete)-len(jobs)}')
+    print(f'Overlap cohort={len(cohort)}; missing end/peak excluded={len(cohort)-len(complete)}')
     print(f'Earlier admissions with no recorded end={unknown_earlier}; their overlap is unknown, '
           'not assumed to still be running. Journal-only peaks are not imported.')
-    baseline = [run.reservation for run in jobs]
-    candidate = [candidate_reservation(run) for run in jobs]
-    observed = [(run.start, run.end, i) for i, run in enumerate(jobs)]
-    results = {'observed': metrics(jobs, observed, args.slice_limit_mib)}
-    for name, reservations in (('baseline', baseline), ('proposed', candidate)):
-        schedule = replay(jobs, reservations, budget, pool['slots'],
-                          cfg.get('priority', {}).get('fair_wait_seconds', 300), pool.get('campaign_cap', 1))
-        results[name] = metrics(jobs, schedule, args.slice_limit_mib)
-    print('Worst case: each included run consumes its measured whole-run peak for its entire lifetime.')
+    observed = [(run.start, run.end, i) for i, run in enumerate(complete)]
+    results = {'observed': metrics(complete, observed, args.slice_limit_mib)}
+    for charge in ('cost', 'max_cost_peak'):
+        jobs = [run for run in complete if
+                (run.cost if charge == 'cost' else max(run.cost, run.peak)) <= budget]
+        schedule = replay(jobs, budget, pool['slots'],
+                          cfg.get('priority', {}).get('fair_wait_seconds', 300),
+                          pool.get('campaign_cap', 1), charge)
+        results[charge] = metrics(jobs, schedule, args.slice_limit_mib)
+        results[charge]['excluded_above_budget'] = len(complete) - len(jobs)
+    print('Each overlap sum uses measured whole-run peaks for every included run throughout its modeled lifetime.')
     for name, result in results.items():
         print(name + ': ' + json.dumps(result, sort_keys=True))
-    base, new = results['baseline'], results['proposed']
-    print('Concurrency gain: maximum=%+d; mean=%+.3f; makespan_seconds=%+.3f' % (
-        new['maximum_concurrency'] - base['maximum_concurrency'],
-        new['mean_concurrency'] - base['mean_concurrency'],
-        new['makespan_seconds'] - base['makespan_seconds']))
-    print('Replay is an approximation: fixed recorded arrivals/runtimes/weights, campaign caps and aged '
+    print('cost charges the declared admit-time cost; max_cost_peak charges max(cost, future whole-run peak). '
+          'The latter uses information unavailable at admission and is a comparison model, not a safety proof.')
+    print('Neither the slice-sized nor the host-total static scenario reproduces observed queue time; '
+          'these are not before/after forecasts.')
+    print('Replay assumptions: fixed recorded arrivals/runtimes/weights, campaign caps and aged '
           'fair turns with eight backfills; assumed static available memory (historical MemAvailable '
-          'is not logged), held charge=max(reservation, peak), '
-          'peak treated as anonymous memory; no PSI/load/quiet tails, '
-          'cancellations, cross-pool jobs, dependency feedback or time-varying memory profiles. '
-          'An overrun is modeled peak overlap, not a predicted OOM; missing/censored peaks limit conclusions.')
+          'is not logged); no PSI/load/quiet tails, cancellations, cross-pool jobs, dependency feedback '
+          'or time-varying memory profiles. An overrun is modeled peak overlap, not a predicted OOM; '
+          'missing/censored peaks limit conclusions. No configuration proposal is generated.')
     if args.no_journal:
-        print('Real journal OOM count: not queried (--no-journal)')
+        print('Real journal OOM unit episodes / unattributed OOM records: not queried (--no-journal)')
     else:
         bounds = [datetime.fromtimestamp(at, timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
                   for at in (since, until)]
@@ -288,15 +277,13 @@ def main():
             records = [json.loads(line) for line in journal.stdout.splitlines()]
             records = [record for record in records if since <=
                        int(record.get('__REALTIME_TIMESTAMP', '0')) / 1000000 < until]
-            ooms = journal_ooms(records, all_runs)
+            ooms, unattributed = journal_ooms(records, all_runs)
             print(f'Real journal OOM count: {len(ooms)} slotr unit episodes; '
                   f'{sum(unit.startswith("slotr-" + args.pool + "-") for unit, _ in ooms)} in {args.pool}')
+            print(f'Unattributed OOM records: {len(unattributed)} (slotr-tests.slice / slotr.slice; not assigned to a run)')
         except (OSError, subprocess.SubprocessError, ValueError) as error:
-            print(f'Real journal OOM count: unavailable ({error}); not zero')
-    print('Proposed additions only (no file is changed; no samples means leave unset):')
-    for kind in sorted(pool.get('kinds', {})):
-        if kind in proposed:
-            print(f'[pools.{args.pool}.kinds.{kind}]\nreservation_mib = {proposed[kind]}\n')
+            print(f'Real journal OOM unit episodes / unattributed OOM records: unavailable ({error}); not zero')
+
 
 
 if __name__ == '__main__':
