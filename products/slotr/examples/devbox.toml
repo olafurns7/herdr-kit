@@ -37,6 +37,9 @@ cost_mib = 6144
 cost_mib = 6144
 [pools.heavy.kinds.vitest]
 cost_mib = 4096
+# Whole test lanes and eval suites; vitest stays for single-file runs.
+[pools.heavy.kinds.vitest-lane]
+cost_mib = 20480
 [pools.heavy.kinds.build]
 cost_mib = 6144
 [pools.heavy.kinds.install]
