@@ -241,19 +241,31 @@ fn lease_action(
 pub fn exit_path(run: &str, invocation: &str) -> std::path::PathBuf {
     state::root().join(format!("exit-{run}-{invocation}.json"))
 }
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+pub struct ExitReceipt {
+    pub code: i32,
+    pub oom_killed: Option<bool>,
+}
 pub fn supervise(run: &str, invocation: &str, cmd: &[String], cfg: &Config) -> Result<i32> {
-    let result = supervise_child(run, invocation, cmd, cfg);
+    let mut receipt = ExitReceipt::default();
+    let result = supervise_child(run, invocation, cmd, cfg, &mut receipt);
     // systemd-run --wait can report success for a failed unit that is already
     // collected, so the client reads the code from this file instead.
-    let code = result
+    receipt.code = result
         .as_ref()
         .map_or(crate::ExitCode::Invalid.value(), |code| *code);
-    if let Err(error) = state::atomic_json(&exit_path(run, invocation), &code) {
+    if let Err(error) = state::atomic_json(&exit_path(run, invocation), &receipt) {
         eprintln!("slotr: exit status for {run}: {error:#}");
     }
     result
 }
-fn supervise_child(run: &str, invocation: &str, cmd: &[String], cfg: &Config) -> Result<i32> {
+fn supervise_child(
+    run: &str,
+    invocation: &str,
+    cmd: &[String],
+    cfg: &Config,
+    receipt: &mut ExitReceipt,
+) -> Result<i32> {
     manager::signals();
     let h = state::transaction(|s| {
         let h = s
@@ -294,7 +306,7 @@ fn supervise_child(run: &str, invocation: &str, cmd: &[String], cfg: &Config) ->
     eprintln!("slotr: admitted {}", h.run);
     let result = (|| {
         let _ = manager::event(
-            json!({"event":"admit","run":h.run,"pool":h.request.pool,"kind":h.request.kind,"cmd":cmd,"campaign":h.request.campaign,"cost_mib":h.request.cost_mib,"weight":h.request.level,"level":h.request.level,"policy_generation":h.request.policy_generation,"waited_ms":((h.admitted_at - h.request.since) * 1000.0).max(0.0) as u64}),
+            json!({"event":"admit","run":h.run,"pool":h.request.pool,"kind":h.request.kind,"cmd":cmd,"campaign":h.request.campaign,"backfill_for":h.backfill_for,"cost_mib":h.request.cost_mib,"weight":h.request.level,"level":h.request.level,"policy_generation":h.request.policy_generation,"waited_ms":((h.admitted_at - h.request.since) * 1000.0).max(0.0) as u64}),
         );
         manager::hook(cfg, "on_admit", &h, "admitted");
         let mut memory_count: u32 = 0;
@@ -544,9 +556,26 @@ fn supervise_child(run: &str, invocation: &str, cmd: &[String], cfg: &Config) ->
     }
     // This supervisor keeps the unit alive while querying it, before --collect
     // can discard accounting. These are unit totals, including the supervisor.
-    let (memory_peak_bytes, cpu_usage_nsec, accounting_error) = unit_usage(run);
+    let (memory_peak_bytes, cpu_usage_nsec, accounting_error, oom_killed) = unit_usage(run);
+    receipt.oom_killed = oom_killed;
+    if oom_killed == Some(true)
+        && let Err(error) = manager::event(json!({
+            "event":"oom_kill", "run":h.run, "unit":format!("{}.service",h.run),
+            "pool":h.request.pool, "kind":h.request.kind, "campaign":h.request.campaign,
+            "purpose":h.request.purpose, "cost_mib":h.request.cost_mib,
+            "memory_peak_bytes":memory_peak_bytes,
+        }))
+    {
+        eprintln!("slotr: OOM audit gap for {run}: {error:#}");
+    }
     if let Err(error) = manager::event(json!({
         "event":"end", "run":h.run, "pool":h.request.pool, "kind":h.request.kind,
+        "oom_killed":oom_killed,
+        "oom_attribution":match oom_killed {
+            Some(true) => "oom_kill",
+            Some(false) => "not_observed",
+            None => "unknown",
+        },
         "exit_code":status.and_then(|s| s.code()),
         "exit_signal":status.and_then(|s| s.signal()),
         "slotr_exit_code":result.as_ref().ok(),
@@ -562,20 +591,29 @@ fn supervise_child(run: &str, invocation: &str, cmd: &[String], cfg: &Config) ->
     result
 }
 
-fn unit_usage(run: &str) -> (Option<u64>, Option<u64>, Option<String>) {
+fn unit_usage(run: &str) -> (Option<u64>, Option<u64>, Option<String>, Option<bool>) {
     let output = match manager::ctl(&[
         "show",
         "--property=MemoryPeak",
         "--property=CPUUsageNSec",
+        "--property=ControlGroup",
         run,
     ]) {
         Ok(output) if output.status.success() => output,
-        Ok(_) => return (None, None, Some("unit accounting query failed".into())),
+        Ok(_) => {
+            return (
+                None,
+                None,
+                Some("unit accounting query failed".into()),
+                None,
+            );
+        }
         Err(error) => {
             return (
                 None,
                 None,
                 Some(format!("unit accounting query: {error:#}")),
+                None,
             );
         }
     };
@@ -589,6 +627,29 @@ fn unit_usage(run: &str) -> (Option<u64>, Option<u64>, Option<String>) {
     };
     let memory = value("MemoryPeak=");
     let cpu = value("CPUUsageNSec=");
+    // OOMPolicy=continue does not set Result=oom-kill. A missing counter is
+    // unknown, including units already collected by systemd, never evidence of zero.
+    let oom_killed = text
+        .lines()
+        .find_map(|line| line.strip_prefix("ControlGroup="))
+        .filter(|cg| !cg.is_empty())
+        .and_then(|cg| {
+            crate::files::read_to_string(
+                std::path::PathBuf::from(stats::setting("CGROUP_ROOT", "/sys/fs/cgroup"))
+                    .join(cg.trim_start_matches('/'))
+                    .join("memory.events"),
+            )
+            .ok()
+        })
+        .and_then(|events| {
+            events.lines().find_map(|line| {
+                let mut fields = line.split_whitespace();
+                if fields.next()? != "oom_kill" {
+                    return None;
+                }
+                fields.next()?.parse::<u64>().ok().map(|n| n > 0)
+            })
+        });
     let missing: Vec<_> = [("MemoryPeak", memory), ("CPUUsageNSec", cpu)]
         .into_iter()
         .filter_map(|(name, value)| value.is_none().then_some(name))
@@ -599,7 +660,7 @@ fn unit_usage(run: &str) -> (Option<u64>, Option<u64>, Option<String>) {
             missing.join(", ")
         )
     });
-    (memory, cpu, error)
+    (memory, cpu, error, oom_killed)
 }
 
 fn report_tick_error(run: &str, error: &anyhow::Error, previous: &mut Option<String>) {
@@ -635,6 +696,7 @@ fn warn_once_when_an_effective_head_returns() {
     };
     let holder = Holder {
         request: request(0, "A"),
+        backfill_for: None,
         run: "slotr-default-1".into(),
         admit_seq: 1,
         slot: 0,

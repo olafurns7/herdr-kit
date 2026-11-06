@@ -153,6 +153,37 @@ and FDs. This cooperative PATH launcher does not alter admission, supervision,
 or slotr's own legacy locks, and requires a stable policy/lock namespace.
 Direct native calls and deliberate namespace substitution can bypass it.
 
+## Peak and overlap replay
+
+`python3 products/slotr/tools/replay.py EVENTS --config CONFIG --since ISO_TIME
+--until ISO_TIME --slice-limit-mib MIB` is a read-only analysis tool using Python
+3.11 or later and its standard library. It prints per-kind measured counts and
+nearest-rank p50/p95/max cgroup peaks, with configured costs as context. It does
+not propose or change configuration.
+
+Historical host MemAvailable is not logged. `--available-mib MIB` specifies an
+assumed static amount available before modeled runs; it defaults to the slice
+limit. The tool reports observed overlap and two replay admission charges:
+`cost` (the declared admit-time cost), and `max_cost_peak` (the larger of cost
+and the future whole-run peak). The latter uses information unavailable at
+admission and serves as a comparison model. Both sum whole-run peaks throughout
+each modeled lifetime to report overlap overruns, intervals and seconds, along
+with concurrency and queue time. Exclusions are reported per charge model.
+
+Neither the slice-sized nor the host-total static scenario reproduces observed
+queue time. These are not before/after forecasts. The replay uses configured
+slots, reserve, campaign caps, recorded weights, fair age and the eight-admission
+backfill bound. It does not reconstruct PSI/load, quiet tails, cross-pool demand,
+cancellations, dependency feedback or time-varying memory. Missing and censored
+peaks limit conclusions; an overlap overrun does not predict a kernel OOM.
+
+The tool separately queries `journalctl --user` for explicit slotr OOM evidence
+in the same window. It deduplicates service unit/admission episodes and reports
+`slotr-tests.slice` and `slotr.slice` OOM records separately as **unattributed OOM
+records**, without assigning them to a job. SIGKILL alone does not count. An
+inaccessible journal is unavailable, not zero; `--no-journal` is for offline
+fixtures. Keep output containing host evidence private.
+
 ## Units
 
 Each admitted command runs in a transient systemd user service with its own
@@ -163,6 +194,22 @@ back to `default_cost_mib` for zero cost; a zero ceiling is rejected), and
 `MemorySwapMax` is the pool's `memory_swap_max_mib`, so a runaway run is
 OOM-killed alone inside its own unit. The supervisor survives that kill and
 reports the payload's signal exit (137).
+
+The supervisor reads its cgroup's `memory.events` `oom_kill` counter before
+exiting. With `OOMPolicy=continue`, systemd's `Result` is not a second OOM signal.
+A positive counter makes the supervisor append one `oom_kill` event next to
+`end`, even if the client was killed hard. It includes run, unit, pool, kind,
+campaign, purpose, declared cost and peak accounting (null if unavailable).
+The current invocation's exit receipt carries the attribution to the client,
+which prints `slotr: OOM-killed RUN` without appending a second event.
+
+Missing or unreadable counters are unknown, not evidence of no OOM. `end` records
+`oom_killed: null` and `oom_attribution: "unknown"` in that case. A known zero
+counter records false and `"not_observed"`; positive evidence records true and
+`"oom_kill"`. The client prints `OOM attribution unknown` when attribution is
+unavailable, including a missing receipt after collection. An arbitrary SIGKILL
+or exit 137 alone is not proof of OOM. Audit append failures are reported as gaps;
+payload exit-code handling is unchanged.
 
 The client passes a random invocation ID to the supervisor, which writes the
 payload's exit code to `exit-RUN-INVOCATION.json` beside the runtime state.
@@ -187,6 +234,10 @@ systemd-run receives only valid environment variable names via
 - `admit` also records `kind`, the requested `--kind` name, or null for
   explicit `--cost` and default-cost requests. `cost_mib` remains the resolved
   admission cost. The requested kind is retained in queue and holder state.
+  `backfill_for` is the fair-turn head's enqueue sequence for a backfill admission,
+  or null for an ordinary admission. Older state writers may drop this added
+  holder field during an upgrade, so null does not prove absence of a backfill
+  when clients from different versions are writing state.
   `cmd` is the payload argv, so a run can be attributed to a package or command;
   the events file is readable by its owner only.
 - An `end` event repeats `run`, `pool`, and `kind`. `exit_code` and

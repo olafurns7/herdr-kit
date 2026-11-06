@@ -147,7 +147,8 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
                     if reason.is_some() {
                         return Ok((None, reason));
                     }
-                    if let Some(first) = admission::backfill_for(s, &q, cfg, &obs, &sample, now) {
+                    let backfill_for = admission::backfill_for(s, &q, cfg, &obs, &sample, now);
+                    if let Some(first) = backfill_for {
                         *s.scheduling.backfill_admissions.entry(first).or_default() += 1;
                     }
                     s.admit_seq += 1;
@@ -157,6 +158,7 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
                         .map(|p| p.base + slot.unwrap() * p.stride);
                     let holder = Holder {
                         request: q,
+                        backfill_for,
                         run: format!("slotr-{}-{}", args.pool, s.admit_seq),
                         admit_seq: s.admit_seq,
                         slot: slot.unwrap(),
@@ -418,10 +420,32 @@ fn launch(h: &Holder, cmd: &[String], cfg: &Config, memory_max: u64) -> Result<(
             || error.contains("already loaded"));
     let recorded = crate::files::read_to_string(&exit_file)
         .ok()
-        .and_then(|text| text.trim().parse::<i32>().ok())
-        .filter(|code| (0..=255).contains(code));
+        .and_then(|text| {
+            serde_json::from_str::<crate::supervisor::ExitReceipt>(&text)
+                .ok()
+                .or_else(|| {
+                    text.trim()
+                        .parse::<i32>()
+                        .ok()
+                        .map(|code| crate::supervisor::ExitReceipt {
+                            code,
+                            ..Default::default()
+                        })
+                })
+        })
+        .filter(|receipt| (0..=255).contains(&receipt.code));
     let _ = std::fs::remove_file(&exit_file);
-    let rc = match recorded {
+    if !collision {
+        match recorded.as_ref().and_then(|receipt| receipt.oom_killed) {
+            Some(true) => eprintln!(
+                "slotr: OOM-killed {} (unit {}.service; cost={} MiB)",
+                h.run, h.run, h.request.cost_mib
+            ),
+            None => eprintln!("slotr: OOM attribution unknown for {}", h.run),
+            Some(false) => {}
+        }
+    }
+    let rc = match recorded.map(|receipt| receipt.code) {
         Some(code) => code,
         // Missing current-invocation status never proves the payload succeeded.
         None if status.success() => {

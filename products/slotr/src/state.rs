@@ -39,6 +39,8 @@ pub struct Request {
 pub struct Holder {
     #[serde(flatten)]
     pub request: Request,
+    #[serde(default)]
+    pub backfill_for: Option<u64>,
     pub run: String,
     pub admit_seq: u64,
     pub slot: u32,

@@ -743,6 +743,74 @@ class AdmissionTest(unittest.TestCase):
         flags = json.loads((self.runtime / 'launches').read_text().splitlines()[-1])
         self.assertIn('--property=MemoryAccounting=yes', flags)
 
+    def test_kernel_oom_evidence_records_one_event_and_names_stderr(self):
+        for source in ('counter', 'signal-only', 'result-only'):
+            with self.subTest(source=source):
+                cg = self.cgroup / 'oom-unit'; cg.mkdir(exist_ok=True)
+                (cg / 'memory.events').write_text('oom_kill %d\n' % (source == 'counter'))
+                (self.runtime / 'accounting').write_text(
+                    'MemoryPeak=12345678\nCPUUsageNSec=987654321\nControlGroup=/oom-unit\nResult=' +
+                    ('oom-kill' if source == 'result-only' else 'signal') + '\n')
+                before = len(self.events('oom_kill'))
+                result = self.invoke('run', '--kind', 'dev-stack', '--', sys.executable,
+                                     '-c', 'import os,signal;os.kill(os.getpid(),signal.SIGKILL)')
+                self.assertEqual(result.returncode, 137, result.stderr)
+                events = self.events('oom_kill')
+                self.assertEqual(len(events), before + (source == 'counter'))
+                if source != 'counter':
+                    self.assertNotIn('OOM-killed', result.stderr)
+                    continue
+                event = events[-1]
+                self.assertEqual(event['unit'], event['run'] + '.service')
+                self.assertEqual((event['pool'], event['kind']), ('runtime', 'dev-stack'))
+                self.assertEqual((event['campaign'], event['purpose']), ('oneshot', 'test'))
+                self.assertEqual(event['cost_mib'], 7680)
+                self.assertEqual(event['memory_peak_bytes'], 12345678)
+                self.assertIn('slotr: OOM-killed ' + event['run'], result.stderr)
+                self.assertEqual(self.events('end')[-1]['oom_attribution'], 'oom_kill')
+
+    def test_supervisor_records_oom_after_client_is_killed(self):
+        cg = self.cgroup / 'oom-unit'; cg.mkdir()
+        counter = cg / 'memory.events'; counter.write_text('oom_kill 0\n')
+        (self.runtime / 'accounting').write_text(
+            'MemoryPeak=12345678\nCPUUsageNSec=987654321\nControlGroup=/oom-unit\nResult=exit-code\n')
+        client, output = self.start('orphaned-client')
+        holder = self.admitted('orphaned-client', output)
+        supervisor_pid = int((self.runtime / holder['run']).read_text())
+        client.kill(); client.wait(timeout=3)
+        counter.write_text('oom_kill 1\n')
+        os.kill(json.loads(output.read_text())['pid'], signal.SIGKILL)
+        events = self.wait(lambda: self.events('oom_kill'))
+        self.wait(lambda: self.events('end'))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['run'], holder['run'])
+        self.assertEqual(self.events('end')[-1]['oom_attribution'], 'oom_kill')
+
+        def finished():
+            try:
+                return Path(f'/proc/{supervisor_pid}/stat').read_text().split()[2] == 'Z'
+            except FileNotFoundError:
+                return True
+        self.wait(finished)
+
+    def test_oom_attribution_unknown_without_counter_or_receipt(self):
+        # A supervisor with no readable counter records unknown in its end event.
+        (self.runtime / 'accounting').write_text(
+            'MemoryPeak=12345678\nCPUUsageNSec=987654321\nControlGroup=\nResult=success\n')
+        result = self.invoke('run', '--', 'true')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('OOM attribution unknown', result.stderr)
+        self.assertIsNone(self.events('end')[-1]['oom_killed'])
+        self.assertEqual(self.events('end')[-1]['oom_attribution'], 'unknown')
+        self.assertEqual(self.events('oom_kill'), [])
+        # No supervisor receipt survives a collected unit. The client must say unknown.
+        stub = self.bin / 'systemd-run'
+        stub.write_text(stub.read_text().replace('os.execv(cmd[0], cmd)', 'sys.exit(0)'))
+        result = self.invoke('run', '--', 'true')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('OOM attribution unknown', result.stderr)
+        self.assertEqual(self.events('oom_kill'), [])
+
     def test_end_event_keeps_missing_accounting_null(self):
         cases = [('MemoryPeak=18446744073709551615\nCPUUsageNSec=0', None, 0, 'MemoryPeak'),
                  ('MemoryPeak=0\nCPUUsageNSec=[not set]', 0, None, 'CPUUsageNSec'),
@@ -2572,6 +2640,7 @@ class AdmissionTest(unittest.TestCase):
         self.admitted('small', output)
         self.assertFalse(large.exists())
         self.assertEqual(self.status()['queue'][0]['backfill_admissions'], 1)
+        self.assertEqual(self.events('admit')[-1]['backfill_for'], queue[0]['enqueue_seq'])
 
     def test_fair_turn_backfill_stream_stops_after_eight_admissions(self):
         self.configure_clock()
@@ -2597,7 +2666,10 @@ class AdmissionTest(unittest.TestCase):
         self.set_stats(30 * 1024)
         self.wait(large.exists); self.wait(ninth.exists)
         admitted = [e['campaign'] for e in self.events('admit')]
-        self.assertEqual(admitted, ['small' + str(i) for i in range(8)] + ['head', 'ninth'])
+        self.assertEqual(admitted[:8], ['small' + str(i) for i in range(8)])
+        self.assertEqual(set(admitted[8:]), {'head', 'ninth'})
+        holders = sorted(self.status()['pools']['runtime']['holders'], key=lambda h: h['admit_seq'])
+        self.assertEqual([h['campaign'] for h in holders], ['head', 'ninth'])
         self.assertIsNone(head.poll())
 
     def test_fitting_fair_turn_head_is_admitted_before_small_ticket(self):
@@ -2617,7 +2689,9 @@ class AdmissionTest(unittest.TestCase):
         finally:
             os.kill(head.pid, signal.SIGCONT); os.kill(small.pid, signal.SIGCONT)
         self.wait(large.exists); self.wait(output.exists)
-        self.assertEqual([e['campaign'] for e in self.events('admit')], ['head', 'small'])
+        holders = sorted(self.status()['pools']['runtime']['holders'], key=lambda h: h['admit_seq'])
+        self.assertEqual([h['campaign'] for h in holders], ['head', 'small'])
+        self.assertTrue(all(e['backfill_for'] is None for e in self.events('admit')))
 
     def test_fair_turn_reserves_memory_and_bypasses_quiet_priority(self):
         self.configure_clock(); self.cfg['heavy']={}; self.write_config()
@@ -3460,6 +3534,74 @@ int main(int argc, char **argv)
                                     timeout=4, restore_signals=False)
             self.assertEqual(result.returncode, 0, (mode, result.stderr))
             self.assertEqual(result.stdout, b'actual-source harness passed\n')
+
+class ReplayTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('slotr_replay', Path(__file__).parents[1] / 'tools/replay.py')
+        cls.replay = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = cls.replay
+        spec.loader.exec_module(cls.replay)
+
+    def test_overlap_reports_both_admission_charges(self):
+        m = self.replay
+        runs = [m.Run(str(i), 0, 0, 4, 'test', str(i), 0, 10, 7) for i in range(3)]
+        cost = m.metrics(runs, m.replay(runs, 12, 3, 0, charge='cost'), 12)
+        peak = m.metrics(runs, m.replay(runs, 12, 3, 0, charge='max_cost_peak'), 12)
+        self.assertEqual(cost['maximum_concurrency'], 3)
+        self.assertEqual(cost['overrun_admissions'], 2)
+        self.assertEqual(cost['overrun_intervals'], 1)
+        self.assertEqual(cost['overrun_seconds'], 10)
+        self.assertEqual(cost['peak_sum_mib'], 21)
+        self.assertEqual(peak['maximum_concurrency'], 1)
+        self.assertEqual(peak['overrun_admissions'], 0)
+
+    def test_replay_backfill_stops_at_eight_and_head_wins(self):
+        m = self.replay
+        runs = [m.Run('holder', 0, 0, 4, '', 'holder', 0, 10, 4),
+                m.Run('head', 1, 1, 10, '', 'head', 0, 11, 10)]
+        runs += [m.Run(str(i), 1, 1, 1, '', str(i), 0, 2, 1) for i in range(10)]
+        schedule = m.replay(runs, 12, 20, 0)
+        self.assertEqual(sum(i >= 2 and start < 10 for start, _, i in schedule), 8)
+        self.assertEqual(next(start for start, _, i in schedule if i == 1), 10)
+        self.assertEqual(next(i for start, _, i in schedule if start == 10), 1)
+
+    def test_peak_table_uses_nearest_rank_without_a_config_proposal(self):
+        m = self.replay
+        runs = [m.Run(str(i), 0, 0, 1000, 'test', '', 0, 1, peak)
+                for i, peak in enumerate([256, 513, 900])]
+        groups = m.peak_groups(runs)
+        self.assertEqual(m.percentile(groups['test'], .5), 513)
+        self.assertEqual(m.percentile(groups['test'], .95), 900)
+
+    def test_reused_run_names_and_journal_deduplication(self):
+        m = self.replay
+        events = [dict(event='admit', pool='heavy', run='slotr-heavy-1', at=0, cost_mib=8),
+                  dict(event='end', run='slotr-heavy-1', at=1, memory_peak_bytes=1048576),
+                  dict(event='admit', pool='heavy', run='slotr-heavy-1', at=10, cost_mib=8),
+                  dict(event='end', run='slotr-heavy-1', at=11, memory_peak_bytes=2097152)]
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'events.jsonl'
+            path.write_text('\n'.join(map(json.dumps, events)))
+            runs = m.read_runs(path, 'heavy')
+        self.assertEqual([run.peak for run in runs], [1, 2])
+        records = [dict(USER_UNIT='slotr-heavy-1.service', __REALTIME_TIMESTAMP='1000000',
+                        MESSAGE='A process of this unit has been killed by the OOM killer.'),
+                   dict(USER_UNIT='slotr-heavy-1.service', __REALTIME_TIMESTAMP='1000000',
+                        MESSAGE="Failed with result 'oom-kill'."),
+                   dict(USER_UNIT='slotr-heavy-1.service', __REALTIME_TIMESTAMP='11000000',
+                        MESSAGE="Failed with result 'oom-kill'."),
+                   dict(USER_UNIT='slotr-heavy-2.service', __REALTIME_TIMESTAMP='11000000',
+                        MESSAGE='code=killed, status=9/KILL')]
+        records += [dict(USER_UNIT='slotr-tests.slice', __REALTIME_TIMESTAMP='12000000',
+                         MESSAGE='A process of this unit has been killed by the OOM killer.'),
+                    dict(UNIT='slotr.slice', __REALTIME_TIMESTAMP='12000000',
+                         MESSAGE='slotr.slice: A process of this unit has been killed by the OOM killer.')]
+        units, unattributed = m.journal_ooms(records, runs)
+        self.assertEqual(len(units), 2)
+        self.assertEqual(len(unattributed), 2)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2, failfast=True)
