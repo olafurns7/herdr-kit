@@ -2548,12 +2548,14 @@ class AdmissionTest(unittest.TestCase):
         self.assertFalse((self.root/'H3').exists())
 
     def test_fair_turn_memory_backfill_reports_incident_budget(self):
-        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='0',
+        self.configure_clock()
+        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='1',
                         SLOTR_ADMISSION__RESERVE_MIB='6144')
         self.cfg['runtime_slots'] = 10
         self.write_config(); self.set_stats(6144)
         head, large = self.start('head', cost=20480)
         self.wait(lambda: len(self.status()['queue']) == 1)
+        self.advance(2)
         small, output = self.start('small', cost=512)
         self.wait(lambda: len(self.status()['queue']) == 2)
         self.freeze(head.pid); self.freeze(small.pid)
@@ -2572,11 +2574,13 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(self.status()['queue'][0]['backfill_admissions'], 1)
 
     def test_fair_turn_backfill_stream_stops_after_eight_admissions(self):
-        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='0',
+        self.configure_clock()
+        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='1',
                         SLOTR_ADMISSION__RESERVE_MIB='6144')
         self.set_stats(20992)
         head, large = self.start('head', cost=20480)
         self.wait(lambda: len(self.status()['queue']) == 1)
+        self.advance(2)
         for i in range(8):
             label = 'small' + str(i)
             small, output = self.start(label, cost=512)
@@ -2597,11 +2601,13 @@ class AdmissionTest(unittest.TestCase):
         self.assertIsNone(head.poll())
 
     def test_fitting_fair_turn_head_is_admitted_before_small_ticket(self):
-        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='0',
+        self.configure_clock()
+        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='1',
                         SLOTR_ADMISSION__RESERVE_MIB='6144')
         self.set_stats(6144)
         head, large = self.start('head', cost=20480)
         self.wait(lambda: len(self.status()['queue']) == 1)
+        self.advance(2)
         small, output = self.start('small', cost=512)
         self.wait(lambda: len(self.status()['queue']) == 2)
         self.freeze(head.pid); self.freeze(small.pid)
