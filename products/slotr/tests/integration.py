@@ -2547,6 +2547,72 @@ class AdmissionTest(unittest.TestCase):
         self.wait(lambda: self.status()['queue'] and self.status()['queue'][0]['wait_reason']=='campaign_cap')
         self.assertFalse((self.root/'H3').exists())
 
+    def test_fair_turn_memory_backfill_reports_incident_budget(self):
+        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='0',
+                        SLOTR_ADMISSION__RESERVE_MIB='6144')
+        self.cfg['runtime_slots'] = 10
+        self.write_config(); self.set_stats(6144)
+        head, large = self.start('head', cost=20480)
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        small, output = self.start('small', cost=512)
+        self.wait(lambda: len(self.status()['queue']) == 2)
+        self.freeze(head.pid); self.freeze(small.pid)
+        try:
+            self.set_stats(20992)  # 20.5 GiB free, 6 GiB reserve, 20 GiB head.
+            queue = self.status()['queue']
+            self.assertEqual(queue[0]['wait_reason'], 'memory_budget')
+            self.assertEqual(queue[1]['wait_reason'], 'fair_turn_backfill')
+            self.assertEqual(queue[1]['backfill_for'], queue[0]['enqueue_seq'])
+            self.assertEqual(queue[0]['backfill_admissions'], 0)
+            self.assertIn('reason="fair_turn_backfill"', self.invoke('status').stdout)
+        finally:
+            os.kill(head.pid, signal.SIGCONT); os.kill(small.pid, signal.SIGCONT)
+        self.admitted('small', output)
+        self.assertFalse(large.exists())
+        self.assertEqual(self.status()['queue'][0]['backfill_admissions'], 1)
+
+    def test_fair_turn_backfill_stream_stops_after_eight_admissions(self):
+        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='0',
+                        SLOTR_ADMISSION__RESERVE_MIB='6144')
+        self.set_stats(20992)
+        head, large = self.start('head', cost=20480)
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        for i in range(8):
+            label = 'small' + str(i)
+            small, output = self.start(label, cost=512)
+            self.admitted(label, output)
+            small.terminate(); small.wait(timeout=3)
+            self.wait(lambda: not self.status()['pools']['runtime']['holders'])
+            self.assertEqual(self.status()['queue'][0]['backfill_admissions'], i + 1)
+        _, ninth = self.start('ninth', cost=512)
+        queue = self.wait(lambda: len(q := self.status()['queue']) == 2 and q)
+        self.assertEqual(queue[1]['wait_reason'], 'fair_turn_backfill_limit')
+        self.assertEqual(queue[0]['backfill_admissions'], queue[0]['backfill_limit'])
+        self.assertFalse(ninth.exists()); self.assertFalse(large.exists())
+        # No backfill holders remain. Once enough memory is available, head wins.
+        self.set_stats(30 * 1024)
+        self.wait(large.exists); self.wait(ninth.exists)
+        admitted = [e['campaign'] for e in self.events('admit')]
+        self.assertEqual(admitted, ['small' + str(i) for i in range(8)] + ['head', 'ninth'])
+        self.assertIsNone(head.poll())
+
+    def test_fitting_fair_turn_head_is_admitted_before_small_ticket(self):
+        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='0',
+                        SLOTR_ADMISSION__RESERVE_MIB='6144')
+        self.set_stats(6144)
+        head, large = self.start('head', cost=20480)
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        small, output = self.start('small', cost=512)
+        self.wait(lambda: len(self.status()['queue']) == 2)
+        self.freeze(head.pid); self.freeze(small.pid)
+        try:
+            self.set_stats(30 * 1024)
+            self.assertEqual([q['wait_reason'] for q in self.status()['queue']], ['ready', 'fair_turn'])
+        finally:
+            os.kill(head.pid, signal.SIGCONT); os.kill(small.pid, signal.SIGCONT)
+        self.wait(large.exists); self.wait(output.exists)
+        self.assertEqual([e['campaign'] for e in self.events('admit')], ['head', 'small'])
+
     def test_fair_turn_reserves_memory_and_bypasses_quiet_priority(self):
         self.configure_clock(); self.cfg['heavy']={}; self.write_config()
         self.set_stats(8000)

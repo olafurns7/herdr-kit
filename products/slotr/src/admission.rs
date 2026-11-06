@@ -6,6 +6,8 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+pub const BACKFILL_LIMIT: u32 = 8;
+
 pub fn outstanding(s: &State, obs: &BTreeMap<String, Observation>) -> f64 {
     s.holders
         .iter()
@@ -107,6 +109,8 @@ pub fn head<'a>(s: &'a State, pool: &str, cfg: &Config) -> Option<&'a Request> {
 pub struct Scheduling {
     pub activity: Vec<Activity>,
     #[serde(default)]
+    pub backfill_admissions: BTreeMap<u64, u32>,
+    #[serde(default)]
     pub last_pressure_stop_at: Option<f64>,
     #[serde(skip)]
     pub now: Option<f64>,
@@ -124,6 +128,10 @@ pub struct Activity {
 // The caller holds state.lock; the sidecar survives older schema-1 writers.
 pub fn update_activity(s: &mut State, cfg: &Config, now: f64) {
     s.scheduling.now = Some(now);
+    // Keep the bound across polls, staleness and changes of the active fair turn.
+    s.scheduling
+        .backfill_admissions
+        .retain(|seq, _| s.queue.iter().any(|q| q.enqueue_seq == *seq));
     for q in &s.queue {
         if cfg.pools.contains_key(&q.pool)
             && fresh(q, cfg, now)
@@ -265,6 +273,54 @@ pub fn fair_turn<'a>(
     })
     .min_by_key(|w| w.enqueue_seq)
 }
+fn backfill_turn<'a>(
+    s: &'a State,
+    first: &Request,
+    cfg: &Config,
+    obs: &BTreeMap<String, Observation>,
+    sample: &Stats,
+    now: f64,
+) -> Option<&'a Request> {
+    if backfill_count(s, first.enqueue_seq) >= BACKFILL_LIMIT
+        || decide(s, first, cfg, obs, sample, now, |_| true).1 != Some("memory_budget")
+    {
+        return None;
+    }
+    ordered(s, &first.pool, cfg, now).into_iter().find(|w| {
+        fresh(w, cfg, now)
+            && w.cost_mib < first.cost_mib
+            && external_blocker(s, w, cfg).is_none()
+            && decide(s, w, cfg, obs, sample, now, |slot| {
+                cfg.pools[&w.pool]
+                    .ports
+                    .as_ref()
+                    .is_none_or(|p| crate::manager::ports_free(p.base + slot * p.stride, p.probe))
+            })
+            .1
+            .is_none()
+    })
+}
+pub fn backfill_count(s: &State, seq: u64) -> u32 {
+    s.scheduling
+        .backfill_admissions
+        .get(&seq)
+        .copied()
+        .unwrap_or(0)
+}
+pub fn backfill_for(
+    s: &State,
+    q: &Request,
+    cfg: &Config,
+    obs: &BTreeMap<String, Observation>,
+    sample: &Stats,
+    now: f64,
+) -> Option<u64> {
+    let first = fair_turn(s, q, cfg, obs, sample, now)?;
+    (first.pool == q.pool
+        && backfill_turn(s, first, cfg, obs, sample, now)
+            .is_some_and(|w| w.enqueue_seq == q.enqueue_seq))
+    .then_some(first.enqueue_seq)
+}
 pub fn evaluate(
     s: &State,
     q: &Request,
@@ -303,6 +359,18 @@ pub fn preference(
     let reserving = fair_turn(s, q, cfg, obs, sample, now);
     if let Some(first) = reserving {
         if first.enqueue_seq != q.enqueue_seq {
+            if first.pool == q.pool
+                && decide(s, first, cfg, obs, sample, now, |_| true).1 == Some("memory_budget")
+            {
+                if backfill_count(s, first.enqueue_seq) >= BACKFILL_LIMIT {
+                    return Some("fair_turn_backfill_limit");
+                }
+                if backfill_turn(s, first, cfg, obs, sample, now)
+                    .is_some_and(|w| w.enqueue_seq == q.enqueue_seq)
+                {
+                    return None;
+                }
+            }
             return Some("fair_turn");
         }
         return None;
@@ -489,6 +557,134 @@ mod tests {
         pool.campaign_cap = 0;
         pool.memory_gated = false;
         cfg
+    }
+    fn backfill_fixture() -> (Config, State, Stats) {
+        let mut cfg = config();
+        let pool = cfg.pools.get_mut("default").unwrap();
+        pool.memory_gated = true;
+        pool.slots = 10;
+        cfg.admission.reserve_mib = 6 * 1024;
+        let mut first = request(1, "default", 0, 0.0);
+        first.cost_mib = 20 * 1024;
+        let mut small = request(2, "default", 0, 999.0);
+        small.cost_mib = 512;
+        let s = State {
+            queue: vec![first, small],
+            ..State::default()
+        };
+        let sample = Stats {
+            available_mib: Some(20.5 * 1024.0),
+            psi_full_avg10: Some(0.0),
+            psi_full_avg60: Some(0.0),
+            ..Stats::default()
+        };
+        (cfg, s, sample)
+    }
+    #[test]
+    fn memory_blocked_fair_turn_allows_fitting_512_mib_backfill() {
+        let (cfg, s, sample) = backfill_fixture();
+        let obs = BTreeMap::new();
+        assert_eq!(
+            evaluate(&s, &s.queue[0], &cfg, &obs, &sample, 1000.0).1,
+            Some("memory_budget")
+        );
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0),
+            (Some(0), None)
+        );
+    }
+    #[test]
+    fn fitting_fair_turn_precedes_small_backfill() {
+        let (cfg, s, mut sample) = backfill_fixture();
+        sample.available_mib = Some(30.0 * 1024.0);
+        let obs = BTreeMap::new();
+        assert_eq!(
+            evaluate(&s, &s.queue[0], &cfg, &obs, &sample, 1000.0),
+            (Some(0), None)
+        );
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0).1,
+            Some("fair_turn")
+        );
+    }
+    #[test]
+    fn backfill_preserves_order_caps_and_memory_safety() {
+        let (mut cfg, mut s, mut sample) = backfill_fixture();
+        let mut high = s.queue[1].clone();
+        high.enqueue_seq = 3;
+        high.level = 5;
+        s.queue.push(high);
+        let obs = BTreeMap::new();
+        assert_eq!(
+            backfill_for(&s, &s.queue[2], &cfg, &obs, &sample, 1000.0),
+            Some(1)
+        );
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0).1,
+            Some("fair_turn")
+        );
+        // Positive-weight campaigns retain their hard cap during backfill.
+        cfg.pools.get_mut("default").unwrap().campaign_cap = 1;
+        let holder: Holder = serde_json::from_value(json!({"enqueue_seq":99,"pool":"default","campaign":"c2","purpose":"synthetic","cwd":"/tmp","cost_mib":512,"lease_seconds":0,"since":0,"seen_at":1000,"run":"synthetic","admit_seq":1,"slot":0,"admitted_at":0})).unwrap();
+        s.holders.push(holder);
+        assert_eq!(
+            evaluate(&s, &s.queue[2], &cfg, &obs, &sample, 1000.0).1,
+            Some("campaign_cap")
+        );
+        s.holders[0].request.campaign = "holder".into();
+        s.holders[0].request.cost_mib = 15000;
+        assert_eq!(
+            evaluate(&s, &s.queue[2], &cfg, &obs, &sample, 1000.0).1,
+            Some("memory_budget")
+        );
+        s.holders.clear();
+        // Missing data, reserve, PSI and declared outstanding costs still gate.
+        sample.available_mib = None;
+        assert_eq!(
+            evaluate(&s, &s.queue[2], &cfg, &obs, &sample, 1000.0).1,
+            Some("memory_budget")
+        );
+        sample.available_mib = Some((cfg.admission.reserve_mib + 511) as f64);
+        assert_eq!(
+            evaluate(&s, &s.queue[2], &cfg, &obs, &sample, 1000.0).1,
+            Some("memory_budget")
+        );
+        sample.available_mib = Some(20.5 * 1024.0);
+        sample.psi_full_avg60 = Some(cfg.admission.psi_full_avg60_max + 1.0);
+        assert_eq!(
+            evaluate(&s, &s.queue[2], &cfg, &obs, &sample, 1000.0).1,
+            Some("psi")
+        );
+    }
+    #[test]
+    fn backfill_limit_survives_serialization_staleness_and_turn_changes() {
+        let (cfg, mut s, sample) = backfill_fixture();
+        s.scheduling.backfill_admissions.insert(1, BACKFILL_LIMIT);
+        s.scheduling = serde_json::from_slice(&serde_json::to_vec(&s.scheduling).unwrap()).unwrap();
+        update_activity(&mut s, &cfg, 1010.0);
+        assert_eq!(backfill_count(&s, 1), BACKFILL_LIMIT);
+        for q in &mut s.queue {
+            q.seen_at = 1010.0;
+        }
+        let mut older = s.queue[0].clone();
+        older.enqueue_seq = 0;
+        s.queue.push(older);
+        update_activity(&mut s, &cfg, 1010.0);
+        assert_eq!(
+            fair_turn(&s, &s.queue[1], &cfg, &BTreeMap::new(), &sample, 1010.0)
+                .unwrap()
+                .enqueue_seq,
+            0
+        );
+        s.queue.pop();
+        update_activity(&mut s, &cfg, 1010.0);
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &BTreeMap::new(), &sample, 1010.0).1,
+            Some("fair_turn_backfill_limit")
+        );
+        s.queue.remove(0);
+        update_activity(&mut s, &cfg, 1010.0);
+        assert_eq!(backfill_count(&s, 1), 0);
     }
     #[test]
     fn manual_and_lifecycle_stops_do_not_restart_pressure_recovery() {

@@ -147,6 +147,9 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
                     if reason.is_some() {
                         return Ok((None, reason));
                     }
+                    if let Some(first) = admission::backfill_for(s, &q, cfg, &obs, &sample, now) {
+                        *s.scheduling.backfill_admissions.entry(first).or_default() += 1;
+                    }
                     s.admit_seq += 1;
                     let base = pool
                         .ports
@@ -517,7 +520,15 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
                         .flatten()
                 );
                 data["position"] = json!(i + 1);
-                data["wait_reason"] = json!(reason.unwrap_or("ready"));
+                let backfill_for = admission::backfill_for(&s, q, cfg, &obs, &sample, now);
+                data["backfill_for"] = json!(backfill_for);
+                data["backfill_admissions"] = json!(admission::backfill_count(&s, q.enqueue_seq));
+                data["backfill_limit"] = json!(admission::BACKFILL_LIMIT);
+                data["wait_reason"] = json!(reason.unwrap_or(if backfill_for.is_some() {
+                    "fair_turn_backfill"
+                } else {
+                    "ready"
+                }));
                 if reason == Some("legacy_lock") {
                     data["legacy_holder_pid"] = json!(manager::legacy_pid(pool));
                 }
@@ -564,7 +575,7 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
             }
             for q in pool["queue"].as_array().unwrap() {
                 println!(
-                    "  queue #{} campaign={} weight={} weight_source={} purpose={} cost={} since={} reason={} priority_blocker={} fair_turn={} fair_deferred={} holder_pid={}",
+                    "  queue #{} campaign={} weight={} weight_source={} purpose={} cost={} since={} reason={} priority_blocker={} fair_turn={} backfill_for={} backfill_admissions={}/{} fair_deferred={} holder_pid={}",
                     q["position"],
                     q["campaign"],
                     q["weight"],
@@ -575,6 +586,9 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
                     q["wait_reason"],
                     q["priority_blocker"],
                     q["fair_turn"],
+                    q["backfill_for"],
+                    q["backfill_admissions"],
+                    q["backfill_limit"],
                     q["fair_deferred"],
                     q["legacy_holder_pid"]
                 );

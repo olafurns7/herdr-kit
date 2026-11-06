@@ -56,8 +56,26 @@ a quiet tail. Unrelated non-memory pools remain independent.
 At `priority.fair_wait_seconds` (default 300 s), the oldest fresh eligible ticket
 earns the next safe admission before weight or quiet preference. Slot shortage
 reserves only its pool's next vacancy; memory shortage reserves the shared
-memory domain. Competing starts wait while that capacity accumulates. Ports or
-legacy locks defer a fair ticket without changing its age or reserving other
+memory domain. When memory alone blocks that fair turn, up to **eight smaller
+tickets from the same pool** may backfill it. Each must fit the current budget
+including the reserve and all holders' outstanding declared costs. Among fitting
+tickets, existing age/weight/enqueue ordering and campaign caps still apply.
+The counter belongs to the head ticket and persists across polls, stale/resumed
+heartbeats and changes of fair turn; completed backfill runs do not reset it.
+After eight admissions, backfill stops and competing starts wait while capacity
+accumulates. A head that fits always goes first. Other pools cannot backfill its
+reservation. Recovery, PSI/load, slots, ports, locks and priority caps still apply.
+
+This bounds bypass to eight admissions per queued head, rather than promising a
+wall-clock start deadline: existing runs must release enough memory and a slot
+before the head can start. A steady stream of small arrivals cannot extend that
+bound. Status names a fitting backfill candidate `fair_turn_backfill`, includes
+its head's sequence in `backfill_for`, and shows each ticket's
+`backfill_admissions` and `backfill_limit`. After the limit, otherwise fitting
+contenders report `fair_turn_backfill_limit`; the head keeps `memory_budget`
+until it fits. No configuration knob is needed.
+
+Ports or legacy locks defer a fair ticket without changing its age or reserving other
 pools; status shows `fair_deferred`. Unknown port ownership cannot justify a
 shared reservation: busy sockets in registered ranges retain pool-local slot
 ordering but defer cross-pool holds until a port block is observed free. Status
