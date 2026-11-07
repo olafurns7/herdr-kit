@@ -38,6 +38,9 @@ role prefixes, and restrictions there; it is the only list of models
 (`herdr-launch --lanes`). Write per-model policy in the instructions overlay.
 Unknown or malformed lanes fail before registration or agent startup.
 
+For every Herdr read, send, close or launch on another host, use `herdr --machine <label>` (upstream Herdr skill: "To control a saved SSH machine"); start a remote lane with `herdr-launch --machine devbox`.
+Use ssh only for non-Herdr work, such as git, files and slotr.
+
 ## Optional tools
 
 `--codator` selects the cdx/cdl forwarding wrappers; it never installs Codator.

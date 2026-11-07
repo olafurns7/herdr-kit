@@ -4,7 +4,7 @@
 # herdr agent start, taskr prompt --confirm (one Enter when no receipt
 # comes; the final line then ends submit_retry=enter). The first failed step
 # stops the run.
-# Usage: herdr-launch [--workspace W] [--cwd DIR] [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]
+# Usage: herdr-launch [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]
 #        herdr-launch --reserved TASK LAUNCH LANE NAME BRIEF REPORT PARENT PANE
 #        herdr-launch --lanes
 #        herdr-launch [--push] --check [LANE...]
@@ -12,6 +12,9 @@
 # DIR (default: pwd -P). A given PANE may be in any workspace; its workspace,
 # tab, and cwd come from herdr pane get. A pane cwd containing , { } " or \
 # is not supported: the run stops at step 1.
+# --machine LABEL selects one enabled saved machine (claude/codex only).
+# Needs target PANE or --workspace W and --cwd DIR; no --push/--reserved/--check.
+# BRIEF is on the caller; REPORT is on the target.
 # --push starts the lane with its taskr push adapter (launch.md "--push"):
 # pi loads $HERDR_PUSH_PI_EXTENSION; claude gets a private --mcp-config and
 # the taskr development channel, whose start dialog step 6 answers; codex gets a
@@ -26,7 +29,7 @@
 # line adds work_brief=<path>. Not with --reserved.
 set -u
 
-usage='usage: herdr-launch --lanes | herdr-launch [--push] --check [LANE...] | herdr-launch [--workspace W] [--cwd DIR] [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
+usage='usage: herdr-launch --lanes | herdr-launch [--push] --check [LANE...] | herdr-launch [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
 
 herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 2
 . "$herdr_bin_dir/herdr-lanes.sh"
@@ -66,7 +69,9 @@ start_agent() {
 # a control character, which the TOML string cannot carry.
 trust_paths() {
     main=
-    common=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=
+    if [ -z "$machine" ]; then
+        common=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=
+    fi
     case $common in
         */.git) [ "${common%/.git}" = "$cwd" ] || main=${common%/.git} ;;
     esac
@@ -159,7 +164,7 @@ check_lanes() {
     return "$check_status"
 }
 
-workspace= cwd= push= reserved_task= reserved_launch= work_id=
+workspace= cwd= push= reserved_task= reserved_launch= work_id= machine= machine_host= check=
 while :; do
     case ${1-} in
         --lanes)
@@ -168,9 +173,14 @@ while :; do
             exit 0
             ;;
         --check)
+            check=1
             shift
-            check_lanes "$@"
-            exit $?
+            break
+            ;;
+        --machine)
+            [ -z "$machine" ] && [ -n "${2-}" ] || die '--machine needs LABEL once'
+            machine=$2
+            shift 2
             ;;
         --workspace)
             [ -n "${2-}" ] || die "--workspace needs a workspace id; $usage"
@@ -179,7 +189,7 @@ while :; do
             ;;
         --cwd)
             [ -n "${2-}" ] || die "--cwd needs a directory; $usage"
-            cwd=$(CDPATH= cd -- "$2" 2>/dev/null && pwd -P) || die "--cwd '$2' is not a directory"
+            cwd=$2
             shift 2
             ;;
         --push)
@@ -205,12 +215,33 @@ while :; do
         *) break ;;
     esac
 done
+if [ -n "$check" ]; then
+    [ -z "$machine" ] || die '--machine does not combine with --check'
+    for checked_arg do
+        [ "$checked_arg" != --machine ] || die '--machine does not combine with --check'
+    done
+fi
+if [ -n "$machine" ]; then
+    [ -z "$push" ] || die '--machine does not combine with --push'
+    [ -z "$reserved_task" ] || die '--machine does not combine with --reserved'
+else
+    [ -z "$cwd" ] || cwd=$(CDPATH= cd -- "$cwd" 2>/dev/null && pwd -P) || die "--cwd '$cwd' is not a directory"
+fi
+if [ -n "$check" ]; then
+    check_lanes "$@"
+    exit $?
+fi
 [ -z "$work_id" ] || [ -z "$reserved_task" ] || die '--work does not combine with --reserved'
 [ $# -eq 5 ] || [ $# -eq 6 ] || die "$usage"
 lane=$1 name=$2 brief=$3 report=$4 parent=$5 given_pane=${6-}
 [ -z "$reserved_task" ] || [ -n "$given_pane" ] || die '--reserved requires PANE'
 
 lane_info "$lane" || die "unknown lane '$lane'"
+if [ -n "$machine" ]; then
+    case $kind in claude | codex) ;; *) die '--machine supports claude and codex only' ;; esac
+    [ -n "$given_pane" ] || { [ -n "$workspace" ] && [ -n "$cwd" ]; } \
+        || die '--machine needs PANE or both --workspace and --cwd'
+fi
 case $name in
     [a-z]*-?*) ;;
     *) die "name '$name' must be PREFIX-SLUG and match [a-z][a-z0-9_-]{0,31}" ;;
@@ -298,6 +329,19 @@ if [ "$kind" = opencode ]; then
     opencode_cli=$(jq -nr --arg path "$cli" '$path | @sh') || exit 2
     opencode_config=$(jq -cn --arg model "$model" \
         '{model:$model,default_agent:"build",agents:{build:{model:$model}}}' | jq -Rr @sh) || exit 2
+fi
+
+# Discovery is local; all pane and agent operations use the saved machine.
+if [ -n "$machine" ]; then
+    machines=$(command herdr machine list --json) || die 'could not list saved machines'
+    machine_host=$(printf '%s\n' "$machines" | jq -er --arg label "$machine" '
+        [.[] | select(.enabled == true and (.label == $label or .id == $label))] |
+        if length != 1 then error("need one enabled machine") else .[0].target end |
+        split("@")[-1] | ascii_downcase |
+        select((contains(":") or test("^[0-9]+(\\.[0-9]+){3}$")) | not) |
+        split(".")[0] | select(test("^[a-z0-9][a-z0-9-]*$"))') \
+        || die "machine '$machine' needs one enabled saved label or id with a hostname target"
+    herdr() { command herdr --machine "$machine" "$@"; }
 fi
 
 # Compact output is what the parsers below read.
@@ -427,7 +471,7 @@ else
     case $cwd in
         *\\*) step_fail "$unread" ;;
     esac
-    [ -d "$cwd" ] || step_fail "$unread"
+    [ -n "$machine" ] || [ -d "$cwd" ] || step_fail "$unread"
     procs=$(herdr pane process-info --pane "$pane") || step_fail '1 (herdr pane process-info)'
     fg=$(json_num foreground_process_group_id "$procs") \
         || step_fail '1 (foreground process group from herdr pane process-info)'
@@ -436,6 +480,33 @@ else
     if [ -z "$reserved_task" ]; then
         herdr pane send-keys "$pane" ctrl+c >/dev/null || step_fail '1 (herdr pane send-keys ctrl+c)'
     fi
+fi
+
+# Probe target facts once, before registration; the command echo cannot match
+# the marker lines because printf expands the marker variable only on output.
+if [ -n "$machine" ]; then
+    probe_marker=herdr-launch-probe-$$-$(date +%s)
+    probe_cwd=$(jq -nr --arg cwd "$cwd" '$cwd | @sh') || step_fail '1 (quote target cwd)'
+    probe=" probe_marker=$probe_marker; probe_cwd=0; test -d $probe_cwd && probe_cwd=1; probe_common=\$(git -C $probe_cwd rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || probe_common=; probe_cli=\$(command -v $kind) || probe_cli=; probe_codator=0; test ! -x \"\$HOME/.local/bin/codator\" || probe_codator=1; printf '\\n'; printf '%s\\n' \"\$probe_marker\" \"\$probe_cwd\" \"\$probe_common\" \"\$probe_cli\" \"\$probe_codator\" \"\$probe_marker-end\""
+    herdr pane run "$pane" "$probe" >/dev/null || step_fail '1 (target probe run)'
+    herdr pane wait-output "$pane" --match "$probe_marker-end" --timeout 15000 >/dev/null \
+        || step_fail '1 (target probe wait)'
+    probe_screen=$(herdr pane read "$pane" --source recent-unwrapped --lines 80) \
+        || step_fail '1 (target probe read)'
+    probe_text=$(printf '%s\n' "$probe_screen" | jq -r '.. | strings' 2>/dev/null) || probe_text=$probe_screen
+    facts=$(printf '%s\n' "$probe_text" | tr -d '\r' | awk -v marker="$probe_marker" '
+        $0 == marker { inside=1 }
+        inside { print }
+        $0 == marker "-end" { inside=0 }' | jq -Rs --arg marker "$probe_marker" 'split("\n") | .[:-1] |
+        select(length == 6 and .[0] == $marker and .[5] == ($marker + "-end")) | .[1:5] |
+        select(.[0] == "1" and (.[2] | length > 0) and (.[3] == "0" or .[3] == "1"))') \
+        || step_fail '1 (target probe unreadable)'
+    [ -n "$facts" ] || step_fail '1 (target cwd or CLI missing, or probe unreadable)'
+    common=$(printf '%s\n' "$facts" | jq -r '.[1]')
+    codator=$(printf '%s\n' "$facts" | jq -r '.[3]')
+else
+    codator=0
+    [ ! -x "$HOME/.local/bin/codator" ] || codator=1
 fi
 
 # Codex trust needs the cwd, so a path it cannot carry stops before taskr new.
@@ -451,8 +522,10 @@ if [ -n "$reserved_task" ]; then
     reserved_check || step_fail '2 (reserved task/launch/root/cwd/pane/lane mismatch)'
 else
 # Step 2: register. Compact output is "n1 <task>"; read the id at line end.
+set --
+[ -z "$machine" ] || set -- --machine "$machine_host"
 out=$(taskr new "$name" --parent "$parent" --role "$role" --workspace "$workspace" \
-    --tab "$tab" --pane "$pane" --cwd "$cwd" --brief "$brief" --report "$report") \
+    --tab "$tab" --pane "$pane" --cwd "$cwd" --brief "$brief" --report "$report" "$@") \
     || step_fail '2 (taskr new)'
 task=$(printf '%s\n' "$out" | sed -n 's/^n1 \([0-9][0-9]*\)$/\1/p')
 case $task in
@@ -462,7 +535,7 @@ esac
     || step_fail "2 (taskr set $task work=$work_id)"
 
 # Step 3: launch. Compact output is 'l1 {"launch_id":<launch>,...}'.
-out=$(taskr launch "$task" --provider "$kind" --model "$model" --effort "$effort") \
+out=$(taskr launch "$task" --provider "$kind" --model "$model" --effort "$effort" "$@") \
     || step_fail '3 (taskr launch)'
 launch=$(printf '%s\n' "$out" | sed -n 's/^l1 .*[{,]"launch_id":\([0-9][0-9]*\)[,}].*$/\1/p')
 case $launch in
@@ -481,7 +554,7 @@ setup=" export FLEET_ROLE=worker TASKR_TASK=$task TASKR_LAUNCH=$launch"
 [ -z "$reserved_task" ] || setup="$reserved_context &&$setup"
 [ "$kind" != pi ] || setup=" unset -f pi 2>/dev/null;$setup"
 [ "$kind" != claude ] || setup="$setup CLAUDE_CODE_SANDBOXED=1 CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1"
-if [ -x "$HOME/.local/bin/codator" ]; then
+if [ "$codator" = 1 ]; then
     setup="$setup && codex() { \"\$HOME/.local/bin/codator\" codex \"\$@\"; } && claude() { \"\$HOME/.local/bin/codator\" claude \"\$@\"; }"
 fi
 if [ "$kind" = opencode ]; then
@@ -640,5 +713,5 @@ if [ -n "$push" ] && [ "$kind" = codex ]; then
 fi
 [ -z "$mcp_config" ] || extra=" mcp_config=$mcp_config"
 
-printf 'task=%s launch=%s tab=%s pane=%s%s%s%s\n' "$task" "$launch" "$tab" "$pane" "$extra" \
-    "${work_brief:+ work_brief=$work_brief}" "$submit_retry"
+printf 'task=%s launch=%s tab=%s pane=%s%s%s%s%s\n' "$task" "$launch" "$tab" "$pane" "$extra" \
+    "${work_brief:+ work_brief=$work_brief}" "$submit_retry" "${machine:+ machine=$machine}"

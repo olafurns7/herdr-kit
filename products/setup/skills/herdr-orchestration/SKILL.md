@@ -65,6 +65,17 @@ Load `~/.agents/skills/taskr/SKILL.md` and its `references/orchestrator.md` for 
 
 ## Launch
 
+For every Herdr read, send, close or launch on another host, use
+`herdr --machine <label>` (upstream Herdr skill: "To control a saved SSH machine").
+Use ssh only for non-Herdr work, such as git, files and slotr.
+
+Start a remote lane with `herdr-launch --machine devbox [--work W] LANE NAME BRIEF REPORT PARENT PANE`,
+or omit PANE and supply both `--workspace W` and `--cwd DIR` on the target.
+This form supports claude and codex only; it refuses `--push`, `--reserved`
+and `--check`. BRIEF is a file on the caller; REPORT is a path on the target.
+The launcher resolves one enabled saved label or id, probes the target pane
+before registration, and records the target host in taskr.
+
 Start an ordinary worker in three steps. Stop if any command fails or an id is missing, and never focus a helper.
 
 **1. Get its pane**, in one of two ways.
