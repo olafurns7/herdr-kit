@@ -66,11 +66,11 @@ and global agent instructions.
 
 Choose the latest release on the
 [Releases page](https://github.com/olafurns7/herdr-kit/releases) with a
-`taskr/vX.Y.Z` tag. The example pins `taskr/v0.29.0`; use a newer published tag
+`taskr/vX.Y.Z` tag. The example pins `taskr/v0.30.1`; use a newer published tag
 if needed:
 
 ```sh
-export TASKR_VERSION=taskr/v0.29.0
+export TASKR_VERSION=taskr/v0.30.1
 sh products/taskr/install.sh --fleet
 taskr version
 command -v taskr-tui herdr-launch
