@@ -342,7 +342,7 @@ if [ -n "$machine" ]; then
             split(".")[0] | select(test("^[a-z0-9][a-z0-9-]*$"));
         . as $machines |
         [.[] | select(.enabled == true and (.label == $label or .id == $label))] |
-        if length != 1 then error("need one enabled machine") else .[0] | host end as $host |
+        (if length != 1 then error("need one enabled machine") else .[0] | host end) as $host |
         [$machines[] | select(.enabled == true) | select(host == $host)] |
         if length == 1 then $host
         else error("host \($host) matches \(length) enabled machines; exactly one is required") end') \
