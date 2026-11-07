@@ -333,6 +333,25 @@ expect_rc 0
 expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=m1'
 expect_machine_calls
 
+new_case 'remote label refuses two enabled profiles for the same derived host'
+STUB_MACHINES='[{"id":"m1","label":"devbox","target":"u@Box","enabled":true},{"id":"m2","label":"other","target":"v@box.example.com","enabled":true}]'
+run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+expect_rc 2
+expect_err 'host box matches 2 enabled machines; exactly one is required'
+expect_calls 'herdr|machine|list|--json'
+
+new_case 'remote label ignores disabled profiles for the same derived host'
+STUB_MACHINES='[{"id":"m1","label":"devbox","target":"u@Box","enabled":true},{"id":"m2","label":"other","target":"v@box.example.com","enabled":false}]'
+run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+expect_rc 0
+expect_machine_calls
+
+new_case 'remote cwd must be absolute before any call'
+run_launch sh "$launch_sh" --machine devbox --workspace wT --cwd relative opus-medium impl-remote "$brief" "$report" 42
+expect_rc 2
+expect_err '--machine needs an absolute --cwd'
+expect_no_calls
+
 for profiles in '[]' '[{"label":"devbox","target":"box","enabled":false}]' \
     '[{"label":"devbox","target":"box","enabled":true},{"id":"devbox","target":"other","enabled":true}]' \
     '[{"label":"Devbox","target":"box","enabled":true}]' \
@@ -910,6 +929,7 @@ check_refused --workspace opus-medium impl-x "$brief" "$report" 42
 check_refused --workspace '' opus-medium impl-x "$brief" "$report" 42
 check_refused --workspace wB opus-medium impl-x "$brief" "$report" 42 wB:p1
 check_refused --cwd "$root/no-such-dir" opus-medium impl-x "$brief" "$report" 42
+expect_err "--cwd '$root/no-such-dir' is not a directory"
 check_refused --cwd "$root" opus-medium impl-x "$brief" "$report" 42 wA:p3
 expect_err '--cwd applies only without PANE'
 

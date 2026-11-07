@@ -224,8 +224,10 @@ fi
 if [ -n "$machine" ]; then
     [ -z "$push" ] || die '--machine does not combine with --push'
     [ -z "$reserved_task" ] || die '--machine does not combine with --reserved'
+    case $cwd in '' | /*) ;; *) die '--machine needs an absolute --cwd' ;; esac
 else
-    [ -z "$cwd" ] || cwd=$(CDPATH= cd -- "$cwd" 2>/dev/null && pwd -P) || die "--cwd '$cwd' is not a directory"
+    cwd_arg=$cwd
+    [ -z "$cwd_arg" ] || cwd=$(CDPATH= cd -- "$cwd_arg" 2>/dev/null && pwd -P) || die "--cwd '$cwd_arg' is not a directory"
 fi
 if [ -n "$check" ]; then
     check_lanes "$@"
@@ -335,11 +337,15 @@ fi
 if [ -n "$machine" ]; then
     machines=$(command herdr machine list --json) || die 'could not list saved machines'
     machine_host=$(printf '%s\n' "$machines" | jq -er --arg label "$machine" '
+        def host: .target | strings | split("@")[-1] | ascii_downcase |
+            select((contains(":") or test("^[0-9]+(\\.[0-9]+){3}$")) | not) |
+            split(".")[0] | select(test("^[a-z0-9][a-z0-9-]*$"));
+        . as $machines |
         [.[] | select(.enabled == true and (.label == $label or .id == $label))] |
-        if length != 1 then error("need one enabled machine") else .[0].target end |
-        split("@")[-1] | ascii_downcase |
-        select((contains(":") or test("^[0-9]+(\\.[0-9]+){3}$")) | not) |
-        split(".")[0] | select(test("^[a-z0-9][a-z0-9-]*$"))') \
+        if length != 1 then error("need one enabled machine") else .[0] | host end as $host |
+        [$machines[] | select(.enabled == true) | select(host == $host)] |
+        if length == 1 then $host
+        else error("host \($host) matches \(length) enabled machines; exactly one is required") end') \
         || die "machine '$machine' needs one enabled saved label or id with a hostname target"
     herdr() { command herdr --machine "$machine" "$@"; }
 fi

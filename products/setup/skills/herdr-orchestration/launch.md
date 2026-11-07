@@ -7,13 +7,14 @@ Load when: before opening the taskr hub workspace; before creating a campaign or
 For every Herdr read, send, close or launch on another host, use
 `herdr --machine <label>` (upstream Herdr skill: "To control a saved SSH machine").
 Use ssh only for non-Herdr work, such as git, files and slotr.
+Run `herdr-launch --machine` on the ledger host; from a client host, `taskr prompt` reaches only lanes on that host and the server host, so step 7 fails for a third host.
 
 ```sh
 herdr-launch --machine devbox [--work W] LANE NAME BRIEF REPORT PARENT PANE
 herdr-launch --machine devbox --workspace W --cwd DIR LANE NAME BRIEF REPORT PARENT
 ```
 
-Use a target PANE, or both a target workspace and cwd. There is no caller
+Use a target PANE, or both a target workspace and absolute cwd. There is no caller
 workspace or cwd default. Only claude and codex are supported; `--push`,
 `--reserved` and `--check` are refused. BRIEF is on the caller; REPORT is on
 the target and must match the brief's report header. The launcher resolves
