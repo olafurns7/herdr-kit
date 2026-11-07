@@ -140,6 +140,43 @@ pub fn request(
     Ok(reply["result"].clone())
 }
 
+pub(crate) fn machine_label(sock: &str, host: &str) -> std::io::Result<String> {
+    let output = command(
+        sock,
+        &["machine", "list", "--json"],
+        Duration::from_secs(10),
+    )?;
+    if output.code != Some(0) {
+        return Err(std::io::Error::other("herdr machine list failed"));
+    }
+    let value: Value = serde_json::from_slice(&output.stdout)?;
+    let machines = value
+        .as_array()
+        .ok_or_else(|| std::io::Error::other("herdr machine list returned no array"))?;
+    let matches: Vec<&Value> = machines
+        .iter()
+        .filter(|m| {
+            let target = m["target"].as_str().unwrap_or("");
+            let target = target.rsplit('@').next().unwrap_or("");
+            m["enabled"] == true
+                && !target.is_empty()
+                && target.parse::<std::net::IpAddr>().is_err()
+                && target.split('.').next().unwrap_or("").to_lowercase() == host
+        })
+        .collect();
+    if matches.len() != 1 {
+        return Err(std::io::Error::other(format!(
+            "host {host} matches {} enabled Herdr machines; exactly one is required",
+            matches.len()
+        )));
+    }
+    matches[0]["label"]
+        .as_str()
+        .filter(|label| !label.is_empty())
+        .map(String::from)
+        .ok_or_else(|| std::io::Error::other("matching Herdr machine has no label"))
+}
+
 /// Run one guarded prompt delivery, preserving Go's outcome/detail fields.
 pub(crate) fn run_prompt(
     sock: &str,
@@ -147,24 +184,34 @@ pub(crate) fn run_prompt(
     text: &str,
     json_mode: bool,
 ) -> (&'static str, Value) {
+    run_machine_prompt(sock, None, target, text, json_mode)
+}
+pub(crate) fn run_machine_prompt(
+    sock: &str,
+    machine: Option<&str>,
+    target: &str,
+    text: &str,
+    json_mode: bool,
+) -> (&'static str, Value) {
+    let mut args = Vec::new();
+    if let Some(label) = machine {
+        args.extend(["--machine", label]);
+    }
+    args.extend([
+        "agent",
+        "prompt",
+        target,
+        text,
+        "--wait",
+        "--until",
+        "working",
+        "--until",
+        "blocked",
+        "--timeout",
+        "20000",
+    ]);
     let mut detail = json!({});
-    let outcome = match command(
-        sock,
-        &[
-            "agent",
-            "prompt",
-            target,
-            text,
-            "--wait",
-            "--until",
-            "working",
-            "--until",
-            "blocked",
-            "--timeout",
-            "20000",
-        ],
-        Duration::from_secs(30),
-    ) {
+    let outcome = match command(sock, &args, Duration::from_secs(30)) {
         Ok(output) => {
             if output.code == Some(0) {
                 if let Ok(v) = serde_json::from_slice::<Value>(&output.stdout)

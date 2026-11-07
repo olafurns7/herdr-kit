@@ -65,6 +65,7 @@ Load `~/.agents/skills/taskr/SKILL.md` and its `references/orchestrator.md` for 
 
 ## Launch
 
+On another host, every Herdr read, send, close or launch uses `herdr --machine <label>`, and `herdr-launch --machine` starts the lane (`launch.md`); use ssh only for non-Herdr work.
 Start an ordinary worker in three steps. Stop if any command fails or an id is missing, and never focus a helper.
 
 **1. Get its pane**, in one of two ways.

@@ -2,6 +2,28 @@
 
 Load when: before opening the taskr hub workspace; before creating a campaign or task worktree or workspace; before starting a campaign lead; before reusing or rearranging an existing tab or pane; for a manual launch, or recovery after `herdr-launch` is missing or failed (first inspect what the script completed, below). The core's Launch section covers an ordinary launch in a new helper tab or a fresh root pane. Part of herdr-orchestration; `SKILL.md` is the core, and its Launch section is the normal path.
 
+## Another host
+
+For every Herdr read, send, close or launch on another host, use
+`herdr --machine <label>` (upstream Herdr skill: "To control a saved SSH machine").
+Use ssh only for non-Herdr work, such as git, files and slotr.
+Run `herdr-launch --machine` on the ledger host; from a client host, `taskr prompt` reaches only lanes on that host and the server host, so step 7 fails for a third host.
+
+```sh
+herdr-launch --machine devbox [--work W] LANE NAME BRIEF REPORT PARENT PANE
+herdr-launch --machine devbox --workspace W --cwd DIR LANE NAME BRIEF REPORT PARENT
+```
+
+Use a target PANE, or both a target workspace and absolute cwd. There is no caller
+workspace or cwd default. Only claude and codex are supported; `--push`,
+`--reserved` and `--check` are refused. BRIEF is on the caller; REPORT is on
+the target and must match the brief's report header. The launcher resolves
+one enabled saved label or id and reads cwd, CLI, Codex trust and Codator
+facts from one target-pane probe before task registration. It adds
+`--machine HOST` to `taskr new` and `taskr launch`; HOST is the target's
+lowercase short hostname. The final line adds `machine=LABEL`.
+For manual recovery, add `--machine LABEL` to every Herdr command below.
+
 ## Workspaces and tabs
 
 Use one workspace per independent task, project, or worktree, never one per worker. Give each helper its own tab in the task workspace, including helpers that a sub-orchestrator starts. A full-size tab keeps the agent's terminal wide enough for reliable status detection, and the sidebar still lists every agent and rolls its state up to the task workspace. Split a pane only when the owner asks to watch two agents side by side, and split the owner's conversation pane only on the owner's explicit request.

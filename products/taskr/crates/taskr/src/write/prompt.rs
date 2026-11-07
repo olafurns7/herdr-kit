@@ -214,10 +214,23 @@ fn deliver(db: &mut db::Connection, id: i64, d: Delivery<'_>, json_mode: bool) -
         }
     })?
     .expect("local attempt");
-    if let Some(launch) = attempt.launch {
+    let machine: Option<String> = db.query_row(
+        "select json_extract(data,'$.machine') from events where id=?",
+        [attempt.id],
+        |r| r.get(0),
+    )?;
+    if machine.is_none()
+        && let Some(launch) = attempt.launch
+    {
         inbox::observe::bind(db, id, launch);
     }
-    let (outcome, detail) = herdr::run_prompt(&sock, &attempt.target, &attempt.text, json_mode);
+    let (outcome, detail) = herdr::run_machine_prompt(
+        &sock,
+        machine.as_deref(),
+        &attempt.target,
+        &attempt.text,
+        json_mode,
+    );
     finish(db, attempt, outcome, detail, confirm, timeout)
 }
 
@@ -274,7 +287,20 @@ pub(crate) fn begin(
         if here && host.is_none() {
             return Ok(None);
         }
-        if let Some(host) = host.as_ref()
+        let machine = if !here && store::caller_machine().is_none() {
+            host.as_deref()
+                .map(|host| {
+                    herdr::machine_label(&herdr::socket(), host).map_err(|e| Error {
+                        code: ExitCode::Transport,
+                        message: e.to_string(),
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        if machine.is_none()
+            && let Some(host) = host.as_ref()
             && (!here || store::caller_machine().as_deref() != Some(host.as_str()))
         {
             let message = if t.parent.is_none() {
@@ -297,6 +323,16 @@ pub(crate) fn begin(
                 message,
             });
         }
+        if machine.is_some()
+            && !d.file.is_empty()
+            && d.input
+                .as_ref()
+                .is_none_or(|input| !input.reason.is_empty())
+        {
+            return Err(store::usage(
+                "remote prompt file must be captured as UTF-8 text without NUL, at most 1 MiB",
+            ));
+        }
         let agent: String = tx.query_row(
             "select coalesce(agent_name,'') from tasks where id=?",
             [id],
@@ -316,6 +352,9 @@ pub(crate) fn begin(
         }
         ready()?;
         d.data["target"] = json!(target);
+        if let Some(label) = &machine {
+            d.data["machine"] = json!(label);
+        }
         let eid = store::event(
             tx,
             store::Event {
@@ -354,6 +393,7 @@ pub(crate) fn begin(
             );
             tx.execute("insert into meta(key,value) values(?,?) on conflict(key) do update set value=excluded.value",params![format!("receipt_due:{eid}"),value])?;
         }
+        let mut document = None;
         if let Some(input) = &d.input {
             documents::capture(tx, || {
                 let (kind, name) = if input.path.is_empty() {
@@ -377,19 +417,37 @@ pub(crate) fn begin(
                         )
                     }
                 };
-                documents::store(tx, id, kind, &name, input, Some(eid), 0)?;
+                let (doc, _) = documents::store(tx, id, kind, &name, input, Some(eid), 0)?;
+                document = Some(doc);
                 Ok(())
             })?;
         }
-        Ok(Some((eid, t.launch, target, t.role, agent)))
+        let remote_doc = if machine.is_some() && !d.file.is_empty() {
+            Some(
+                document
+                    .filter(|doc| doc.captured)
+                    .ok_or_else(|| {
+                        store::usage("remote prompt file could not be captured; not delivering")
+                    })?
+                    .id,
+            )
+        } else {
+            None
+        };
+        Ok(Some((eid, t.launch, target, t.role, agent, remote_doc)))
     })?;
-    let Some((attempt, launch, target, role, agent)) = attempt else {
+    let Some((attempt, launch, target, role, agent, remote_doc)) = attempt else {
         return Ok(None);
     };
     let text = if let Some((ask, text)) = d.answer {
         format!("First taskr got {attempt}. ask {ask}: {text}")
     } else if d.file.is_empty() {
         format!("First taskr got {attempt}. {}", d.body)
+    } else if let Some(doc) = remote_doc {
+        format!(
+            "First taskr got {attempt}; run taskr doc get {doc} and execute that text exactly.{}",
+            contract(&role)
+        )
     } else {
         format!(
             "First taskr got {attempt}; read {}; execute exactly.{}",

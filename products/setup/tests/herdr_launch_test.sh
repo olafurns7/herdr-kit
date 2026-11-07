@@ -23,8 +23,13 @@ cat >"$stub_dir/herdr" <<'EOF'
 line=herdr
 for arg in "$@"; do line="$line|$arg"; done
 printf '%s\n' "$line" >>"$STUB_CALLS"
+if [ "$1" = --machine ]; then
+    [ "$2" = "${STUB_MACHINE_LABEL:-devbox}" ] || exit 1
+    shift 2
+fi
 [ "${STUB_FAIL:-}" != "herdr $1 $2" ] || exit 1
 case "$1 $2" in
+    "machine list") printf '%s\n' "$STUB_MACHINES" ;;
     "pane current") printf '%s\n' "${STUB_CURRENT:-{\"result\":{\"pane\":{\"pane_id\":\"wA:p1\",\"tab_id\":\"wA:t1\",\"workspace_id\":\"wA\"}}}}" ;;
     "tab create")
         [ "$4" != wZ ] || exit 1
@@ -40,12 +45,21 @@ case "$1 $2" in
         ;;
     "pane process-info") printf '{"result":{"process_info":{"foreground_process_group_id":%s,"foreground_processes":[{"name":"zsh","pid":400}],"pane_id":"%s","shell_pid":400}}}\n' "${STUB_FG:-400}" "$4" ;;
     "pane wait-output")
+        case $5 in herdr-launch-probe-*) [ "${STUB_PROBE:-ok}" != wait-fail ] || exit 1; exit 0 ;; esac
         [ "${STUB_ENV_OK:-1}" = 1 ] || exit 1
         if [ -f "$STUB_CALLS.setup" ]; then
             [ "$(cat "$STUB_CALLS.env")" = "$5" ] || exit 1
             [ -f "$(cat "$STUB_CALLS.setup-path")" ] || exit 1
         fi ;;
     "pane run")
+        case $4 in ' probe_marker='*)
+            [ "${STUB_PROBE:-ok}" != run-fail ] || exit 1
+            printf '%s\n' "$4" >"$STUB_CALLS.probe-command"
+            marker=${4#' probe_marker='}; marker=${marker%%;*}
+            printf '%s\n' "$marker" "${STUB_CWD_OK:-1}" "${STUB_COMMON:-/target/main/.git}" \
+                "${STUB_CLI-/target/bin/codex}" "${STUB_CODATOR:-0}" "$marker-end" >"$STUB_CALLS.probe"
+            ;;
+        esac
         case $3 in *:p8) [ "${STUB_PUSH_FAIL:-}" != run ] || exit 1 ;; esac
         case $4 in '. '*)
             source_command=$4
@@ -66,7 +80,16 @@ case "$1 $2" in
                 fi
             ) || exit 1
             ;; esac ;;
-    "pane read") printf '%s\n' "${STUB_SCREEN:-}" ;;
+    "pane read")
+        if [ -f "$STUB_CALLS.probe" ]; then
+            case ${STUB_PROBE:-ok} in
+                read-fail) exit 1 ;;
+                unreadable) printf '%s\n' 'no probe output' ;;
+                truncated) sed '$d' "$STUB_CALLS.probe" ;;
+                json) jq -Rs '{result:{output:.}}' <"$STUB_CALLS.probe" ;;
+                *) cat "$STUB_CALLS.probe" ;;
+            esac
+        else printf '%s\n' "${STUB_SCREEN:-}"; fi ;;
     "agent start") [ "${STUB_START_OK:-1}" = 1 ] || exit 1; printf '%s\n' "$3" >"$STUB_CALLS.started" ;;
     "agent list")
         if [ -f "$STUB_CALLS.started" ]; then
@@ -148,6 +171,8 @@ new_case() {
     STUB_SCREEN= STUB_START_OK= STUB_PUSH_FAIL= STUB_SERVER_RC=0 STUB_NATIVE= STUB_OBSERVE=
     STUB_INIT_RC=0 STUB_INIT_NATIVE=synthetic-native
     STUB_SOURCE_PROBE=0 STUB_PROMPT= STUB_LOG_GOT=
+    STUB_MACHINES='[{"id":"m1","label":"devbox","target":"u@Box.example.com","enabled":true}]'
+    STUB_MACHINE_LABEL=devbox STUB_PROBE=ok STUB_CWD_OK=1 STUB_COMMON=/target/main/.git STUB_CLI=/target/bin/codex STUB_CODATOR=0
     STUB_RESERVED=$case_dir/reserved.json
     printf '%s\n' "case: $case_name"
 }
@@ -165,6 +190,9 @@ run_launch() {
         STUB_NATIVE="$STUB_NATIVE" STUB_OBSERVE="$STUB_OBSERVE" \
         STUB_INIT_RC="$STUB_INIT_RC" STUB_INIT_NATIVE="$STUB_INIT_NATIVE" \
         STUB_SOURCE_PROBE="$STUB_SOURCE_PROBE" STUB_PROMPT="$STUB_PROMPT" STUB_LOG_GOT="$STUB_LOG_GOT" \
+        STUB_MACHINES="$STUB_MACHINES" STUB_MACHINE_LABEL="$STUB_MACHINE_LABEL" \
+        STUB_PROBE="$STUB_PROBE" STUB_CWD_OK="$STUB_CWD_OK" STUB_COMMON="$STUB_COMMON" \
+        STUB_CLI="$STUB_CLI" STUB_CODATOR="$STUB_CODATOR" \
         TASKR_FORMAT=json "$@" \
         >"$case_dir/out" 2>"$case_dir/err") || run_status=$?
     out=$(cat "$case_dir/out")
@@ -227,6 +255,159 @@ tab_calls() {
 }
 
 if [ "${HERDR_LAUNCH_RESERVED_ONLY:-0}" != 1 ]; then
+# Discovery is the only local Herdr read; every control call must be forwarded.
+expect_machine_calls() {
+    bad=$(sed '/^herdr|machine|list|--json$/d; /^herdr|--machine|/d; /^taskr|/d' "$case_dir/calls")
+    [ -z "$bad" ] || fail "unforwarded calls: $bad"
+    [ "$(grep -c '^herdr|machine|list|--json$' "$case_dir/calls")" -eq 1 ] || fail 'discovery count'
+    ! grep -q '|pane|current|' "$case_dir/calls" || fail 'used caller pane current'
+    grep -q '^taskr|new|.*|--machine|box$' "$case_dir/calls" || fail 'new machine host missing'
+    grep -q '^taskr|launch|.*|--machine|box$' "$case_dir/calls" || fail 'launch machine host missing'
+    [ "$(grep -c '|pane|run|.* probe_marker=' "$case_dir/calls")" -eq 1 ] || fail 'probe count'
+    awk '/^taskr\|new\|/ {exit !seen} /\|pane\|read\|/ {seen=1}' "$case_dir/calls" || fail 'registered before probe read'
+}
+
+for remote_kind in claude codex; do
+    new_case "remote $remote_kind uses target facts and forwards every control call"
+    lane=opus-medium
+    [ "$remote_kind" != codex ] || lane=sol-high
+    tcwd="/target/checkout 'quoted"
+    STUB_PROBE=json
+    STUB_CODATOR=1
+    mkdir -p "$case_dir/caller-bin"
+    printf '%s\n' '#!/bin/sh' 'touch "$STUB_CALLS.caller-git"; exit 99' >"$case_dir/caller-bin/git"
+    chmod 0755 "$case_dir/caller-bin/git"
+    run_path=$case_dir/caller-bin:$run_path
+    run_launch sh "$launch_sh" --cwd "$tcwd" --machine devbox --workspace wT "$lane" impl-remote "$brief" "$report" 42
+    expect_rc 0
+    [ -z "$err" ] || fail "unexpected stderr: $err"
+    [ ! -e "$case_dir/calls.caller-git" ] || fail 'ran git on the caller'
+    expect_out 'task=2468 launch=3579 tab=wT:t7 pane=wT:p7 machine=devbox'
+    expect_machine_calls
+    grep -q -F "$forward" "$case_dir/calls" || fail 'target Codator was not forwarded'
+    if [ "$remote_kind" = codex ]; then
+        grep -q -F '"/target/main"={trust_level="trusted"}' "$case_dir/calls" || fail 'target main checkout not trusted'
+        grep -q -F "\"$tcwd\"={trust_level=\"trusted\"}" "$case_dir/calls" || fail 'target cwd not trusted'
+    fi
+    # Execute the exact generated shell probe in an isolated target fixture.
+    mkdir -p "$case_dir/target/bin" "$case_dir/target/home/.local/bin"
+    printf '%s\n' '#!/bin/sh' 'echo /target/main/.git' >"$case_dir/target/bin/git"
+    printf '%s\n' '#!/bin/sh' >"$case_dir/target/bin/$remote_kind"
+    chmod 0755 "$case_dir/target/bin/git" "$case_dir/target/bin/$remote_kind"
+    HOME="$case_dir/target/home" PATH="$case_dir/target/bin:/usr/bin:/bin" \
+        sh "$case_dir/calls.probe-command" >"$case_dir/probe-output"
+    sed -n '3p' "$case_dir/probe-output" | grep -qx 0 || fail 'probe did not check missing target cwd'
+    sed -n '4p' "$case_dir/probe-output" | grep -qx /target/main/.git || fail 'probe git fact missing'
+    sed -n '5p' "$case_dir/probe-output" | grep -qx "$case_dir/target/bin/$remote_kind" || fail 'probe CLI fact missing'
+    sed -n '6p' "$case_dir/probe-output" | grep -qx 0 || fail 'probe absent Codator fact missing'
+    printf '%s\n' '#!/bin/sh' >"$case_dir/target/home/.local/bin/codator"
+    chmod 0755 "$case_dir/target/home/.local/bin/codator"
+    HOME="$case_dir/target/home" PATH="$case_dir/target/bin:/usr/bin:/bin" \
+        sh "$case_dir/calls.probe-command" >"$case_dir/probe-output"
+    sed -n '6p' "$case_dir/probe-output" | grep -qx 1 || fail 'probe executable Codator fact missing'
+done
+
+new_case 'remote given pane does not check the caller cwd or Codator'
+STUB_PANE_CWD=/target/only
+mkdir -p "$home/.local/bin"
+printf '%s\n' '#!/bin/sh' >"$home/.local/bin/codator"
+chmod 0755 "$home/.local/bin/codator"
+run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+expect_rc 0
+expect_machine_calls
+! grep -q -F "$forward" "$case_dir/calls" || fail 'used caller Codator'
+
+new_case 'remote no-receipt retry forwards pane read and Enter without resending'
+STUB_PROMPT=no_receipt STUB_LOG_GOT=1
+run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 submit_retry=enter machine=devbox'
+expect_machine_calls
+[ "$(grep -c '^taskr|prompt|' "$case_dir/calls")" -eq 1 ] || fail 'remote brief resent'
+grep -q '^herdr|--machine|devbox|pane|send-keys|wA:p3|Enter$' "$case_dir/calls" || fail 'retry Enter not forwarded'
+
+new_case 'machine id resolves to its enabled target'
+STUB_MACHINE_LABEL=m1
+run_launch sh "$launch_sh" --machine m1 opus-medium impl-remote "$brief" "$report" 42 wA:p3
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=m1'
+expect_machine_calls
+
+new_case 'remote label refuses two enabled profiles for the same derived host'
+STUB_MACHINES='[{"id":"m1","label":"devbox","target":"u@Box","enabled":true},{"id":"m2","label":"other","target":"v@box.example.com","enabled":true}]'
+run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+expect_rc 2
+expect_err 'host box matches 2 enabled machines; exactly one is required'
+expect_calls 'herdr|machine|list|--json'
+
+new_case 'remote label ignores disabled profiles for the same derived host'
+STUB_MACHINES='[{"id":"m1","label":"devbox","target":"u@Box","enabled":true},{"id":"m2","label":"other","target":"v@box.example.com","enabled":false}]'
+run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+expect_rc 0
+expect_machine_calls
+
+new_case 'remote cwd must be absolute before any call'
+run_launch sh "$launch_sh" --machine devbox --workspace wT --cwd relative opus-medium impl-remote "$brief" "$report" 42
+expect_rc 2
+expect_err '--machine needs an absolute --cwd'
+expect_no_calls
+
+for profiles in '[]' '[{"label":"devbox","target":"box","enabled":false}]' \
+    '[{"label":"devbox","target":"box","enabled":true},{"id":"devbox","target":"other","enabled":true}]' \
+    '[{"label":"Devbox","target":"box","enabled":true}]' \
+    '[{"label":"devbox","target":"u@192.0.2.1","enabled":true}]' \
+    '[{"label":"devbox","target":"u@2001:db8::1","enabled":true}]' 'invalid'; do
+    new_case 'missing, disabled, ambiguous, wrong-case, IP or unreadable machine is refused'
+    STUB_MACHINES=$profiles
+    run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+    expect_rc 2
+    expect_err 'needs one enabled saved label or id'
+    expect_calls 'herdr|machine|list|--json'
+done
+
+for flags in '--push --machine devbox' '--machine devbox --push' \
+    '--reserved 2 3 --machine devbox' '--machine devbox --reserved 2 3' \
+    '--machine devbox --check' '--check --machine devbox' '--machine'; do
+    new_case "refuse remote incompatible flags: $flags"
+    run_launch sh "$launch_sh" $flags opus-medium impl-remote "$brief" "$report" 42 wA:p3
+    expect_rc 2
+    expect_no_calls
+done
+for remote_kind in opencode pi; do
+    new_case "refuse remote kind: $remote_kind"
+    mkdir -p "$home/.config/herdr-fleet"
+    remote_model=synthetic
+    [ "$remote_kind" != opencode ] || remote_model=opencode/synthetic
+    printf '{"custom":{"kind":"%s","model":"%s","effort":"high","prefixes":["impl"]}}\n' "$remote_kind" "$remote_model" >"$home/.config/herdr-fleet/lanes.json"
+    run_launch sh "$launch_sh" --machine devbox custom impl-remote "$brief" "$report" 42 wA:p3
+    expect_rc 2
+    expect_err 'supports claude and codex only'
+    expect_no_calls
+done
+for flags in '' '--workspace wT' '--cwd /target/only'; do
+    new_case "remote new tab needs workspace and cwd: $flags"
+    run_launch sh "$launch_sh" --machine devbox $flags opus-medium impl-remote "$brief" "$report" 42
+    expect_rc 2
+    expect_err 'needs PANE or both --workspace and --cwd'
+    expect_no_calls
+done
+for probe_failure in run-fail wait-fail read-fail unreadable truncated; do
+    new_case "remote probe failure stops before registration: $probe_failure"
+    STUB_PROBE=$probe_failure
+    run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+    expect_rc 1
+    expect_err 'step 1'
+    expect_err 'task=- launch=- tab=wA:t5 pane=wA:p3'
+    ! grep -q '^taskr|' "$case_dir/calls" || fail 'registered after probe failure'
+done
+for fact in cwd cli codator; do
+    new_case "invalid target fact stops before registration: $fact"
+    case $fact in cwd) STUB_CWD_OK=0 ;; cli) STUB_CLI= ;; codator) STUB_CODATOR=invalid ;; esac
+    run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+    expect_rc 1
+    ! grep -q '^taskr|' "$case_dir/calls" || fail 'registered with invalid target fact'
+done
+
 new_case 'claude lane in a new tab, with Codator forwarding'
 mkdir -p "$home/.local/bin"
 printf '%s\n' '#!/bin/sh' >"$home/.local/bin/codator"
@@ -748,6 +929,7 @@ check_refused --workspace opus-medium impl-x "$brief" "$report" 42
 check_refused --workspace '' opus-medium impl-x "$brief" "$report" 42
 check_refused --workspace wB opus-medium impl-x "$brief" "$report" 42 wB:p1
 check_refused --cwd "$root/no-such-dir" opus-medium impl-x "$brief" "$report" 42
+expect_err "--cwd '$root/no-such-dir' is not a directory"
 check_refused --cwd "$root" opus-medium impl-x "$brief" "$report" 42 wA:p3
 expect_err '--cwd applies only without PANE'
 
