@@ -1,0 +1,8 @@
+{
+  "observed_at": "2026-11-09T20:23:28.547322389Z",
+  "snapshot": {
+    "rate_limits": {
+      "model_scoped": [{"display_name": "Other", "utilization": 12}]
+    }
+  }
+}

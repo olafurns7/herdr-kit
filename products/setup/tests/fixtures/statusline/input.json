@@ -1,0 +1,11 @@
+{
+  "workspace": {"current_dir": "/workspace"},
+  "model": {"display_name": "Claude (1M context)"},
+  "effort": {"level": "high"},
+  "fast_mode": true,
+  "rate_limits": {
+    "five_hour": {"used_percentage": 25.2, "resets_at": 1700000000},
+    "seven_day": {"used_percentage": 40.3}
+  },
+  "context_window": {"remaining_percentage": 80.2}
+}
