@@ -576,6 +576,13 @@ for caller_role in orchestrator sub-orchestrator; do
     grep -q '^herdr|agent|start|impl-fix|' "$case_dir/calls" || fail 'no implementer start'
 done
 
+new_case 'sub-orchestrator caller keeps remote launch authority'
+caller_fixture sub-orchestrator orch-parent
+run_launch TASKR_TASK=42 sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+expect_rc 0
+expect_machine_calls
+grep -q '^herdr|--machine|devbox|agent|start|impl-remote|' "$case_dir/calls" || fail 'no remote implementer start'
+
 new_case 'opus-xhigh launches an orch- sub-orchestrator' sub-orchestrator
 run_launch sh "$launch_sh" opus-xhigh orch-x "$brief" "$report" 42
 expect_rc 0

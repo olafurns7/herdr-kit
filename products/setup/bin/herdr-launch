@@ -327,7 +327,6 @@ fi
 
 # A worker may gather facts under its own task; it may not launch other lanes.
 if [ -n "${TASKR_TASK:-}" ]; then
-    [ -z "$reserved_task" ] && [ -z "$machine" ] || die 'a lane cannot use --reserved or --machine'
     caller_rows=$(taskr --json status --tree "$TASKR_TASK" --all) || die 'could not read caller task and children'
     caller=$(printf '%s\n' "$caller_rows" | jq -ces --arg id "$TASKR_TASK" '
         [.[] | select((.id | tostring) == $id)] | select(length == 1) | .[0] |
@@ -337,6 +336,7 @@ if [ -n "${TASKR_TASK:-}" ]; then
     case $caller_role in
         orchestrator | sub-orchestrator) ;;
         reviewer | researcher)
+            [ -z "$reserved_task" ] && [ -z "$machine" ] || die 'a lane cannot use --reserved or --machine'
             [ "$prefix" = gather ] || die 'a reviewer or researcher may launch only gather- helpers'
             [ "$parent" = "$TASKR_TASK" ] || die 'a gather helper must use PARENT=$TASKR_TASK'
             caller_name=$(printf '%s\n' "$caller" | jq -r .name)
