@@ -46,7 +46,8 @@ for name, criteria in continuity.items():
         if criterion not in body:
             errors.append(f"orchestration {name} is missing continuity rule: {criterion}")
 # Slice C allows about 25 lines above the 382-line core baseline. The head-gate loop adds about 13 lines.
-if sum(len((orchestration / name).read_text().splitlines()) for name in continuity) > 420:
+# The owner's review-loop rules (stop line, round cap, fresh seat, round-5 ask) add 10 lines.
+if sum(len((orchestration / name).read_text().splitlines()) for name in continuity) > 430:
     errors.append("orchestration continuity core exceeds its line budget")
 review = (root / "products/setup/skills/herdr-practices/references/review.md").read_text()
 if len(review.splitlines()) > 80:
