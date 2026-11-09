@@ -53,7 +53,7 @@ never install it or read its accounts. For a resume, preserve the recorded accou
 Do not bypass an account manager's refusal or inspect credential files.
 
 If a host uses slotr, a leaf brief gets no `slotr run` line except the one
-focused repro that a gate failure prompt names. The parent's head gate passes
+focused repro that a gate failure prompt names. A parent's local head gate passes
 `--cost MIB` or an existing `--kind`.
 Keep local admission configuration and notification credentials outside this repo.
 The default hook templates call taskr; the Claude template also denies Agent,
