@@ -108,6 +108,11 @@ printf '%s\n' "$line" >>"$STUB_CALLS"
 [ "${STUB_FAIL:-}" != "taskr $1 ${2:-}" ] || exit 1
 case $1 in
     --json) case "$2 $3" in
+        'status --tree') cat "$STUB_CALLER" ;;
+        'doc ls')
+            [ "${STUB_FAIL:-}" != 'taskr doc ls' ] || exit 1
+            jq -cn --arg path "$STUB_CALLER_BRIEF" \
+                '{task_id:42,kind:"brief",name:"",source_path:$path}' ;;
         'work list') cat "$STUB_RESERVED" ;;
         'work observe')
             [ "${STUB_FAIL:-}" != 'taskr work observe' ] || exit 1
@@ -174,6 +179,7 @@ new_case() {
     STUB_MACHINES='[{"id":"m1","label":"devbox","target":"u@Box.example.com","enabled":true}]'
     STUB_MACHINE_LABEL=devbox STUB_PROBE=ok STUB_CWD_OK=1 STUB_COMMON=/target/main/.git STUB_CLI=/target/bin/codex STUB_CODATOR=0
     STUB_RESERVED=$case_dir/reserved.json
+    STUB_CALLER=$case_dir/caller.json STUB_CALLER_BRIEF=$case_dir/caller.md
     printf '%s\n' "case: $case_name"
 }
 
@@ -187,6 +193,7 @@ run_launch() {
         STUB_ENV_OK="$STUB_ENV_OK" STUB_NEW="$STUB_NEW" STUB_LAUNCH="$STUB_LAUNCH" \
         STUB_SCREEN="$STUB_SCREEN" STUB_START_OK="$STUB_START_OK" STUB_PUSH_FAIL="$STUB_PUSH_FAIL" \
         STUB_RESERVED="$STUB_RESERVED" STUB_SERVER_RC="$STUB_SERVER_RC" \
+        STUB_CALLER="$STUB_CALLER" STUB_CALLER_BRIEF="$STUB_CALLER_BRIEF" \
         STUB_NATIVE="$STUB_NATIVE" STUB_OBSERVE="$STUB_OBSERVE" \
         STUB_INIT_RC="$STUB_INIT_RC" STUB_INIT_NATIVE="$STUB_INIT_NATIVE" \
         STUB_SOURCE_PROBE="$STUB_SOURCE_PROBE" STUB_PROMPT="$STUB_PROMPT" STUB_LOG_GOT="$STUB_LOG_GOT" \
@@ -503,6 +510,71 @@ expect_rc 0
 expect_calls "$(tab_calls gather-x)" \
     "$(tail_calls gather-x researcher wA:p7 wA:t7 codex gpt-6-luna medium "$setup" \
         "$(codex_flags gpt-6-luna medium "\"$tcwd\"={trust_level=\"trusted\"}")")"
+
+# These callers are workers, not root launchers. The ledger owns their role.
+caller_fixture() {
+    jq -cn --arg role "$1" --arg name "${2:-rev-parent}" \
+        '{id:42,role:$role,name:$name,status:"open"}' >"$STUB_CALLER"
+    printf '%s\n' 'HERDR-BRIEF role=reviewer' >"$STUB_CALLER_BRIEF"
+}
+
+for caller_role in reviewer researcher; do
+    for gather_lane in haiku-gather luna-gather glm-free; do
+        new_case "$caller_role caller may launch $gather_lane" researcher
+        caller_fixture "$caller_role"
+        # A closed child does not count; ready and done children still count.
+        printf '%s\n' '{"id":43,"parent_id":42,"status":"ready"}' \
+            '{"id":44,"parent_id":42,"status":"done"}' \
+            '{"id":45,"parent_id":42,"status":"closed"}' >>"$STUB_CALLER"
+        run_launch TASKR_TASK=42 sh "$launch_sh" "$gather_lane" gather-facts "$brief" "$report" 42
+        expect_rc 0
+        grep -q '^taskr|new|gather-facts|--parent|42|--role|researcher|' "$case_dir/calls" || fail 'helper is not ledgered under caller'
+        grep -q '^herdr|agent|start|gather-facts|' "$case_dir/calls" || fail 'no gather helper start'
+    done
+done
+
+for refusal in non-gather parent nested cap forbidden implementer ledger malformed missing-caller docs missing-brief reserved machine; do
+    new_case "worker gather refusal: $refusal" researcher
+    caller_fixture reviewer
+    helper_lane=haiku-gather helper_name=gather-facts helper_parent=42
+    case $refusal in
+        non-gather)
+            helper_lane=opus-medium helper_name=rs-facts
+            reason='may launch only gather- helpers' ;;
+        parent) helper_parent=41; reason='must use PARENT=$TASKR_TASK' ;;
+        nested) caller_fixture researcher gather-parent; reason='cannot start a helper' ;;
+        cap)
+            printf '%s\n' '{"id":43,"parent_id":42,"status":"open"}' \
+                '{"id":44,"parent_id":42,"status":"ready"}' \
+                '{"id":45,"parent_id":42,"status":"done"}' >>"$STUB_CALLER"
+            reason='at most 3 open gather helpers' ;;
+        forbidden) printf '%s\n' 'Gather helpers: none' >>"$STUB_CALLER_BRIEF"; reason='brief says Gather helpers: none' ;;
+        implementer) caller_fixture implementer impl-parent; reason='caller role=implementer cannot start helpers' ;;
+        ledger) STUB_FAIL='taskr --json status'; reason='could not read caller task and children' ;;
+        malformed) printf '%s\n' 'not JSON' >"$STUB_CALLER"; reason='could not read caller role and name' ;;
+        missing-caller) printf '%s\n' '{"record":"daemon"}' >"$STUB_CALLER"; reason='could not read caller role and name' ;;
+        docs) STUB_FAIL='taskr doc ls'; reason='could not read caller brief record' ;;
+        missing-brief) rm "$STUB_CALLER_BRIEF"; reason='caller brief is not readable' ;;
+        reserved | machine) reason='a lane cannot use --reserved or --machine' ;;
+    esac
+    case $refusal in
+        reserved) run_launch TASKR_TASK=42 sh "$launch_sh" --reserved 2468 3579 "$helper_lane" "$helper_name" "$brief" "$report" "$helper_parent" wA:p5 ;;
+        machine) run_launch TASKR_TASK=42 sh "$launch_sh" --machine devbox "$helper_lane" "$helper_name" "$brief" "$report" "$helper_parent" wA:p5 ;;
+        *) run_launch TASKR_TASK=42 sh "$launch_sh" "$helper_lane" "$helper_name" "$brief" "$report" "$helper_parent" ;;
+    esac
+    expect_rc 2
+    expect_err "$reason"
+    grep -q '^herdr|' "$case_dir/calls" && fail 'refused caller reached Herdr'
+    grep -q '^taskr|new|' "$case_dir/calls" && fail 'refused caller registered a child'
+done
+
+for caller_role in orchestrator sub-orchestrator; do
+    new_case "$caller_role caller keeps non-gather launch authority"
+    caller_fixture "$caller_role" orch-parent
+    run_launch TASKR_TASK=42 sh "$launch_sh" opus-medium impl-fix "$brief" "$report" 42
+    expect_rc 0
+    grep -q '^herdr|agent|start|impl-fix|' "$case_dir/calls" || fail 'no implementer start'
+done
 
 new_case 'opus-xhigh launches an orch- sub-orchestrator' sub-orchestrator
 run_launch sh "$launch_sh" opus-xhigh orch-x "$brief" "$report" 42
