@@ -51,6 +51,10 @@ current authorized lane settings. Stop if those cannot be established.
 Reviewers work independently of implementers. The brief defines scope, validation,
 escalation, and publication authority; a lane name grants none of those rights.
 
+A quota stop parks a rule-bound review loop. When a model that the loop's review
+rule needs is out of quota, park the loop until that model returns. Do not run
+rounds with fewer seats, and do not switch the writer model.
+
 ## Loop verification
 
 For velocity, a lead or sub-orchestrator splits work into small gated tasks, runs fast implementers in parallel, and has one verifier review the work of several.
