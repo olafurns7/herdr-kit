@@ -32,6 +32,9 @@ psi_full_avg60_max = 5.0
 load1_per_core_max = 0.0 # 0 disables the load gate
 recovery_healthy_seconds = 30.0
 queue_poll_ms = 1000
+peak_window_hours = 48 # rolling window of measured end-event peaks
+peak_min_samples = 20 # fewer samples reserve the declared cost
+reserve_from = "peak_p95" # peak_p95 or cost; does not change the per-run memory cap
 
 [watchdog]
 observe_locks = [] # report whether these locks are held at a stop (shared probe)

@@ -9,6 +9,15 @@ priority level, and it can reclaim a run past its lease when another
 campaign waits. This lowers the risk of running out
 of memory but does not remove it.
 
+Running jobs reserve their class's measured p95 peak, capped at their declared
+cost. Classes use `--kind`, or `cost:<mib>` for jobs without a kind. The
+`[admission]` defaults are `peak_window_hours = 48`, `peak_min_samples = 20`, and
+`reserve_from = "peak_p95"`. Below the sample floor, jobs reserve their declared
+cost; `reserve_from = "cost"` restores declared-cost reservations for every job.
+The candidate still needs its full declared cost to start, and per-job memory
+caps remain unchanged. `slotr status` and `slotr status --json` show each
+holder's cost, `reservation_mib`, and `peak_samples`.
+
 ## Quick install
 
 ```sh

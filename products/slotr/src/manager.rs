@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     os::unix::{
         fs::MetadataExt,
         process::{CommandExt, ExitStatusExt},
@@ -74,6 +74,116 @@ pub fn wall_now() -> f64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
+}
+
+#[derive(Default)]
+pub struct PeakCache {
+    refreshed_at: Option<f64>,
+    peaks: crate::admission::Peaks,
+}
+impl PeakCache {
+    pub fn refresh(&mut self, cfg: &config::Config, now: f64) -> crate::admission::Peaks {
+        self.refresh_with(now, || {
+            let mut file = crate::files::readable(events_path())?;
+            let wall = wall_now();
+            read_peaks(&mut file, wall, cfg.admission.peak_window_hours)
+        })
+    }
+    fn refresh_with(
+        &mut self,
+        now: f64,
+        read: impl FnOnce() -> std::io::Result<crate::admission::Peaks>,
+    ) -> crate::admission::Peaks {
+        if self.refreshed_at.is_none_or(|at| now - at >= 300.0) {
+            self.refreshed_at = Some(now);
+            if let Ok(peaks) = read() {
+                self.peaks = peaks;
+            }
+        }
+        self.peaks.clone()
+    }
+}
+
+// Scan backwards in blocks, stopping at the first dated event before the window.
+// Each waiter owns a cache across polls; a status invocation takes one snapshot.
+pub(crate) fn read_peaks(
+    file: &mut (impl Read + Seek),
+    now: f64,
+    window_hours: u64,
+) -> std::io::Result<crate::admission::Peaks> {
+    let cutoff = now - window_hours as f64 * 3600.0;
+    let mut samples: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut position = file.seek(SeekFrom::End(0))?;
+    let mut line = Vec::new();
+    let mut collect = |line: &mut Vec<u8>| {
+        line.reverse();
+        let event = serde_json::from_slice::<Value>(line).ok();
+        line.clear();
+        let Some(event) = event else { return true };
+        let at = event["at"].as_f64().or_else(|| {
+            time::OffsetDateTime::parse(
+                event["at"].as_str()?,
+                &time::format_description::well_known::Rfc3339,
+            )
+            .ok()
+            .map(|at| at.unix_timestamp_nanos() as f64 / 1_000_000_000.0)
+        });
+        let Some(at) = at else { return true };
+        if at < cutoff {
+            return false;
+        }
+        if at > now || event["event"] != "end" || !event["accounting_error"].is_null() {
+            return true;
+        }
+        let Some(peak) = event["memory_peak_bytes"].as_u64().filter(|n| *n > 0) else {
+            return true;
+        };
+        let class = match event["kind"].as_str() {
+            Some(kind) => crate::admission::class(Some(kind), 0),
+            None => {
+                let Some(cost) = event["cost_mib"].as_u64() else {
+                    return true;
+                };
+                crate::admission::class(None, cost)
+            }
+        };
+        samples.entry(class).or_default().push(peak);
+        true
+    };
+    'scan: while position > 0 {
+        let size = position.min(8192) as usize;
+        position -= size as u64;
+        file.seek(SeekFrom::Start(position))?;
+        let mut block = vec![0; size];
+        file.read_exact(&mut block)?;
+        for byte in block.into_iter().rev() {
+            if byte == b'\n' {
+                if !collect(&mut line) {
+                    break 'scan;
+                }
+            } else {
+                line.push(byte);
+            }
+        }
+    }
+    if !line.is_empty() {
+        collect(&mut line);
+    }
+    Ok(samples
+        .into_iter()
+        .map(|(class, mut values)| {
+            values.sort_unstable();
+            // Nearest-rank p95: ceil(0.95 * n), using a one-based rank.
+            let rank = (95 * values.len()).div_ceil(100);
+            (
+                class,
+                crate::admission::Peak {
+                    mib: values[rank - 1] as f64 / 1048576.0,
+                    samples: values.len(),
+                },
+            )
+        })
+        .collect())
 }
 
 pub fn code(status: std::process::ExitStatus) -> i32 {
@@ -464,4 +574,93 @@ pub fn stop_event(
 
 pub fn caller(actor: &str) -> Value {
     json!({"actor":actor,"uid":rustix::process::getuid().as_raw(),"pid":std::process::id(),"task":std::env::var("TASKR_TASK").ok()})
+}
+
+#[cfg(test)]
+mod peak_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn peaks_filter_window_accounting_and_use_nearest_rank() {
+        let mut events =
+            vec![json!({"at":0,"event":"end","kind":"build","memory_peak_bytes":999999999})];
+        for peak in 1..=20 {
+            events.push(json!({"at":"2026-01-01T00:00:00.000Z","event":"end","kind":"build","memory_peak_bytes":peak * 1048576_u64,"oom_killed":peak == 19}));
+        }
+        for fields in [
+            json!({"event":"end","memory_peak_bytes":null}),
+            json!({"event":"end","memory_peak_bytes":0}),
+            json!({"event":"end","memory_peak_bytes":999999999,"accounting_error":"unavailable"}),
+            json!({"event":"admit","memory_peak_bytes":999999999}),
+        ] {
+            let mut event = fields;
+            event["at"] = json!(1767225600);
+            event["kind"] = json!("build");
+            events.push(event);
+        }
+        // A missing cost on an old unkinded event cannot identify its class.
+        events
+            .push(json!({"at":1767225600,"event":"end","kind":null,"memory_peak_bytes":999999999}));
+        let mut bytes = events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        bytes.push_str("\n{incomplete");
+        let peaks = read_peaks(&mut Cursor::new(bytes), 1767225600.0, 48).unwrap();
+        assert_eq!(peaks.len(), 1);
+        assert_eq!(peaks["build"].samples, 20);
+        assert_eq!(peaks["build"].mib, 19.0);
+    }
+
+    #[test]
+    fn reverse_scan_carries_lines_across_blocks_and_stops_at_window() {
+        let old = json!({"at":0,"event":"end","kind":"build","memory_peak_bytes":999999999});
+        let recent = json!({"at":100000,"event":"end","kind":"build","memory_peak_bytes":1572864,"purpose":"x".repeat(9000)});
+        let bytes = format!("{}\n{old}\n{recent}\n", " ".repeat(20000));
+        let mut cursor = Cursor::new(bytes);
+        let peaks = read_peaks(&mut cursor, 100000.0, 1).unwrap();
+        assert_eq!(peaks["build"].samples, 1);
+        assert_eq!(peaks["build"].mib, 1.5);
+        // The oldest block containing the 20 KB prefix was never read.
+        assert!(cursor.position() > 20000);
+    }
+
+    #[test]
+    fn cache_throttles_reads_and_keeps_last_table_on_error() {
+        let mut cache = PeakCache::default();
+        let unreadable = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(cache.refresh_with(0.0, unreadable).is_empty());
+        let cfg: config::Config = toml::from_str(include_str!("../config.example.toml")).unwrap();
+        let request: state::Request = serde_json::from_value(json!({
+            "enqueue_seq":1,"pool":"default","campaign":"synthetic","purpose":"synthetic",
+            "cwd":"/tmp","cost_mib":4096,"kind":"build","lease_seconds":0,"since":0,"seen_at":0,
+        }))
+        .unwrap();
+        assert_eq!(
+            crate::admission::reservation(&request, &cfg, &cache.peaks),
+            (4096.0, 0)
+        );
+        assert!(
+            cache
+                .refresh_with(299.0, || panic!("read before five minutes"))
+                .is_empty()
+        );
+        let peaks = cache.refresh_with(300.0, || {
+            Ok(BTreeMap::from([(
+                "build".into(),
+                crate::admission::Peak {
+                    mib: 512.5,
+                    samples: 20,
+                },
+            )]))
+        });
+        assert_eq!(peaks["build"].mib, 512.5);
+        assert_eq!(cache.refresh_with(600.0, unreadable)["build"].samples, 20);
+        assert_eq!(
+            cache.refresh_with(899.0, || panic!("retry before five minutes"))["build"].mib,
+            512.5
+        );
+    }
 }

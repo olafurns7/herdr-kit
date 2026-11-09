@@ -96,6 +96,21 @@ admission events and repeated in terminal events. Explicit and default costs
 record a null kind. Terminal `memory_peak_bytes` and `cpu_usage_nsec` are null
 when the manager cannot supply them. See [event fields and accounting limits](how-it-works.md#state-and-events).
 
+### Measured memory reservations
+
+| Admission key (`admission`) | Default | Meaning |
+| --- | --- | --- |
+| `peak_window_hours` | `48` | Positive rolling window for measured terminal peaks |
+| `peak_min_samples` | `20` | Positive sample floor per class; below it, reserve declared cost |
+| `reserve_from` | `"peak_p95"` | `peak_p95` reserves the smaller of declared cost and class p95; `cost` restores declared-cost reservations |
+
+Classes use the requested kind, or `cost:<mib>` for requests without a kind.
+The candidate still counts at its declared cost, and these settings do not
+change the cgroup memory cap. See [admission](how-it-works.md#admission) for
+peak selection, caching, and accounting-error fallback. Running holders in text
+and JSON status retain their declared cost and add `reservation_mib` and
+`peak_samples` (usable class samples, including when cost mode is selected).
+
 ### Priority
 
 | Priority key (`priority`) | Default | Meaning |

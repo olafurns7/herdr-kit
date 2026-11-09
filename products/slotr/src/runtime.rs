@@ -112,6 +112,7 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
     let result = (|| {
         let mut previous = None;
         let mut previous_error = None;
+        let mut peak_cache = manager::PeakCache::default();
         while manager::cancelled() == 0 {
             let poll = (|| -> Result<_> {
                 let obs = manager::observations(&state::read(&state::root())?)?;
@@ -120,8 +121,10 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
                 }
                 let sample = stats::read();
                 let now = manager::now();
+                let peaks = peak_cache.refresh(cfg, now);
                 let (legacy_ok, legacy_file) = manager::legacy(pool, false)?;
                 let (holder, reason) = state::transaction(|s| {
+                    s.scheduling.peaks = peaks;
                     manager::reconcile(s, &obs);
                     state::clean_tickets(s)?;
                     admission::update_recovery(s, &sample, cfg, now);
@@ -472,6 +475,7 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
     manager::reconcile(&mut s, &obs); // In-memory only: status never writes state.
     let sample = stats::read();
     let now = manager::now();
+    s.scheduling.peaks = manager::PeakCache::default().refresh(cfg, now);
     let policy_result = policy::read();
     let policy_error = policy_result.as_ref().err().map(|e| format!("{e:#}"));
     let priority = match &policy_result {
@@ -506,6 +510,10 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
                 } else {
                     "configured"
                 });
+                let (reserved, samples) =
+                    admission::reservation(&h.request, cfg, &s.scheduling.peaks);
+                data["reservation_mib"] = json!(reserved);
+                data["peak_samples"] = json!(samples);
                 data
             })
             .collect();
@@ -559,7 +567,7 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
                 data
             })
             .collect();
-        let reserved = admission::outstanding(&s, &obs);
+        let reserved = admission::outstanding(&s, &obs, cfg);
         pools.insert(name,json!({"slots":pool.slots,"campaign_cap":pool.campaign_cap,"priority_cap":admission::priority_cap(pool),"activity":s.scheduling.activity.iter().filter(|a| a.pool == *name).map(|a| json!({"campaign":a.campaign,"weight":a.weight,"quiet_expires_in_seconds":a.quiet_since.map(|at|(at+cfg.priority.quiet_seconds-now).max(0.0)),"demanding":a.demanding})).collect::<Vec<_>>(),"holders":holders,"queue":queue,"budget":{"reserve_mib":cfg.admission.reserve_mib,"outstanding_mib":reserved,"projected_free_mib":sample.available_mib.map(|v|v-reserved-pool.default_cost_mib as f64)}}));
     }
     let mut last_stop = serde_json::to_value(&s.last_stop)?;
@@ -577,7 +585,7 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
             );
             for h in pool["holders"].as_array().unwrap() {
                 println!(
-                    "  {} {} campaign={} weight={} weight_source={} purpose={} task={} pane={} cwd={} seq={} admitted={} lease_expires={} cost={} anon={} ports={}-{} notify={}",
+                    "  {} {} campaign={} weight={} weight_source={} purpose={} task={} pane={} cwd={} seq={} admitted={} lease_expires={} cost={} anon={} ports={}-{} notify={} reservation_mib={} peak_samples={}",
                     h["run"],
                     h["state"],
                     h["campaign"],
@@ -594,7 +602,9 @@ pub fn status(cfg: &Config, as_json: bool) -> Result<()> {
                     h["anon_mib"],
                     h["port_base"],
                     h["port_end"],
-                    h["notify"]
+                    h["notify"],
+                    h["reservation_mib"],
+                    h["peak_samples"]
                 );
             }
             for q in pool["queue"].as_array().unwrap() {
