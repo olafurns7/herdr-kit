@@ -27,7 +27,7 @@ Before reporting done, audit each claim against its evidence (commit, check outp
 
 A fully specified brief makes every decision itself. Wherever something could be unexpected, it says "stop and report", never "decide" or "choose". A fully specified brief also gives every write an exact validation gate and says "stop and report" when a step ends with finish reason `length` or produces no edit.
 
-A fix brief closes the review's findings and adds no design: no rule, table, state, disposition or ticket that no finding requires. A finding that needs new design goes to the owner once, as a design revision. Name each new rare case with its likelihood and cost, or drop it. A review seat's brief gives the artifact, base and head, ticket, and spec or register only. It carries no ruling history and no earlier verdicts, and stays under about 8 KB.
+A fix brief closes the review's findings and adds no design: no rule, table, state, disposition or ticket that no finding requires. A finding that needs new design goes to the owner once, as a design revision. A review seat's brief gives the artifact, base and head, ticket, and spec or register only. It carries no ruling history and no earlier verdicts, and stays under about 8 KB.
 
 For an explicitly owner-authorized `orchestrator` brief, record that authorization and its scope; replace the worker prohibitions with its actual delegation and publication limits under the core's "Roles and briefs" and "Gates before publishing" sections and `lanes.md`. The role alone grants no publication rights.
 
@@ -45,9 +45,9 @@ A root records no pane unless it is given one, and taskr publishes `taskr_parent
 
 Every campaign-lead and sub-orchestrator brief names its permitted lanes, escalation rules, and independent review requirements from the operator policy.
 
-Independent review requirements apply to every review loop: PR, spec or plan. When the review ticket is filed, its acceptance holds a stop line and a round cap. The default stop line is "done at no P0 or P1 finding; P2 and P3 findings become tickets". The default cap is 5 rounds; after round 5 the lead asks the owner (`owner.md` "Review loop at its cap"). The first full review uses the full seat set. After a fix, one fresh seat reviews the fix diff; the full set runs again only when the fix adds files or behaviour. Operator policy can add a seat for named high-risk areas.
+Independent review requirements apply to every review loop: PR, spec or plan. When the review ticket is filed, its acceptance holds this stop line: "done at no P0 or P1 finding; P2 and P3 findings become tickets". It also holds a cap of 5 rounds. After round 5 the lead asks the owner (`owner.md` "Review loop at its cap"). The first full review uses the full seat set. After a fix, one fresh seat reviews the fix diff; the full set runs again only when the fix adds files or behaviour. Operator policy can add a seat for named high-risk areas.
 
-A ticket that moves to another lead is a checkpoint, not a continuation. Its review loop stops and reopens with a state line on the new lead's root (`taskr note`): rounds, open findings, artifact size. The earlier lead's seat rule does not carry over.
+A ticket that moves to another lead is a checkpoint, not a continuation. Its review loop stops and reopens with a state line on the new lead's root (`taskr note`): rounds, open findings, artifact size.
 
 In a `sub-orchestrator` brief, write "Do not commit, push, open a PR, or update the issue tracker." instead, because that brief grants agent starts. Its Ownership field bounds every brief it writes, and it gives each of its helpers a tab in the task workspace under `launch.md`. It cannot nest or publish; ordinary worker briefs may not create a workspace, worktree, tab, or pane.
 
