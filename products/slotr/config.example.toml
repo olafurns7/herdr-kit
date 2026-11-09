@@ -8,6 +8,7 @@ max_lease = "4h" # "0" disables the lease cap
 campaign_cap = 1 # 0 disables the cap
 memory_max_mib = 0 # per-run MemoryMax; 0 uses admission cost, then default_cost_mib if cost is 0
 memory_swap_max_mib = 0 # per-run MemorySwapMax
+fair_turn = "global" # global shares fair turns and priority with other memory-gated pools; pool keeps them inside this pool
 # Optional tables (absent by default):
 # [pools.default.ports]
 # base = 31000
@@ -19,6 +20,8 @@ memory_swap_max_mib = 0 # per-run MemorySwapMax
 # queue_only = false # opt-in cooperative flock guard; see docs/flock.md
 # [pools.default.kinds.dev-stack]
 # cost_mib = 7680
+# pool = "" # nonempty: run this kind in that pool, using that pool's same-named kind
+# env = {} # string variables set for the command, for example { VITEST_MAX_WORKERS = "4" }
 
 [priority]
 quiet_seconds = 30.0 # queue-empty handoff grace; 0 disables the tail

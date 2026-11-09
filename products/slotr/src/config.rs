@@ -108,6 +108,7 @@ pub struct Pool {
     pub campaign_cap: u32,
     pub memory_max_mib: u64,
     pub memory_swap_max_mib: u64,
+    pub fair_turn: String,
     pub ports: Option<Ports>,
     pub legacy_lock: Option<Legacy>,
     #[serde(default)]
@@ -129,6 +130,38 @@ pub struct Legacy {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Kind {
     pub cost_mib: u64,
+    #[serde(default)]
+    pub pool: String,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+impl Config {
+    /// Resolves a requested pool and kind to the pool that runs it and its kind entry.
+    pub fn resolve_kind<'a>(&'a self, pool: &'a str, kind: &str) -> Result<(&'a str, &'a Kind)> {
+        let entry = self.pools[pool].kinds.get(kind).ok_or_else(|| {
+            let valid = self.pools[pool]
+                .kinds
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::anyhow!(
+                "unknown kind: {kind} (pool {pool}; valid kinds: {})",
+                if valid.is_empty() { "none" } else { &valid }
+            )
+        })?;
+        if entry.pool.is_empty() {
+            return Ok((pool, entry));
+        }
+        Ok((entry.pool.as_str(), &self.pools[&entry.pool].kinds[kind]))
+    }
+}
+pub fn env_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .enumerate()
+            .all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Admission {
@@ -217,7 +250,8 @@ fn schema(path: &str) -> Result<Value> {
             "path=\"\"\nmode=\"shared\"\nqueue_only=false",
         )?),
         ["pools", _, "kinds"] => Ok(Value::Table(Default::default())),
-        ["pools", _, "kinds", _] => Ok(toml::from_str("cost_mib=7680")?),
+        ["pools", _, "kinds", _] => Ok(toml::from_str("cost_mib=7680\npool=\"\"\nenv={}")?),
+        ["pools", _, "kinds", _, "env", _] => Ok(Value::String(String::new())),
         _ => bail!("config {path}: unknown key"),
     }
 }
@@ -363,6 +397,37 @@ fn load_with_env(
                     && p.probe <= p.stride
                     && u64::from(p.base) + u64::from(p.stride) * u64::from(pool.slots) <= 65536,
                 "config pools.{name}.ports: invalid block range"
+            );
+        }
+        ensure!(
+            ["global", "pool"].contains(&pool.fair_turn.as_str()),
+            "config pools.{name}.fair_turn: expected global or pool"
+        );
+        for (kind, entry) in &pool.kinds {
+            let key = format!("config pools.{name}.kinds.{kind}");
+            for var in entry.env.keys() {
+                ensure!(
+                    env_name(var) && !var.starts_with("SLOTR_"),
+                    "{key}.env.{var}: invalid or reserved variable name"
+                );
+            }
+            if entry.pool.is_empty() {
+                continue;
+            }
+            ensure!(
+                entry.env.is_empty(),
+                "{key}: a redirected kind takes env from pools.{}.kinds.{kind}",
+                entry.pool
+            );
+            let target = cfg
+                .pools
+                .get(&entry.pool)
+                .filter(|_| entry.pool != *name)
+                .and_then(|p| p.kinds.get(kind));
+            ensure!(
+                target.is_some_and(|t| t.pool.is_empty()),
+                "{key}.pool: {} must be another pool defining kind {kind} without its own pool",
+                entry.pool
             );
         }
         if let Some(l) = &pool.legacy_lock {

@@ -274,6 +274,10 @@ pub fn ordered<'a>(s: &'a State, pool: &str, cfg: &Config, now: f64) -> Vec<&'a 
     });
     queue
 }
+/// Memory-gated pools with global fair turns share fair turns and priority waits.
+fn shares_turns(a: &crate::config::Pool, b: &crate::config::Pool) -> bool {
+    a.memory_gated && b.memory_gated && a.fair_turn == "global" && b.fair_turn == "global"
+}
 pub fn fair_turn<'a>(
     s: &'a State,
     q: &Request,
@@ -295,9 +299,7 @@ pub fn fair_turn<'a>(
         let other = &cfg.pools[&w.pool];
         let why = decide(s, w, cfg, obs, sample, now, |_| true).1;
         (w.pool == q.pool && matches!(why, None | Some("no_slot") | Some("memory_budget")))
-            || (pool.memory_gated
-                && other.memory_gated
-                && matches!(why, None | Some("memory_budget")))
+            || (shares_turns(pool, other) && matches!(why, None | Some("memory_budget")))
     })
     .min_by_key(|w| w.enqueue_seq)
 }
@@ -415,7 +417,7 @@ pub fn preference(
         };
         if a.weight <= q.level
             || campaign_held(s, &a.pool, &a.campaign) >= priority_cap(other)
-            || !(a.pool == q.pool || (pool.memory_gated && other.memory_gated))
+            || !(a.pool == q.pool || shares_turns(pool, other))
         {
             continue;
         }
@@ -440,19 +442,20 @@ pub fn preference(
         }
     }
     // Equal-weight memory contenders also keep their global enqueue order.
-    if pool.memory_gated
-        && s.queue.iter().any(|w| {
-            w.pool != q.pool
-                && cfg.pools.get(&w.pool).is_some_and(|p| p.memory_gated)
-                && w.level == q.level
-                && w.enqueue_seq < q.enqueue_seq
-                && fresh(w, cfg, now)
-                && !cap_blocked(s, w, cfg)
-                && external_blocker(s, w, cfg).is_none()
-                && shared_ports_clear(s, &w.pool, cfg)
-                && decide(s, w, cfg, obs, sample, now, |_| true).1.is_none()
-        })
-    {
+    if s.queue.iter().any(|w| {
+        w.pool != q.pool
+            && cfg
+                .pools
+                .get(&w.pool)
+                .is_some_and(|p| shares_turns(pool, p))
+            && w.level == q.level
+            && w.enqueue_seq < q.enqueue_seq
+            && fresh(w, cfg, now)
+            && !cap_blocked(s, w, cfg)
+            && external_blocker(s, w, cfg).is_none()
+            && shared_ports_clear(s, &w.pool, cfg)
+            && decide(s, w, cfg, obs, sample, now, |_| true).1.is_none()
+    }) {
         return Some("priority_wait");
     }
     None
@@ -695,6 +698,39 @@ mod tests {
             ..Stats::default()
         };
         (cfg, s, sample)
+    }
+    #[test]
+    fn pool_scoped_fair_turn_ignores_other_pools_memory_blocked_turn() {
+        let (mut cfg, mut s, sample) = backfill_fixture();
+        let mut light = cfg.pools["default"].clone();
+        light.slots = 4;
+        cfg.pools.insert("light".into(), light);
+        s.queue[1].pool = "light".into();
+        let obs = BTreeMap::new();
+        // A global light pool waits behind the 20 GiB fair turn, with no backfill.
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0),
+            (None, Some("fair_turn"))
+        );
+        cfg.pools.get_mut("light").unwrap().fair_turn = "pool".into();
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0),
+            (Some(0), None)
+        );
+        // An aged, memory-blocked light waiter does not reserve the other pool either.
+        s.queue[0].pool = "light".into();
+        s.queue[1].pool = "default".into();
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0),
+            (Some(0), None)
+        );
+        // Memory admission still applies inside the scoped pool.
+        s.queue[1].pool = "light".into();
+        s.queue[1].cost_mib = 15 * 1024;
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0).1,
+            Some("memory_budget")
+        );
     }
     #[test]
     fn memory_blocked_fair_turn_allows_fitting_512_mib_backfill() {

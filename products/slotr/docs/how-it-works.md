@@ -82,6 +82,8 @@ heartbeats and changes of fair turn; completed backfill runs do not reset it.
 After eight admissions, backfill stops and competing starts wait while capacity
 accumulates. A head that fits always goes first. Other pools cannot backfill its
 reservation. Recovery, PSI/load, slots, ports, locks and priority caps still apply.
+A pool with `fair_turn = "pool"` neither waits for nor reserves another pool's
+fair turn or priority hold; see [configuration](configuration.md#pools).
 
 This bounds bypass to eight admissions per queued head, rather than promising a
 wall-clock start deadline: existing runs must release enough memory and a slot
