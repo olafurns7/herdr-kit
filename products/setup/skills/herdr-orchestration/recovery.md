@@ -86,7 +86,7 @@ For Claude, use only that worker's recorded `CLAUDE_CONFIG_DIR`, session referen
 ```bash
 # Load Claude-only metadata; stop/report if claude_sid is empty or `null`.
 herdr agent start rev-<slug> --kind claude --pane "$helper_pane_id" --timeout 90000 -- \
-  --model claude-fable-5-1 --effort high \
+  --model claude-fable-5-2 --effort high \
   --dangerously-skip-permissions --settings '<claude settings>' \
   --resume "$claude_sid"
 ```
