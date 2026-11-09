@@ -137,6 +137,9 @@ pub struct Admission {
     pub load1_per_core_max: f64,
     pub recovery_healthy_seconds: f64,
     pub queue_poll_ms: u64,
+    pub peak_window_hours: u64,
+    pub peak_min_samples: usize,
+    pub reserve_from: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Watchdog {
@@ -372,6 +375,14 @@ fn load_with_env(
     ensure!(
         cfg.admission.queue_poll_ms > 0,
         "config admission.queue_poll_ms: must be positive"
+    );
+    ensure!(
+        cfg.admission.peak_window_hours > 0 && cfg.admission.peak_min_samples > 0,
+        "config admission peak window and minimum samples: must be positive"
+    );
+    ensure!(
+        ["peak_p95", "cost"].contains(&cfg.admission.reserve_from.as_str()),
+        "config admission.reserve_from: expected peak_p95 or cost"
     );
     ensure!(
         cfg.watchdog.term_grace_seconds > 0.0,

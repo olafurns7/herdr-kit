@@ -8,9 +8,26 @@ A request is admitted when its pool has a free slot and, for memory-gated
 pools, both of these hold:
 
 ```text
-MemAvailable - sum(max(0, holder.cost_mib - holder.anon_mib)) - request.cost_mib >= reserve_mib
+MemAvailable - sum(max(0, holder.reservation_mib - holder.anon_mib)) - request.cost_mib >= reserve_mib
 PSI full avg60 <= psi_full_avg60_max
 ```
+
+A holder's reservation is the smaller of its declared cost and its class's
+measured p95 peak when there are at least `admission.peak_min_samples` usable
+peaks in the last `admission.peak_window_hours`. Otherwise it uses the declared
+cost. The class is the kind, or `cost:<mib>` when no kind was requested.
+`admission.reserve_from = "cost"` always uses declared costs.
+
+The manager scans `end` events backwards through the rolling window and uses
+nearest-rank p95: sort peaks, then select rank `ceil(0.95 * sample_count)`.
+Bytes are divided by 1048576 to obtain MiB. Null or zero peaks and events with
+accounting errors are skipped; OOM-killed runs count at their recorded peak.
+Older unkinded events without `cost_mib` cannot identify a class and are skipped.
+Each waiter caches its table across polls, refreshing at most every five
+minutes; status takes one snapshot per invocation. A read error retains the
+last table, or declared-cost reservations when no table exists. Admission never
+waits for enough samples. These reservations do not change the candidate's
+declared cost, the per-job memory cap, or the watchdog policy.
 
 - In a memory-gated pool, when MemTotal can be read, requests above MemTotal
   minus the reserve are rejected before queueing.
@@ -240,7 +257,7 @@ systemd-run receives only valid environment variable names via
   when clients from different versions are writing state.
   `cmd` is the payload argv, so a run can be attributed to a package or command;
   the events file is readable by its owner only.
-- An `end` event repeats `run`, `pool`, and `kind`. `exit_code` and
+- An `end` event repeats `run`, `pool`, `kind`, and `cost_mib`. `exit_code` and
   `exit_signal` describe the payload's actual wait status (one is null);
   `slotr_exit_code` is the supervisor's result, including 75 for automatic
   stops. `stopped` and `stop_reason` distinguish slotr stops from payload

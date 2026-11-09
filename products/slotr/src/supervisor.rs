@@ -570,6 +570,7 @@ fn supervise_child(
     }
     if let Err(error) = manager::event(json!({
         "event":"end", "run":h.run, "pool":h.request.pool, "kind":h.request.kind,
+        "cost_mib":h.request.cost_mib,
         "oom_killed":oom_killed,
         "oom_attribution":match oom_killed {
             Some(true) => "oom_kill",

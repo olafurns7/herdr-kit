@@ -8,12 +8,38 @@ use std::collections::BTreeMap;
 
 pub const BACKFILL_LIMIT: u32 = 8;
 
-pub fn outstanding(s: &State, obs: &BTreeMap<String, Observation>) -> f64 {
+#[derive(Clone, Debug)]
+pub struct Peak {
+    pub mib: f64,
+    pub samples: usize,
+}
+pub type Peaks = BTreeMap<String, Peak>;
+
+pub fn class(kind: Option<&str>, cost_mib: u64) -> String {
+    kind.map_or_else(|| format!("cost:{cost_mib}"), str::to_owned)
+}
+pub fn reservation(q: &Request, cfg: &Config, peaks: &Peaks) -> (f64, usize) {
+    let peak = peaks.get(&class(q.kind.as_deref(), q.cost_mib));
+    let samples = peak.map_or(0, |p| p.samples);
+    let cost = q.cost_mib as f64;
+    let reserved = match peak {
+        Some(p)
+            if cfg.admission.reserve_from == "peak_p95"
+                && samples >= cfg.admission.peak_min_samples =>
+        {
+            cost.min(p.mib)
+        }
+        _ => cost,
+    };
+    (reserved, samples)
+}
+pub fn outstanding(s: &State, obs: &BTreeMap<String, Observation>, cfg: &Config) -> f64 {
     s.holders
         .iter()
         .map(|h| {
-            (h.request.cost_mib as f64 - obs.get(&h.run).and_then(|o| o.anon_mib).unwrap_or(0.0))
-                .max(0.0)
+            (reservation(&h.request, cfg, &s.scheduling.peaks).0
+                - obs.get(&h.run).and_then(|o| o.anon_mib).unwrap_or(0.0))
+            .max(0.0)
         })
         .sum()
 }
@@ -107,6 +133,8 @@ pub fn head<'a>(s: &'a State, pool: &str, cfg: &Config) -> Option<&'a Request> {
 
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct Scheduling {
+    #[serde(skip)]
+    pub peaks: Peaks,
     pub activity: Vec<Activity>,
     #[serde(default)]
     pub backfill_admissions: BTreeMap<u64, u32>,
@@ -457,7 +485,7 @@ pub fn decide(
             return (None, Some("recovery"));
         }
         if sample.available_mib.is_none_or(|v| {
-            v - outstanding(s, obs) - (q.cost_mib as f64) < cfg.admission.reserve_mib as f64
+            v - outstanding(s, obs, cfg) - (q.cost_mib as f64) < cfg.admission.reserve_mib as f64
         }) {
             return (None, Some("memory_budget"));
         }
@@ -557,6 +585,94 @@ mod tests {
         pool.campaign_cap = 0;
         pool.memory_gated = false;
         cfg
+    }
+    #[test]
+    fn measured_peaks_release_snapshot_reservations_without_lowering_candidate_cost() {
+        let mut cfg = config();
+        cfg.admission.reserve_mib = 6144;
+        cfg.pools.get_mut("default").unwrap().memory_gated = true;
+        cfg.pools.get_mut("default").unwrap().slots = 5;
+        let mut s = State::default();
+        let mut obs = BTreeMap::new();
+        let mut events = String::new();
+        for (kind, cost, peak) in [
+            (Some("vitest"), 4096, 2867),
+            (Some("build"), 9216, 5734),
+            (None, 16384, 8499),
+        ] {
+            // 19 ordinary peaks and one outlier: nearest-rank p95 selects peak.
+            for sample in 0..20 {
+                let peak = if sample == 19 { peak * 2 } else { peak };
+                events.push_str(&json!({"at":1000,"event":"end","kind":kind,"cost_mib":cost,"memory_peak_bytes":peak as u64 * 1048576}).to_string());
+                events.push('\n');
+            }
+        }
+        s.scheduling.peaks =
+            crate::manager::read_peaks(&mut std::io::Cursor::new(events), 1000.0, 48).unwrap();
+        for (i, (kind, cost, anon)) in [
+            (Some("vitest"), 4096, 584),
+            (Some("vitest"), 4096, 1608),
+            (Some("build"), 9216, 727),
+            (None, 16384, 3973),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let run = format!("slotr-default-{i}");
+            s.holders.push(serde_json::from_value(json!({"enqueue_seq":i,"pool":"default","campaign":"holder","purpose":"synthetic","cwd":"/tmp","cost_mib":cost,"kind":kind,"lease_seconds":0,"since":0,"seen_at":1000,"run":run,"admit_seq":i,"slot":i,"admitted_at":0})).unwrap());
+            obs.insert(
+                run,
+                Observation {
+                    live: true,
+                    started: true,
+                    anon_mib: Some(anon as f64),
+                    cpu_usec: None,
+                },
+            );
+        }
+        assert_eq!(outstanding(&s, &obs, &cfg), 13075.0);
+        assert_eq!(35533.0 - outstanding(&s, &obs, &cfg) - 6144.0, 16314.0);
+        let mut candidate = request(99, "default", 0, 1000.0);
+        candidate.kind = Some("vitest".into());
+        candidate.cost_mib = 16315;
+        let sample = Stats {
+            available_mib: Some(35533.0),
+            psi_full_avg60: Some(0.0),
+            ..Stats::default()
+        };
+        assert_eq!(
+            decide(&s, &candidate, &cfg, &obs, &sample, 1000.0, |_| true).1,
+            Some("memory_budget")
+        );
+        candidate.cost_mib = 16314;
+        assert_eq!(
+            decide(&s, &candidate, &cfg, &obs, &sample, 1000.0, |_| true).1,
+            None
+        );
+        cfg.admission.reserve_from = "cost".into();
+        assert_eq!(outstanding(&s, &obs, &cfg), 26900.0);
+        assert_eq!(35533.0 - outstanding(&s, &obs, &cfg) - 6144.0, 2489.0);
+        cfg.admission.reserve_from = "peak_p95".into();
+        // With no readable history, the empty initial cache uses declared costs.
+        s.scheduling.peaks.clear();
+        assert_eq!(outstanding(&s, &obs, &cfg), 26900.0);
+    }
+    #[test]
+    fn sparse_samples_fall_back_and_reservations_clamp_to_cost() {
+        let cfg = config();
+        let q = request(1, "default", 0, 1000.0);
+        let mut peaks = BTreeMap::from([(
+            class(None, q.cost_mib),
+            Peak {
+                mib: 100.0,
+                samples: 19,
+            },
+        )]);
+        assert_eq!(reservation(&q, &cfg, &peaks), (1000.0, 19));
+        peaks.get_mut("cost:1000").unwrap().samples = 20;
+        assert_eq!(reservation(&q, &cfg, &peaks), (100.0, 20));
+        peaks.get_mut("cost:1000").unwrap().mib = 2000.0;
+        assert_eq!(reservation(&q, &cfg, &peaks), (1000.0, 20));
     }
     fn backfill_fixture() -> (Config, State, Stats) {
         let mut cfg = config();
