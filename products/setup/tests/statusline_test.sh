@@ -8,13 +8,24 @@ trap 'exit 1' 1 2 3 15
 export HOME="$root/home" XDG_CACHE_HOME="$root/cache" TZ=UTC
 export CLAUDE_CONFIG_DIR="$HOME/codator/claude/claude3/native"
 export FAKE_LOG="$root/codator.log"
+export REAL_JQ="$(command -v jq)" FAKE_USAGE_LOG="$root/root-usage-read"
 mkdir -p "$HOME" "$root/bin" "$CLAUDE_CONFIG_DIR"
 cat > "$root/bin/codator" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_LOG"
 exit 1
 STUB
-chmod +x "$root/bin/codator"
+cat > "$root/bin/jq" <<'STUB'
+#!/bin/sh
+# Mark root usage reads without touching host state.
+for arg do
+    case "$arg" in
+        /.claude-usage.json) : > "$FAKE_USAGE_LOG"; exit 1 ;;
+    esac
+done
+exec "$REAL_JQ" "$@"
+STUB
+chmod +x "$root/bin/codator" "$root/bin/jq"
 export PATH="$root/bin:$PATH"
 
 git init -q -b fixture "$root/work"
@@ -47,10 +58,14 @@ fresh_usage() {
 
 fresh_usage
 expect "$(render)" "$base fbl 42%$tail"
+grep -Fq "$(printf '\033[02mfbl\033[0m \033[33m42%%\033[0m')" "$root/raw" || {
+    echo 'FAIL: fbl 42% must be yellow' >&2; exit 1
+}
 printf 'fresh Fable snapshot, remaining percent and installed layout: ok\n'
 
 output=$(unset CLAUDE_CONFIG_DIR; render)
 expect "$output" "$base$tail"
+[ ! -e "$FAKE_USAGE_LOG" ] || { echo 'FAIL: unset config read root usage file' >&2; exit 1; }
 printf 'unset config directory: ok\n'
 rm "$usage"
 expect "$(render)" "$base$tail"
