@@ -21,7 +21,13 @@ case "$1 $2" in
         [ -f "$CASE/stopped" ] && AGENTS=
         printf '%s\n' "${AGENTS:-$agents}" ;;
     'pane send-keys')
-        case " $* " in *' ctrl+c '*) [ "${STOP_IGNORED:-}" = 1 ] || : >"$CASE/stopped" ;; esac ;;
+        case " $* " in
+            *' ctrl+c '*)
+                if [ "${STOP_IGNORED:-}" != 1 ]; then
+                    if [ "${EXIT_MODAL:-}" = 1 ]; then : >"$CASE/exit-modal"; else : >"$CASE/stopped"; fi
+                fi ;;
+            *' Enter '*) [ ! -f "$CASE/exit-modal" ] || : >"$CASE/stopped" ;;
+        esac ;;
     'pane get') printf '%s\n' '{"result":{"pane":{"workspace_id":"wA","tab_id":"wA:t1"}}}' ;;
     'pane process-info')
         fg=400
@@ -74,7 +80,9 @@ case "$1 $2" in
         fi
         ;;
     'pane read')
-        if [ -f "$CASE/prompt-sent" ]; then
+        if [ -f "$CASE/exit-modal" ]; then
+            printf '%s\n' '{"result":{"lines":["Exit and stop tasks","Move to background and exit","Stay"]}}'
+        elif [ -f "$CASE/prompt-sent" ]; then
             case ${PROMPT_VISIBLE:-} in
                 1) printf '%s\n' 'lead-push-gen-7' ;;
                 disappears)
@@ -83,10 +91,15 @@ case "$1 $2" in
                 old-generation) printf '%s\n' 'lead-push-gen-70' ;;
             esac
         else
-            printf '%s\n' "${DIALOG_SCREEN:-Loading development channels
+            pane_screen=${DIALOG_SCREEN:-Loading development channels
 ❯ 1. I am using this for local development
   2. Exit
-Enter to confirm · Esc to cancel}"
+Enter to confirm · Esc to cancel}
+            if [ "${DIALOG_TALL:-}" = 1 ]; then
+                printf '%s\n' "$pane_screen" | tail -n "${7:-40}"
+            else
+                printf '%s\n' "$pane_screen"
+            fi
         fi
         ;;
 esac
@@ -170,6 +183,27 @@ exec /usr/bin/sed "$@"
 EOF
 printf '%s\n' '#!/bin/sh' 'printf "sleep|%s\n" "$1" >>"$CALLS"' >"$scratch/stubs/sleep"
 printf '%s\n' '#!/bin/sh' 'echo "real Claude must not run" >&2' 'exit 99' >"$scratch/stubs/claude"
+cat >"$scratch/stubs/ps" <<'EOF'
+#!/bin/sh
+[ "$*" = '-eww -o pid=,args=' ] || exit 99
+config=$HOME/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
+case ${PROCESS:-} in
+    dropped) printf '123 claude --resume sess-lead --mcp-config %s\n' "$config" ;;
+    flag) printf '123 claude --mcp-config %s --dangerously-load-development-channels server:taskr\n' "$config" ;;
+    channels) printf '123 claude --mcp-config %s --channels server:taskr\n' "$config" ;;
+    other-generation) printf '123 claude --mcp-config %s/taskr-mcp-6.json\n' "${config%/*}" ;;
+esac
+EOF
+cat >"$scratch/stubs/awk" <<'EOF'
+#!/bin/sh
+if [ -n "${HERDR_CHECK_MCP_CONFIG:-}" ]; then
+    for arg; do
+        case $arg in *"$HERDR_CHECK_MCP_CONFIG"*) echo 'config path leaked into helper argv' >&2; exit 99 ;; esac
+    done
+    : >"$CASE/awk-env-checked"
+fi
+exec /usr/bin/awk "$@"
+EOF
 chmod 0755 "$scratch/stubs/"*
 
 count=0
@@ -189,7 +223,7 @@ EOF
     : >"$case_dir/calls"
     FAIL= LEASE= LATEST= LEASE_GEN= AGENTS= BUSY= ENV_BAD= DIALOG= ACK= RECEIVED= DELIVERY_GEN= CONFIG_EXISTS= HOLDER= CAMPAIGN=
     DIALOG_SCREEN= STOP_IGNORED= NO_HANDOVER= ACKS= AGENTS_AFTER_WAIT= CALLER_HOST=
-    PROMPT_RESULT= PROMPT_VISIBLE= WAIT_RESULTS= GET_STATUSES= ENTER_DELAYS=
+    PROMPT_RESULT= PROMPT_VISIBLE= WAIT_RESULTS= GET_STATUSES= ENTER_DELAYS= PROCESS= EXIT_MODAL= DIALOG_TALL=
     printf 'case: %s\n' "$name"
 }
 run() {
@@ -200,7 +234,7 @@ run() {
         CONFIG_EXISTS="$CONFIG_EXISTS" HOLDER="$HOLDER" CAMPAIGN="$CAMPAIGN" TASKR_TASK=99 TASKR_LAUNCH=100 FLEET_ROLE=hub \
         PROMPT_RESULT="$PROMPT_RESULT" PROMPT_VISIBLE="$PROMPT_VISIBLE" WAIT_RESULTS="$WAIT_RESULTS" \
         GET_STATUSES="$GET_STATUSES" HERDR_LEAD_ENTER_DELAYS="$ENTER_DELAYS" STOP_IGNORED="$STOP_IGNORED" NO_HANDOVER="$NO_HANDOVER" ACKS="$ACKS" \
-        AGENTS_AFTER_WAIT="$AGENTS_AFTER_WAIT" CALLER_HOST="$CALLER_HOST" \
+        AGENTS_AFTER_WAIT="$AGENTS_AFTER_WAIT" CALLER_HOST="$CALLER_HOST" PROCESS="$PROCESS" EXIT_MODAL="$EXIT_MODAL" DIALOG_TALL="$DIALOG_TALL" \
         sh "$repo_dir/bin/herdr-lead" "$@" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
 }
 expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/err")"; }
@@ -587,6 +621,14 @@ Enter to confirm · Esc to cancel'
     has calls 'herdr|pane|send-keys|wA:p1|Enter'
 done
 
+new_case 'development-channel title stays visible above 40 wrapped lines'
+DIALOG=1 DIALOG_TALL=1
+DIALOG_SCREEN=$(printf 'Loading development channels\n'; n=0; while [ "$n" -lt 60 ]; do printf 'wrapped dialog content\n'; n=$((n + 1)); done; printf '1. I am using this for local development\nEnter to confirm\n')
+start
+expect_rc 0
+has calls 'herdr|pane|read|wA:p1|--source|visible|--lines|1000'
+has calls 'herdr|pane|send-keys|wA:p1|Enter'
+
 new_case 'failed start without development-channel dialog'
 DIALOG=1 DIALOG_SCREEN='Unrelated failure'
 start
@@ -775,6 +817,16 @@ run stop 42 wA:p1
 expect_rc 0
 has out 'herdr-lead: wA:p1 is at its shell prompt and the lease of 42 is free'
 
+new_case 'stop confirms the exit-and-stop-tasks modal'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead EXIT_MODAL=1
+run stop 42 wA:p1
+expect_rc 0
+has calls 'herdr|pane|send-keys|wA:p1|esc|ctrl+c|ctrl+c'
+has calls 'herdr|pane|read|wA:p1|--source|visible|--lines|1000'
+has calls 'herdr|pane|send-keys|wA:p1|Enter'
+has out 'answered the exit-and-stop-tasks dialog'
+[ "$(grep -c 'herdr|pane|send-keys|wA:p1|Enter' "$case_dir/calls")" = 1 ] || fail 'exit modal answered more than once'
+
 new_case 'stop refuses a pane that is not the recorded root pane'
 CAMPAIGN=$moved_campaign AGENTS=$old_lead
 run stop 42 wA:p9
@@ -830,6 +882,23 @@ LEASE=live
 run check 42
 expect_rc 0
 has out live
+
+for process in dropped flag channels other-generation; do
+    new_case "check process $process"
+    LEASE=live PROCESS=$process
+    run check 42
+    [ -f "$case_dir/awk-env-checked" ] || fail 'check did not keep the config out of helper argv'
+    if [ "$process" = dropped ]; then
+        expect_rc 1
+        has out push-dropped
+        has out 'herdr-lead move 42'
+        has out '--resume'
+        [ "$(wc -l <"$case_dir/out")" -eq 2 ] || fail 'expected status and repair line'
+    else
+        expect_rc 0
+        has out live
+    fi
+done
 
 new_case 'check free is stale'
 run check 42

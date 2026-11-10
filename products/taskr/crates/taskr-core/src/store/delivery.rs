@@ -265,7 +265,7 @@ pub fn exhausted(
             "select count(*) from delivery_attempts where task_id=? and event_id=? and launch_id is ? and session_gen is ? and machine is ?",
             params![t.id, event_id, launch, generation, caller_machine()], |r| r.get(0),
         )?;
-        if count < 3 || t.acked >= event_id || t.parent.is_none() {
+        if count < 3 || t.acked >= event_id {
             return Ok(json!({"alarmed":false}));
         }
         // Internal meta keys cannot be squatted by a worker's --key event.
@@ -282,6 +282,48 @@ pub fn exhausted(
             )
             .optional()?
         {
+            return Ok(json!({"alarmed":true,"event":e}));
+        }
+        if t.parent.is_none() {
+            let summary = format!(
+                "ALARM push_exhausted root {} event {event_id} ({kind}): {count} delivery attempts without an ack; the channel flag may be gone (Claude /restart); repair with herdr-hub move / herdr-lead move --resume",
+                t.id
+            );
+            let e = event(
+                tx,
+                Event {
+                    task: t.id,
+                    kind: "note",
+                    summary: &summary,
+                    related: Some(event_id),
+                    ..Event::default()
+                },
+            )?;
+            let hub: Option<i64> = tx.query_row(
+                "select t.id from tasks t where t.id!=? and t.parent_id is null and t.status!='closed' and (select json_extract(e.data,'$.value') from events e where e.task_id=t.id and e.kind='ref' and json_extract(e.data,'$.key')='hub' order by e.id desc limit 1)='on' order by t.id limit 1",
+                [t.id],
+                |r| r.get(0),
+            ).optional()?;
+            if let Some(hub) = hub {
+                event(
+                    tx,
+                    Event {
+                        task: t.id,
+                        to: Some(hub),
+                        kind: "herdr",
+                        summary: &summary,
+                        data: Some(
+                            json!({"reason":"push_exhausted","consumer":t.id,"event":event_id,"kind":kind,"attempts":count,"recovery":"taskr inbox"}),
+                        ),
+                        related: Some(event_id),
+                        ..Event::default()
+                    },
+                )?;
+            }
+            tx.execute(
+                "insert into meta(key,value) values(?,?)",
+                params![key, e.to_string()],
+            )?;
             return Ok(json!({"alarmed":true,"event":e}));
         }
         let parent = match t.parent {
