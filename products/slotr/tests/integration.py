@@ -814,7 +814,9 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(self.events('oom_kill'), [])
         # No supervisor receipt survives a collected unit. The client must say unknown.
         stub = self.bin / 'systemd-run'
-        stub.write_text(stub.read_text().replace('os.execv(cmd[0], cmd)', 'sys.exit(0)'))
+        text = stub.read_text()
+        self.assertIn('os.execv(cmd[0], cmd)', text)
+        stub.write_text(text.replace('os.execv(cmd[0], cmd)', 'sys.exit(0)'))
         result = self.invoke('run', '--', 'true')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('OOM attribution unknown', result.stderr)
@@ -1276,11 +1278,10 @@ class AdmissionTest(unittest.TestCase):
         pending.replace(state)
         self.assertIsNone(rc, 'holder workload was terminated: rc=%s' % rc)
 
-    # --- item 2: `slotr stop` and a signalled frontend against a synchronous `systemctl stop`
+    # --- item 2: `slotr stop` and a signalled frontend using `systemctl stop --no-block`
     def test_probe_p03_stop_command_reports_success(self):
         self.cfg['term_grace_seconds'] = 6          # default is 15; anything above ctl's 5 s shows it
         self.write_config()
-        (self.runtime / 'sync-stop').touch()
         holder, p1 = self.start('holder')
         h = self.admitted('holder', p1)
         began = time.monotonic()
@@ -1292,7 +1293,6 @@ class AdmissionTest(unittest.TestCase):
     def test_probe_p04_sigterm_frontend_relays_143(self):
         self.cfg['term_grace_seconds'] = 6
         self.write_config()
-        (self.runtime / 'sync-stop').touch()
         holder, p1 = self.start('holder')
         self.admitted('holder', p1)
         holder.terminate()

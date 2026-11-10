@@ -132,19 +132,33 @@ pub(crate) fn read_peaks(
         if at < cutoff {
             return false;
         }
-        if at > now || event["event"] != "end" || !event["accounting_error"].is_null() {
+        if at > now
+            || event["event"] != "end"
+            || !event["accounting_error"].is_null()
+            || event["stopped"] == true
+        {
             return true;
         }
         let Some(peak) = event["memory_peak_bytes"].as_u64().filter(|n| *n > 0) else {
             return true;
         };
+        let peak = if event["oom_killed"] == true {
+            u64::MAX
+        } else {
+            peak
+        };
+        let Some(pool) = event["pool"].as_str() else {
+            return true;
+        };
+        // Redirected kinds record their target pool. History under the old pool
+        // no longer counts there; declared cost applies until the sample floor.
         let class = match event["kind"].as_str() {
-            Some(kind) => crate::admission::class(Some(kind), 0),
+            Some(kind) => crate::admission::class(pool, Some(kind), 0),
             None => {
                 let Some(cost) = event["cost_mib"].as_u64() else {
                     return true;
                 };
-                crate::admission::class(None, cost)
+                crate::admission::class(pool, None, cost)
             }
         };
         samples.entry(class).or_default().push(peak);
@@ -583,10 +597,11 @@ mod peak_tests {
 
     #[test]
     fn peaks_filter_window_accounting_and_use_nearest_rank() {
-        let mut events =
-            vec![json!({"at":0,"event":"end","kind":"build","memory_peak_bytes":999999999})];
+        let mut events = vec![
+            json!({"at":0,"event":"end","pool":"default","kind":"build","memory_peak_bytes":999999999}),
+        ];
         for peak in 1..=20 {
-            events.push(json!({"at":"2026-01-01T00:00:00.000Z","event":"end","kind":"build","memory_peak_bytes":peak * 1048576_u64,"oom_killed":peak == 19}));
+            events.push(json!({"at":"2026-01-01T00:00:00.000Z","event":"end","pool":"default","kind":"build","memory_peak_bytes":peak * 1048576_u64,"oom_killed":peak == 19}));
         }
         for fields in [
             json!({"event":"end","memory_peak_bytes":null}),
@@ -597,11 +612,12 @@ mod peak_tests {
             let mut event = fields;
             event["at"] = json!(1767225600);
             event["kind"] = json!("build");
+            event["pool"] = json!("default");
             events.push(event);
         }
         // A missing cost on an old unkinded event cannot identify its class.
         events
-            .push(json!({"at":1767225600,"event":"end","kind":null,"memory_peak_bytes":999999999}));
+            .push(json!({"at":1767225600,"event":"end","pool":"default","kind":null,"memory_peak_bytes":999999999}));
         let mut bytes = events
             .iter()
             .map(Value::to_string)
@@ -610,19 +626,19 @@ mod peak_tests {
         bytes.push_str("\n{incomplete");
         let peaks = read_peaks(&mut Cursor::new(bytes), 1767225600.0, 48).unwrap();
         assert_eq!(peaks.len(), 1);
-        assert_eq!(peaks["build"].samples, 20);
-        assert_eq!(peaks["build"].mib, 19.0);
+        assert_eq!(peaks["default:build"].samples, 20);
+        assert_eq!(peaks["default:build"].mib, 20.0);
     }
 
     #[test]
     fn reverse_scan_carries_lines_across_blocks_and_stops_at_window() {
-        let old = json!({"at":0,"event":"end","kind":"build","memory_peak_bytes":999999999});
-        let recent = json!({"at":100000,"event":"end","kind":"build","memory_peak_bytes":1572864,"purpose":"x".repeat(9000)});
+        let old = json!({"at":0,"event":"end","pool":"default","kind":"build","memory_peak_bytes":999999999});
+        let recent = json!({"at":100000,"event":"end","pool":"default","kind":"build","memory_peak_bytes":1572864,"purpose":"x".repeat(9000)});
         let bytes = format!("{}\n{old}\n{recent}\n", " ".repeat(20000));
         let mut cursor = Cursor::new(bytes);
         let peaks = read_peaks(&mut cursor, 100000.0, 1).unwrap();
-        assert_eq!(peaks["build"].samples, 1);
-        assert_eq!(peaks["build"].mib, 1.5);
+        assert_eq!(peaks["default:build"].samples, 1);
+        assert_eq!(peaks["default:build"].mib, 1.5);
         // The oldest block containing the 20 KB prefix was never read.
         assert!(cursor.position() > 20000);
     }
@@ -649,17 +665,20 @@ mod peak_tests {
         );
         let peaks = cache.refresh_with(300.0, || {
             Ok(BTreeMap::from([(
-                "build".into(),
+                "default:build".into(),
                 crate::admission::Peak {
                     mib: 512.5,
                     samples: 20,
                 },
             )]))
         });
-        assert_eq!(peaks["build"].mib, 512.5);
-        assert_eq!(cache.refresh_with(600.0, unreadable)["build"].samples, 20);
+        assert_eq!(peaks["default:build"].mib, 512.5);
         assert_eq!(
-            cache.refresh_with(899.0, || panic!("retry before five minutes"))["build"].mib,
+            cache.refresh_with(600.0, unreadable)["default:build"].samples,
+            20
+        );
+        assert_eq!(
+            cache.refresh_with(899.0, || panic!("retry before five minutes"))["default:build"].mib,
             512.5
         );
     }

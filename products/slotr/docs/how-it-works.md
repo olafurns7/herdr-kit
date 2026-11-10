@@ -15,13 +15,18 @@ PSI full avg60 <= psi_full_avg60_max
 A holder's reservation is the smaller of its declared cost and its class's
 measured p95 peak when there are at least `admission.peak_min_samples` usable
 peaks in the last `admission.peak_window_hours`. Otherwise it uses the declared
-cost. The class is the kind, or `cost:<mib>` when no kind was requested.
+cost. The class is the pool plus the kind, or the pool plus `cost:<mib>` when
+no kind was requested. Redirected kinds record their target pool; samples under
+the old pool no longer count toward the target pool's class. Reservations use
+declared cost until that class reaches the sample floor again.
 `admission.reserve_from = "cost"` always uses declared costs.
 
 The manager scans `end` events backwards through the rolling window and uses
 nearest-rank p95: sort peaks, then select rank `ceil(0.95 * sample_count)`.
 Bytes are divided by 1048576 to obtain MiB. Null or zero peaks and events with
-accounting errors are skipped; OOM-killed runs count at their recorded peak.
+accounting errors or `stopped = true` are skipped. Fast payload failures still
+count. OOM-killed samples count as unbounded (`u64::MAX` bytes), so a class with
+more than 5% OOMs reserves its full current declared cost.
 Older unkinded events without `cost_mib` cannot identify a class and are skipped.
 Each waiter caches its table across polls, refreshing at most every five
 minutes; status takes one snapshot per invocation. A read error retains the
@@ -75,7 +80,7 @@ earns the next safe admission before weight or quiet preference. Slot shortage
 reserves only its pool's next vacancy; memory shortage reserves the shared
 memory domain. When memory alone blocks that fair turn, up to **eight smaller
 tickets from the same pool** may backfill it. Each must fit the current budget
-including the reserve and all holders' outstanding declared costs. Among fitting
+including the reserve and all holders' outstanding reservations. Among fitting
 tickets, existing age/weight/enqueue ordering and campaign caps still apply.
 The counter belongs to the head ticket and persists across polls, stale/resumed
 heartbeats and changes of fair turn; completed backfill runs do not reset it.
@@ -111,8 +116,9 @@ Campaign names are cooperative same-user labels, not authentication.
 
 ## Leases and idle release
 
-Priority and campaign contention never evict an admitted run. Existing
-configured lease and idle lifecycle rules remain:
+Priority and campaign contention never evict an admitted run. Lifecycle fit
+checks use declared costs. Existing configured lease and idle lifecycle rules
+remain:
 
 - An overdue lease continues when nobody waits.
 - Under contention, only an eligible holder whose release helps a fitting

@@ -42,8 +42,9 @@ only that file and skips all environment overrides for policy. See
 
 ## Environment overrides
 
-Every scalar has an environment override: uppercase the full dotted path,
-separating its parts with `__`, for example:
+Scalars have environment overrides: uppercase the dotted configuration path,
+except the final kind env variable name, which must match the payload variable's
+case. Separate path parts with `__`, for example:
 
 ```sh
 SLOTR_POOLS__RUNTIME__SLOTS=3
@@ -52,6 +53,9 @@ SLOTR_LEASE__ON_EXPIRY=warn
 
 Pool and kind names in environment paths are normalized to lowercase, but the
 variable name after `pools.<pool>.kinds.<kind>.env` keeps its original case.
+A kind env variable whose name contains `__` cannot use a scalar environment
+override: config loading fails with an invalid-path error. Set those variables
+in the TOML file instead.
 Hook, observation, and priority campaign arrays use TOML array syntax.
 For example, `SLOTR_PRIORITY__CAMPAIGNS='["team-a", "team-b-*"]'` and
 `SLOTR_PRIORITY__FILE=~/priority` override both priority settings.

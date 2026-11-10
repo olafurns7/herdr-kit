@@ -15,11 +15,12 @@ pub struct Peak {
 }
 pub type Peaks = BTreeMap<String, Peak>;
 
-pub fn class(kind: Option<&str>, cost_mib: u64) -> String {
-    kind.map_or_else(|| format!("cost:{cost_mib}"), str::to_owned)
+pub fn class(pool: &str, kind: Option<&str>, cost_mib: u64) -> String {
+    let workload = kind.map_or_else(|| format!("cost:{cost_mib}"), str::to_owned);
+    format!("{pool}:{workload}")
 }
 pub fn reservation(q: &Request, cfg: &Config, peaks: &Peaks) -> (f64, usize) {
-    let peak = peaks.get(&class(q.kind.as_deref(), q.cost_mib));
+    let peak = peaks.get(&class(&q.pool, q.kind.as_deref(), q.cost_mib));
     let samples = peak.map_or(0, |p| p.samples);
     let cost = q.cost_mib as f64;
     let reserved = match peak {
@@ -589,6 +590,77 @@ mod tests {
         pool.memory_gated = false;
         cfg
     }
+    fn history(events: Vec<serde_json::Value>) -> Peaks {
+        let bytes = events
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        crate::manager::read_peaks(&mut std::io::Cursor::new(bytes), 1000.0, 48).unwrap()
+    }
+    #[test]
+    fn stopped_runs_do_not_lower_peaks_but_fast_payload_failures_count() {
+        let cfg = config();
+        let mut q = request(1, "default", 0, 1000.0);
+        q.kind = Some("build".into());
+        let mut events = vec![
+            json!({"at":1000,"event":"end","pool":"default","kind":"build","memory_peak_bytes":100 * 1048576_u64,"stopped":true});
+            100
+        ];
+        events.extend((0..20).map(|_| {
+            json!({"at":1000,"event":"end","pool":"default","kind":"build","memory_peak_bytes":800 * 1048576_u64,"exit_code":1,"stopped":false})
+        }));
+        assert_eq!(reservation(&q, &cfg, &history(events)), (800.0, 20));
+    }
+    #[test]
+    fn named_peak_classes_follow_the_recorded_pool() {
+        let cfg = config();
+        let mut q = request(1, "heavy", 0, 1000.0);
+        q.kind = Some("build".into());
+        let mut events = Vec::new();
+        for (pool, peak, count) in [("light", 100, 100), ("heavy", 800, 20)] {
+            events.extend((0..count).map(|_| {
+                json!({"at":1000,"event":"end","pool":pool,"kind":"build","memory_peak_bytes":peak * 1048576_u64})
+            }));
+        }
+        let peaks = history(events);
+        assert_eq!(reservation(&q, &cfg, &peaks), (800.0, 20));
+        q.pool = "light".into();
+        assert_eq!(reservation(&q, &cfg, &peaks), (100.0, 100));
+        q.pool = "redirected".into();
+        assert_eq!(reservation(&q, &cfg, &peaks), (1000.0, 0));
+    }
+    #[test]
+    fn unkinded_peak_classes_include_pool_and_declared_cost() {
+        let cfg = config();
+        let q = request(1, "heavy", 0, 1000.0);
+        let mut events = Vec::new();
+        for (pool, cost, peak, count) in [
+            ("light", 1000, 100, 100),
+            ("heavy", 1000, 800, 20),
+            ("heavy", 2000, 200, 100),
+        ] {
+            events.extend((0..count).map(|_| {
+                json!({"at":1000,"event":"end","pool":pool,"cost_mib":cost,"memory_peak_bytes":peak * 1048576_u64})
+            }));
+        }
+        assert_eq!(reservation(&q, &cfg, &history(events)), (800.0, 20));
+    }
+    #[test]
+    fn more_than_five_percent_ooms_reserve_the_current_cost() {
+        let cfg = config();
+        let mut q = request(1, "default", 0, 1000.0);
+        q.kind = Some("build".into());
+        q.cost_mib = 2000;
+        for (ooms, expected) in [(1, 100.0), (2, 2000.0)] {
+            let events = (0..20)
+                .map(|i| {
+                    json!({"at":1000,"event":"end","pool":"default","kind":"build","memory_peak_bytes":100 * 1048576_u64,"oom_killed":i < ooms})
+                })
+                .collect();
+            assert_eq!(reservation(&q, &cfg, &history(events)), (expected, 20));
+        }
+    }
     #[test]
     fn measured_peaks_release_snapshot_reservations_without_lowering_candidate_cost() {
         let mut cfg = config();
@@ -606,7 +678,7 @@ mod tests {
             // 19 ordinary peaks and one outlier: nearest-rank p95 selects peak.
             for sample in 0..20 {
                 let peak = if sample == 19 { peak * 2 } else { peak };
-                events.push_str(&json!({"at":1000,"event":"end","kind":kind,"cost_mib":cost,"memory_peak_bytes":peak as u64 * 1048576}).to_string());
+                events.push_str(&json!({"at":1000,"event":"end","pool":"default","kind":kind,"cost_mib":cost,"memory_peak_bytes":peak as u64 * 1048576}).to_string());
                 events.push('\n');
             }
         }
@@ -665,16 +737,16 @@ mod tests {
         let cfg = config();
         let q = request(1, "default", 0, 1000.0);
         let mut peaks = BTreeMap::from([(
-            class(None, q.cost_mib),
+            class(&q.pool, None, q.cost_mib),
             Peak {
                 mib: 100.0,
                 samples: 19,
             },
         )]);
         assert_eq!(reservation(&q, &cfg, &peaks), (1000.0, 19));
-        peaks.get_mut("cost:1000").unwrap().samples = 20;
+        peaks.get_mut("default:cost:1000").unwrap().samples = 20;
         assert_eq!(reservation(&q, &cfg, &peaks), (100.0, 20));
-        peaks.get_mut("cost:1000").unwrap().mib = 2000.0;
+        peaks.get_mut("default:cost:1000").unwrap().mib = 2000.0;
         assert_eq!(reservation(&q, &cfg, &peaks), (1000.0, 20));
     }
     fn backfill_fixture() -> (Config, State, Stats) {
