@@ -2,8 +2,8 @@
   D Dashboard  [A Asks 5]  F Fleet 11   I Detail
  3 notes still carry OWNER items
  NEEDS YOU ────────────────────────── 5 ╭ ask 61790 · auth-rotation ───────────╮
- ? ◆ fleet-hub       BLOCKING HUB ⏎  25s│ asker waiting · 2m ago · atlas       │
-   Release: Cut the v3.2 release today… │ w20:p1                               │
+ ? ◆ fleet-hub       BLOCKING HUB ⏎  25s│ asker waiting · 2m ago ·             │
+   Release: Cut the v3.2 release today… │ atlas w20:p1                         │
 ▌? ◆ auth-rotation   BLOCKING     ⏎   2m│                                      │
 ▌  Tokens: Which signing scheme should… │ Tokens: Which signing scheme should  │
  ? ◆ docs-refresh                 ⏎   4m│ the rotated service tokens use?      │

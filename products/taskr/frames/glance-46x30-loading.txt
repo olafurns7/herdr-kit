@@ -1,4 +1,6 @@
  taskr                  ◓  reading the ledger
+ [D Dashboard]  A Asks   F Fleet   I Detail
+panels 1+ 2+ 3+ 4+ 5+ 6+ 7- 8- 9- 0- H-
  ░░░░░░░░░░░░░
  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
@@ -25,6 +27,4 @@
 
 
 
-
-
- c all campaigns   ? help
+ c all campaigns   D A F I screens   ? help

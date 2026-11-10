@@ -1,6 +1,6 @@
  taskr ❯ answer        2s ago   ● 2 need you
  ask 61367 · ios-widgets
- not blocking · waiting · 6m · laptop ↗
+ waiting · 6m · laptop w95:p1 ↗
 
  WIDGET BATCH: 19 of 23 merged (14:02-14:09Z,
  squash). STOPPED, per your rule (conflict on

@@ -1,0 +1,14 @@
+ taskr    2s ago   ● 1 need you
+  D   A 1   F 11  [I]
+╭ ask 61767 · tui-frames · 1-9/2╮
+│ from Dashboard · NEEDS YOU ·  │
+│ row 1                         │
+│ asker not waiting · 3m ago ·  │
+│ atlas w31:p1                  │
+│                               │
+│ Frames follow-up is ready: PR │
+│ #212 (orphaned asks hidden,   │
+│ close warns). (A) merge #212  │
+│ and release v2.4.1 now        │
+╰───────────────────────────────╯
+ j k scroll   h back   ? help
