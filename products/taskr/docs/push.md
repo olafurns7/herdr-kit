@@ -175,6 +175,15 @@ the old server process stays under Claude until Claude exits: its loop has stopp
 its generation is refused, but it lingers, so a stop and resume is cleaner than a
 reconnect.
 
+A delivery receipt means that the adapter sent the notification. It does not
+mean that the model saw it. The ack is the proof that the model handled it.
+After three attempts without an ack, a root records one `ALARM push_exhausted`
+note for that event and generation. If another open root has `hub=on`, it also
+gets a `herdr` alarm. Claude `/restart`, including an update restart, can drop
+the channel flag while the MCP server still records receipts. Use
+`herdr-hub check ROOT` or `herdr-lead check ROOT` to check for `push-dropped`;
+follow the printed move command with `--resume` to restore the same session.
+
 The model sees `<channel source="taskr" event="E" attempt="A" fence="N" kind="K" task="S">TEXT</channel>`. TEXT is two lines: event identifiers, a note that the adapter records the receipt, the `taskr_inbox` and `taskr_ack` calls (with a short CLI ack fallback), then the quoted untrusted summary. The full inbox/lease/ack procedure is in the server's initialization instructions once; see [the envelope and procedure](mcp.md#channel). The CLI fallbacks need the task's taskr environment.
 
 ## pi

@@ -118,11 +118,20 @@ Do not use `herdr-launch` for a lead: it registers a child. `herdr-lead` accepts
 After the lead is closed and its generation's work/recovery are settled, delete
 its `$HOME/.local/state/herdr-orch/lead-push/<root>/taskr-mcp-<gen>.json` by literal path.
 
-The lead brief says **"herdr-lead adopted you; skip adopt"** and carries the root and generation from the helper's prompt. A second adopt, even in the same pane, fences that channel. Handle pushed events with taskr MCP receipt/inbox/consumer/ack tools and the supplied fence; deduplicate against the inbox before effects. No plain `taskr wait` or `taskr ack` in a push lead. A live lease alone is insufficient: `start` creates a throwaway gate child, emits its ready event, waits up to 240 s for current-generation receipt and ack, and closes the child accepted. A successor first acks older pushed events in order; it prints that backlog, and each new ack extends the wait by up to 240 s (at most 30 min). Only its final `ROOT live at GEN (event E received and acked)` line accepts startup. `check` prints `live`, `stale`, or `unknown` (exit 0, 1, or 2); it checks lease/generation only, not end-to-end delivery.
+The lead brief says **"herdr-lead adopted you; skip adopt"** and carries the root and generation from the helper's prompt. A second adopt, even in the same pane, fences that channel. Handle pushed events with taskr MCP receipt/inbox/consumer/ack tools and the supplied fence; deduplicate against the inbox before effects. No plain `taskr wait` or `taskr ack` in a push lead. A live lease alone is insufficient: `start` creates a throwaway gate child, emits its ready event, waits up to 240 s for current-generation receipt and ack, and closes the child accepted. A successor first acks older pushed events in order; it prints that backlog, and each new ack extends the wait by up to 240 s (at most 30 min). Only its final `ROOT live at GEN (event E received and acked)` line accepts startup. `check` prints `live` (exit 0), `stale` or `push-dropped` (exit 1), or `unknown` (exit 2). It checks the lease, generation, and channel flag when the current process is found. It does not prove end-to-end delivery.
 
 Move leads one at a time, starting low-traffic; stop rollout on any failed live check. On failure at or after adoption the helper prints `ROOT= GEN= pane= mcp_config= agent= lease= check_task= log=`. Inspect that state and the ledger before recovery; never blindly rerun, re-adopt, or start a second agent. Recovery and account-pinned resume are in `recovery.md` "Your own session".
 
 For a plain lead, use an authorized `orch-` lane and send the brief with `herdr agent prompt`. It registers its own root if needed (`workflow.md` "Brief variants"), and its first ledger act on the root is `taskr adopt <root> --pane <pane>`. The hub checks that `taskr campaign <root>` does not read `unregistered` before reporting startup. A root without a pane cannot be watched or focused from the owner's view. Every lead brief says owner decisions and actions are owner asks; owner notes only summarize them (`owner.md`). A repository's worktree setup plugin may skip `orch/*` branches. The lead needs no dependencies and runs gates in task worktrees.
+
+Do not type `/restart` in a Claude push lane. Do not accept an update restart
+prompt. It drops the channel flag. For a hub, use
+`herdr-hub move <root> --lane <lane> -- --resume <session id>`.
+For a lead, use `herdr-lead move <root> <pane> --worktree <campaign worktree>
+--lane <lane> --resume <session id> --account <account> --prompt-file <lead brief>`.
+Both commands restore the flag and keep the session. `check` reports
+`push-dropped` and prints a repair command if the current process lost the flag.
+See `recovery.md` "Your own session" before a move.
 
 ### Optional native jobs for future Claude launches
 

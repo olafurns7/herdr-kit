@@ -85,6 +85,16 @@ if sys.argv[1:4] != [helper, '__move-helper', '42']:
 os.setsid()
 os.execv(helper, sys.argv[1:])
 ''')
+    executable(stubs / 'ps', '''#!/bin/sh
+if [ "$*" != '-eww -o pid=,args=' ]; then exec /bin/ps "$@"; fi
+config=$HOME/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
+case $MODE in
+    check-dropped) printf '123 claude --resume sess-hub --mcp-config %s\\n' "$config" ;;
+    check-flag) printf '123 claude --mcp-config %s --dangerously-load-development-channels server:taskr\\n' "$config" ;;
+    check-channels) printf '123 claude --mcp-config %s --channels server:taskr\\n' "$config" ;;
+    check-other-generation) printf '123 claude --mcp-config %s/taskr-mcp-6.json\\n' "${config%/*}" ;;
+esac
+''')
     executable(stubs / 'herdr', '''#!/usr/bin/python3
 import json, os, sys
 from pathlib import Path
@@ -587,6 +597,15 @@ else: sys.exit(98)
         c = run('check '+mode, args=('check','42'), mode=mode)
         expect(c, rc)
         assert c[3].strip() == output
+        assert not (c[1] / '.local/state').exists()
+
+    for mode in ['check-dropped', 'check-flag', 'check-channels', 'check-other-generation']:
+        c = run('check argv '+mode, args=('check','42'), mode=mode)
+        expect(c, 1 if mode == 'check-dropped' else 0)
+        lines = c[3].splitlines()
+        assert lines[0] == ('push-dropped' if mode == 'check-dropped' else 'live'), c[3]
+        if mode == 'check-dropped':
+            assert len(lines) == 2 and 'herdr-hub move 42' in lines[1] and '--resume' in lines[1], c[3]
         assert not (c[1] / '.local/state').exists()
 
     # Review 7952 F1: an old prover finishes after its hub exited and a rerun reclaimed the lock. It must not

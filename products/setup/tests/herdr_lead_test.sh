@@ -170,6 +170,17 @@ exec /usr/bin/sed "$@"
 EOF
 printf '%s\n' '#!/bin/sh' 'printf "sleep|%s\n" "$1" >>"$CALLS"' >"$scratch/stubs/sleep"
 printf '%s\n' '#!/bin/sh' 'echo "real Claude must not run" >&2' 'exit 99' >"$scratch/stubs/claude"
+cat >"$scratch/stubs/ps" <<'EOF'
+#!/bin/sh
+[ "$*" = '-eww -o pid=,args=' ] || exit 99
+config=$HOME/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
+case ${PROCESS:-} in
+    dropped) printf '123 claude --resume sess-lead --mcp-config %s\n' "$config" ;;
+    flag) printf '123 claude --mcp-config %s --dangerously-load-development-channels server:taskr\n' "$config" ;;
+    channels) printf '123 claude --mcp-config %s --channels server:taskr\n' "$config" ;;
+    other-generation) printf '123 claude --mcp-config %s/taskr-mcp-6.json\n' "${config%/*}" ;;
+esac
+EOF
 chmod 0755 "$scratch/stubs/"*
 
 count=0
@@ -189,7 +200,7 @@ EOF
     : >"$case_dir/calls"
     FAIL= LEASE= LATEST= LEASE_GEN= AGENTS= BUSY= ENV_BAD= DIALOG= ACK= RECEIVED= DELIVERY_GEN= CONFIG_EXISTS= HOLDER= CAMPAIGN=
     DIALOG_SCREEN= STOP_IGNORED= NO_HANDOVER= ACKS= AGENTS_AFTER_WAIT= CALLER_HOST=
-    PROMPT_RESULT= PROMPT_VISIBLE= WAIT_RESULTS= GET_STATUSES= ENTER_DELAYS=
+    PROMPT_RESULT= PROMPT_VISIBLE= WAIT_RESULTS= GET_STATUSES= ENTER_DELAYS= PROCESS=
     printf 'case: %s\n' "$name"
 }
 run() {
@@ -200,7 +211,7 @@ run() {
         CONFIG_EXISTS="$CONFIG_EXISTS" HOLDER="$HOLDER" CAMPAIGN="$CAMPAIGN" TASKR_TASK=99 TASKR_LAUNCH=100 FLEET_ROLE=hub \
         PROMPT_RESULT="$PROMPT_RESULT" PROMPT_VISIBLE="$PROMPT_VISIBLE" WAIT_RESULTS="$WAIT_RESULTS" \
         GET_STATUSES="$GET_STATUSES" HERDR_LEAD_ENTER_DELAYS="$ENTER_DELAYS" STOP_IGNORED="$STOP_IGNORED" NO_HANDOVER="$NO_HANDOVER" ACKS="$ACKS" \
-        AGENTS_AFTER_WAIT="$AGENTS_AFTER_WAIT" CALLER_HOST="$CALLER_HOST" \
+        AGENTS_AFTER_WAIT="$AGENTS_AFTER_WAIT" CALLER_HOST="$CALLER_HOST" PROCESS="$PROCESS" \
         sh "$repo_dir/bin/herdr-lead" "$@" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
 }
 expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/err")"; }
@@ -830,6 +841,22 @@ LEASE=live
 run check 42
 expect_rc 0
 has out live
+
+for process in dropped flag channels other-generation; do
+    new_case "check process $process"
+    LEASE=live PROCESS=$process
+    run check 42
+    if [ "$process" = dropped ]; then
+        expect_rc 1
+        has out push-dropped
+        has out 'herdr-lead move 42'
+        has out '--resume'
+        [ "$(wc -l <"$case_dir/out")" -eq 2 ] || fail 'expected status and repair line'
+    else
+        expect_rc 0
+        has out live
+    fi
+done
 
 new_case 'check free is stale'
 run check 42

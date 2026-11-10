@@ -130,6 +130,16 @@ if [ "$1" = check ]; then
     if ! gen=$(latest_gen) || ! read_lease; then
         printf 'unknown\n'; exit 2
     fi
+    mcp_config=$HOME/.local/state/herdr-orch/lead-push/$root/taskr-mcp-$gen.json
+    # A live MCP lease can survive Claude /restart after its channel flag is lost.
+    if ps -eww -o pid=,args= | awk -v config="$mcp_config" '
+        index($0, config) && $0 !~ /(^|[[:space:]])--(dangerously-load-development-channels|channels)([=[:space:]]|$)/ { dropped=1 }
+        END { exit !dropped }
+    '; then
+        printf 'push-dropped\n'
+        printf 'Repair: herdr-hub move %s --lane <lane> -- --resume <session-id>\n' "$root"
+        exit 1
+    fi
     if [ "$lease" = live ] && printf '%s\n' "$lease_json" | jq -e --argjson gen "$gen" '.session_gen == $gen' >/dev/null; then
         printf 'live\n'; exit 0
     fi

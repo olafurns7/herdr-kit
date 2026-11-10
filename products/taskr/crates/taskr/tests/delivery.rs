@@ -1447,18 +1447,77 @@ fn a_relaunch_can_hint_again_for_the_same_event() {
 }
 
 #[test]
-fn root_consumers_do_not_hint_to_themselves_even_after_adopt() {
-    let h = Harness::new();
-    let (w, _, env) = h.lane("claude", "implementer");
-    let r = parent(&h, w);
-    let e = id(&h.ok(&env, &["ask", "go?"]), "ask_id");
-    let before = cursors(&h);
-    let mut generation = "0".to_string();
-    for round in 0..2 {
-        if round == 1 {
-            generation = adopt(&h, &[], &r, "w1:p7");
+fn root_consumers_alarm_once_per_generation_and_notify_only_an_open_other_hub() {
+    for hub_state in ["none", "open", "closed", "off", "self"] {
+        let h = Harness::new();
+        let (w, _, env) = h.lane("claude", "implementer");
+        let r = parent(&h, w);
+        let hub = match hub_state {
+            "none" => None,
+            "self" => Some(r.clone()),
+            _ => Some(id(
+                &h.ok(&[], &["new", "hub", "--role", "orchestrator"]),
+                "task_id",
+            )),
+        };
+        if let Some(hub) = &hub {
+            h.ok(&[], &["set", hub, "hub=on"]);
+            if hub_state == "off" {
+                h.ok(&[], &["set", hub, "hub="]);
+            } else if hub_state == "closed" {
+                h.ok(&[], &["close", hub]);
+            }
         }
-        for _ in 0..3 {
+        let e = id(&h.ok(&env, &["ask", "go?"]), "ask_id");
+        let before = cursors(&h);
+        let mut generation = "0".to_string();
+        for round in 0..2 {
+            if round == 1 {
+                generation = adopt(&h, &[], &r, "w1:p7");
+            }
+            let args = [
+                "delivery",
+                "exhausted",
+                &e,
+                "--as",
+                &r,
+                "--session",
+                &generation,
+            ];
+            for _ in 0..3 {
+                assert_eq!(h.ok(&[], &args)["alarmed"], false);
+                let attempt = id(
+                    &h.ok(
+                        &[],
+                        &[
+                            "delivery",
+                            "new",
+                            &e,
+                            "--adapter",
+                            "claude-channel",
+                            "--as",
+                            &r,
+                            "--session",
+                            &generation,
+                        ],
+                    ),
+                    "attempt_id",
+                );
+                h.ok(
+                    &[],
+                    &[
+                        "delivery",
+                        "received",
+                        &attempt,
+                        "--as",
+                        &r,
+                        "--session",
+                        &generation,
+                    ],
+                );
+            }
+            let alarm = h.ok(&[], &args);
+            assert_eq!(alarm["alarmed"], true, "{hub_state}: {alarm}");
             h.ok(
                 &[],
                 &[
@@ -1473,34 +1532,39 @@ fn root_consumers_do_not_hint_to_themselves_even_after_adopt() {
                     &generation,
                 ],
             );
-        }
-        for _ in 0..2 {
-            assert_eq!(
-                h.ok(
-                    &[],
-                    &[
-                        "delivery",
-                        "exhausted",
-                        &e,
-                        "--as",
-                        &r,
-                        "--session",
-                        &generation
-                    ]
-                )["alarmed"],
-                false
+            assert_eq!(h.ok(&[], &args), alarm);
+            assert_eq!(h.count("select count(*) from events where task_id=? and kind='note' and summary like 'ALARM push_exhausted%'", r.parse().unwrap()), round + 1);
+            assert_eq!(h.count("select count(*) from events where related_event_id=? and kind='herdr' and json_extract(data,'$.reason')='push_exhausted'", e.parse().unwrap()), if hub_state == "open" { round + 1 } else { 0 });
+            if hub_state == "open" {
+                assert_eq!(
+                    text(
+                        &h,
+                        &format!(
+                            "select recipient_task_id||'' from events where kind='herdr' and related_event_id={e} order by id desc limit 1"
+                        )
+                    ),
+                    *hub.as_ref().unwrap()
+                );
+            }
+            let summary = text(
+                &h,
+                &format!(
+                    "select summary from events where task_id={r} and kind='note' order by id desc limit 1"
+                ),
             );
+            for expected in [
+                format!("ALARM push_exhausted root {r} event {e} (ask)"),
+                "3 delivery attempts without an ack".into(),
+                "Claude /restart".into(),
+                "herdr-hub move".into(),
+                "herdr-lead move".into(),
+                "--resume".into(),
+            ] {
+                assert!(summary.contains(&expected), "{summary}");
+            }
         }
+        assert_eq!(cursors(&h), before);
     }
-    assert_eq!(cursors(&h), before);
-    assert_eq!(h.count("select count(*) from events where related_event_id=? and json_extract(data,'$.reason')='push_exhausted'", e.parse().unwrap()), 0);
-    assert_eq!(
-        text(
-            &h,
-            "select count(*)||'' from meta where key like 'push_exhausted:%'"
-        ),
-        "0"
-    );
 }
 
 #[test]
