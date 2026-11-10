@@ -563,7 +563,13 @@ fn supervise_child(
     // Control-group TERM may reach us after the payload exits, including
     // during the accounting query. Resolve the reason just before the end event.
     if stop_reason.is_none() {
-        let intents = crate::stops::status().ok();
+        let intents = match crate::stops::status() {
+            Ok(intents) => Some(intents),
+            Err(error) => {
+                eprintln!("slotr: stop intents for {run}: {error:#}");
+                None
+            }
+        };
         let phase = intents
             .as_ref()
             .and_then(|intents| intents.get(run))
