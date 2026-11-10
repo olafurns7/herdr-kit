@@ -285,8 +285,12 @@ pub fn exhausted(
             return Ok(json!({"alarmed":true,"event":e}));
         }
         if t.parent.is_none() {
+            let recovery = format!(
+                "run herdr-hub check {} (hub) or herdr-lead check {} (lead); on push-dropped follow its Repair line; live means the root is busy",
+                t.id, t.id
+            );
             let summary = format!(
-                "ALARM push_exhausted root {} event {event_id} ({kind}): {count} delivery attempts without an ack; the channel flag may be gone (Claude /restart); repair with herdr-hub move / herdr-lead move --resume",
+                "ALARM push_exhausted root {} event {event_id} ({kind}): {count} delivery attempts without an ack; the channel flag may be gone (Claude /restart); {recovery}",
                 t.id
             );
             let e = event(
@@ -313,7 +317,7 @@ pub fn exhausted(
                         kind: "herdr",
                         summary: &summary,
                         data: Some(
-                            json!({"reason":"push_exhausted","consumer":t.id,"event":event_id,"kind":kind,"attempts":count,"recovery":"taskr inbox"}),
+                            json!({"reason":"push_exhausted","consumer":t.id,"event":event_id,"kind":kind,"attempts":count,"recovery":recovery}),
                         ),
                         related: Some(event_id),
                         ..Event::default()

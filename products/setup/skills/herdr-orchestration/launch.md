@@ -86,8 +86,10 @@ The prover requires the matching lease and a received-and-acked gate
 event within 600 s; while the hub acks older pushed events, each new ack extends the wait (up to 30 min).
 It closes the gate accepted or rejected and notes the result.
 `$HOME/.local/state/herdr-orch/lead-push/<root>/hub-check-<gen>.log` and `.result`
-record `live` or `failed: REASON`; `check` reports lease/generation only (0/1/2:
-live/stale/unknown). After a failure, see `recovery.md` for `start.lock`.
+record `live` or `failed: REASON`. `check` prints `live` (exit 0), `stale` or
+`push-dropped` (exit 1), or `unknown` (exit 2). It checks the lease, generation,
+and channel flag when the current process is found. It does not prove end-to-end
+delivery. After a failure, see `recovery.md` for `start.lock`.
 Keep the immutable generation config while recovering native handles; remove it
 by literal path only after that generation's work and recovery are settled.
 
@@ -128,19 +130,19 @@ Do not type `/restart` in a Claude push lane. Do not accept an update restart
 prompt. It drops the channel flag. Use the saved session ID and authorized lane:
 
 ```bash
-herdr-hub move <root> --lane <lane> -- --resume <session id>
+herdr-hub move <root> --lane <lane> --account <account> -- --resume <session id>
 herdr-lead move <root> <pane> --worktree <campaign worktree> --lane <lane> \
   --resume <session id> --account <account> --prompt-file <lead brief>
 ```
+
+Both commands restore the flag and keep the session. `check` reports
+`push-dropped` and prints a repair command if the current process lost the flag.
+See `recovery.md` "Your own session" before a move.
 
 A session with Monitor or CronCreate tasks can show an exit dialog after the
 stop keys. If it shows `Exit and stop tasks`, the helper sends Enter to select
 that option, then waits for the process to exit. Keep the session ID from the
 resume line. The successor must re-create the timers from the handover.
-
-Both commands restore the flag and keep the session. `check` reports
-`push-dropped` and prints a repair command if the current process lost the flag.
-See `recovery.md` "Your own session" before a move.
 
 ### Optional native jobs for future Claude launches
 

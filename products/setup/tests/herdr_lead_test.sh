@@ -24,9 +24,9 @@ case "$1 $2" in
         case " $* " in
             *' ctrl+c '*)
                 if [ "${STOP_IGNORED:-}" != 1 ]; then
-                    if [ "${EXIT_MODAL:-}" = 1 ]; then : >"$CASE/exit-modal"; else : >"$CASE/stopped"; fi
+                    if [ -n "${EXIT_MODAL:-}" ]; then : >"$CASE/exit-modal"; else : >"$CASE/stopped"; fi
                 fi ;;
-            *' Enter '*) [ ! -f "$CASE/exit-modal" ] || : >"$CASE/stopped" ;;
+            *' Enter '*) [ ! -f "$CASE/exit-modal" ] || [ "${EXIT_MODAL:-}" = persistent ] || : >"$CASE/stopped" ;;
         esac ;;
     'pane get') printf '%s\n' '{"result":{"pane":{"workspace_id":"wA","tab_id":"wA:t1"}}}' ;;
     'pane process-info')
@@ -81,7 +81,11 @@ case "$1 $2" in
         ;;
     'pane read')
         if [ -f "$CASE/exit-modal" ]; then
-            printf '%s\n' '{"result":{"lines":["Exit and stop tasks","Move to background and exit","Stay"]}}'
+            if [ "$EXIT_MODAL" = wrapped ]; then
+                printf '%s\n' '{"result":{"lines":["Exit and stop","tasks","Move to","background and exit","Stay"]}}'
+            else
+                printf '%s\n' '{"result":{"lines":["Exit and stop tasks","Move to background and exit","Stay"]}}'
+            fi
         elif [ -f "$CASE/prompt-sent" ]; then
             case ${PROMPT_VISIBLE:-} in
                 1) printf '%s\n' 'lead-push-gen-7' ;;
@@ -826,6 +830,27 @@ has calls 'herdr|pane|read|wA:p1|--source|visible|--lines|1000'
 has calls 'herdr|pane|send-keys|wA:p1|Enter'
 has out 'answered the exit-and-stop-tasks dialog'
 [ "$(grep -c 'herdr|pane|send-keys|wA:p1|Enter' "$case_dir/calls")" = 1 ] || fail 'exit modal answered more than once'
+
+new_case 'stop answers a persistent exit modal once and still retries stop keys'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead EXIT_MODAL=persistent
+run stop 42 wA:p1
+expect_rc 1
+has err 'orch-example still runs in wA:p1 after 120 s'
+[ "$(grep -c 'herdr|pane|send-keys|wA:p1|Enter' "$case_dir/calls")" = 1 ] || fail 'persistent exit modal answered more than once'
+[ "$(grep -c 'herdr|pane|send-keys|wA:p1|ctrl+c|ctrl+c' "$case_dir/calls")" = 1 ] || fail 'modal skipped stop retry'
+
+new_case 'stop recognises wrapped exit options'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead EXIT_MODAL=wrapped
+run stop 42 wA:p1
+expect_rc 0
+has calls 'herdr|pane|send-keys|wA:p1|Enter'
+
+new_case 'stop ignores a quoted exit option and still retries stop keys'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead STOP_IGNORED=1 DIALOG_SCREEN='Previous output: Exit and stop tasks'
+run stop 42 wA:p1
+expect_rc 1
+lacks calls 'herdr|pane|send-keys|wA:p1|Enter'
+[ "$(grep -c 'herdr|pane|send-keys|wA:p1|ctrl+c|ctrl+c' "$case_dir/calls")" = 1 ] || fail 'quoted option skipped stop retry'
 
 new_case 'stop refuses a pane that is not the recorded root pane'
 CAMPAIGN=$moved_campaign AGENTS=$old_lead

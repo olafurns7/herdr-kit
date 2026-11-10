@@ -146,18 +146,17 @@ stop_pane() {
         if lead_in_pane "$1" "$2" "$stop_session"; then
             say "stop $stop_name in $1"
             herdr pane send-keys "$1" esc ctrl+c ctrl+c >/dev/null || fail 'send stop keys'
-            stop_start=$(date +%s) again=
+            stop_start=$(date +%s) again= exit_answered=
             while lead_in_pane "$1" "$2" "$stop_session"; do
                 elapsed=$(($(date +%s) - stop_start))
                 [ "$elapsed" -lt 120 ] || fail "$stop_name still runs in $1 after 120 s"
                 screen=$(visible_text "$1") || fail 'read exit dialog'
-                case $screen in
-                    *'Exit and stop tasks'*)
+                case $exit_answered:$screen in
+                    :*'Exit'*'background'*'Stay'*)
                         lead_in_pane "$1" "$2" "$stop_session" || break
                         herdr pane send-keys "$1" Enter >/dev/null || fail 'answer exit dialog'
-                        say 'answered the exit-and-stop-tasks dialog'
-                        sleep 3
-                        continue ;;
+                        exit_answered=1
+                        say 'answered the exit-and-stop-tasks dialog' ;;
                 esac
                 if [ "$elapsed" -ge 45 ] && [ -z "$again" ]; then
                     again=1
