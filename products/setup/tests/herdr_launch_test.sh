@@ -111,14 +111,16 @@ case $1 in
         'status --tree') cat "$STUB_CALLER" ;;
         'doc ls')
             [ "${STUB_FAIL:-}" != 'taskr doc ls' ] || exit 1
-            jq -cn --arg path "$STUB_CALLER_BRIEF" \
-                '{task_id:42,kind:"brief",name:"",source_path:$path}' ;;
+            cat "$STUB_CALLER_DOCS" ;;
         'work list') cat "$STUB_RESERVED" ;;
         'work observe')
             [ "${STUB_FAIL:-}" != 'taskr work observe' ] || exit 1
             if [ -n "${STUB_OBSERVE:-}" ]; then printf '%s\n' "$STUB_OBSERVE";
             else printf '%s\n' '{"launch_id":3579,"task_id":2468,"native_session":"synthetic-native","dispatch":{"pane":"wA:p5"}}'; fi ;;
         *) exit 1 ;; esac ;;
+    doc)
+        [ "$2" = get ] && [ "$3" = 99 ] || exit 1
+        cat "$STUB_CALLER_CAPTURE" ;;
     new) printf '%s\n' "${STUB_NEW:-n1 2468}" ;;
     # STUB_PROMPT: got (default), no_receipt or rejected, as --confirm reports them.
     prompt) case ${STUB_PROMPT:-got} in
@@ -180,6 +182,7 @@ new_case() {
     STUB_MACHINE_LABEL=devbox STUB_PROBE=ok STUB_CWD_OK=1 STUB_COMMON=/target/main/.git STUB_CLI=/target/bin/codex STUB_CODATOR=0
     STUB_RESERVED=$case_dir/reserved.json
     STUB_CALLER=$case_dir/caller.json STUB_CALLER_BRIEF=$case_dir/caller.md
+    STUB_CALLER_DOCS=$case_dir/caller-docs.json STUB_CALLER_CAPTURE=$case_dir/caller-captured.md
     printf '%s\n' "case: $case_name"
 }
 
@@ -194,6 +197,7 @@ run_launch() {
         STUB_SCREEN="$STUB_SCREEN" STUB_START_OK="$STUB_START_OK" STUB_PUSH_FAIL="$STUB_PUSH_FAIL" \
         STUB_RESERVED="$STUB_RESERVED" STUB_SERVER_RC="$STUB_SERVER_RC" \
         STUB_CALLER="$STUB_CALLER" STUB_CALLER_BRIEF="$STUB_CALLER_BRIEF" \
+        STUB_CALLER_DOCS="$STUB_CALLER_DOCS" STUB_CALLER_CAPTURE="$STUB_CALLER_CAPTURE" \
         STUB_NATIVE="$STUB_NATIVE" STUB_OBSERVE="$STUB_OBSERVE" \
         STUB_INIT_RC="$STUB_INIT_RC" STUB_INIT_NATIVE="$STUB_INIT_NATIVE" \
         STUB_SOURCE_PROBE="$STUB_SOURCE_PROBE" STUB_PROMPT="$STUB_PROMPT" STUB_LOG_GOT="$STUB_LOG_GOT" \
@@ -516,6 +520,9 @@ caller_fixture() {
     jq -cn --arg role "$1" --arg name "${2:-rev-parent}" \
         '{id:42,role:$role,name:$name,status:"open"}' >"$STUB_CALLER"
     printf '%s\n' 'HERDR-BRIEF role=reviewer' >"$STUB_CALLER_BRIEF"
+    cp "$STUB_CALLER_BRIEF" "$STUB_CALLER_CAPTURE"
+    jq -cn --arg path "$STUB_CALLER_BRIEF" \
+        '{doc_id:99,task_id:42,kind:"brief",name:"",captured:true,source_path:$path}' >"$STUB_CALLER_DOCS"
 }
 
 for caller_role in reviewer researcher; do
@@ -533,7 +540,7 @@ for caller_role in reviewer researcher; do
     done
 done
 
-for refusal in non-gather parent nested cap forbidden implementer ledger malformed missing-caller docs missing-brief reserved machine; do
+for refusal in non-gather parent nested cap forbidden forbidden-reason forbidden-crlf captured-forbidden implementer ledger malformed missing-caller docs uncaptured get; do
     new_case "worker gather refusal: $refusal" researcher
     caller_fixture reviewer
     helper_lane=haiku-gather helper_name=gather-facts helper_parent=42
@@ -548,24 +555,69 @@ for refusal in non-gather parent nested cap forbidden implementer ledger malform
                 '{"id":44,"parent_id":42,"status":"ready"}' \
                 '{"id":45,"parent_id":42,"status":"done"}' >>"$STUB_CALLER"
             reason='at most 3 open gather helpers' ;;
-        forbidden) printf '%s\n' 'Gather helpers: none' >>"$STUB_CALLER_BRIEF"; reason='brief says Gather helpers: none' ;;
+        forbidden | forbidden-reason | forbidden-crlf | captured-forbidden)
+            case $refusal in
+                forbidden-reason) printf '%s\n' 'Gather helpers: none (reason).' ;;
+                forbidden-crlf) printf 'Gather helpers:\tnone\r\n' ;;
+                *) printf '%s\n' 'Gather helpers: none' ;;
+            esac >>"$STUB_CALLER_CAPTURE"
+            [ "$refusal" = captured-forbidden ] || cp "$STUB_CALLER_CAPTURE" "$STUB_CALLER_BRIEF"
+            reason='brief says Gather helpers: none' ;;
         implementer) caller_fixture implementer impl-parent; reason='caller role=implementer cannot start helpers' ;;
         ledger) STUB_FAIL='taskr --json status'; reason='could not read caller task and children' ;;
         malformed) printf '%s\n' 'not JSON' >"$STUB_CALLER"; reason='could not read caller role and name' ;;
         missing-caller) printf '%s\n' '{"record":"daemon"}' >"$STUB_CALLER"; reason='could not read caller role and name' ;;
         docs) STUB_FAIL='taskr doc ls'; reason='could not read caller brief record' ;;
-        missing-brief) rm "$STUB_CALLER_BRIEF"; reason='caller brief is not readable' ;;
-        reserved | machine) reason='a lane cannot use --reserved or --machine' ;;
+        uncaptured)
+            jq '.captured = false' "$STUB_CALLER_DOCS" >"$case_dir/updated"
+            mv "$case_dir/updated" "$STUB_CALLER_DOCS"
+            reason='could not read captured caller brief id' ;;
+        get) STUB_FAIL='taskr doc get'; reason='could not read captured caller brief' ;;
     esac
-    case $refusal in
-        reserved) run_launch TASKR_TASK=42 sh "$launch_sh" --reserved 2468 3579 "$helper_lane" "$helper_name" "$brief" "$report" "$helper_parent" wA:p5 ;;
-        machine) run_launch TASKR_TASK=42 sh "$launch_sh" --machine devbox "$helper_lane" "$helper_name" "$brief" "$report" "$helper_parent" wA:p5 ;;
-        *) run_launch TASKR_TASK=42 sh "$launch_sh" "$helper_lane" "$helper_name" "$brief" "$report" "$helper_parent" ;;
-    esac
+    run_launch TASKR_TASK=42 sh "$launch_sh" "$helper_lane" "$helper_name" "$brief" "$report" "$helper_parent"
     expect_rc 2
     expect_err "$reason"
     grep -q '^herdr|' "$case_dir/calls" && fail 'refused caller reached Herdr'
     grep -q '^taskr|new|' "$case_dir/calls" && fail 'refused caller registered a child'
+done
+
+for caller_role in reviewer researcher; do
+    for refusal in reserved machine pane workspace; do
+        new_case "$caller_role gather refusal: $refusal" researcher
+        caller_fixture "$caller_role"
+        reason='a lane cannot use --reserved or --machine'
+        case $refusal in
+            reserved) run_launch TASKR_TASK=42 sh "$launch_sh" --reserved 2468 3579 haiku-gather gather-facts "$brief" "$report" 42 wA:p5 ;;
+            machine) run_launch TASKR_TASK=42 sh "$launch_sh" --machine devbox haiku-gather gather-facts "$brief" "$report" 42 wA:p5 ;;
+            pane)
+                reason='a gather helper uses a new tab in the caller workspace'
+                run_launch TASKR_TASK=42 sh "$launch_sh" haiku-gather gather-facts "$brief" "$report" 42 wB:p5 ;;
+            workspace)
+                reason='a gather helper uses a new tab in the caller workspace'
+                run_launch TASKR_TASK=42 sh "$launch_sh" --workspace wB haiku-gather gather-facts "$brief" "$report" 42 ;;
+        esac
+        expect_rc 2
+        expect_err "$reason"
+        grep -q '^herdr|' "$case_dir/calls" && fail 'refused caller reached Herdr'
+        grep -q '^taskr|new|' "$case_dir/calls" && fail 'refused caller registered a child'
+    done
+done
+
+for disk_brief in changed missing; do
+    new_case "captured brief permits gather with $disk_brief disk brief" researcher
+    caller_fixture reviewer
+    case $disk_brief in
+        changed) printf '%s\n' 'Gather helpers: none' >>"$STUB_CALLER_BRIEF" ;;
+        missing) rm "$STUB_CALLER_BRIEF" ;;
+    esac
+    # Only the matching row's captured document controls the opt-out.
+    printf '%s\n' '{"doc_id":100,"task_id":41,"kind":"brief","name":"","captured":false}' >>"$STUB_CALLER_DOCS"
+    printf '%s\n' 'Gather helpers: nonetheless allowed' >>"$STUB_CALLER_CAPTURE"
+    run_launch TASKR_TASK=42 sh "$launch_sh" haiku-gather gather-facts "$brief" "$report" 42
+    expect_rc 0
+    grep -q '^taskr|doc|get|99$' "$case_dir/calls" || fail 'did not read matching captured brief'
+    grep -q '^herdr|tab|create|--workspace|wA|' "$case_dir/calls" || fail 'helper is not in caller workspace'
+    grep -q '^herdr|agent|start|gather-facts|' "$case_dir/calls" || fail 'no gather helper start'
 done
 
 for caller_role in orchestrator sub-orchestrator; do
@@ -1716,6 +1768,15 @@ fi
 reserved_snapshot() {
     jq -n --arg cwd "$tcwd" '{campaign:42,generation:7,parked:false,configuration:{enabled:true},work:[{revision:1,current_run:9,revisions:[{revision:1,contract:{checkout:{cwd:$cwd}}}],runs:[{run_id:9,round:1,state:"active",assignments:[{task_id:2468,launch_id:3579,round:1,state:"starting",stage:"executor",dispatch:{workspace:"wA",tab:"wA:t5",pane:"wA:p5"},lane:{name:"opus-medium",provider:"claude",model:"claude-opus-5-5",effort:"medium"}}]}]}]}' >"$STUB_RESERVED"
 }
+
+new_case 'orchestrator caller keeps reserved launch authority'
+reserved_snapshot
+printf '%s\n' '{"id":42,"role":"orchestrator","name":"orch-parent","status":"open"}' >"$STUB_CALLER"
+run_launch TASKR_TASK=42 sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p5'
+grep -q '^herdr|agent|start|impl-cart|' "$case_dir/calls" || fail 'no reserved implementer start'
+if grep -E '^taskr\|(new|launch)\|' "$case_dir/calls" >/dev/null; then fail 'reserved mode created another task or launch'; fi
 
 new_case 'reserved long PATH sources exact private setup before Step5 cleanup'
 reserved_snapshot

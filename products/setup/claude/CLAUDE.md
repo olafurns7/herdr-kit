@@ -71,7 +71,8 @@ else: model lanes, launch commands, accounts, layout, briefs, and teardown.
   A reviewer (`code-reviewer`, `reviewer`, `code-validator`) or researcher
   (`researcher`, `architect`) may also start gather helpers for read-only
   gathering under `~/.agents/skills/taskr/references/review.md`, unless its
-  brief says `Gather helpers: none`. No other delegation is allowed.
+  brief says `Gather helpers: none`. A `gather-` lane never starts helpers.
+  No other delegation is allowed.
 - The flag identifies the environment. It does not authorize destructive
   actions, closing others' workspaces, or publishing; those follow the task's
   own authorization.
