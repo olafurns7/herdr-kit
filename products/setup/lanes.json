@@ -17,7 +17,8 @@
     "prefixes": [
       "impl",
       "rs",
-      "orch"
+      "orch",
+      "rev"
     ]
   },
   "opus-xhigh": {
