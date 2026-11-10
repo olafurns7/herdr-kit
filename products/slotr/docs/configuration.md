@@ -50,8 +50,9 @@ SLOTR_POOLS__RUNTIME__SLOTS=3
 SLOTR_LEASE__ON_EXPIRY=warn
 ```
 
-Pool and kind names in environment paths are normalized to lowercase. Hook,
-observation, and priority campaign arrays use TOML array syntax.
+Pool and kind names in environment paths are normalized to lowercase, but the
+variable name after `pools.<pool>.kinds.<kind>.env` keeps its original case.
+Hook, observation, and priority campaign arrays use TOML array syntax.
 For example, `SLOTR_PRIORITY__CAMPAIGNS='["team-a", "team-b-*"]'` and
 `SLOTR_PRIORITY__FILE=~/priority` override both priority settings.
 
@@ -106,8 +107,11 @@ A small-job pool can set `fair_turn = "pool"` so a memory-blocked fair turn in
 another pool (for example a 20 GiB lane) does not hold it, and its own aged
 tickets do not hold other pools. It still passes the shared memory budget,
 reserve, PSI, load and recovery gates, and the watchdog still covers its runs.
-Its `slots` times its kind costs bounds the memory it can hold ahead of a big
-fair turn elsewhere; size it with that in mind.
+With steady demand, a pool with `fair_turn = "pool"` can delay another pool's
+memory-blocked head without limit; its starts do not count toward that head's
+eight-admission bound. Its `slots` times its configured kind costs gives an
+approximate memory size; explicit `--cost` requests and `memory_max_mib` can
+differ. The default remains `fair_turn = "global"`.
 
 The requested kind is recorded separately from the resolved `cost_mib` in
 admission events and repeated in terminal events. Explicit and default costs

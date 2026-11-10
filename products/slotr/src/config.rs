@@ -353,7 +353,10 @@ fn load_with_env(
         .filter(|(k, _)| k.starts_with("SLOTR_") && k.contains("__"))
         .filter(|_| overrides)
     {
-        let parts: Vec<_> = key[6..].split("__").map(str::to_lowercase).collect();
+        let mut parts: Vec<_> = key[6..].split("__").map(str::to_lowercase).collect();
+        if parts.len() == 6 && parts[0] == "pools" && parts[2] == "kinds" && parts[4] == "env" {
+            parts[5] = key.rsplit("__").next().unwrap().to_owned();
+        }
         let path = parts.join(".");
         let mut cursor = &mut value;
         for i in 0..parts.len() {

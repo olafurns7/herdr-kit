@@ -1068,6 +1068,17 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(built_in, example)
         self.assertEqual(self.invoke("config", "check", str(self.root / "missing")).returncode, 2)
 
+    def test_config_kind_env_override_preserves_variable_case(self):
+        self.cfg['light'] = dict(kinds=dict(check=dict(cost_mib=1024,
+                                                     env=dict(BUILD_THREADS='4'))))
+        self.write_config()
+        override = dict(self.env, SLOTR_POOLS__LIGHT__KINDS__CHECK__ENV__BUILD_THREADS='2')
+        result = self.invoke('config', 'show', env=override)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env = json.loads(result.stdout)['config']['pools']['light']['kinds']['check']['env']
+        self.assertEqual(env['BUILD_THREADS'], '2')
+        self.assertNotIn('build_threads', env)
+
     def test_explicit_config_required_and_file_precedence(self):
         config = self.root / 'config/slotr/config.toml'
         missing = str(self.root / 'missing.toml')

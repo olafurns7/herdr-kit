@@ -85,10 +85,12 @@ reservation. Recovery, PSI/load, slots, ports, locks and priority caps still app
 A pool with `fair_turn = "pool"` neither waits for nor reserves another pool's
 fair turn or priority hold; see [configuration](configuration.md#pools).
 
-This bounds bypass to eight admissions per queued head, rather than promising a
-wall-clock start deadline: existing runs must release enough memory and a slot
-before the head can start. A steady stream of small arrivals cannot extend that
-bound. Status names a fitting backfill candidate `fair_turn_backfill`, includes
+Among pools that share fair turns, this bounds bypass to eight admissions per
+queued head. It does not promise a wall-clock start deadline: existing runs must
+release enough memory and a slot before the head can start. A pool with
+`fair_turn = "pool"` can delay another pool's memory-blocked head without limit
+while it has steady demand; its starts do not count toward that head's bound.
+Status names a fitting backfill candidate `fair_turn_backfill`, includes
 its head's sequence in `backfill_for`, and shows each ticket's
 `backfill_admissions` and `backfill_limit`. After the limit, otherwise fitting
 contenders report `fair_turn_backfill_limit`; the head keeps `memory_budget`
