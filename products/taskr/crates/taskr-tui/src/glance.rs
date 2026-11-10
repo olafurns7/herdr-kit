@@ -2539,16 +2539,11 @@ fn detail_lines(app: &App, width: usize) -> Option<(String, Vec<Line<'static>>)>
     let (title, mut lines, text) = match selected(app) {
         Selected::Ask(a) => {
             let head = vec![
-                if a.blocking {
-                    bold("BLOCKING", t.need)
-                } else {
-                    sp("not blocking", t.sub)
-                },
                 sp(
                     if a.asker_waiting {
-                        " · asker waiting · "
+                        "asker waiting · "
                     } else {
-                        " · asker not waiting · "
+                        "asker not waiting · "
                     },
                     t.dim,
                 ),

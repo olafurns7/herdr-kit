@@ -5,8 +5,7 @@
 ▌? ◆ fleet-hub            BLOCKING HUB  ⏎  25s
 ▌  Release: Cut the v3.2 release today, or w…
 ╭ ask 61811 · fleet-hub ─────────────────────╮
-│ BLOCKING · asker waiting · 25s ago · atlas │
-│ w1:p1                                      │
+│ asker waiting · 25s ago · atlas w1:p1      │
 │                                            │
 │ Release: Cut the v3.2 release today, or    │
 │ wait for the cache fix?                    │
@@ -18,6 +17,7 @@
 │  B Wait for the fix                        │
 │     One release with everything, likely    │
 │     tomorrow afternoon.                    │
+│                                            │
 │                                            │
 │                                            │
 │                                            │
