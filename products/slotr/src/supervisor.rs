@@ -537,23 +537,6 @@ fn supervise_child(
     })();
     let wall_ms = started_at.elapsed().as_millis() as u64;
     let status = child.try_wait().ok().flatten();
-    if stop_reason.is_none() && manager::cancelled() != 0 {
-        stop_reason = Some(
-            if crate::stops::status().is_ok_and(|intents| {
-                intents.get(run).is_some_and(|intent| {
-                    matches!(
-                        intent["phase"].as_str(),
-                        Some("requested" | "submitted" | "completed")
-                    )
-                })
-            }) {
-                "manual"
-            } else {
-                "cancelled"
-            }
-            .into(),
-        );
-    }
     // This supervisor keeps the unit alive while querying it, before --collect
     // can discard accounting. These are unit totals, including the supervisor.
     let (memory_peak_bytes, cpu_usage_nsec, accounting_error, oom_killed) = unit_usage(run);
@@ -567,6 +550,16 @@ fn supervise_child(
         }))
     {
         eprintln!("slotr: OOM audit gap for {run}: {error:#}");
+    }
+    // Control-group TERM may reach us after the payload exits, including
+    // during the accounting query. Resolve the reason just before the end event.
+    if stop_reason.is_none() {
+        let intents = crate::stops::status().ok();
+        let phase = intents
+            .as_ref()
+            .and_then(|intents| intents.get(run))
+            .and_then(|intent| intent["phase"].as_str());
+        stop_reason = external_stop_reason(manager::cancelled(), phase).map(str::to_owned);
     }
     if let Err(error) = manager::event(json!({
         "event":"end", "run":h.run, "pool":h.request.pool, "kind":h.request.kind,
@@ -590,6 +583,29 @@ fn supervise_child(
     // Retain the record until systemd confirms the unit has gone. A unit still
     // owns descendants after its supervisor exits (KillMode=control-group).
     result
+}
+
+fn external_stop_reason(signal: i32, manual_phase: Option<&str>) -> Option<&'static str> {
+    // Manual intent is durable before stop submission, independently of TERM.
+    if matches!(manual_phase, Some("requested" | "submitted" | "completed")) {
+        Some("manual")
+    } else if signal != 0 {
+        Some("cancelled")
+    } else {
+        None
+    }
+}
+
+#[test]
+fn external_stop_reason_does_not_require_a_signal_for_manual_intent() {
+    for phase in ["requested", "submitted", "completed"] {
+        assert_eq!(external_stop_reason(0, Some(phase)), Some("manual"));
+        assert_eq!(external_stop_reason(15, Some(phase)), Some("manual"));
+    }
+    for phase in [None, Some("failed"), Some("unknown")] {
+        assert_eq!(external_stop_reason(0, phase), None);
+        assert_eq!(external_stop_reason(15, phase), Some("cancelled"));
+    }
 }
 
 fn unit_usage(run: &str) -> (Option<u64>, Option<u64>, Option<String>, Option<bool>) {
