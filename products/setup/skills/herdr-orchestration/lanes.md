@@ -19,8 +19,12 @@ before any control-plane call. `herdr-launch --lanes` lists resolved lanes, pref
 and the table path without launching.
 
 Use `gather-` with a `role=researcher` brief for read-only gathering, such as
-scraping, docs, or release notes. A lane's prefixes say which roles it may
-take; the operator overlay may narrow that further for a model.
+scraping, docs, or release notes. A lead's gather lanes and a reviewer or analysis
+lane's gather helpers have the same model limits: read-only gathering, never
+analysis, review, a verdict, implementation, or orchestration. Reviewers and
+analysis lanes follow taskr `references/review.md` for launch, checks, and close.
+A lane's prefixes say which roles it may take; the operator overlay may narrow
+that further for a model.
 
 OpenCode models use `provider/model` syntax. Its v2.1.1 root TUI has no model or
 reasoning-effort flag: the launcher selects the model through process-local
