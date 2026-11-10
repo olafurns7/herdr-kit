@@ -10,10 +10,11 @@ On resume, read the campaign plan, ledger, and latest reports before re-deriving
 
 For a plain orchestrator, a new session starts with `taskr adopt <me>` and continues from the handover and inbox (`workflow.md` "Goal, plan, and documents"). Stop the predecessor's wait before adoption, then arm your own `taskr wait`.
 
-Never type `/restart` or accept an update restart in a Claude push lane.
-Claude rebuilds its resume command without the channel flag, so the MCP server can keep its lease while the model gets no pushes.
-`check` reports `push-dropped`; repair with `herdr-hub move` / `herdr-lead move --resume`, see `launch.md`.
-For a running Claude push lead, `herdr-lead move <root> <pane> --worktree <campaign worktree> --prompt-file <lead brief>` does the whole restart: it asks for the handover, stops the lead, waits for the lease, then starts and proves the successor (`launch.md`); a hub restarts itself with `herdr-hub move <root>`. To do it by hand, settle the handover and quit the predecessor first (`herdr-lead stop <root> <pane>` waits for idle, quits it, and waits for the lease). Verify that no live agent occupies its pane and wait for `taskr consumer show --as <root>` to report `live:false`; quitting can leave the lease live until its 60 s expiry. A running channel keeps renewing, so waiting alone does not stop it. Start the successor on the same host with:
+Never type `/restart` or accept an update restart prompt in a Claude push lane.
+Claude rebuilds its resume command without the channel flag. The MCP server can keep its lease and record receipts while the model gets no pushes.
+`herdr-hub check <root>` and `herdr-lead check <root>` report `push-dropped`. To repair, use `move` with `--resume` (`launch.md`).
+
+For a running Claude push lead, `herdr-lead move <root> <pane> --worktree <campaign worktree> --prompt-file <lead brief>` does the whole restart: it asks for the handover, stops the lead, waits for the lease, then starts and proves the successor (`launch.md`); a hub resumes with `herdr-hub move <root> --account <account> -- --resume <session id>`. To do it by hand, settle the handover and quit the predecessor first (`herdr-lead stop <root> <pane>` waits for idle, quits it, and waits for the lease). Verify that no live agent occupies its pane and wait for `taskr consumer show --as <root>` to report `live:false`; quitting can leave the lease live until its 60 s expiry. A running channel keeps renewing, so waiting alone does not stop it. Start the successor on the same host with:
 
 ```bash
 herdr-lead start <root> <pane> --worktree <campaign worktree> --predecessor-pane <old pane> --prompt-file <lead brief>
@@ -58,7 +59,6 @@ From the orchestrator, use `herdr agent get "$owned_agent_name"` to resolve the 
 recovered=$(herdr pane get "$recovered_pane_id")
 recovered_workspace_id=$(printf '%s\n' "$recovered" | jq -er '.result.pane.workspace_id')
 test "$recovered_workspace_id" = "$task_workspace_id"
-
 helper_pane_id="$recovered_pane_id"
 ```
 

@@ -1545,6 +1545,17 @@ fn root_consumers_alarm_once_per_generation_and_notify_only_an_open_other_hub() 
                     ),
                     *hub.as_ref().unwrap()
                 );
+                assert_eq!(
+                    text(
+                        &h,
+                        &format!(
+                            "select json_extract(data,'$.recovery') from events where related_event_id={e} and kind='herdr' order by id desc limit 1"
+                        )
+                    ),
+                    format!(
+                        "run herdr-hub check {r} (hub) or herdr-lead check {r} (lead); on push-dropped follow its Repair line; live means the root is busy"
+                    )
+                );
             }
             let summary = text(
                 &h,
@@ -1556,9 +1567,9 @@ fn root_consumers_alarm_once_per_generation_and_notify_only_an_open_other_hub() 
                 format!("ALARM push_exhausted root {r} event {e} (ask)"),
                 "3 delivery attempts without an ack".into(),
                 "Claude /restart".into(),
-                "herdr-hub move".into(),
-                "herdr-lead move".into(),
-                "--resume".into(),
+                format!("run herdr-hub check {r} (hub) or herdr-lead check {r} (lead)"),
+                "on push-dropped follow its Repair line".into(),
+                "live means the root is busy".into(),
             ] {
                 assert!(summary.contains(&expected), "{summary}");
             }

@@ -315,7 +315,7 @@ else: sys.exit(98)
     def expect(case, rc):
         assert case[2].returncode == rc, (case[2].returncode, case[3], case[4])
 
-    def success(case, extra=(), new=False, jobs=False):
+    def success(case, extra=(), new=False, jobs=False, account=()):
         expect(case, 0)
         work, home, process, out, err, calls = case
         state = home / '.local/state/herdr-orch/lead-push/42'
@@ -326,7 +326,7 @@ else: sys.exit(98)
                   f'A "hub push check 7" event will arrive: record it and ack it.'
                   f' Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note.')
         actual = json.loads((work / 'cdl').read_text())
-        expected = dict(args=['--model','example-opus','--effort','high','--mcp-config',str(config),
+        expected = dict(args=[*account,'--model','example-opus','--effort','high','--mcp-config',str(config),
                               '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
                         task=None, launch=None, role='hub', pid=process.pid, cwd=str(work), umask=0o002)
         assert actual == expected, {'actual':actual, 'expected':expected}
@@ -362,6 +362,8 @@ else: sys.exit(98)
     success(c, ('--resume','id with spaces',"quote'arg"))
     assert not (c[0] / 'agent-list').exists()
     assert c[3].splitlines()[1:] == ['To make this the hub: taskr set 42 hub=on']
+    c = run('hub account is the leading cdl pair', args=('42','--account',"account ' quoted",'--','--resume','saved-session'))
+    success(c, ('--resume','saved-session'), account=('--account',"account ' quoted"))
     c = run('hub overrides inherited worker role', location={'FLEET_ROLE':'worker'})
     success(c)
     c = run('new root created then adopted', args=('--new','example-hub','--lane','opus-high'))
@@ -560,14 +562,14 @@ else: sys.exit(98)
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
 
     c = run('jobs move forwards opt-in across detached helper and shell-quoted successor',
-            args=('move','42','--jobs','--','--resume','id with spaces',"quote'arg"), mode='move')
+            args=('move','42','--jobs','--account',"account ' quoted",'--','--resume','id with spaces',"quote'arg"), mode='move')
     expect(c, 0)
     log = Path(c[3].splitlines()[0].split('; log ')[1])
     wait_for(log, 'herdr-hub: moved 42: generation 9 live')
     bindir = c[1] / '.local/bin'
     assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
-            '--lane','opus-high','--session','sess-hub','--jobs','--','--resume','id with spaces',"quote'arg"]
-    assert shlex.split((c[0] / 'typed').read_text()) == [str(bindir / 'herdr-hub'),'42','--lane','opus-high','--jobs',
+            '--lane','opus-high','--session','sess-hub','--jobs','--account',"account ' quoted",'--','--resume','id with spaces',"quote'arg"]
+    assert shlex.split((c[0] / 'typed').read_text()) == [str(bindir / 'herdr-hub'),'42','--lane','opus-high','--jobs','--account',"account ' quoted",
                                                         '--','--resume','id with spaces',"quote'arg"]
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
 
