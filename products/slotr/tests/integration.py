@@ -798,7 +798,7 @@ class AdmissionTest(unittest.TestCase):
         def finished():
             try:
                 return Path(f'/proc/{supervisor_pid}/stat').read_text().split()[2] == 'Z'
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 return True
         self.wait(finished)
 
@@ -1344,7 +1344,12 @@ class AdmissionTest(unittest.TestCase):
         launcher = self.launcher_pid()
         os.kill(holder.pid, signal.SIGSTOP)           # the launcher handles the tab's HUP first
         os.killpg(holder.pid, signal.SIGHUP)
-        self.wait(lambda: Path('/proc/%d/stat' % launcher).read_text().split()[2] == 'Z')
+        def launcher_exited():
+            try:
+                return Path('/proc/%d/stat' % launcher).read_text().split()[2] == 'Z'
+            except (FileNotFoundError, ProcessLookupError):
+                return True
+        self.wait(launcher_exited)
         os.kill(holder.pid, signal.SIGCONT)
         holder.wait(timeout=30)
         self.assertEqual(holder.returncode, 129, (self.root / 'holder.log').read_text()[-300:])
@@ -1987,8 +1992,12 @@ class AdmissionTest(unittest.TestCase):
             try:
                 self.wait(lambda: float((self.root / 'clock').read_text()) >= 21)
                 # The old helper lets the holder cancel while the waiter is still frozen.
-                self.wait(lambda: Path(f'/proc/{pid}/stat').read_text().split()[2] == 'T'
-                          or self.events('warn_cancelled'))
+                def stopped_or_cancelled():
+                    try:
+                        return Path(f'/proc/{pid}/stat').read_text().split()[2] == 'T' or self.events('warn_cancelled')
+                    except (FileNotFoundError, ProcessLookupError):
+                        self.fail('supervisor exited before reaching stopped state')
+                self.wait(stopped_or_cancelled)
                 self.assertEqual(self.events('warn_cancelled'), [])
                 self.assertFalse(jump.done(), 'returned before the waiter saw the jump')
             finally:
@@ -2922,14 +2931,16 @@ class AdmissionTest(unittest.TestCase):
             def state():
                 try: return stat.read_text().split()[2]
                 except OSError: return 'gone'
+            def read_wchan(path):
+                try: return path.read_text()
+                except (FileNotFoundError, ProcessLookupError): return 'gone'
             began=time.monotonic(); deadline=began+6
             while not (out.with_suffix('.term').exists() and state() in ('gone','Z')) and time.monotonic()<deadline:
                 threading.Event().wait(0.04)
             evidence=dict(seconds=round(time.monotonic()-began,2), workload_state=state(),
                           term_received=out.with_suffix('.term').exists(),
-                          supervisor_wchan=wchan.read_text() if wchan.exists() else 'gone',
-                          waiter_wchan=Path(f'/proc/{lower.pid}/wchan').read_text()
-                          if Path(f'/proc/{lower.pid}/wchan').exists() else 'gone')
+                          supervisor_wchan=read_wchan(wchan),
+                          waiter_wchan=read_wchan(Path(f'/proc/{lower.pid}/wchan')))
             print(evidence,flush=True)
         finally:
             fd=os.open(path,os.O_RDWR|os.O_NONBLOCK)
@@ -3002,7 +3013,7 @@ class AdmissionTest(unittest.TestCase):
             def terminated():
                 try:
                     return Path(f'/proc/{pid}/stat').read_text().split()[2]=='Z'
-                except FileNotFoundError:
+                except (FileNotFoundError, ProcessLookupError):
                     return True
             deadline=time.monotonic()+2
             self.wait(lambda: terminated() or time.monotonic()>=deadline)
@@ -3127,7 +3138,7 @@ class AdmissionTest(unittest.TestCase):
                     def terminated():
                         try:
                             return Path(f'/proc/{pid}/stat').read_text().split()[2]=='Z'
-                        except FileNotFoundError:
+                        except (FileNotFoundError, ProcessLookupError):
                             return True
                     deadline=time.monotonic()+2
                     self.wait(lambda: terminated() or time.monotonic()>=deadline)
