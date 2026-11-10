@@ -1,6 +1,6 @@
  taskr ❯ answer        2s ago   ● 5 need you
  ask 61802 · docs-refresh
- not blocking · waiting · 4m · atlas w28:p1
+ waiting · 4m · atlas w28:p1
 
  Translations landed for three of the four
  … 1-1/3 · ctrl-d ctrl-u scroll

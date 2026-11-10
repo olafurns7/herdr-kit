@@ -1,9 +1,8 @@
  taskr      2s ago   ● 3 need you  3 to check
   D Dash   A Asks 3   F Fleet 11  [I Detail]
-╭ ask 61812 · infra-layout · 1-15/48 ────────╮
+╭ ask 61812 · infra-layout · 1-15/47 ────────╮
 │ from Dashboard · NEEDS YOU · row 3         │
-│ BLOCKING · asker waiting · 3m ago · atlas  │
-│ w62:p1                                     │
+│ asker waiting · 3m ago · atlas w62:p1      │
 │                                            │
 │ Release runbook for v2.5, ready to run     │
 │ once you pick the window. Each step waits  │
@@ -16,5 +15,6 @@
 │ daemon for both architectures.             │
 │ 4. Run the full suite on the build host    │
 │ with the slow tests switched on.           │
+│ 5. Install the candidate on the staging    │
 ╰────────────────────────────────────────────╯
  j k scroll   h back   ⏎ go   ? help

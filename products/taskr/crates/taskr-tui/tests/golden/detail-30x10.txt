@@ -3,8 +3,8 @@
 ╭ ask 61812 · infra-layout · ╮
 │ from Dashboard · NEEDS YOU │
 │ · row 3                    │
-│ BLOCKING · asker waiting · │
-│ 3m ago · atlas w62:p1      │
+│ asker waiting · 3m ago ·   │
+│ atlas w62:p1               │
 │                            │
 ╰────────────────────────────╯
  j k scroll   h back   ? help
