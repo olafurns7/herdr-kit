@@ -218,6 +218,11 @@ class AdmissionTest(unittest.TestCase):
                 ports=dict(base=self.cfg['ports']['base'] + 64, stride=32, probe=7),
                 legacy_lock=dict(path=str(self.runtime / 'legacy-heavy.lock'), mode='shared'))
             cfg['pools']['heavy'].update(self.cfg['heavy'])
+        if "light" in self.cfg:
+            cfg["pools"]["light"] = dict(slots=2, memory_gated=True, evictable=True,
+                default_cost_mib=1024, max_lease="1h", campaign_cap=0,
+                legacy_lock=dict(path=self.cfg["legacy_runtime_lock"], mode="shared"))
+            cfg['pools']['light'].update(self.cfg['light'])
         lines = []
         def table(obj, prefix=""):
             if prefix:
@@ -1063,6 +1068,17 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(built_in, example)
         self.assertEqual(self.invoke("config", "check", str(self.root / "missing")).returncode, 2)
 
+    def test_config_kind_env_override_preserves_variable_case(self):
+        self.cfg['light'] = dict(kinds=dict(check=dict(cost_mib=1024,
+                                                     env=dict(BUILD_THREADS='4'))))
+        self.write_config()
+        override = dict(self.env, SLOTR_POOLS__LIGHT__KINDS__CHECK__ENV__BUILD_THREADS='2')
+        result = self.invoke('config', 'show', env=override)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        env = json.loads(result.stdout)['config']['pools']['light']['kinds']['check']['env']
+        self.assertEqual(env['BUILD_THREADS'], '2')
+        self.assertNotIn('build_threads', env)
+
     def test_explicit_config_required_and_file_precedence(self):
         config = self.root / 'config/slotr/config.toml'
         missing = str(self.root / 'missing.toml')
@@ -1098,6 +1114,56 @@ class AdmissionTest(unittest.TestCase):
             identities.append(receipt)
         self.assertNotEqual(identities[0]['SLOTR_RUN'], identities[1]['SLOTR_RUN'])
         self.assertNotEqual(identities[0]['SLOTR_INVOCATION'], identities[1]['SLOTR_INVOCATION'])
+
+    def test_kind_redirect_runs_in_target_pool_with_kind_env(self):
+        self.cfg.update(heavy=dict(kinds=dict(oxlint=dict(cost_mib=3072, pool='light'),
+                                             build=dict(cost_mib=6144))),
+                        light=dict(fair_turn='pool', kinds=dict(oxlint=dict(
+                            cost_mib=1536, env=dict(VITEST_MAX_WORKERS='4')))))
+        self.write_config()
+        result = subprocess.run([str(TOOL), 'run', '--pool', 'heavy', '--kind', 'oxlint',
+                                 '--campaign', 'light-check', '--purpose', 'test', '--',
+                                 sys.executable, '-c',
+                                 'import json,os; print(json.dumps({k:os.environ[k] for k in '
+                                 '("VITEST_MAX_WORKERS","SLOTR_POOL")}))'],
+                                env=dict(self.env, VITEST_MAX_WORKERS='16'),
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('slotr: admitted slotr-light-1', result.stderr)
+        self.assertEqual(json.loads(result.stdout), dict(VITEST_MAX_WORKERS='4', SLOTR_POOL='light'))
+        flags = json.loads((self.runtime / 'launches').read_text().splitlines()[-1])
+        self.assertIn('--property=MemoryMax=1536M', flags)
+        admit = self.events('admit')[-1]
+        self.assertEqual((admit['pool'], admit['kind'], admit['cost_mib']), ('light', 'oxlint', 1536))
+        # Kinds without a redirect stay in the requested pool and get no kind variables.
+        result = subprocess.run([str(TOOL), 'run', '--pool', 'heavy', '--kind', 'build',
+                                 '--campaign', 'light-check', '--purpose', 'test', '--',
+                                 sys.executable, '-c',
+                                 'import os; print(os.environ["SLOTR_POOL"], os.environ.get("VITEST_MAX_WORKERS"))'],
+                                env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'heavy None')
+
+    def test_kind_redirect_and_env_validation(self):
+        config = self.root / 'config/slotr/config.toml'
+        for heavy, light, diagnostic in (
+                (dict(pool='light'), None, 'pools.heavy.kinds.oxlint.pool'),
+                (dict(pool='heavy'), {}, 'pools.heavy.kinds.oxlint.pool'),
+                (dict(pool='light'), dict(pool='heavy'), 'pools.heavy.kinds.oxlint.pool'),
+                (dict(pool='light', env=dict(A='1')), {}, 'a redirected kind takes env'),
+                ({}, dict(env={'SLOTR_POOL': 'x'}), 'pools.light.kinds.oxlint.env.SLOTR_POOL'),
+                ({}, dict(env={'1BAD': 'x'}), 'pools.light.kinds.oxlint.env.1BAD'),
+                ({}, dict(env=dict(A=1)), 'pools.light.kinds.oxlint.env.A'),
+                ({}, {}, 'pools.light.fair_turn')):
+            with self.subTest(heavy=heavy, light=light):
+                self.cfg['heavy'] = dict(kinds=dict(oxlint=dict(cost_mib=3072, **heavy)))
+                self.cfg['light'] = dict(fair_turn='pool' if diagnostic != 'pools.light.fair_turn' else 'all')
+                if light is not None:
+                    self.cfg['light']['kinds'] = dict(oxlint=dict(cost_mib=1536, **light))
+                self.write_config()
+                result = self.invoke('config', 'check', str(config))
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(diagnostic, result.stderr)
 
     def test_absolute_config_and_payload_scratch_home_preserve_queue(self):
         scratch = self.root / 'scratch-home'

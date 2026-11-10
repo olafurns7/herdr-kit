@@ -280,8 +280,17 @@ fn supervise_child(
     let (legacy_ok, _legacy_file) = manager::legacy(&cfg.pools[&h.request.pool], false)?;
     ensure!(legacy_ok, "legacy lock changed before supervisor start");
     let mut command = Command::new(&cmd[0]);
+    command.args(&cmd[1..]);
+    // Kind variables override the caller's environment; SLOTR_ names are reserved.
+    if let Some(kind) = h
+        .request
+        .kind
+        .as_ref()
+        .and_then(|kind| cfg.pools.get(&h.request.pool)?.kinds.get(kind))
+    {
+        command.envs(&kind.env);
+    }
     command
-        .args(&cmd[1..])
         .env("SLOTR_RUN", &h.run)
         .env("SLOTR_INVOCATION", invocation)
         .env("SLOTR_POOL", &h.request.pool)

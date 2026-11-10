@@ -50,8 +50,9 @@ SLOTR_POOLS__RUNTIME__SLOTS=3
 SLOTR_LEASE__ON_EXPIRY=warn
 ```
 
-Pool and kind names in environment paths are normalized to lowercase. Hook,
-observation, and priority campaign arrays use TOML array syntax.
+Pool and kind names in environment paths are normalized to lowercase, but the
+variable name after `pools.<pool>.kinds.<kind>.env` keeps its original case.
+Hook, observation, and priority campaign arrays use TOML array syntax.
 For example, `SLOTR_PRIORITY__CAMPAIGNS='["team-a", "team-b-*"]'` and
 `SLOTR_PRIORITY__FILE=~/priority` override both priority settings.
 
@@ -72,6 +73,7 @@ These tables match `config.example.toml`. Durations use the suffixes `s`,
 | `campaign_cap` | `1` | Slots per campaign when another campaign waits; 0 disables |
 | `memory_max_mib` | `0` | Each run's `MemoryMax`; 0 uses the admission cost (kind, `--cost` or `default_cost_mib`), falling back to `default_cost_mib` when that cost is 0. A run is rejected before admission if the resolved ceiling is still 0; otherwise a run over it is OOM-killed in its own unit |
 | `memory_swap_max_mib` | `0` | Each run's `MemorySwapMax`; 0 keeps runs out of swap so the memory ceiling holds |
+| `fair_turn` | `"global"` | `global` shares fair turns and priority waits with other memory-gated `global` pools; `pool` keeps them inside this pool |
 | `ports.base` | absent | Optional first block's starting port, at least 1024 |
 | `ports.stride` | absent | Optional block width; example 32 |
 | `ports.probe` | absent | Optional first N ports to bind-probe; example 7 |
@@ -79,6 +81,8 @@ These tables match `config.example.toml`. Durations use the suffixes `s`,
 | `legacy_lock.mode` | absent | `shared` or `exclusive`; both are nonblocking probes |
 | `legacy_lock.queue_only` | `false` | Refuse native use of this existing absolute regular file through the opt-in flock guard |
 | `kinds.K.cost_mib` | absent | Optional named request cost |
+| `kinds.K.pool` | `""` | Nonempty: queue and run this kind in that pool with that pool's kind `K` |
+| `kinds.K.env` | `{}` | String variables set for the command; they replace the caller's values |
 
 Optional port tables default to base 31000, stride 32, and probe 7 when
 enabled. A legacy lock requires a path; its mode defaults to `shared`.
@@ -90,6 +94,24 @@ Kinds belong to each pool; they are not global aliases. The example `heavy`
 pool defines `tsc`, `oxlint`, `vitest`, `vitest-lane`, `build`, and `install`. Select only
 kinds defined in your chosen pool. Unknown kinds exit 2 and list that pool's
 configured keys, or `none` when it has no kinds.
+
+A kind with `pool` moves its requests to another pool without changing
+callers: `--pool heavy --kind oxlint` with `pools.heavy.kinds.oxlint.pool =
+"light"` queues, runs and records in `light`, with the cost, memory ceiling and
+`env` of `pools.light.kinds.oxlint`. The target must be another pool that
+defines the same kind without its own `pool`, and a redirected kind cannot set
+`env`. Its own `cost_mib` is unused; keep it so removing `pool` restores the
+old cost. Kind `env` names must be valid variable names outside `SLOTR_`.
+
+A small-job pool can set `fair_turn = "pool"` so a memory-blocked fair turn in
+another pool (for example a 20 GiB lane) does not hold it, and its own aged
+tickets do not hold other pools. It still passes the shared memory budget,
+reserve, PSI, load and recovery gates, and the watchdog still covers its runs.
+With steady demand, a pool with `fair_turn = "pool"` can delay another pool's
+memory-blocked head without limit; its starts do not count toward that head's
+eight-admission bound. Its `slots` times its configured kind costs gives an
+approximate memory size; explicit `--cost` requests and `memory_max_mib` can
+differ. The default remains `fair_turn = "global"`.
 
 The requested kind is recorded separately from the resolved `cost_mib` in
 admission events and repeated in terminal events. Explicit and default costs

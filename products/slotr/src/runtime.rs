@@ -18,30 +18,29 @@ use std::{
 };
 
 pub fn run(args: Run, cfg: &Config) -> Result<i32> {
-    let pool = cfg
-        .pools
-        .get(&args.pool)
-        .ok_or_else(|| anyhow::anyhow!("unknown pool: {}", args.pool))?;
+    ensure!(
+        cfg.pools.contains_key(&args.pool),
+        "unknown pool: {}",
+        args.pool
+    );
     ensure!(
         !args.campaign.trim().is_empty(),
         "campaign must not be empty"
     );
     ensure!(!args.purpose.trim().is_empty(), "purpose must not be empty");
-    let cost = if let Some(kind) = &args.kind {
-        pool.kinds
-            .get(kind)
-            .ok_or_else(|| {
-                let valid = pool.kinds.keys().cloned().collect::<Vec<_>>().join(", ");
-                anyhow::anyhow!(
-                    "unknown kind: {kind} (pool {}; valid kinds: {})",
-                    args.pool,
-                    if valid.is_empty() { "none" } else { &valid }
-                )
-            })?
-            .cost_mib
-    } else {
-        args.cost.unwrap_or(pool.default_cost_mib)
+    // A kind may name another pool; the request queues and runs there.
+    let (pool_name, kind) = match &args.kind {
+        Some(kind) => {
+            let (pool_name, entry) = cfg.resolve_kind(&args.pool, kind)?;
+            (pool_name, Some(entry))
+        }
+        None => (args.pool.as_str(), None),
     };
+    let pool = &cfg.pools[pool_name];
+    let cost = kind.map_or_else(
+        || args.cost.unwrap_or(pool.default_cost_mib),
+        |kind| kind.cost_mib,
+    );
     let memory_max = match (pool.memory_max_mib, cost) {
         (0, 0) => pool.default_cost_mib,
         (0, cost) => cost,
@@ -92,7 +91,7 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
         };
         s.queue.push(Request {
             enqueue_seq: seq,
-            pool: args.pool.clone(),
+            pool: pool_name.to_owned(),
             campaign: args.campaign.clone(),
             level: 0,
             policy_generation: 0,
@@ -162,7 +161,7 @@ pub fn run(args: Run, cfg: &Config) -> Result<i32> {
                     let holder = Holder {
                         request: q,
                         backfill_for,
-                        run: format!("slotr-{}-{}", args.pool, s.admit_seq),
+                        run: format!("slotr-{}-{}", pool_name, s.admit_seq),
                         admit_seq: s.admit_seq,
                         slot: slot.unwrap(),
                         port_base: base,
@@ -340,11 +339,7 @@ fn launch(h: &Holder, cmd: &[String], cfg: &Config, memory_max: u64) -> Result<(
     }
     for (key, _) in std::env::vars_os() {
         if let Some(name) = key.to_str()
-            && !name.is_empty()
-            && name
-                .bytes()
-                .enumerate()
-                .all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+            && config::env_name(name)
         {
             command.arg(format!("--setenv={name}"));
         }
