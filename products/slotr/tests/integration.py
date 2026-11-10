@@ -1289,6 +1289,26 @@ class AdmissionTest(unittest.TestCase):
         # A control-group TERM can reap a handler that exits 0 before cancellation is read.
         self.assertIn(end['slotr_exit_code'], (0, 143))
 
+    def test_end_records_cancellation_delivered_during_accounting(self):
+        # A control-group stop can reap the payload before TERM reaches the
+        # supervisor. Deliver that TERM in its final accounting query so the
+        # ordering is deterministic, without relying on scheduler timing.
+        stub = (self.bin / 'systemctl').read_text()
+        stub = stub.replace(
+            "if 'stop' in args:\n    if live:\n        terminate_children(pid)\n        os.kill(pid, signal.SIGTERM)",
+            "if 'stop' in args:\n    if live:\n        terminate_children(pid)")
+        stub = stub.replace("if '--property=MemoryPeak' in args:\n",
+                            "if '--property=MemoryPeak' in args:\n    os.kill(pid, signal.SIGTERM)\n")
+        (self.bin / 'systemctl').write_text(stub)
+        holder, output = self.start('late-cancellation')
+        self.admitted('late-cancellation', output)
+        holder.terminate()
+        holder.wait(timeout=30)
+        self.assertEqual(holder.returncode, 143)
+        end = self.events('end')[-1]
+        self.assertTrue(end['stopped'])
+        self.assertEqual(end['stop_reason'], 'cancelled')
+
     def test_sighup_frontend_stops_unit_and_releases_holder(self):
         holder, p1 = self.start('holder')
         self.admitted('holder', p1)

@@ -325,6 +325,41 @@ if [ -n "$push" ]; then
     esac
 fi
 
+# A worker may gather facts under its own task; it may not launch other lanes.
+if [ -n "${TASKR_TASK:-}" ]; then
+    caller_rows=$(taskr --json status --tree "$TASKR_TASK" --all) || die 'could not read caller task and children'
+    caller=$(printf '%s\n' "$caller_rows" | jq -ces --arg id "$TASKR_TASK" '
+        [.[] | select((.id | tostring) == $id)] | select(length == 1) | .[0] |
+        select((.role | type) == "string" and (.name | type) == "string" and (.name | length) > 0)') \
+        || die 'could not read caller role and name'
+    caller_role=$(printf '%s\n' "$caller" | jq -r .role)
+    case $caller_role in
+        orchestrator | sub-orchestrator) ;;
+        reviewer | researcher)
+            [ -z "$reserved_task" ] && [ -z "$machine" ] || die 'a lane cannot use --reserved or --machine'
+            [ "$prefix" = gather ] || die 'a reviewer or researcher may launch only gather- helpers'
+            [ "$parent" = "$TASKR_TASK" ] || die 'a gather helper must use PARENT=$TASKR_TASK'
+            caller_name=$(printf '%s\n' "$caller" | jq -r .name)
+            case $caller_name in gather-*) die 'a gather helper cannot start a helper' ;; esac
+            open_children=$(printf '%s\n' "$caller_rows" | jq -es --arg id "$TASKR_TASK" '
+                [.[] | select((.parent_id | tostring) == $id and .status != "closed")] | length') \
+                || die 'could not read caller children'
+            [ "$open_children" -lt 3 ] || die 'a reviewer or researcher may have at most 3 open gather helpers'
+            caller_docs=$(taskr --json doc ls "$TASKR_TASK" --kind brief --limit 0) || die 'could not read caller brief record'
+            caller_brief=$(printf '%s\n' "$caller_docs" | jq -ers --arg id "$TASKR_TASK" '
+                [.[] | select((.task_id | tostring) == $id and .kind == "brief" and .name == "")] |
+                select(length == 1) | .[0].source_path | strings | select(length > 0)') \
+                || die 'could not read caller brief path'
+            [ -f "$caller_brief" ] && [ -r "$caller_brief" ] || die 'caller brief is not readable'
+            gather_rule=$(grep -x 'Gather helpers: none' "$caller_brief")
+            gather_rule_status=$?
+            [ "$gather_rule_status" -le 1 ] || die 'could not read caller brief'
+            [ -z "$gather_rule" ] || die 'caller brief says Gather helpers: none'
+            ;;
+        *) die "caller role=$caller_role cannot start helpers" ;;
+    esac
+fi
+
 # Fail before creating a tab or a task when OpenCode is absent.
 if [ "$kind" = opencode ]; then
     resolve_cli || die 'missing CLI: opencode (also checked ~/.opencode/bin/opencode)'

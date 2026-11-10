@@ -448,6 +448,43 @@ fn selected_line(text: &str) -> &str {
     text.lines().find(|l| l.starts_with('▌')).unwrap_or("")
 }
 
+#[test]
+fn blocking_label_stays_on_the_ask_card_only() {
+    for width in [46, 120] {
+        for blocking in [false, true] {
+            for waiting in [false, true] {
+                let mut app = configured_app(frames::fixture());
+                app.data.glance.needs_you.truncate(1);
+                app.data.glance.needs_you[0].blocking = blocking;
+                app.data.glance.needs_you[0].asker_waiting = waiting;
+                app.screen = Screen::Asks;
+                app.row = 0;
+                let (text, _) = render(&app, width, 30);
+                assert_eq!(text.matches("BLOCKING").count(), usize::from(blocking));
+                assert_eq!(selected_line(&text).contains("BLOCKING"), blocking);
+                assert!(!text.contains("not blocking"), "{text}");
+
+                input::key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('I'), KeyModifiers::NONE),
+                );
+                let (text, _) = render(&app, width, 30);
+                assert!(!text.contains("BLOCKING"), "{text}");
+                assert!(!text.contains("not blocking"), "{text}");
+                let waiting = if waiting { "waiting" } else { "not waiting" };
+                let state = text.lines().find(|l| l.contains("asker ")).unwrap();
+                assert!(
+                    state.starts_with(&format!("│ asker {waiting} · 41s ago · atlas")),
+                    "{state}"
+                );
+                if width == 120 {
+                    assert!(state.contains("atlas w31:p1"), "{state}");
+                }
+            }
+        }
+    }
+}
+
 /// Startup: before the ledger only the seeded PR source is listed (its stop, or its PRs).
 /// The first ledger snapshot opens on the first ask in either arrival order; later
 /// snapshots keep the cursor's identity, a stop's included, through a reorder.

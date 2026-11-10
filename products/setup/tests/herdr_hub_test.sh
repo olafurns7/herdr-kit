@@ -85,6 +85,25 @@ if sys.argv[1:4] != [helper, '__move-helper', '42']:
 os.setsid()
 os.execv(helper, sys.argv[1:])
 ''')
+    executable(stubs / 'ps', '''#!/bin/sh
+if [ "$*" != '-eww -o pid=,args=' ]; then exec /bin/ps "$@"; fi
+config=$HOME/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
+case $MODE in
+    check-dropped) printf '123 claude --resume sess-hub --mcp-config %s\\n' "$config" ;;
+    check-flag) printf '123 claude --mcp-config %s --dangerously-load-development-channels server:taskr\\n' "$config" ;;
+    check-channels) printf '123 claude --mcp-config %s --channels server:taskr\\n' "$config" ;;
+    check-other-generation) printf '123 claude --mcp-config %s/taskr-mcp-6.json\\n' "${config%/*}" ;;
+esac
+''')
+    executable(stubs / 'awk', '''#!/bin/sh
+if [ -n "${HERDR_CHECK_MCP_CONFIG:-}" ]; then
+    for arg; do
+        case $arg in *"$HERDR_CHECK_MCP_CONFIG"*) echo 'config path leaked into helper argv' >&2; exit 99 ;; esac
+    done
+    : >"$CASE/awk-env-checked"
+fi
+exec /usr/bin/awk "$@"
+''')
     executable(stubs / 'herdr', '''#!/usr/bin/python3
 import json, os, sys
 from pathlib import Path
@@ -106,9 +125,12 @@ if args[:2] == ['agent', 'list']:
                                                       'agent_session':{'value':session}}]
     print(json.dumps({'result':{'agents':agents}}))
 elif args[:2] == ['pane', 'read']:
-    if mode == 'dialog' and not (case / 'dialog-answered').exists():
-        print(json.dumps({'result':{'lines':['Loading development channels', '\u276f 1. I am using this for local development',
-                                              '  2. Exit', 'Enter to confirm \u00b7 Esc to cancel']}}))
+    if mode in ('dialog', 'dialog-tall') and not (case / 'dialog-answered').exists():
+        lines = ['Loading development channels']
+        if mode == 'dialog-tall': lines += ['wrapped dialog content'] * 60
+        lines += ['\u276f 1. I am using this for local development', '  2. Exit', 'Enter to confirm \u00b7 Esc to cancel']
+        limit = int(args[args.index('--lines') + 1]) if '--lines' in args else 40
+        print(json.dumps({'result':{'lines':lines[-limit:]}}))
     else: print(json.dumps({'result':{'lines':['$']}}))
 elif args[:2] == ['pane', 'send-keys']:
     if 'Enter' in args: (case / 'dialog-answered').touch()
@@ -141,7 +163,7 @@ if cmd == 'campaign':
           'status': 'closed' if mode == 'closed' else 'open',
           'pane_id':'wA:p2' if mode in ('old-pane-live', 'old-pane-free', 'fail-agent-list') else 'wA:p1'}}))
 elif cmd == 'consumer':
-    if mode == 'dialog' and not (case / 'dialog-answered').exists(): print('{"live":false}')
+    if mode in ('dialog', 'dialog-tall') and not (case / 'dialog-answered').exists(): print('{"live":false}')
     elif mode in ('cdl-exit-lease', 'prover-lease-conflict') and (case / 'adopted').exists():
         (case / 'waiting-lease').touch()
         print('{"live":false}')
@@ -365,6 +387,13 @@ else: sys.exit(98)
     sent = [a for a,e in map(json.loads, (c[0] / 'herdr-calls').read_text().splitlines()) if a[:2] == ['pane','send-keys']]
     assert sent == [['pane','send-keys','wA:p1','Enter']], sent
 
+    c = run('prover reads a channel dialog taller than 40 visible lines', mode='dialog-tall')
+    success(c)
+    sent = [a for a,e in map(json.loads, (c[0] / 'herdr-calls').read_text().splitlines()) if a[:2] == ['pane','send-keys']]
+    assert sent == [['pane','send-keys','wA:p1','Enter']], sent
+    assert any(a[:3] == ['pane','read','wA:p1'] and int(a[a.index('--lines') + 1]) >= 64
+               for a,e in map(json.loads, (c[0] / 'herdr-calls').read_text().splitlines()) if a[:2] == ['pane','read'])
+
     c = run('prover waits while the successor drains an inbox backlog', mode='backlog')
     expect(c, 0)
     state = c[1] / '.local/state/herdr-orch/lead-push/42'
@@ -587,6 +616,16 @@ else: sys.exit(98)
         c = run('check '+mode, args=('check','42'), mode=mode)
         expect(c, rc)
         assert c[3].strip() == output
+        assert not (c[1] / '.local/state').exists()
+
+    for mode in ['check-dropped', 'check-flag', 'check-channels', 'check-other-generation']:
+        c = run('check argv '+mode, args=('check','42'), mode=mode)
+        expect(c, 1 if mode == 'check-dropped' else 0)
+        lines = c[3].splitlines()
+        assert lines[0] == ('push-dropped' if mode == 'check-dropped' else 'live'), c[3]
+        assert (c[0] / 'awk-env-checked').exists(), 'check did not keep the config out of helper argv'
+        if mode == 'check-dropped':
+            assert len(lines) == 2 and 'herdr-hub move 42' in lines[1] and '--resume' in lines[1], c[3]
         assert not (c[1] / '.local/state').exists()
 
     # Review 7952 F1: an old prover finishes after its hub exited and a rerun reclaimed the lock. It must not

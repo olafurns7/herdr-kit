@@ -1,6 +1,6 @@
  taskr ❯ answer        2s ago   ● 1 need you
  ask 61767 · tui-frames
- BLOCKING · waiting · 41s · atlas w31:p1
+ waiting · 41s · atlas w31:p1
  ! ask 61767 is no longer open (answered or
  withdrawn elsewhere); y sends nothing, esc
  closes

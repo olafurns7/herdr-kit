@@ -17,7 +17,8 @@
     "prefixes": [
       "impl",
       "rs",
-      "orch"
+      "orch",
+      "rev"
     ]
   },
   "opus-xhigh": {
@@ -123,7 +124,7 @@
   },
   "fable-high": {
     "kind": "claude",
-    "model": "claude-fable-5-1",
+    "model": "claude-fable-5-2",
     "effort": "high",
     "prefixes": [
       "rev"
@@ -131,7 +132,7 @@
   },
   "fable-xhigh": {
     "kind": "claude",
-    "model": "claude-fable-5-1",
+    "model": "claude-fable-5-2",
     "effort": "xhigh",
     "prefixes": [
       "arch"

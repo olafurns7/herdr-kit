@@ -10,6 +10,9 @@ On resume, read the campaign plan, ledger, and latest reports before re-deriving
 
 For a plain orchestrator, a new session starts with `taskr adopt <me>` and continues from the handover and inbox (`workflow.md` "Goal, plan, and documents"). Stop the predecessor's wait before adoption, then arm your own `taskr wait`.
 
+Never type `/restart` or accept an update restart in a Claude push lane.
+Claude rebuilds its resume command without the channel flag, so the MCP server can keep its lease while the model gets no pushes.
+`check` reports `push-dropped`; repair with `herdr-hub move` / `herdr-lead move --resume`, see `launch.md`.
 For a running Claude push lead, `herdr-lead move <root> <pane> --worktree <campaign worktree> --prompt-file <lead brief>` does the whole restart: it asks for the handover, stops the lead, waits for the lease, then starts and proves the successor (`launch.md`); a hub restarts itself with `herdr-hub move <root>`. To do it by hand, settle the handover and quit the predecessor first (`herdr-lead stop <root> <pane>` waits for idle, quits it, and waits for the lease). Verify that no live agent occupies its pane and wait for `taskr consumer show --as <root>` to report `live:false`; quitting can leave the lease live until its 60 s expiry. A running channel keeps renewing, so waiting alone does not stop it. Start the successor on the same host with:
 
 ```bash
@@ -19,7 +22,7 @@ herdr-lead start <root> <pane> --worktree <campaign worktree> --predecessor-pane
   --resume <session id> --account <account> --prompt-file <lead brief>
 ```
 
-Verify the saved account/native home before resuming; Codator selects that home through `--account`, which the helper places first after `--`. The helper waits up to 75 s for a predecessor lease, adopts once, saves the handover, and prompts the lead with its generation in a single line naming the absolute prompt-file path and ending in `lead-push-gen-<gen>`; on a stalled prompt, step 7 checks that token before each of at most four Enter retries, spaced by 5 s then 10 s, and fails if Claude does not start working on it. The lead **skips adopt**, uses taskr MCP tools for pushed events and fenced acks, and never runs plain wait/ack. Wait for the received-and-acked live check before declaring recovery. `herdr-lead check <root>` alone proves only lease/generation health.
+Verify the saved account/native home before resuming; Codator selects that home through `--account`, which the helper places first after `--`. The helper waits up to 75 s for a predecessor lease, adopts once, saves the handover, and prompts the lead with its generation in a single line naming the absolute prompt-file path and ending in `lead-push-gen-<gen>`; on a stalled prompt, step 7 checks that token before each of at most four Enter retries, spaced by 5 s then 10 s, and fails if Claude does not start working on it. The lead **skips adopt**, uses taskr MCP tools for pushed events and fenced acks, and never runs plain wait/ack. Wait for the received-and-acked live check before declaring recovery. `herdr-lead check <root>` checks the lease, generation, and channel flag when the current process is found. It does not prove end-to-end delivery.
 
 If startup fails after adoption, preserve its printed `ROOT/GEN/pane/mcp_config/agent/lease/check_task` state. Inspect the saved handover, latest adopt, agent, lease, delivery, inbox, and any check task before continuing; never blindly adopt again or start another agent. Stop the failed push lead before a plain rollback, observe `live:false`, then start a plain successor without the channel flags or helper config and let it consume the pending inbox. Inventory any project channel configuration without overwriting or deleting it. Keep the handover and per-generation config for reconciliation. There is no in-place rebind: use controlled stop-and-start or stop-and-resume.
 
@@ -86,7 +89,7 @@ For Claude, use only that worker's recorded `CLAUDE_CONFIG_DIR`, session referen
 ```bash
 # Load Claude-only metadata; stop/report if claude_sid is empty or `null`.
 herdr agent start rev-<slug> --kind claude --pane "$helper_pane_id" --timeout 90000 -- \
-  --model claude-fable-5-1 --effort high \
+  --model claude-fable-5-2 --effort high \
   --dangerously-skip-permissions --settings '<claude settings>' \
   --resume "$claude_sid"
 ```

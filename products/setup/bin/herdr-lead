@@ -127,6 +127,15 @@ lead_in_pane() {
         fail "$1 runs ${found_name:-an unnamed agent} (session ${found_session:-unknown}), not the lead of root $root; nothing was sent to it"
     fi
 }
+# Read enough of the visible screen to include a dialog wrapped in a narrow pane.
+visible_text() {
+    screen=$(herdr pane read "$1" --source visible --lines 1000) || return 1
+    printf '%s\n' "$screen" | jq -Rrs '(try fromjson catch .)
+        | if type == "string" then .
+          elif type == "object" and (.result.lines | type) == "array" and all(.result.lines[]; type == "string")
+          then .result.lines | join(" ")
+          else error("missing visible lines") end | gsub("[\u2500-\u257f]"; " ") | gsub("\\s+"; " ")'
+}
 # Stop the root's lead in PANE and wait for the root's lease to expire. The pane may be reused by
 # another agent, so the identity is rechecked right before each key sequence.
 stop_pane() {
@@ -141,6 +150,15 @@ stop_pane() {
             while lead_in_pane "$1" "$2" "$stop_session"; do
                 elapsed=$(($(date +%s) - stop_start))
                 [ "$elapsed" -lt 120 ] || fail "$stop_name still runs in $1 after 120 s"
+                screen=$(visible_text "$1") || fail 'read exit dialog'
+                case $screen in
+                    *'Exit and stop tasks'*)
+                        lead_in_pane "$1" "$2" "$stop_session" || break
+                        herdr pane send-keys "$1" Enter >/dev/null || fail 'answer exit dialog'
+                        say 'answered the exit-and-stop-tasks dialog'
+                        sleep 3
+                        continue ;;
+                esac
                 if [ "$elapsed" -ge 45 ] && [ -z "$again" ]; then
                     again=1
                     herdr pane send-keys "$1" ctrl+c ctrl+c >/dev/null || fail 'send stop keys'
@@ -221,6 +239,17 @@ if [ "$command" = check ]; then
     [ $# -eq 0 ] || die "$usage"
     if ! gen=$(latest_gen) || ! read_lease; then
         printf 'unknown\n'; exit 2
+    fi
+    mcp_config=$HOME/.local/state/herdr-orch/lead-push/$root/taskr-mcp-$gen.json
+    # A live MCP lease can survive Claude /restart after its channel flag is lost.
+    if ps -eww -o pid=,args= | HERDR_CHECK_MCP_CONFIG="$mcp_config" awk '
+        BEGIN { config=ENVIRON["HERDR_CHECK_MCP_CONFIG"] }
+        index($0, config) && $0 !~ /(^|[[:space:]])--(dangerously-load-development-channels|channels)([=[:space:]]|$)/ { dropped=1 }
+        END { exit !dropped }
+    '; then
+        printf 'push-dropped\n'
+        printf 'Repair: herdr-lead move %s <pane> --worktree <worktree> --lane <lane> --resume <session-id> --account <account>\n' "$root"
+        exit 1
     fi
     if [ "$lease" = live ] && printf '%s\n' "$lease_json" | jq -e --argjson gen "$gen" '.session_gen == $gen' >/dev/null; then
         printf 'live\n'; exit 0
@@ -440,12 +469,7 @@ lease=unknown
 # A blocked start (agent_not_ready) is the expected development-channel dialog; keep its stderr for failures.
 if ! start_err=$(herdr agent start "$agent" --kind claude --pane "$pane" --timeout 90000 -- "$@" 2>&1 >/dev/null); then
     note "agent start: $start_err"
-    screen=$(herdr pane read "$pane" --source visible --lines 40) || fail 'read failed start dialog'
-    screen=$(printf '%s\n' "$screen" | jq -Rrs '(try fromjson catch .)
-        | if type == "string" then .
-          elif type == "object" and (.result.lines | type) == "array" and all(.result.lines[]; type == "string")
-          then .result.lines | join(" ")
-          else error("missing visible lines") end | gsub("[\u2500-\u257f]"; " ") | gsub("\\s+"; " ")') || fail 'normalize failed start dialog'
+    screen=$(visible_text "$pane") || fail 'read failed start dialog'
     case $screen in
         *'Loading development channels'*'1. I am using this for local development'*'Enter to confirm'*) ;;
         *) fail "agent start failed without development-channel dialog: $start_err" ;;

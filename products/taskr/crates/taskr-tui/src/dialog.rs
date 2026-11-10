@@ -610,16 +610,11 @@ pub(crate) fn answer(f: &mut Frame, app: &App) {
     // The pane id gives way when the line is full; the confirm step shows it.
     let state = |pane: bool| {
         vec![
-            if a.blocking {
-                bold("BLOCKING", t.need)
-            } else {
-                sp("not blocking", t.sub)
-            },
             sp(
                 if a.asker_waiting {
-                    " · waiting · "
+                    "waiting · "
                 } else {
-                    " · not waiting · "
+                    "not waiting · "
                 },
                 t.dim,
             ),
@@ -1044,6 +1039,23 @@ mod tests {
         let mut t = Terminal::new(TestBackend::new(width, height)).expect("a test backend");
         t.draw(|f| draw(f, app)).expect("a frame");
         t.backend().buffer().clone()
+    }
+
+    #[test]
+    fn answer_state_keeps_waiting_age_and_place_without_a_blocking_label() {
+        for blocking in [false, true] {
+            for waiting in [false, true] {
+                let mut app = App::new(frames::fixture());
+                let mut ask = app.data.glance.needs_you[0].clone();
+                ask.blocking = blocking;
+                ask.asker_waiting = waiting;
+                app.answer(ask);
+                let text = frames::text(&render(&app, 46, 30));
+                let state = text.lines().nth(2).unwrap().trim();
+                let waiting = if waiting { "waiting" } else { "not waiting" };
+                assert_eq!(state, format!("{waiting} · 41s · atlas w31:p1"));
+            }
+        }
     }
 
     #[test]
