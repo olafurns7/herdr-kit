@@ -11,7 +11,7 @@ which `--fleet` merges into the global instructions; public text names no models
 source, else `~/.local/share/herdr-setup/lanes.json`. A private table replaces all defaults.
 Each lane has `kind` (`claude`, `codex`, `opencode`, or legacy private `pi`), `model`,
 `effort` (`low` to `ultra`), optional `provider`, and allowed `prefixes`
-(`impl`, `mech`, `rs`, `rev`, `arch`, `glm`, `orch`, `gather`). OpenCode's provider is
+(`impl`, `mech`, `rs`, `rev`, `arch`, `glm`, `orch`, `hub`, `gather`). Only `herdr-hub` accepts `hub` lanes, such as `fable-high`; leads use `orch` lanes. OpenCode's provider is
 the model prefix; an explicit value must match. Other kinds default to the kind,
 except legacy `pi`, which defaults to `opencode`.
 The helpers validate the table and build argv without evaluating text. Unknown lanes fail

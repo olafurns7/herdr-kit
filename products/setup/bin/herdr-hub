@@ -187,7 +187,7 @@ herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || die 'resolve la
 . "$herdr_bin_dir/herdr-lanes.sh"
 lane_info "$lane" || die "unknown lane '$lane'"
 [ "$kind" = claude ] || die 'Claude hubs only'
-case " $prefixes " in *' orch '*) ;; *) die 'hub lane must allow orch prefix' ;; esac
+case " $prefixes " in *' orch '* | *' hub '*) ;; *) die 'hub lane must allow orch or hub prefix' ;; esac
 [ -x "$herdr_bin_dir/cdl" ] || die 'sibling cdl must be executable'
 [ "$mode" = start ] || [ -x "$herdr_bin_dir/herdr-lead" ] || die 'sibling herdr-lead must be executable'
 host=$(uname -n) || die 'read local host'
