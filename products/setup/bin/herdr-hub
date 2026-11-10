@@ -103,7 +103,7 @@ release_lock() {
 }
 # The development-channel confirmation dialog is visible in the pane.
 dialog_shown() {
-    screen=$(herdr pane read "$1" --source visible --lines 40 2>/dev/null) || return 1
+    screen=$(herdr pane read "$1" --source visible --lines 1000 2>/dev/null) || return 1
     screen=$(printf '%s\n' "$screen" | jq -Rrs '(try fromjson catch .)
         | if type == "string" then .
           elif type == "object" and (.result.lines | type) == "array" and all(.result.lines[]; type == "string")
@@ -132,7 +132,8 @@ if [ "$1" = check ]; then
     fi
     mcp_config=$HOME/.local/state/herdr-orch/lead-push/$root/taskr-mcp-$gen.json
     # A live MCP lease can survive Claude /restart after its channel flag is lost.
-    if ps -eww -o pid=,args= | awk -v config="$mcp_config" '
+    if ps -eww -o pid=,args= | HERDR_CHECK_MCP_CONFIG="$mcp_config" awk '
+        BEGIN { config=ENVIRON["HERDR_CHECK_MCP_CONFIG"] }
         index($0, config) && $0 !~ /(^|[[:space:]])--(dangerously-load-development-channels|channels)([=[:space:]]|$)/ { dropped=1 }
         END { exit !dropped }
     '; then

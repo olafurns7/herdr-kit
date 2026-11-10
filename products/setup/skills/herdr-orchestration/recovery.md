@@ -23,6 +23,11 @@ herdr-lead move <root> <pane> --worktree <campaign worktree> --lane <lane> \
   --resume <session id> --account <account> --prompt-file <lead brief>
 ```
 
+A session with Monitor or CronCreate tasks can show an exit dialog after the
+stop keys. If it shows `Exit and stop tasks`, the helper sends Enter to select
+that option, then waits for the process to exit. Keep the session ID from the
+resume line. The successor must re-create the timers from the handover.
+
 For a running Claude push lead, `herdr-lead move <root> <pane> --worktree <campaign worktree> --prompt-file <lead brief>` does the whole restart: it asks for the handover, stops the lead, waits for the lease, then starts and proves the successor (`launch.md`); a hub restarts itself with `herdr-hub move <root>`. To do it by hand, settle the handover and quit the predecessor first (`herdr-lead stop <root> <pane>` waits for idle, quits it, and waits for the lease). Verify that no live agent occupies its pane and wait for `taskr consumer show --as <root>` to report `live:false`; quitting can leave the lease live until its 60 s expiry. A running channel keeps renewing, so waiting alone does not stop it. Start the successor on the same host with:
 
 ```bash
