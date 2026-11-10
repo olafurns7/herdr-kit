@@ -52,6 +52,44 @@ fn every_golden_file_has_a_frame() {
     assert_eq!(names, files);
 }
 
+#[test]
+fn remote_blocking_frames_keep_the_full_card_tag() {
+    for spec in frames::all()
+        .iter()
+        .filter(|s| s.name.ends_with("-remote-blocking"))
+    {
+        let text = frames::text(&frames::render(spec));
+        let card = text.lines().find(|l| l.starts_with('▌')).unwrap();
+        assert!(card.contains("BLOCKING"), "{}:\n{text}", spec.name);
+        assert!(card.contains('↗'), "{}:\n{text}", spec.name);
+    }
+}
+
+#[test]
+fn narrow_detail_heads_never_start_a_row_with_a_separator() {
+    for spec in frames::all()
+        .iter()
+        .filter(|s| s.name.ends_with("-not-waiting"))
+    {
+        let text = frames::text(&frames::render(spec));
+        let head: Vec<_> = text
+            .lines()
+            .skip_while(|l| !l.contains("asker "))
+            .take_while(|l| !l.trim_matches(['│', ' ']).is_empty())
+            .collect();
+        assert!(
+            head.iter().any(|l| l.contains("asker not waiting")),
+            "{text}"
+        );
+        assert!(
+            head.iter()
+                .all(|l| !l.trim_start_matches(['│', ' ']).starts_with('·')),
+            "{}:\n{text}",
+            spec.name
+        );
+    }
+}
+
 /// The fixture's own text is ASCII, so this covers everything the view draws. Live
 /// ledger text can hold anything.
 #[test]

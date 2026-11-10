@@ -106,6 +106,26 @@ fn asks(app: &mut App) {
     app.row = 1;
 }
 
+/// A blocking ask on another machine, with a long host label competing for card space.
+fn remote_blocking(app: &mut App) {
+    let ask = &mut app.data.glance.needs_you[0];
+    ask.host = "remotehost12".into();
+    ask.blocking = true;
+    ask.dialog = true;
+    app.screen = Screen::Asks;
+    app.row = 0;
+}
+
+/// The non-waiting head whose second separator used to start a continuation row.
+fn detail_not_waiting(app: &mut App) {
+    app.data.glance.needs_you.truncate(1);
+    let ask = &mut app.data.glance.needs_you[0];
+    ask.asker_waiting = false;
+    ask.age_ms = 180_000;
+    app.row = 0;
+    app.inspect();
+}
+
 fn fleet(app: &mut App) {
     glance(app);
     app.screen = Screen::Fleet;
@@ -633,6 +653,11 @@ pub fn all() -> Vec<Spec> {
         }),
         spec("detail", 46, 20, "", detail),
         spec("detail", 30, 10, "", detail),
+        spec("detail", 30, 14, "-not-waiting", detail_not_waiting),
+        spec("detail", 31, 14, "-not-waiting", detail_not_waiting),
+        spec("detail", 32, 14, "-not-waiting", detail_not_waiting),
+        spec("detail", 33, 14, "-not-waiting", detail_not_waiting),
+        spec("detail", 34, 14, "-not-waiting", detail_not_waiting),
         spec("asks", 120, 40, "", asks),
         spec("asks", 120, 40, "-light", asks),
         spec("asks", 80, 30, "", asks),
@@ -645,6 +670,8 @@ pub fn all() -> Vec<Spec> {
         }),
         spec("asks", 46, 20, "", asks),
         spec("asks", 30, 10, "", asks),
+        spec("asks", 30, 30, "-remote-blocking", remote_blocking),
+        spec("asks", 46, 30, "-remote-blocking", remote_blocking),
         spec("asks", 46, 30, "-hidden", |app| {
             // Panel 1 hidden on the Dashboard: Asks still lists every open ask.
             asks(app);

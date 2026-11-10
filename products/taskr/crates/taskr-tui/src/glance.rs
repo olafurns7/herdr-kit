@@ -332,6 +332,12 @@ impl Card {
         let mut out = Drawn::default();
         let n = self.rows.len();
         let line = |i: usize, prefix: String| {
+            // A blocking ask keeps its only tag even in the one-line card layout.
+            if self.title == "NEEDS YOU"
+                && app.data.glance.needs_you.get(i).is_some_and(|a| a.blocking)
+            {
+                return self.rows[i].lines[0].clone();
+            }
             let (text, color) = label(app, self.offset + i).unwrap_or_default();
             ui::row(
                 &app.theme,
@@ -421,13 +427,19 @@ fn count(rows: &Range<usize>, total: usize, cursor: Option<usize>) -> String {
 
 /// What Enter does on the row, at its right: `⏎` focuses the pane, `host ↗` is another
 /// machine. Nothing when the row has no pane, or the snapshot does not say where it is.
-fn place(t: &Theme, g: &Glance, host: &str, pane: &str) -> Span<'static> {
+fn place(t: &Theme, g: &Glance, host: &str, pane: &str, max: usize) -> Span<'static> {
     if pane.is_empty() || (g.server_host.is_empty() && host.is_empty()) {
         Span::raw("")
     } else if g.local(host) {
         sp("⏎ ", t.accent)
     } else {
-        sp(format!("{} ↗ ", ui::host_name(g, host)), t.remote)
+        sp(
+            format!(
+                "{} ↗ ",
+                clip(&ui::host_name(g, host), max.saturating_sub(3))
+            ),
+            t.remote,
+        )
     }
 }
 
@@ -456,11 +468,21 @@ fn second(text: &str, color: Color, width: usize) -> Vec<Span<'static>> {
 pub(crate) fn ask_lines(app: &App, a: &Need, on: bool, width: usize) -> Vec<Line<'static>> {
     let (t, g) = (&app.theme, &app.data.glance);
     let body = width.saturating_sub(1);
+    let tags = usize::from(a.blocking) * 9 + usize::from(a.dialog) * 4;
+    let right = vec![
+        Span::raw(" "),
+        place(t, g, &a.host, &a.pane_id, body.saturating_sub(4 + tags + 5)),
+        sp(format!("{:>4}", age(a.age_ms)), t.sub),
+    ];
+    // Campaign padding yields to the tags and the actual remote host/age width.
+    let campaign_width = 20
+        .min(body.saturating_sub(24))
+        .min(body.saturating_sub(4 + tags + ui::width(&right)));
     // ◆ a structured ask, ◇ options found in its text; HUB: the hub's own dialog.
     let mut left = vec![
         bold("? ", t.need),
         bold(format!("{} ", ask::mark(a)), t.accent),
-        bold(pad(&a.campaign, 20.min(body.saturating_sub(24))), t.text),
+        bold(pad(&a.campaign, campaign_width), t.text),
     ];
     if a.blocking {
         left.push(bold(" BLOCKING", t.need));
@@ -468,11 +490,6 @@ pub(crate) fn ask_lines(app: &App, a: &Need, on: bool, width: usize) -> Vec<Line
     if a.dialog {
         left.push(bold(" HUB", t.remote));
     }
-    let right = vec![
-        Span::raw(" "),
-        place(t, g, &a.host, &a.pane_id),
-        sp(format!("{:>4}", age(a.age_ms)), t.sub),
-    ];
     vec![
         ui::row(t, ui::spread(left, right, body), on, false, t.need, width),
         ui::row(t, second(&a.text, t.sub, width), on, false, t.need, width),
@@ -2539,29 +2556,37 @@ fn detail_lines(app: &App, width: usize) -> Option<(String, Vec<Line<'static>>)>
     let (title, mut lines, text) = match selected(app) {
         Selected::Ask(a) => {
             let head = vec![
-                sp(
+                vec![sp(
                     if a.asker_waiting {
                         "asker waiting · "
                     } else {
                         "asker not waiting · "
                     },
                     t.dim,
-                ),
-                sp(format!("{} ago", age(a.age_ms)), t.sub),
-                sp(" · ", t.dim),
-                at(&a.host, &a.pane_id),
+                )],
+                vec![
+                    sp(format!("{} ago", age(a.age_ms)), t.sub),
+                    sp(" · ", t.dim),
+                ],
+                vec![at(&a.host, &a.pane_id)],
             ];
+            // Wrap whole facts, keeping each separator with the fact before it.
+            let mut lines = vec![];
+            let mut line = Line::default();
+            for spans in head {
+                if !line.spans.is_empty() && line.width() + ui::width(&spans) > width {
+                    lines.push(std::mem::take(&mut line));
+                }
+                line.spans.extend(spans);
+            }
+            lines.push(line);
             // A structured ask's options are listed under its text, so the text drops them.
             let text = if a.question.is_some() {
                 ask::parse(a).context
             } else {
                 a.text.clone()
             };
-            (
-                format!("ask {} · {}", a.ask_id, a.campaign),
-                vec![Line::from(head)],
-                text,
-            )
+            (format!("ask {} · {}", a.ask_id, a.campaign), lines, text)
         }
         Selected::Check(a) => {
             let head = vec![

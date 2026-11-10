@@ -485,6 +485,29 @@ fn blocking_label_stays_on_the_ask_card_only() {
     }
 }
 
+#[test]
+fn remote_blocking_cards_keep_the_tag_before_campaign_padding() {
+    for width in 30..=46 {
+        for host in ["laptop", "remotehost12"] {
+            for dialog in [false, true] {
+                let mut app = configured_app(frames::fixture());
+                let ask = &mut app.data.glance.needs_you[0];
+                ask.host = host.into();
+                ask.blocking = true;
+                ask.dialog = dialog;
+                app.screen = Screen::Asks;
+                let (text, _) = render(&app, width, 30);
+                let card = selected_line(&text);
+                assert!(
+                    card.contains("BLOCKING"),
+                    "{width}/{host}/{dialog}:\n{text}"
+                );
+                assert!(card.contains('↗'), "{card}");
+            }
+        }
+    }
+}
+
 /// Startup: before the ledger only the seeded PR source is listed (its stop, or its PRs).
 /// The first ledger snapshot opens on the first ask in either arrival order; later
 /// snapshots keep the cursor's identity, a stop's included, through a reorder.
