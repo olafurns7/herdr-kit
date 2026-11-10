@@ -125,10 +125,19 @@ Move leads one at a time, starting low-traffic; stop rollout on any failed live 
 For a plain lead, use an authorized `orch-` lane and send the brief with `herdr agent prompt`. It registers its own root if needed (`workflow.md` "Brief variants"), and its first ledger act on the root is `taskr adopt <root> --pane <pane>`. The hub checks that `taskr campaign <root>` does not read `unregistered` before reporting startup. A root without a pane cannot be watched or focused from the owner's view. Every lead brief says owner decisions and actions are owner asks; owner notes only summarize them (`owner.md`). A repository's worktree setup plugin may skip `orch/*` branches. The lead needs no dependencies and runs gates in task worktrees.
 
 Do not type `/restart` in a Claude push lane. Do not accept an update restart
-prompt. It drops the channel flag. For a hub, use
-`herdr-hub move <root> --lane <lane> -- --resume <session id>`.
-For a lead, use `herdr-lead move <root> <pane> --worktree <campaign worktree>
---lane <lane> --resume <session id> --account <account> --prompt-file <lead brief>`.
+prompt. It drops the channel flag. Use the saved session ID and authorized lane:
+
+```bash
+herdr-hub move <root> --lane <lane> -- --resume <session id>
+herdr-lead move <root> <pane> --worktree <campaign worktree> --lane <lane> \
+  --resume <session id> --account <account> --prompt-file <lead brief>
+```
+
+A session with Monitor or CronCreate tasks can show an exit dialog after the
+stop keys. If it shows `Exit and stop tasks`, the helper sends Enter to select
+that option, then waits for the process to exit. Keep the session ID from the
+resume line. The successor must re-create the timers from the handover.
+
 Both commands restore the flag and keep the session. `check` reports
 `push-dropped` and prints a repair command if the current process lost the flag.
 See `recovery.md` "Your own session" before a move.
