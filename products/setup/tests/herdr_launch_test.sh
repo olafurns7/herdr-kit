@@ -1020,9 +1020,9 @@ $(jq -r 'del(.deny) | to_entries | sort_by(.key)[] | [.key, .value.kind, .value.
 expect_no_calls
 
 new_case 'prefix refusal lists the source lanes that allow rev-'
-run_launch sh "$launch_sh" opus-high rev-cart "$brief" "$report" 42
+run_launch sh "$launch_sh" sol-high rev-cart "$brief" "$report" 42
 expect_rc 2
-expect_err 'lane opus-high does not launch as rev- (allowed: impl rs orch; rev- lanes: astra-high fable-high opus-max opus-medium opus-xhigh sol-medium)'
+expect_err 'lane sol-high does not launch as rev- (allowed: impl orch; rev- lanes: astra-high fable-high opus-high opus-max opus-medium opus-xhigh sol-medium)'
 expect_no_calls
 
 new_case '--lanes usage rejects extra arguments without calls'
