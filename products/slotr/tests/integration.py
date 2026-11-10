@@ -54,8 +54,8 @@ if pathlib.Path(sys.argv[0]).name == 'systemctl':
         import time
         try:
             pid = int((root / args[-1]).read_text())
-            terminate_children(pid)
             os.kill(pid, signal.SIGTERM)
+            terminate_children(pid)
         except (OSError, ValueError):
             sys.exit(0)
         while True:
@@ -119,8 +119,8 @@ if 'is-active' in args:
     sys.exit(0 if live else 3)
 if 'stop' in args:
     if live:
-        terminate_children(pid)
         os.kill(pid, signal.SIGTERM)
+        terminate_children(pid)
     sys.exit(0)
 if '--property=MemoryPeak' in args:
     with (root / 'accounting-queries').open('a') as log:
@@ -556,6 +556,7 @@ class AdmissionTest(unittest.TestCase):
         self.assertIn('slotr: FAIL slotr-runtime-1: exit 17', result.stderr)
         # systemd-run --wait may report success for a failed unit it already collected.
         stub = (self.bin / 'systemd-run').read_text()
+        self.assertIn('os.execv(cmd[0], cmd)', stub)
         (self.bin / 'systemd-run').write_text(stub.replace('os.execv(cmd[0], cmd)', "__import__('subprocess').run(cmd); sys.exit(0)"))
         result = self.invoke('run', '--kind', 'dev-stack', '--', 'sh', '-c', 'exit 3')
         self.assertEqual(result.returncode, 3, result.stderr)
@@ -573,6 +574,7 @@ class AdmissionTest(unittest.TestCase):
               for value in ('invalid', '-1', '256')],
         ):
             with self.subTest(label=label):
+                self.assertIn('os.execv(cmd[0], cmd)', stub)
                 (self.bin / 'systemd-run').write_text(stub.replace('os.execv(cmd[0], cmd)', body))
                 result = self.invoke('run', '--', 'true')
                 self.assertNotEqual(result.returncode, 0, result.stderr)
@@ -584,6 +586,7 @@ class AdmissionTest(unittest.TestCase):
                 state_path = self.runtime / 'slotr/state.json'
                 state_path.unlink()
                 capture = "(root/'old-invocation').write_text(cmd[3]); os.execv(cmd[0], cmd)"
+                self.assertIn('os.execv(cmd[0], cmd)', stub)
                 (self.bin / 'systemd-run').write_text(stub.replace('os.execv(cmd[0], cmd)', capture))
                 result = self.invoke('run', '--', 'true')
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -596,6 +599,7 @@ class AdmissionTest(unittest.TestCase):
                     old.write_text('0\n')
                     legacy.write_text('0\n')
                     body = 'os.execv(cmd[0], cmd)'
+                self.assertIn('os.execv(cmd[0], cmd)', stub)
                 (self.bin / 'systemd-run').write_text(stub.replace('os.execv(cmd[0], cmd)', body))
                 result = self.invoke('run', '--', 'sh', '-c', 'kill -KILL "$PPID"; exit 3')
                 self.assertNotEqual(result.returncode, 0, result.stderr)
@@ -1239,9 +1243,12 @@ class AdmissionTest(unittest.TestCase):
         # supervisor. Deliver that TERM in its final accounting query so the
         # ordering is deterministic, without relying on scheduler timing.
         stub = (self.bin / 'systemctl').read_text()
+        pattern = "if 'stop' in args:\n    if live:\n        os.kill(pid, signal.SIGTERM)\n        terminate_children(pid)"
+        self.assertIn(pattern, stub)
         stub = stub.replace(
-            "if 'stop' in args:\n    if live:\n        terminate_children(pid)\n        os.kill(pid, signal.SIGTERM)",
+            pattern,
             "if 'stop' in args:\n    if live:\n        terminate_children(pid)")
+        self.assertIn("if '--property=MemoryPeak' in args:\n", stub)
         stub = stub.replace("if '--property=MemoryPeak' in args:\n",
                             "if '--property=MemoryPeak' in args:\n    os.kill(pid, signal.SIGTERM)\n")
         (self.bin / 'systemctl').write_text(stub)
@@ -1528,6 +1535,7 @@ class AdmissionTest(unittest.TestCase):
 
     def test_failed_start_removes_own_holder(self):
         stub = (self.bin / "systemd-run").read_text()
+        self.assertIn("os.execv(cmd[0], cmd)", stub)
         (self.bin / "systemd-run").write_text(stub.replace("os.execv(cmd[0], cmd)", "sys.exit(23)"))
         result = self.invoke("run", "--kind", "dev-stack", "--", "true")
         self.assertEqual(result.returncode, 23, result.stderr)
@@ -2751,6 +2759,7 @@ class AdmissionTest(unittest.TestCase):
     def test_manual_stop_audit_precedes_signal_and_failure_refuses(self):
         self.set_stats(40000)
         stub=(self.bin/'systemctl').read_text()
+        self.assertIn("if 'stop' in args:\n    if live:", stub)
         (self.bin/'systemctl').write_text(stub.replace("if 'stop' in args:\n    if live:",
             "if 'stop' in args:\n    events = pathlib.Path(os.environ['XDG_STATE_HOME']) / 'slotr/events.jsonl'\n    assert any(e['event']=='stop' and e.get('phase')=='requested' and e['run']==unit for e in map(json.loads,events.read_text().splitlines()))\n    if (root / 'stop-fail').exists(): sys.exit(1)\n    if live:"))
         child,out=self.start('manual'); h=self.admitted('manual',out)
@@ -2787,6 +2796,24 @@ class AdmissionTest(unittest.TestCase):
         self.assertIsInstance(requested['caller']['pid'],int)
         self.assertNotIn('private-test-value',events.read_text())
         self.assertEqual(self.invoke('stop','unknown').returncode,2)
+
+    def test_manual_stop_without_supervisor_signal_records_manual_end(self):
+        stub = (self.bin / 'systemctl').read_text()
+        pattern = "if 'stop' in args:\n    if live:\n        os.kill(pid, signal.SIGTERM)\n        terminate_children(pid)"
+        self.assertIn(pattern, stub)
+        (self.bin / 'systemctl').write_text(stub.replace(
+            pattern, "if 'stop' in args:\n    if live:\n        terminate_children(pid)"))
+        child, output = self.start('payload-only-stop')
+        holder = self.admitted('payload-only-stop', output)
+        result = self.invoke('stop', holder['run'], '--reason', 'payload-only cancellation')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        child.wait(timeout=30)
+        self.assertEqual(child.returncode, 0, (self.root / 'payload-only-stop.log').read_text())
+        self.assertTrue(output.with_suffix('.term').exists())
+        end = next(e for e in self.events('end') if e['run'] == holder['run'])
+        self.assertEqual(end['slotr_exit_code'], 0)
+        self.assertTrue(end['stopped'])
+        self.assertEqual(end['stop_reason'], 'manual')
 
     def test_quiet_legacy_blocker_does_not_hold_other_pool(self):
         self.env['SLOTR_PRIORITY__QUIET_SECONDS']='30'
@@ -2986,6 +3013,7 @@ class AdmissionTest(unittest.TestCase):
     def test_manual_duplicate_pending_recovery_and_completion_are_visible(self):
         self.set_stats(40000)
         stub=(self.bin/'systemctl').read_text()
+        self.assertIn("if 'stop' in args:\n    if live:", stub)
         (self.bin/'systemctl').write_text(stub.replace("if 'stop' in args:\n    if live:","if 'stop' in args:\n    if (root/'accept-only').exists(): sys.exit(0)\n    if live:"))
         (self.runtime/'accept-only').touch()
         child,out=self.start('manual'); h=self.admitted('manual',out)
