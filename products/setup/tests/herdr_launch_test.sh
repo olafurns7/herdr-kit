@@ -61,7 +61,7 @@ case "$1 $2" in
             fi
             marker=${4#' probe_marker='}; marker=${marker%%;*}
             printf '%s\n' "$marker" "${STUB_CWD_OK:-1}" "${STUB_COMMON:-/target/main/.git}" \
-                "${STUB_CLI-/target/bin/codex}" "${STUB_CODATOR:-0}" '{}' "$marker-end" >"$STUB_CALLS.probe"
+                "${STUB_CLI-/target/bin/codex}" "${STUB_CODATOR:-0}" "$STUB_ACCOUNT" "$marker-end" >"$STUB_CALLS.probe"
             ;;
         esac
         case $3 in *:p8) [ "${STUB_PUSH_FAIL:-}" != run ] || exit 1 ;; esac
@@ -185,7 +185,7 @@ new_case() {
     STUB_SOURCE_PROBE=0 STUB_PROMPT= STUB_LOG_GOT=
     STUB_MACHINES='[{"id":"m1","label":"devbox","target":"u@Box.example.com","enabled":true}]'
     STUB_MACHINE_LABEL=devbox STUB_PROBE=ok STUB_CWD_OK=1 STUB_COMMON=/target/main/.git STUB_CLI=/target/bin/codex STUB_CODATOR=0
-    STUB_TARGET_HOME= STUB_TARGET_BIN=
+    STUB_TARGET_HOME= STUB_TARGET_BIN= STUB_ACCOUNT='{}'
     STUB_RESERVED=$case_dir/reserved.json
     STUB_CALLER=$case_dir/caller.json STUB_CALLER_BRIEF=$case_dir/caller.md
     STUB_CALLER_DOCS=$case_dir/caller-docs.json STUB_CALLER_CAPTURE=$case_dir/caller-captured.md
@@ -209,7 +209,7 @@ run_launch() {
         STUB_SOURCE_PROBE="$STUB_SOURCE_PROBE" STUB_PROMPT="$STUB_PROMPT" STUB_LOG_GOT="$STUB_LOG_GOT" \
         STUB_MACHINES="$STUB_MACHINES" STUB_MACHINE_LABEL="$STUB_MACHINE_LABEL" \
         STUB_PROBE="$STUB_PROBE" STUB_CWD_OK="$STUB_CWD_OK" STUB_COMMON="$STUB_COMMON" \
-        STUB_CLI="$STUB_CLI" STUB_CODATOR="$STUB_CODATOR" \
+        STUB_CLI="$STUB_CLI" STUB_CODATOR="$STUB_CODATOR" STUB_ACCOUNT="$STUB_ACCOUNT" \
         STUB_TARGET_HOME="$STUB_TARGET_HOME" STUB_TARGET_BIN="$STUB_TARGET_BIN" \
         TASKR_FORMAT=json "$@" \
         >"$case_dir/out" 2>"$case_dir/err") || run_status=$?
@@ -527,6 +527,42 @@ printf '%s\n' "$out" | grep -q '^account=later .* role=next$' || fail 'next role
 case $out in *'alert '*) fail 'soon pick made a drain alert' ;; esac
 expect_no_calls
 
+for target_used in 96 97 98 100; do
+    for soon_present in no yes; do
+        new_case "quota alerts on latest non-soon target at $target_used used with soon=$soon_present"
+        usage_fixture "$home" a-target 0 usable 0 120
+        usage_limits a-target "{\"seven_day\":{\"utilization\":$target_used,\"resets_at\":\"2099-01-01T00:00:00Z\"}}"
+        usage_fixture "$home" z-target 0
+        cp "$home/.local/share/codator/claude/a-target/.claude-usage.json" "$home/.local/share/codator/claude/z-target/.claude-usage.json"
+        usage_fixture "$home" eligible 0 usable 0 48
+        [ "$soon_present" != yes ] || usage_fixture "$home" soon 0 usable 0 2
+        run_launch sh "$launch_sh" --quota
+        expect_rc 0
+        if [ "$target_used" -ge 97 ]; then
+            [ "$(printf '%s\n' "$out" | tail -n 1)" = "alert account=a-target used=$target_used" ] || fail 'latest target alert missing or not last'
+            [ "$(printf '%s\n' "$out" | grep -c '^alert ')" -eq 1 ] || fail 'expected exactly one alert'
+        else
+            case $out in *'alert '*) fail 'alert below 97 used' ;; esac
+        fi
+        if [ "$soon_present" = yes ]; then
+            printf '%s\n' "$out" | grep -q '^account=soon .* role=soon$' || fail 'soon pick changed'
+        elif [ "$target_used" -gt 97 ]; then
+            printf '%s\n' "$out" | grep -q '^account=eligible .* role=drain$' || fail 'eligible pick changed'
+        fi
+        expect_no_calls
+    done
+done
+
+new_case 'quota without Python fails clearly without calls'
+mkdir -p "$case_dir/no-python"
+printf '%s\n' '#!/bin/sh' 'exit 127' >"$case_dir/no-python/python3"
+chmod 0755 "$case_dir/no-python/python3"
+run_path=$case_dir/no-python:$run_path
+run_launch sh "$launch_sh" --quota
+expect_rc 2
+expect_err '--quota could not read snapshots with python3'
+expect_no_calls
+
 new_case 'quota with no snapshots succeeds without output'
 run_launch sh "$launch_sh" --quota
 expect_rc 0
@@ -611,6 +647,27 @@ expect_account_start target-best --model
 expect_machine_calls
 ! grep -q '|--account|caller-only|' "$case_dir/calls" || fail 'used caller usage'
 case $out in *' drain=latest') ;; *) fail 'remote latest reason missing' ;; esac
+done
+
+for bad_pick in 'bad name' '_bad' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do
+    new_case "remote invalid picked account falls back to Codator: $bad_pick"
+    STUB_CODATOR=1
+    STUB_ACCOUNT=$(jq -cn --arg account "$bad_pick" '{account:$account,drain:"latest"}')
+    run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+    expect_rc 0
+    expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=default'
+    ! grep -q '|--account|' "$case_dir/calls" || fail 'invalid account reached agent start'
+done
+
+for bad_account_line in '' garbage; do
+    new_case 'remote empty or garbage account line falls back to Codator'
+    STUB_CODATOR=1
+    STUB_ACCOUNT=$bad_account_line
+    run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+    expect_rc 0
+    expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=default'
+    [ -z "$err" ] || fail "unexpected stderr: $err"
+    ! grep -q '|--account|' "$case_dir/calls" || fail 'unreadable account reached agent start'
 done
 
 new_case 'remote unavailable Python falls back to Codator' reviewer

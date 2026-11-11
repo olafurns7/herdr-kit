@@ -237,8 +237,11 @@ if mode == "quota":
     for record in records:
         print("account={} week_used={} fable_used={} reset={} role={}".format(
             record["name"], display(record["week"]), display(record["fable"]), record["reset"], record["role"]))
-    if pick and pick["role"] == "drain" and pick["week"] >= 97:
-        print("alert account={} used={}".format(pick["name"], display(pick["week"])))
+    targets = [record for record in records if record["role"] in ("next", "drain", "out")
+               and not 0 <= record["stamp"] - now <= 24 * 3600]
+    target = min(targets, key=lambda record: (-record["stamp"], record["name"]), default=None)
+    if target and target["week"] >= 97:
+        print("alert account={} used={}".format(target["name"], display(target["week"])))
 else:
     print(json.dumps({"account": pick["name"], "drain": "soon" if soon else "latest"} if pick else {}))
 PY
@@ -660,7 +663,7 @@ if [ -n "$machine" ]; then
         $0 == marker "-end" { inside=0 }' | jq -Rs --arg marker "$probe_marker" 'split("\n") | .[:-1] |
         select(length == 7 and .[0] == $marker and .[6] == ($marker + "-end")) | .[1:6] |
         select(.[0] == "1" and (.[2] | length > 0) and (.[3] == "0" or .[3] == "1")) |
-        .[4] |= (fromjson | objects)') \
+        .[4] |= ((try fromjson catch {}) | objects)') \
         || step_fail '1 (target probe unreadable)'
     [ -n "$facts" ] || step_fail '1 (target cwd or CLI missing, or probe unreadable)'
     common=$(printf '%s\n' "$facts" | jq -r '.[1]')
@@ -677,6 +680,12 @@ else
         account=$(printf '%s\n' "$picked" | jq -r '.account // ""') || account=
         drain=$(printf '%s\n' "$picked" | jq -r '.drain // ""') || drain=
     fi
+fi
+if [ -n "$account_pick" ]; then
+    case $account in
+        '' | [!A-Za-z0-9]* | *[!A-Za-z0-9_-]*) account= drain= ;;
+    esac
+    [ "${#account}" -le 48 ] || { account= drain=; }
 fi
 [ -z "$account" ] || [ "$codator" = 1 ] || die '--account requires Codator on the target'
 

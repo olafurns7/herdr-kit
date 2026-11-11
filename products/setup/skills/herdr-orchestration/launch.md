@@ -41,13 +41,17 @@ pick, `account=default` for fallback, and `account=NAME` for an explicit choice.
 Selection reads no credentials, stores no state, and runs no Codator commands.
 
 `herdr-launch --quota` reads local snapshots without a pane, agent or taskr
-call; `--machine` is refused because reading the target would need a pane.
+call; `--machine` is refused because reading the target would need a pane,
+and unavailable Python exits 2.
 It prints `account=NAME week_used=N fable_used=N|- reset=ISO role=ROLE` per
 validly named snapshot account. Roles are `soon` for a chosen imminent reset,
 `drain` for the chosen latest reset, `next` for other eligible Opus accounts,
 `out` for accounts below the margin, and `stale` for skipped snapshots.
-Unavailable values print `-`. It adds `alert account=NAME used=N` when the
-drain account is at least 97% used; it sends no alert itself.
+Unavailable values print `-`. The alert target is the fresh, usable account
+whose valid weekly reset is latest outside the 24-hour soon window (then
+lowest name), even when below the eligibility margin or a soon account is picked.
+It adds `alert account=NAME used=N` as the last line when that target is at
+least 97% used; it sends no alert itself.
 A lead living on a drained account stops until the owner resets it.
 It is unknown whether the reset restores the Fable limit.
 
