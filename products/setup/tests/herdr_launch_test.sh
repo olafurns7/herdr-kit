@@ -1071,6 +1071,24 @@ expect_out "Lane table: $repo_dir/bin/../lanes.json
 $(jq -r 'del(.deny) | to_entries | sort_by(.key)[] | [.key, .value.kind, .value.model, .value.effort, (.value.prefixes | join(" "))] | @tsv' "$repo_dir/lanes.json")"
 expect_no_calls
 
+new_case '--lanes shows fable-high with the hub prefix'
+run_launch sh "$launch_sh" --lanes
+expect_rc 0
+printf '%s\n' "$out" | grep -Fx "$(printf 'fable-high\tclaude\tclaude-fable-5-2\thigh\trev hub')" >/dev/null || fail 'fable-high lacks the hub prefix'
+expect_no_calls
+
+new_case 'hub names are refused even with a hub-capable lane' orchestrator
+run_launch sh "$launch_sh" fable-high hub-cart "$brief" "$report" 42
+expect_rc 2
+expect_err "name prefix 'hub-' is not"
+expect_no_calls
+
+new_case 'fable-high cannot launch an orch sub-orchestrator' sub-orchestrator
+run_launch sh "$launch_sh" fable-high orch-cart "$brief" "$report" 42
+expect_rc 2
+expect_err 'lane fable-high does not launch as orch-'
+expect_no_calls
+
 new_case 'prefix refusal lists the source lanes that allow rev-'
 run_launch sh "$launch_sh" sol-high rev-cart "$brief" "$report" 42
 expect_rc 2
