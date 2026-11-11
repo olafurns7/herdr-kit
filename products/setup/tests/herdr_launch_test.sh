@@ -924,7 +924,7 @@ for caller_role in reviewer researcher; do
     done
 done
 
-for refusal in non-gather parent nested cap forbidden forbidden-reason forbidden-crlf captured-forbidden implementer ledger malformed missing-caller docs uncaptured get; do
+for refusal in non-gather parent nested cap forbidden forbidden-reason forbidden-crlf forbidden-capital forbidden-indented forbidden-bullet forbidden-colon captured-forbidden implementer ledger malformed missing-caller docs no-row two-rows string-id uncaptured get; do
     new_case "worker gather refusal: $refusal" researcher
     caller_fixture reviewer
     helper_lane=haiku-gather helper_name=gather-facts helper_parent=42
@@ -939,8 +939,12 @@ for refusal in non-gather parent nested cap forbidden forbidden-reason forbidden
                 '{"id":44,"parent_id":42,"status":"ready"}' \
                 '{"id":45,"parent_id":42,"status":"done"}' >>"$STUB_CALLER"
             reason='at most 3 open gather helpers' ;;
-        forbidden | forbidden-reason | forbidden-crlf | captured-forbidden)
+        forbidden | forbidden-reason | forbidden-crlf | forbidden-capital | forbidden-indented | forbidden-bullet | forbidden-colon | captured-forbidden)
             case $refusal in
+                forbidden-capital) printf '%s\n' 'Gather helpers: None' ;;
+                forbidden-indented) printf '%s\n' '  Gather helpers: none' ;;
+                forbidden-bullet) printf '%s\n' '- Gather helpers: none' ;;
+                forbidden-colon) printf '%s\n' 'Gather helpers : none' ;;
                 forbidden-reason) printf '%s\n' 'Gather helpers: none (reason).' ;;
                 forbidden-crlf) printf 'Gather helpers:\tnone\r\n' ;;
                 *) printf '%s\n' 'Gather helpers: none' ;;
@@ -952,6 +956,18 @@ for refusal in non-gather parent nested cap forbidden forbidden-reason forbidden
         malformed) printf '%s\n' 'not JSON' >"$STUB_CALLER"; reason='could not read caller role and name' ;;
         missing-caller) printf '%s\n' '{"record":"daemon"}' >"$STUB_CALLER"; reason='could not read caller role and name' ;;
         docs) STUB_FAIL='taskr doc ls'; reason='could not read caller brief record' ;;
+        no-row)
+            jq '.task_id = 41' "$STUB_CALLER_DOCS" >"$case_dir/updated"
+            mv "$case_dir/updated" "$STUB_CALLER_DOCS"
+            reason='could not read captured caller brief id' ;;
+        two-rows)
+            cat "$STUB_CALLER_DOCS" "$STUB_CALLER_DOCS" >"$case_dir/updated"
+            mv "$case_dir/updated" "$STUB_CALLER_DOCS"
+            reason='could not read captured caller brief id' ;;
+        string-id)
+            jq '.doc_id |= tostring' "$STUB_CALLER_DOCS" >"$case_dir/updated"
+            mv "$case_dir/updated" "$STUB_CALLER_DOCS"
+            reason='could not read captured caller brief id' ;;
         uncaptured)
             jq '.captured = false' "$STUB_CALLER_DOCS" >"$case_dir/updated"
             mv "$case_dir/updated" "$STUB_CALLER_DOCS"
@@ -996,7 +1012,7 @@ for disk_brief in changed missing; do
     esac
     # Only the matching row's captured document controls the opt-out.
     printf '%s\n' '{"doc_id":100,"task_id":41,"kind":"brief","name":"","captured":false}' >>"$STUB_CALLER_DOCS"
-    printf '%s\n' 'Gather helpers: nonetheless allowed' >>"$STUB_CALLER_CAPTURE"
+    printf '%s\n' 'Gather helpers: nonetheless allowed' 'A brief may say Gather helpers: none' >>"$STUB_CALLER_CAPTURE"
     run_launch TASKR_TASK=42 sh "$launch_sh" haiku-gather gather-facts "$brief" "$report" 42
     expect_rc 0
     grep -q '^taskr|doc|get|99$' "$case_dir/calls" || fail 'did not read matching captured brief'

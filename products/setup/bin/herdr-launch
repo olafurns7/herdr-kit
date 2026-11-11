@@ -460,7 +460,7 @@ if [ -n "${TASKR_TASK:-}" ]; then
                 select(length == 1) | .[0] | select(.captured == true) | .doc_id | numbers') \
                 || die 'could not read captured caller brief id'
             caller_brief=$(taskr doc get "$caller_brief_id") || die 'could not read captured caller brief'
-            gather_rule=$(printf '%s\n' "$caller_brief" | tr -d '\r' | grep -E '^Gather helpers:[[:blank:]]*none([^[:alnum:]]|$)')
+            gather_rule=$(printf '%s\n' "$caller_brief" | tr -d '\r' | grep -Ei '^[[:blank:]-]*Gather helpers[[:blank:]]*:[[:blank:]]*none([^[:alnum:]]|$)')
             gather_rule_status=$?
             [ "$gather_rule_status" -le 1 ] || die 'could not read caller brief'
             [ -z "$gather_rule" ] || die 'caller brief says Gather helpers: none'

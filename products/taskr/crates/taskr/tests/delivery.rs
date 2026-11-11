@@ -1553,7 +1553,7 @@ fn root_consumers_alarm_once_per_generation_and_notify_only_an_open_other_hub() 
                         )
                     ),
                     format!(
-                        "run herdr-hub check {r} (hub) or herdr-lead check {r} (lead); on push-dropped follow its Repair line; live means the root is busy"
+                        "on the root's host, run herdr-hub check {r} (hub) or herdr-lead check {r} (lead); on push-dropped follow its Repair line; live is only meaningful on that host and means the root is busy"
                     )
                 );
             }
@@ -1567,9 +1567,11 @@ fn root_consumers_alarm_once_per_generation_and_notify_only_an_open_other_hub() 
                 format!("ALARM push_exhausted root {r} event {e} (ask)"),
                 "3 delivery attempts without an ack".into(),
                 "Claude /restart".into(),
-                format!("run herdr-hub check {r} (hub) or herdr-lead check {r} (lead)"),
+                format!(
+                    "on the root's host, run herdr-hub check {r} (hub) or herdr-lead check {r} (lead)"
+                ),
                 "on push-dropped follow its Repair line".into(),
-                "live means the root is busy".into(),
+                "live is only meaningful on that host and means the root is busy".into(),
             ] {
                 assert!(summary.contains(&expected), "{summary}");
             }

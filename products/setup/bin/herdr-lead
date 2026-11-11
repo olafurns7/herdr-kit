@@ -152,7 +152,7 @@ stop_pane() {
                 [ "$elapsed" -lt 120 ] || fail "$stop_name still runs in $1 after 120 s"
                 screen=$(visible_text "$1") || fail 'read exit dialog'
                 case $exit_answered:$screen in
-                    :*'Exit'*'background'*'Stay'*)
+                    :*'Exit and stop tasks'*'Move to background and exit'*'Stay'*)
                         lead_in_pane "$1" "$2" "$stop_session" || break
                         herdr pane send-keys "$1" Enter >/dev/null || fail 'answer exit dialog'
                         exit_answered=1
