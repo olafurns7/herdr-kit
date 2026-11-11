@@ -50,6 +50,10 @@
             "type": "command",
             "command": "[ -n \"${TASKR_LAUNCH:-}\" ] && \"$HOME/.local/bin/taskr\" hook claude UserPromptSubmit >/dev/null 2>&1; true",
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "if [ \"${HERDR_ENV:-}\" = 1 ]; then ( minute=$(date -u +%Y-%m-%dT%H:%MZ) || exit 0; printf '{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"clock: %s (UTC, from date -u)\"}}\\n' \"$minute\" ) 2>/dev/null; fi; true"
           }
         ]
       }
@@ -73,6 +77,15 @@
             "type": "command",
             "command": "if [ \"${HERDR_ENV:-}\" = 1 ]; then \"$HOME/.local/bin/taskr\" hook claude PostToolUse; fi",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ \"${HERDR_ENV:-}\" = 1 ]; then ( minute=$(date -u +%Y-%m-%dT%H:%MZ) || exit 0; id=$(jq -ser 'if length == 1 then .[0].session_id else null end | select(type == \"string\") | gsub(\"[^A-Za-z0-9_-]\"; \"\") | select(length > 0)') || id=ppid-$PPID; stamp=\"${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/herdr-clock-$id\"; previous=$(cat \"$stamp\" 2>/dev/null) || previous=; [ \"$previous\" != \"$minute\" ] || exit 0; printf '%s\\n' \"$minute\" >\"$stamp\" || exit 0; printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"clock: %s (UTC, from date -u)\"}}\\n' \"$minute\" ) 2>/dev/null; fi; true"
           }
         ]
       }
