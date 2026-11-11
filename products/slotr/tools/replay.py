@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only per-kind cgroup peaks and overlap replay (stdlib only)."""
+"""Read-only per-class cgroup peaks and overlap replay (stdlib only)."""
 import argparse
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -32,11 +32,17 @@ class Run:
     start: float
     arrival: float
     cost: int
-    kind: str
+    kind: str | None
     campaign: str
     weight: int
+    pool: str
     end: float | None = None
     peak: float | None = None
+
+    @property
+    def admission_class(self):
+        workload = self.kind if self.kind is not None else f'cost:{self.cost}'
+        return f'{self.pool}:{workload}'
 
 
 def read_runs(path, pool):
@@ -52,8 +58,8 @@ def read_runs(path, pool):
                 cost = event['cost_mib']
                 run = Run(event['run'], start, start - event.get('waited_ms', 0) / 1000,
                           cost,
-                          event.get('kind') or '<untyped>', event.get('campaign', ''),
-                          event.get('weight', event.get('level', 0)))
+                          event.get('kind'), event.get('campaign', ''),
+                          event.get('weight', event.get('level', 0)), pool)
                 runs.append(run)
                 latest[run.run] = run
             elif event.get('event') == 'end' and event.get('run') in latest:
@@ -70,7 +76,7 @@ def peak_groups(runs):
     groups = defaultdict(list)
     for run in runs:
         if run.peak is not None:
-            groups[run.kind].append(run.peak)
+            groups[run.admission_class].append(run.peak)
     return groups
 
 
@@ -226,15 +232,18 @@ def main():
     print(f'Slice limit={args.slice_limit_mib} MiB; assumed available={available} MiB; '
           f'reserve={reserve} MiB; static admission budget={budget} MiB')
     print('Peaks are cgroup totals, nearest-rank percentiles, all measured outcomes including censored OOMs.')
-    print('| kind | admitted | measured n | p50 MiB | p95 MiB | max MiB | current cost MiB |')
+    print('| class | admitted | measured n | p50 MiB | p95 MiB | max MiB | current cost MiB |')
     print('| --- | ---: | ---: | ---: | ---: | ---: | ---: |')
-    counts = Counter(run.kind for run in window)
-    for kind in sorted(set(counts) | set(pool.get('kinds', {}))):
-        peaks = groups.get(kind, [])
-        cost = pool.get('kinds', {}).get(kind, {}).get('cost_mib', '-')
+    counts = Counter(run.admission_class for run in window)
+    costs = {run.admission_class: run.cost for run in window if run.kind is None}
+    costs.update({f'{args.pool}:{kind}': entry.get('cost_mib', '-')
+                  for kind, entry in pool.get('kinds', {}).items()})
+    for admission_class in sorted(set(counts) | set(costs)):
+        peaks = groups.get(admission_class, [])
+        cost = costs.get(admission_class, '-')
         stats = ([f'{percentile(peaks, p):.1f}' for p in (.5, .95)] + [f'{max(peaks):.1f}']
                  if peaks else ['-', '-', '-'])
-        print(f'| {kind} | {counts[kind]} | {len(peaks)} | {" | ".join(stats)} | {cost} |')
+        print(f'| {admission_class} | {counts[admission_class]} | {len(peaks)} | {" | ".join(stats)} | {cost} |')
     cohort = [run for run in all_runs if run.arrival < until and
               ((run.end is not None and run.end > since) or
                (run.end is None and run.start >= since))]

@@ -52,7 +52,9 @@ SLOTR_LEASE__ON_EXPIRY=warn
 ```
 
 Pool and kind names in environment paths are normalized to lowercase, but the
-variable name after `pools.<pool>.kinds.<kind>.env` keeps its original case.
+variable name after `pools.<pool>.kinds.<kind>.env` keeps its original case and
+leading underscore (for example, `SLOTR_POOLS__HEAVY__KINDS__BUILD__ENV___FOO`
+sets `_FOO`).
 A kind env variable whose name contains `__` cannot use a scalar environment
 override: config loading fails with an invalid-path error. Set those variables
 in the TOML file instead.

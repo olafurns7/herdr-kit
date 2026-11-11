@@ -23,10 +23,12 @@ declared cost until that class reaches the sample floor again.
 
 The manager scans `end` events backwards through the rolling window and uses
 nearest-rank p95: sort peaks, then select rank `ceil(0.95 * sample_count)`.
-Bytes are divided by 1048576 to obtain MiB. Null or zero peaks and events with
-accounting errors or `stopped = true` are skipped. Fast payload failures still
-count. OOM-killed samples count as unbounded (`u64::MAX` bytes), so a class with
-more than 5% OOMs reserves its full current declared cost.
+Bytes are divided by 1048576 to obtain MiB. OOM-killed samples count as unbounded
+(`u64::MAX` bytes), even with a null or zero peak, accounting errors, or
+`stopped = true`, so a class with more than 5% OOMs reserves its full current
+declared cost. For other samples, null or zero peaks and events with accounting
+errors or `stopped = true` are skipped. Fast payload failures still count.
+End events without a pool are skipped.
 Older unkinded events without `cost_mib` cannot identify a class and are skipped.
 Each waiter caches its table across polls, refreshing at most every five
 minutes; status takes one snapshot per invocation. A read error retains the
@@ -184,7 +186,8 @@ Direct native calls and deliberate namespace substitution can bypass it.
 
 `python3 products/slotr/tools/replay.py EVENTS --config CONFIG --since ISO_TIME
 --until ISO_TIME --slice-limit-mib MIB` is a read-only analysis tool using Python
-3.11 or later and its standard library. It prints per-kind measured counts and
+3.11 or later and its standard library. It prints measured counts per admission
+class (`pool:kind` or `pool:cost:<mib>` for unkinded runs) and
 nearest-rank p50/p95/max cgroup peaks, with configured costs as context. It does
 not propose or change configuration.
 
