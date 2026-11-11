@@ -531,7 +531,18 @@ pub(super) fn apply(
                     )?;
                     n += 1;
                 }
-                tx.execute("delete from meta where key=?", [&key])?;
+                if waiter.is_some() {
+                    // A subscription can outlive the unlink (or target this PR
+                    // without any link). Keep it terminal for polling and replay.
+                    let next = State {
+                        state: "CLOSED".into(),
+                        done: true,
+                        ..prev
+                    };
+                    set_meta(tx, &key, &serde_json::to_string(&next)?)?;
+                } else {
+                    tx.execute("delete from meta where key=?", [&key])?;
+                }
                 continue;
             }
             let (mut next, subs) = diff(&prev, node, names);

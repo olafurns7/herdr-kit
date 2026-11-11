@@ -583,6 +583,7 @@ fn a_null_alias_with_not_found_closes_and_unlinks() {
     );
     assert_eq!(reason, "Could not resolve to a Repository");
     assert_eq!(f.poller.failures, 0, "JSON with data is not a failure");
+    assert_eq!(meta(&f.db, "pr_state:demo-org/demo#32").unwrap(), None);
 }
 
 #[test]
@@ -1027,6 +1028,108 @@ fn a_new_subscription_replays_a_cached_terminal_pr_only_to_itself() {
         assert_eq!(f.calls(), 1, "terminal cache is not polled again");
         assert_eq!(f.afters().len(), 2, "keep does not repeat the cached match");
     }
+}
+
+const NOT_FOUND: &str = r#"{"data":{"p0":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND","path":["p0","pullRequest"],"message":"Could not resolve to a PullRequest with the number of 31."}]}"#;
+
+#[test]
+fn an_unlinked_not_found_pr_is_cached_and_replayed_to_later_subscribers() {
+    let mut f = fixture("after-not-found");
+    f.subscribe(3, "merged", false);
+    f.reply(NOT_FOUND, 1);
+    f.poll();
+    f.poll();
+    assert_eq!(f.calls(), 1, "a missing PR is not polled again");
+    assert_eq!(f.events(), [(3, None, "closed".into())]);
+    assert!(f.afters().is_empty(), "closed does not match merged");
+    let s = pr_state(&f, "demo-org/demo#31");
+    assert_eq!(
+        (s["state"].clone(), s["done"].clone()),
+        (json!("CLOSED"), json!(true))
+    );
+    f.subscribe(1, "closed", false);
+    let source =
+        f.db.query_row("select id from events where kind='pr'", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap();
+    assert_eq!(f.afters(), [(1, "closed".into(), source)]);
+    assert_eq!(f.latest_ref(3, "pr"), None);
+}
+
+#[test]
+fn an_unlinked_not_found_pr_fires_keep_closed_only_once() {
+    let mut f = fixture("after-not-found-keep");
+    let prev = State {
+        head: HEAD.into(),
+        state: "OPEN".into(),
+        seen: "green".into(),
+        ..State::default()
+    };
+    set_meta(
+        &f.db,
+        "pr_state:demo-org/demo#31",
+        &serde_json::to_string(&prev).unwrap(),
+    )
+    .unwrap();
+    f.subscribe(3, "closed", true);
+    f.reply(NOT_FOUND, 1);
+    f.poll();
+    f.poll();
+    assert_eq!(f.calls(), 1, "keep does not keep polling a terminal PR");
+    assert_eq!(f.events(), [(3, None, "closed".into())]);
+    let afters = f.afters();
+    assert_eq!(afters.len(), 1);
+    assert_eq!((afters[0].0, afters[0].1.as_str()), (3, "closed"));
+    let terminal = state(&f.db, &parse("31", "demo-org/demo").unwrap()).unwrap();
+    assert_eq!(
+        terminal,
+        State {
+            state: "CLOSED".into(),
+            done: true,
+            ..prev
+        }
+    );
+    f.subscribe(1, "closed", false);
+    assert_eq!(
+        f.afters(),
+        [
+            (3, "closed".into(), afters[0].2),
+            (1, "closed".into(), afters[0].2)
+        ]
+    );
+}
+
+#[test]
+fn a_linked_not_found_pr_with_a_subscription_emits_closed_only_once() {
+    let mut f = fixture("after-not-found-linked");
+    f.link(2, "31");
+    f.subscribe(3, "merged,closed", true);
+    f.reply(NOT_FOUND, 1);
+    f.poll();
+    f.poll();
+    assert_eq!(
+        f.calls(),
+        1,
+        "the subscription does not repoll the unlinked PR"
+    );
+    assert_eq!(f.latest_ref(2, "pr").as_deref(), Some(""));
+    assert_eq!(f.events(), [(2, Some(1), "closed".into())]);
+    let afters = f.afters();
+    assert_eq!(
+        afters.len(),
+        1,
+        "only the linked event fires the subscription"
+    );
+    assert_eq!((afters[0].0, afters[0].1.as_str()), (3, "closed"));
+    f.subscribe(1, "closed", false);
+    assert_eq!(
+        f.afters(),
+        [
+            (3, "closed".into(), afters[0].2),
+            (1, "closed".into(), afters[0].2)
+        ]
+    );
 }
 
 fn pr_state(f: &Fixture, key: &str) -> Value {
