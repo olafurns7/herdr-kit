@@ -857,7 +857,7 @@ expect_rc 0
 has calls 'herdr|pane|send-keys|wA:p1|Enter'
 
 new_case 'stop ignores a quoted exit option and still retries stop keys'
-CAMPAIGN=$moved_campaign AGENTS=$old_lead STOP_IGNORED=1 DIALOG_SCREEN='Previous output: Exit and stop tasks'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead STOP_IGNORED=1 DIALOG_SCREEN='Previous output: Exit code 1; run in background; Stay informed'
 run stop 42 wA:p1
 expect_rc 1
 lacks calls 'herdr|pane|send-keys|wA:p1|Enter'

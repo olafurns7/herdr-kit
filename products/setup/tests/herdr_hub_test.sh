@@ -442,7 +442,8 @@ else: sys.exit(98)
         assert message in c[4] and not c[5]
         assert not (c[1] / '.local/state').exists()
 
-    for args in [(), ('0',), ('42','--unknown'), ('42','--lane'), ('--new','Bad'), ('--new','x'*33)]:
+    for args in [(), ('0',), ('42','--unknown'), ('42','--lane'), ('42','--account',''), ('42','--account'),
+                 ('move','42','--account',''), ('move','42','--account'), ('--new','Bad'), ('--new','x'*33)]:
         c = run('invalid arguments', args=args)
         expect(c, 2)
         assert not c[5]
@@ -646,7 +647,8 @@ else: sys.exit(98)
         assert lines[0] == ('push-dropped' if mode == 'check-dropped' else 'live'), c[3]
         assert (c[0] / 'awk-env-checked').exists(), 'check did not keep the config out of helper argv'
         if mode == 'check-dropped':
-            assert len(lines) == 2 and 'herdr-hub move 42' in lines[1] and '--resume' in lines[1], c[3]
+            assert len(lines) == 2, c[3]
+            assert lines[1] == 'Repair: herdr-hub move 42 --lane <lane> --account <account> -- --resume <session-id>', c[3]
         assert not (c[1] / '.local/state').exists()
 
     # Review 7952 F1: an old prover finishes after its hub exited and a rerun reclaimed the lock. It must not

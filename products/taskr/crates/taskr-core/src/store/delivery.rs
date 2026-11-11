@@ -286,7 +286,7 @@ pub fn exhausted(
         }
         if t.parent.is_none() {
             let recovery = format!(
-                "run herdr-hub check {} (hub) or herdr-lead check {} (lead); on push-dropped follow its Repair line; live means the root is busy",
+                "on the root's host, run herdr-hub check {} (hub) or herdr-lead check {} (lead); on push-dropped follow its Repair line; live is only meaningful on that host and means the root is busy",
                 t.id, t.id
             );
             let summary = format!(
