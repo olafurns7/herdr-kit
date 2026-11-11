@@ -55,9 +55,13 @@ case "$1 $2" in
         case $4 in ' probe_marker='*)
             [ "${STUB_PROBE:-ok}" != run-fail ] || exit 1
             printf '%s\n' "$4" >"$STUB_CALLS.probe-command"
+            if [ -n "${STUB_TARGET_HOME:-}" ]; then
+                HOME="$STUB_TARGET_HOME" PATH="$STUB_TARGET_BIN:/usr/bin:/bin" sh -c "$4" >"$STUB_CALLS.probe"
+                exit 0
+            fi
             marker=${4#' probe_marker='}; marker=${marker%%;*}
             printf '%s\n' "$marker" "${STUB_CWD_OK:-1}" "${STUB_COMMON:-/target/main/.git}" \
-                "${STUB_CLI-/target/bin/codex}" "${STUB_CODATOR:-0}" "$marker-end" >"$STUB_CALLS.probe"
+                "${STUB_CLI-/target/bin/codex}" "${STUB_CODATOR:-0}" '""' "$marker-end" >"$STUB_CALLS.probe"
             ;;
         esac
         case $3 in *:p8) [ "${STUB_PUSH_FAIL:-}" != run ] || exit 1 ;; esac
@@ -139,7 +143,8 @@ ln -s "$(command -v jq)" "$stub_dir/jq"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$stub_dir/sleep"
 chmod 0755 "$stub_dir/herdr" "$stub_dir/taskr" "$stub_dir/sleep"
 # Reserved-mode socket preflight is isolated too; no connection to a live server.
-printf '%s\n' '#!/bin/sh' 'cat >/dev/null' 'exit "${STUB_SERVER_RC:-0}"' >"$stub_dir/python3"
+printf '%s\n' '#!/bin/sh' "[ \"\${1:-}\" != -c ] || exec '$(command -v python3)' \"\$@\"" \
+    'cat >/dev/null' 'exit "${STUB_SERVER_RC:-0}"' >"$stub_dir/python3"
 chmod 0755 "$stub_dir/python3"
 
 failures=0
@@ -180,6 +185,7 @@ new_case() {
     STUB_SOURCE_PROBE=0 STUB_PROMPT= STUB_LOG_GOT=
     STUB_MACHINES='[{"id":"m1","label":"devbox","target":"u@Box.example.com","enabled":true}]'
     STUB_MACHINE_LABEL=devbox STUB_PROBE=ok STUB_CWD_OK=1 STUB_COMMON=/target/main/.git STUB_CLI=/target/bin/codex STUB_CODATOR=0
+    STUB_TARGET_HOME= STUB_TARGET_BIN=
     STUB_RESERVED=$case_dir/reserved.json
     STUB_CALLER=$case_dir/caller.json STUB_CALLER_BRIEF=$case_dir/caller.md
     STUB_CALLER_DOCS=$case_dir/caller-docs.json STUB_CALLER_CAPTURE=$case_dir/caller-captured.md
@@ -204,6 +210,7 @@ run_launch() {
         STUB_MACHINES="$STUB_MACHINES" STUB_MACHINE_LABEL="$STUB_MACHINE_LABEL" \
         STUB_PROBE="$STUB_PROBE" STUB_CWD_OK="$STUB_CWD_OK" STUB_COMMON="$STUB_COMMON" \
         STUB_CLI="$STUB_CLI" STUB_CODATOR="$STUB_CODATOR" \
+        STUB_TARGET_HOME="$STUB_TARGET_HOME" STUB_TARGET_BIN="$STUB_TARGET_BIN" \
         TASKR_FORMAT=json "$@" \
         >"$case_dir/out" 2>"$case_dir/err") || run_status=$?
     out=$(cat "$case_dir/out")
@@ -266,6 +273,118 @@ tab_calls() {
 }
 
 if [ "${HERDR_LAUNCH_RESERVED_ONLY:-0}" != 1 ]; then
+# Only synthetic usage files are read; Codator must never be invoked to pick.
+account_codator() {
+    mkdir -p "$1/.local/bin"
+    printf '%s\n' '#!/bin/sh' 'echo unexpected-codator-call >&2; exit 99' >"$1/.local/bin/codator"
+    chmod 0755 "$1/.local/bin/codator"
+}
+usage_fixture() {
+    python3 - "$1" "$2" "$3" "${4:-usable}" "${5:-0}" <<'PY'
+import json, os, pathlib, sys, time
+path = pathlib.Path(sys.argv[1]) / '.local/share/codator/claude' / sys.argv[2] / '.claude-usage.json'
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps({'outcome': sys.argv[4], 'snapshot': {'rate_limits': {
+    'model_scoped': [{'display_name': 'Fable', 'utilization': json.loads(sys.argv[3])}]}}}))
+os.chmod(path, 0o600)
+mtime = time.time() - int(sys.argv[5])
+os.utime(path, (mtime, mtime))
+PY
+}
+expect_account_start() {
+    grep -F '|agent|start|' "$case_dir/calls" | grep -F -- "|--|--account|$1|$2" >/dev/null \
+        || fail 'account is not the leading native argument pair'
+    printf '%s\n' "$out" | grep -F " account=$1" >/dev/null || fail 'chosen account not reported'
+    [ -z "$err" ] || fail "unexpected stderr: $err"
+}
+
+for account_lane in opus-medium sol-high; do
+    new_case "explicit account is passed first for $account_lane"
+    account_codator "$home"
+    run_launch sh "$launch_sh" --account 'review seat' "$account_lane" impl-cart "$brief" "$report" 42
+    expect_rc 0
+    native_flag=--model
+    [ "$account_lane" != sol-high ] || native_flag=-m
+    expect_account_start 'review seat' "$native_flag"
+done
+for account_arg in empty missing; do
+    new_case "--account rejects $account_arg value"
+    if [ "$account_arg" = empty ]; then
+        run_launch sh "$launch_sh" --account '' opus-medium impl-cart "$brief" "$report" 42
+    else run_launch sh "$launch_sh" --account; fi
+    expect_rc 2
+    expect_err '--account needs NAME'
+    expect_no_calls
+done
+new_case 'explicit account refuses a target without Codator'
+run_launch sh "$launch_sh" --account seat opus-medium impl-cart "$brief" "$report" 42
+expect_rc 2
+expect_err '--account requires Codator on the target'
+! grep -q '^taskr|' "$case_dir/calls" || fail 'registered without target Codator'
+
+new_case 'Fable chooses most quota left and lowest name on a tie' reviewer
+account_codator "$home"
+usage_fixture "$home" z-seat 10
+usage_fixture "$home" a-seat 10
+usage_fixture "$home" less-left 60
+run_launch sh "$launch_sh" fable-high rev-cart "$brief" "$report" 42
+expect_rc 0
+expect_account_start a-seat --model
+
+new_case 'Fable skips exhausted, stale, unusable, unreadable and malformed usage' reviewer
+account_codator "$home"
+usage_fixture "$home" valid 90
+usage_fixture "$home" exhausted 100
+usage_fixture "$home" over-limit 110
+usage_fixture "$home" stale 0 usable 1900
+usage_fixture "$home" unusable 0 error
+usage_fixture "$home" no-fable 0
+usage_fixture "$home" malformed 0
+usage_fixture "$home" unreadable 0
+usage_fixture "$home" missing-file 0
+usage_fixture "$home" wrong-shape 0
+usage_fixture "$home" wrong-number '"0"'
+usage_fixture "$home" boolean false
+usage_dir=$home/.local/share/codator/claude
+printf '%s\n' '{"outcome":"usable","snapshot":{"rate_limits":{"model_scoped":[]}}}' >"$usage_dir/no-fable/.claude-usage.json"
+printf '%s\n' '{broken' >"$usage_dir/malformed/.claude-usage.json"
+printf '%s\n' '[]' >"$usage_dir/wrong-shape/.claude-usage.json"
+chmod 000 "$usage_dir/unreadable/.claude-usage.json"
+rm "$usage_dir/missing-file/.claude-usage.json"
+mkdir "$usage_dir/missing-file/.claude-usage.json"
+run_launch sh "$launch_sh" fable-high rev-cart "$brief" "$report" 42
+expect_rc 0
+if [ -r "$usage_dir/unreadable/.claude-usage.json" ]; then
+    # Privileged test runners can read mode 000; the directory still exercises
+    # a read failure. Ordinary runners also check permission denial.
+    expect_account_start unreadable --model
+else expect_account_start valid --model; fi
+chmod 600 "$usage_dir/unreadable/.claude-usage.json"
+
+for fallback in empty exhausted; do
+    new_case "Fable falls back without an account: $fallback" reviewer
+    account_codator "$home"
+    [ "$fallback" != exhausted ] || usage_fixture "$home" seat 100
+    run_launch sh "$launch_sh" fable-high rev-cart "$brief" "$report" 42
+    expect_rc 0
+    expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
+    ! grep -q '|--account|' "$case_dir/calls" || fail 'fallback supplied an account'
+done
+new_case 'explicit Fable account overrides quota selection' reviewer
+account_codator "$home"
+usage_fixture "$home" automatic 0
+run_launch sh "$launch_sh" --account manual fable-high rev-cart "$brief" "$report" 42
+expect_rc 0
+expect_account_start manual --model
+
+new_case 'non-Fable model keeps default account despite Fable quota'
+account_codator "$home"
+usage_fixture "$home" automatic 0
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
+! grep -q '|--account|' "$case_dir/calls" || fail 'picked for non-Fable model'
+
 # Discovery is the only local Herdr read; every control call must be forwarded.
 expect_machine_calls() {
     bad=$(sed '/^herdr|machine|list|--json$/d; /^herdr|--machine|/d; /^taskr|/d' "$case_dir/calls")
@@ -293,7 +412,7 @@ for remote_kind in claude codex; do
     expect_rc 0
     [ -z "$err" ] || fail "unexpected stderr: $err"
     [ ! -e "$case_dir/calls.caller-git" ] || fail 'ran git on the caller'
-    expect_out 'task=2468 launch=3579 tab=wT:t7 pane=wT:p7 machine=devbox'
+    expect_out 'task=2468 launch=3579 tab=wT:t7 pane=wT:p7 machine=devbox account=default'
     expect_machine_calls
     grep -q -F "$forward" "$case_dir/calls" || fail 'target Codator was not forwarded'
     if [ "$remote_kind" = codex ]; then
@@ -318,6 +437,40 @@ for remote_kind in claude codex; do
     sed -n '6p' "$case_dir/probe-output" | grep -qx 1 || fail 'probe executable Codator fact missing'
 done
 
+new_case 'remote Fable selection reads target usage in the single existing probe' reviewer
+account_codator "$home"
+usage_fixture "$home" caller-only 0
+STUB_TARGET_HOME=$case_dir/target/home
+STUB_TARGET_BIN=$case_dir/target/bin
+mkdir -p "$STUB_TARGET_BIN"
+printf '%s\n' '#!/bin/sh' 'exit 0' >"$STUB_TARGET_BIN/claude"
+chmod 0755 "$STUB_TARGET_BIN/claude"
+account_codator "$STUB_TARGET_HOME"
+usage_fixture "$STUB_TARGET_HOME" target-less 80
+usage_fixture "$STUB_TARGET_HOME" target-best 30
+run_launch sh "$launch_sh" --machine devbox --workspace wT --cwd "$work" fable-high rev-cart "$brief" "$report" 42
+expect_rc 0
+expect_account_start target-best --model
+expect_machine_calls
+! grep -q '|--account|caller-only|' "$case_dir/calls" || fail 'used caller usage'
+
+for target_codator in 0 1; do
+    new_case "remote explicit account uses target Codator fact: $target_codator"
+    # Caller always has Codator, so a missing target must still refuse.
+    account_codator "$home"
+    STUB_CODATOR=$target_codator
+    run_launch sh "$launch_sh" --machine devbox --account remote-seat opus-medium impl-remote "$brief" "$report" 42 wA:p3
+    if [ "$target_codator" = 1 ]; then
+        expect_rc 0
+        expect_account_start remote-seat --model
+        expect_machine_calls
+    else
+        expect_rc 2
+        expect_err '--account requires Codator on the target'
+        ! grep -q '^taskr|' "$case_dir/calls" || fail 'registered without target Codator'
+    fi
+done
+
 new_case 'remote given pane does not check the caller cwd or Codator'
 STUB_PANE_CWD=/target/only
 mkdir -p "$home/.local/bin"
@@ -332,7 +485,7 @@ new_case 'remote no-receipt retry forwards pane read and Enter without resending
 STUB_PROMPT=no_receipt STUB_LOG_GOT=1
 run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 submit_retry=enter machine=devbox'
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 submit_retry=enter machine=devbox account=default'
 expect_machine_calls
 [ "$(grep -c '^taskr|prompt|' "$case_dir/calls")" -eq 1 ] || fail 'remote brief resent'
 grep -q '^herdr|--machine|devbox|pane|send-keys|wA:p3|Enter$' "$case_dir/calls" || fail 'retry Enter not forwarded'
@@ -341,7 +494,7 @@ new_case 'machine id resolves to its enabled target'
 STUB_MACHINE_LABEL=m1
 run_launch sh "$launch_sh" --machine m1 opus-medium impl-remote "$brief" "$report" 42 wA:p3
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=m1'
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=m1 account=default'
 expect_machine_calls
 
 new_case 'remote label refuses two enabled profiles for the same derived host'
@@ -425,7 +578,7 @@ printf '%s\n' '#!/bin/sh' >"$home/.local/bin/codator"
 chmod 0755 "$home/.local/bin/codator"
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7'
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
 expect_calls "$(tab_calls impl-cart)" \
     "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup$forward" "|$(claude_flags medium)")"
 
@@ -466,7 +619,7 @@ done
 new_case 'OpenCode free lane with a given pane'
 run_launch sh "$launch_sh" glm-free glm-inventory "$brief" "$report" 42 wA:p3
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3'
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 account=default'
 grep -q -F '|--kind|opencode|--pane|wA:p3|--timeout|90000|--|--standalone|--auto' "$case_dir/calls" || fail 'wrong OpenCode argv'
 grep -q -F 'opencode/glm-5.3-flash-free' "$case_dir/calls" || fail 'free model missing'
 
@@ -752,7 +905,7 @@ done
 new_case 'given pane: workspace and shell checks, then ctrl+c' sub-orchestrator
 run_launch sh "$launch_sh" opus-high orch-cart "$brief" "$report" 42 wA:p3
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3'
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 account=default'
 expect_calls "herdr|pane|get|wA:p3" \
     "herdr|pane|process-info|--pane|wA:p3" "herdr|pane|send-keys|wA:p3|ctrl+c" \
     "$(tail_calls orch-cart sub-orchestrator wA:p3 wA:t5 claude claude-opus-5-5 high "$claude_setup" \
@@ -763,7 +916,7 @@ STUB_PANE_WS=wB
 ws=wB
 run_launch sh "$launch_sh" opus-high impl-cart "$brief" "$report" 42 wB:p1
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wB:t5 pane=wB:p1'
+expect_out 'task=2468 launch=3579 tab=wB:t5 pane=wB:p1 account=default'
 expect_calls "herdr|pane|get|wB:p1" \
     "herdr|pane|process-info|--pane|wB:p1" "herdr|pane|send-keys|wB:p1|ctrl+c" \
     "$(tail_calls impl-cart implementer wB:p1 wB:t5 claude claude-opus-5-5 high "$claude_setup" \
@@ -823,7 +976,7 @@ new_case 'a pane get with a tokens map of other keys still passes'
 STUB_PANE_GET='{"result":{"pane":{"cwd":"'"$work"'","foreground_cwd":"/elsewhere","pane_id":"wA:p3","tab_id":"wA:t5","tokens":{"tab_key":"k-wA:t5","ws_key":"k-wA"},"workspace_id":"wA"}}}'
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42 wA:p3
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3'
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 account=default'
 
 new_case '--workspace and --cwd create the tab there without asking for the current pane'
 mkdir -p "$case_dir/task"
@@ -831,7 +984,7 @@ ws=wT
 tcwd=$(CDPATH= cd "$case_dir/task" && pwd -P)
 run_launch sh "$launch_sh" --workspace wT --cwd "$case_dir/task" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wT:t7 pane=wT:p7'
+expect_out 'task=2468 launch=3579 tab=wT:t7 pane=wT:p7 account=default'
 expect_calls "$(tab_calls impl-cart wT)" \
     "$(tail_calls impl-cart implementer wT:p7 wT:t7 claude claude-opus-5-5 medium "$claude_setup" "|$(claude_flags medium)")"
 
@@ -860,13 +1013,13 @@ new_case 'ids without a 1 are read whole'
 STUB_NEW='n1 2468' STUB_LAUNCH='l1 {"launch_id":3579}'
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7'
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
 
 new_case 'misleading tags: the n1 and l1 digits are never read as ids'
 STUB_NEW='n1 2468' STUB_LAUNCH='l1 {"replaced_launch_id":11,"launch_id":3579,"status":"open"}'
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7'
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
 
 new_case 'a planned or noisy new line is refused'
 STUB_NEW='n1 2468 planned'
@@ -925,14 +1078,14 @@ log_call='taskr|log|2468|--json|--limit|5'
 new_case 'step 7: got within the first wait presses no Enter'
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7'
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
 expect_calls "$(step7_calls)"
 
 new_case 'step 7: no_receipt, then a got after one Enter'
 STUB_PROMPT=no_receipt STUB_LOG_GOT=1 STUB_SCREEN='pasted brief, not submitted'
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 submit_retry=enter'
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 submit_retry=enter account=default'
 expect_err 'pasted brief, not submitted'
 expect_calls "$(step7_calls 'herdr|pane|read|wA:p7|--source|recent-unwrapped|--lines|40' "$enter" "$log_call")"
 
@@ -1136,7 +1289,7 @@ ext=$work/taskr-push.ts
 : >"$ext"
 run_launch HERDR_PUSH_PI_EXTENSION="$ext" sh "$launch_sh" --push glm glm-inventory "$brief" "$report" 42
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7'
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
 expect_calls "$(tab_calls glm-inventory)" \
     "$(tail_calls glm-inventory implementer wA:p7 wA:t7 pi glm-5.3-flash high " unset -f pi 2>/dev/null;$setup" \
         "|--provider|opencode|--model|glm-5.3-flash|--thinking|high|--approve|--extension|$ext")"
@@ -1162,7 +1315,7 @@ claude_push_flags() {
 new_case 'claude --push writes a private config and adds both flags'
 run_launch sh "$launch_sh" --push opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 mcp_config=$mcp_config"
+expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 mcp_config=$mcp_config account=default"
 expect_calls "$(tab_calls impl-cart)" \
     "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" "$(claude_push_flags)")"
 printf '%s\n' "$mcp_want" | cmp -s - "$mcp_config" || fail 'private config content is wrong'
@@ -1177,7 +1330,7 @@ git -C "$work" init -q
 git -C "$work" add .mcp.json
 run_launch sh "$launch_sh" --push opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 mcp_config=$mcp_config"
+expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 mcp_config=$mcp_config account=default"
 git -C "$work" diff --exit-code -- .mcp.json >/dev/null || fail 'tracked project config was changed'
 printf '%s\n' "$mcp_want" | cmp -s - "$mcp_config" || fail 'private config content is wrong'
 
@@ -1229,7 +1382,7 @@ STUB_START_OK=0 STUB_SCREEN='WARNING: Loading development channels
 > 1. I am using this for local development'
 run_launch sh "$launch_sh" --push opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 mcp_config=$mcp_config"
+expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 mcp_config=$mcp_config account=default"
 expect_calls "$(tab_calls impl-cart)" \
     "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" "$(claude_push_flags)" \
         | sed '$d')" \
@@ -1268,7 +1421,7 @@ new_case 'codex --push starts the push sidecar in its own tab (step 8)'
 printf '%s\n' 'Run taskr start first.' >>"$brief"
 run_launch HERDR_PUSH_CODEX_BIN="$codex_bin" sh "$launch_sh" --push sol-high impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 push_tab=wA:t8 push_pane=wA:p8'
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 push_tab=wA:t8 push_pane=wA:p8 account=default'
 expect_calls "$(tab_calls impl-cart)" \
     "$(tail_calls impl-cart implementer wA:p7 wA:t7 codex gpt-6.1-sol high "$setup" \
         "$(codex_flags gpt-6.1-sol high "\"$tcwd\"={trust_level=\"trusted\"}")")" \
@@ -1394,7 +1547,7 @@ ext=$work/taskr-push.ts
 : >"$ext"
 run_launch HERDR_PUSH_PI_EXTENSION="$ext" sh "$launch_sh" --push glm glm-inventory "$brief" "$report" 42 wA:p3
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3'
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 account=default'
 grep -q -F -- "|--extension|$ext" "$case_dir/calls" || fail 'no --extension'
 
 new_case 'opus-max launches a rev- name' reviewer
@@ -1760,7 +1913,7 @@ ticket_list
 cp "$brief" "$case_dir/brief.orig"
 run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 work_brief=$work/brief.W12.md"
+expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 work_brief=$work/brief.W12.md account=default"
 cmp -s "$brief" "$case_dir/brief.orig" || fail 'the lead brief was modified'
 {
     sed -n '1,3p' "$brief"
@@ -1808,7 +1961,7 @@ reserved_snapshot
 printf '%s\n' '{"id":42,"role":"orchestrator","name":"orch-parent","status":"open"}' >"$STUB_CALLER"
 run_launch TASKR_TASK=42 sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p5'
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p5 account=default'
 grep -q '^herdr|agent|start|impl-cart|' "$case_dir/calls" || fail 'no reserved implementer start'
 if grep -E '^taskr\|(new|launch)\|' "$case_dir/calls" >/dev/null; then fail 'reserved mode created another task or launch'; fi
 
@@ -1932,7 +2085,7 @@ new_case 'reserved launch skips new and launch, preserving exports/start/prompt'
 reserved_snapshot
 run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
 expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p5'
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p5 account=default'
 if grep -E '^taskr\|(new|launch)\|' "$case_dir/calls" >/dev/null; then fail 'reserved mode created another task or launch'; fi
 grep -F 'herdr|agent|start|impl-cart|' "$case_dir/calls" >/dev/null || fail 'reserved mode did not start'
 grep -F "taskr|prompt|2468|--file|$brief|--confirm|--confirm-timeout|60000" "$case_dir/calls" >/dev/null || fail 'reserved brief not captured'
