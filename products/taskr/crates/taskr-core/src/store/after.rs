@@ -30,6 +30,50 @@ fn source(e: &Event<'_>) -> Option<(String, String)> {
         _ => None,
     }
 }
+struct Subscription {
+    id: i64,
+    waiter: i64,
+    kinds: String,
+    keep: bool,
+}
+
+/// The shared delivery path for a live event or a new subscription to a cached PR.
+fn fire_subscription(
+    db: &Connection,
+    sub: &Subscription,
+    eid: i64,
+    task: i64,
+    target: &str,
+    on: &str,
+) -> Result<()> {
+    if !sub.kinds.split(',').any(|k| k == on) {
+        return Ok(());
+    }
+    if !sub.keep {
+        db.execute(
+            "update subscriptions set fired_at=? where id=?",
+            params![now(), sub.id],
+        )?;
+    }
+    let label = if target.starts_with("pr:") {
+        target.to_string()
+    } else {
+        format!("task {target}")
+    };
+    event(
+        db,
+        Event {
+            task,
+            to: Some(sub.waiter),
+            kind: "after",
+            summary: &format!("{label} {on}"),
+            data: Some(json!({"target":target,"on":on,"source_event_id":eid})),
+            ..Event::default()
+        },
+    )?;
+    Ok(())
+}
+
 pub(super) fn fire(db: &Connection, eid: i64, e: &Event<'_>) -> Result<()> {
     let Some((target, on)) = source(e) else {
         return Ok(());
@@ -37,40 +81,16 @@ pub(super) fn fire(db: &Connection, eid: i64, e: &Event<'_>) -> Result<()> {
     let mut stmt = db.prepare("select s.id,s.waiter_task_id,s.kinds,s.keep from subscriptions s join tasks t on t.id=s.waiter_task_id where s.target=? and s.fired_at is null and t.status!='closed' order by s.id")?;
     let subs = stmt
         .query_map([&target], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, bool>(3)?,
-            ))
+            Ok(Subscription {
+                id: r.get(0)?,
+                waiter: r.get(1)?,
+                kinds: r.get(2)?,
+                keep: r.get(3)?,
+            })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let label = if target.starts_with("pr:") {
-        target.clone()
-    } else {
-        format!("task {target}")
-    };
-    for (id, waiter, kinds, keep) in subs {
-        if !kinds.split(',').any(|k| k == on) {
-            continue;
-        }
-        if !keep {
-            db.execute(
-                "update subscriptions set fired_at=? where id=?",
-                params![now(), id],
-            )?;
-        }
-        event(
-            db,
-            Event {
-                task: e.task,
-                to: Some(waiter),
-                kind: "after",
-                summary: &format!("{label} {on}"),
-                data: Some(json!({"target":target,"on":on,"source_event_id":eid})),
-                ..Event::default()
-            },
-        )?;
+    for sub in subs {
+        fire_subscription(db, &sub, eid, e.task, &target, &on)?;
     }
     Ok(())
 }
@@ -92,9 +112,32 @@ pub fn add(
             "insert into subscriptions(waiter_task_id,target,kinds,keep,created_at) values(?,?,?,?,?)",
             params![as_id, target, kinds, keep, now()],
         )?;
-        Ok(
-            json!({"ok":true,"subscription_id":tx.last_insert_rowid(),"target":target,"on":kinds,"keep":keep}),
-        )
+        let id = tx.last_insert_rowid();
+        if let Some(pr) = target.strip_prefix("pr:") {
+            // Reuse the poller's terminal source event. Only this new subscription
+            // is delivered: existing keep subscriptions must not fire again.
+            let cached: Option<(i64, i64, String)> = tx.query_row(
+                "select e.id,e.task_id,json_extract(e.data,'$.sub') from meta m join events e on e.id=(select max(x.id) from events x where x.kind='pr' and json_extract(x.data,'$.pr')=?1 and json_extract(x.data,'$.sub')=case json_extract(m.value,'$.state') when 'MERGED' then 'merged' when 'CLOSED' then 'closed' end) where m.key=?2 and json_extract(m.value,'$.done')=1",
+                params![pr, format!("pr_state:{pr}")],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            ).optional()?;
+            if let Some((eid, task, on)) = cached {
+                fire_subscription(
+                    tx,
+                    &Subscription {
+                        id,
+                        waiter: as_id,
+                        kinds: kinds.into(),
+                        keep,
+                    },
+                    eid,
+                    task,
+                    target,
+                    &on,
+                )?;
+            }
+        }
+        Ok(json!({"ok":true,"subscription_id":id,"target":target,"on":kinds,"keep":keep}))
     })
 }
 /// A read: no write transaction.

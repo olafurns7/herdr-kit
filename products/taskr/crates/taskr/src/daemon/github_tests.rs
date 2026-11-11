@@ -72,6 +72,16 @@ impl Fixture {
     fn link(&self, task: i64, value: &str) {
         self.db.execute("insert into events(task_id,kind,summary,data,created_at) values(?,'ref',?,json_object('key','pr','value',?),?)",params![task,format!("pr={value}"),value,store::now()]).unwrap();
     }
+    fn subscribe(&mut self, waiter: i64, on: &str, keep: bool) {
+        store::after::add(&mut self.db, waiter, "pr:demo-org/demo#31", on, keep).unwrap();
+    }
+    fn afters(&self) -> Vec<(i64, String, i64)> {
+        let mut stmt = self.db.prepare("select recipient_task_id,json_extract(data,'$.on'),json_extract(data,'$.source_event_id') from events where kind='after' order by id").unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap()
+    }
     fn reply(&self, body: &str, code: i32) {
         fs::write(self.dir.join("reply"), body).unwrap();
         fs::write(self.dir.join("code"), code.to_string()).unwrap();
@@ -906,6 +916,117 @@ fn an_unfired_subscription_keeps_a_closed_tasks_pr_polled() {
     // Fired and the task closed: polling stops, though the PR is still open.
     f.poll();
     assert_eq!(f.calls(), 1);
+}
+
+#[test]
+fn an_unlinked_pr_merge_fires_once_without_refs_or_work_completion() {
+    let mut f = fixture("after-unlinked");
+    f.ticket(2, 1);
+    f.subscribe(1, "merged", false);
+    f.subscribe(3, "merged", false);
+    f.reply(&data(&[pr(HEAD, "CLEAN", &[], 0)]), 0);
+    f.poll();
+    assert_eq!(f.calls(), 1);
+    f.reply(&data(&[merged()]), 0);
+    f.poll();
+    assert_eq!(f.calls(), 2);
+    let afters = f.afters();
+    assert_eq!(afters.len(), 2);
+    assert_eq!((afters[0].0, afters[0].1.as_str()), (1, "merged"));
+    assert_eq!((afters[1].0, afters[1].1.as_str()), (3, "merged"));
+    assert_eq!(afters[0].2, afters[1].2);
+    assert_eq!(f.events(), [(1, None, "merged".into())]);
+    f.poll();
+    assert_eq!(f.calls(), 2);
+    assert_eq!(f.afters(), afters);
+    assert_eq!(f.ticket_state(1), ("backlog".into(), None));
+    let pr_refs: i64 = f.db.query_row("select count(*) from events where kind='ref' and json_extract(data,'$.key') like 'pr%'", [], |r| r.get(0)).unwrap();
+    assert_eq!(pr_refs, 0);
+}
+
+#[test]
+fn an_unlinked_terminal_pr_fires_on_its_first_poll() {
+    for terminal in ["merged", "closed"] {
+        let mut f = fixture(&format!("after-first-{terminal}"));
+        f.subscribe(3, terminal, false);
+        let mut node = merged();
+        if terminal == "closed" {
+            node["merged"] = json!(false);
+            node["state"] = json!("CLOSED");
+        }
+        f.reply(&data(&[node]), 0);
+        f.poll();
+        assert_eq!(f.afters().len(), 1, "{terminal}");
+        assert_eq!(f.afters()[0].1, terminal);
+        f.poll();
+        assert_eq!(f.calls(), 1);
+        assert_eq!(f.afters().len(), 1);
+    }
+}
+
+#[test]
+fn an_unlinked_keep_subscription_fires_for_each_matching_transition() {
+    let mut f = fixture("after-keep");
+    f.subscribe(3, "dirty", true);
+    for merge in ["DIRTY", "DIRTY", "CLEAN", "DIRTY"] {
+        f.reply(&data(&[pr(HEAD, merge, &[], 0)]), 0);
+        f.poll();
+    }
+    assert_eq!(f.calls(), 4);
+    assert_eq!(f.afters().len(), 2);
+    assert!(f.afters().iter().all(|e| e.0 == 3 && e.1 == "dirty"));
+    f.db.execute("update tasks set status='closed' where id=3", [])
+        .unwrap();
+    f.poll();
+    assert_eq!(f.calls(), 4, "closed waiters do not keep PRs polled");
+}
+
+#[test]
+fn a_linked_subscription_preserves_pr_events_refs_and_work_completion() {
+    let mut f = fixture("after-linked");
+    f.ticket(2, 1);
+    f.link(2, "31");
+    f.subscribe(3, "merged", false);
+    f.reply(&data(&[merged()]), 0);
+    f.poll();
+    assert_eq!(f.events(), [(2, Some(1), "merged".into())]);
+    assert_eq!(f.latest_ref(2, "pr").as_deref(), Some("31"));
+    assert_eq!(f.latest_ref(2, "pr.state").as_deref(), Some("merged"));
+    assert_eq!(f.latest_ref(3, "pr.state"), None);
+    assert_eq!(f.ticket_state(1).0, "done");
+    assert_eq!(f.afters().len(), 1);
+    f.poll();
+    assert_eq!(
+        f.calls(),
+        1,
+        "linked and subscription targets are deduplicated"
+    );
+    assert_eq!(f.afters().len(), 1);
+}
+
+#[test]
+fn a_new_subscription_replays_a_cached_terminal_pr_only_to_itself() {
+    for linked in [false, true] {
+        let mut f = fixture(&format!("after-cached-{linked}"));
+        if linked {
+            f.link(2, "31");
+        }
+        f.subscribe(1, "merged", true);
+        f.reply(&data(&[merged()]), 0);
+        f.poll();
+        assert_eq!(f.afters().len(), 1);
+        let source = f.afters()[0].2;
+        f.subscribe(3, "closed", false);
+        assert_eq!(f.afters().len(), 1);
+        f.subscribe(3, "merged", true);
+        assert_eq!(
+            f.afters(),
+            [(1, "merged".into(), source), (3, "merged".into(), source)]
+        );
+        f.poll();
+        assert_eq!(f.calls(), 1, "terminal cache is not polled again");
+        assert_eq!(f.afters().len(), 2, "keep does not repeat the cached match");
+    }
 }
 
 fn pr_state(f: &Fixture, key: &str) -> Value {

@@ -127,6 +127,17 @@ pub(super) struct Link {
     task: i64,
     pr: Pr,
 }
+/// Unfired PR subscriptions of open waiters, independent of task PR refs.
+fn subscriptions(db: &db::Connection, default: &str) -> Result<Vec<Link>> {
+    let mut stmt = db.prepare("select distinct s.waiter_task_id,substr(s.target,4) from subscriptions s join tasks w on w.id=s.waiter_task_id where s.fired_at is null and s.target like 'pr:%' and w.status!='closed' order by s.waiter_task_id,s.target")?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(task, value)| parse(&value, default).map(|pr| Link { task, pr }))
+        .collect())
+}
 /// Tasks whose latest `pr` ref parses: open tasks, tasks closed in the last 7 days,
 /// and older closed ones whose PR an unfired `after pr:` subscription of an open
 /// waiter still targets.
@@ -471,6 +482,7 @@ pub(super) fn apply(
     let errors = v["errors"].as_array().cloned().unwrap_or_default();
     store::transaction(db, |tx| {
         let links = links(tx, default)?;
+        let subscriptions = subscriptions(tx, default)?;
         let mut n = 0;
         for (i, pr) in batch.iter().enumerate() {
             let alias = format!("p{i}");
@@ -479,7 +491,8 @@ pub(super) fn apply(
                 .filter(|l| l.pr == *pr)
                 .map(|l| l.task)
                 .collect();
-            if tasks.is_empty() {
+            let waiter = subscriptions.iter().find(|s| s.pr == *pr).map(|s| s.task);
+            if tasks.is_empty() && waiter.is_none() {
                 continue;
             }
             let key = format!("pr_state:{}", pr.key());
@@ -506,6 +519,18 @@ pub(super) fn apply(
                     refs(tx, task, &[("pr", "")])?;
                     n += 1;
                 }
+                if tasks.is_empty()
+                    && let Some(waiter) = waiter
+                {
+                    subscription_event(
+                        tx,
+                        waiter,
+                        pr,
+                        "closed",
+                        json!({"head":prev.head,"reason":reason}),
+                    )?;
+                    n += 1;
+                }
                 tx.execute("delete from meta where key=?", [&key])?;
                 continue;
             }
@@ -525,10 +550,45 @@ pub(super) fn apply(
                 }
                 task_refs(tx, task, &next)?;
             }
+            if tasks.is_empty()
+                && let Some(waiter) = waiter
+            {
+                for (sub, _) in &subs {
+                    let mut data = json!({"head":next.head,"checks":next.seen,"merge_state":next.merge,"threads_open":next.threads});
+                    if *sub == "merged" {
+                        data["merge_commit"] = node["mergeCommit"]["oid"].clone();
+                    }
+                    subscription_event(tx, waiter, pr, sub, data)?;
+                    n += 1;
+                }
+            }
         }
         complete_work(tx, default)?;
         Ok(n)
     })
+}
+
+/// A subscription-only source event has no direct inbox recipient or task refs.
+/// `store::event` fires all matching subscriptions through after.rs as usual.
+fn subscription_event(
+    db: &db::Connection,
+    waiter: i64,
+    pr: &Pr,
+    sub: &str,
+    mut data: Value,
+) -> Result<i64> {
+    data["pr"] = json!(pr.key());
+    data["sub"] = json!(sub);
+    store::event(
+        db,
+        store::Event {
+            task: waiter,
+            kind: "pr",
+            summary: &format!("PR {} {sub}", pr.short()),
+            data: Some(data),
+            ..store::Event::default()
+        },
+    )
 }
 
 #[derive(Clone)]
@@ -824,6 +884,11 @@ impl Poller {
                     task_refs(tx, l.task, &s)?;
                 } else {
                     prs.push(l.pr);
+                }
+            }
+            for subscription in subscriptions(tx, &default)? {
+                if !state(tx, &subscription.pr)?.done {
+                    prs.push(subscription.pr);
                 }
             }
             complete_work(tx, &default)?;
