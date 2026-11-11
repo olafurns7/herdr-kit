@@ -127,7 +127,8 @@
     "model": "claude-fable-5-2",
     "effort": "high",
     "prefixes": [
-      "rev"
+      "rev",
+      "hub"
     ]
   },
   "fable-xhigh": {

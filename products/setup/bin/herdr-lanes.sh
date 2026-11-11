@@ -14,7 +14,7 @@ lane_table_load() {
         | def patterns: type == "array" and all(.[];
             type == "string" and length > 0 and
             (. as $pattern | try ("" | test($pattern) | type == "boolean") catch false));
-        def prefix: IN("impl", "mech", "rs", "rev", "arch", "glm", "orch", "gather");
+        def prefix: IN("impl", "mech", "rs", "rev", "arch", "glm", "orch", "hub", "gather");
         def fields: type == "object" and all(to_entries[];
             (.key | IN("model", "provider", "kind")) and (.value | patterns));
         def denied($rules): . as $lane

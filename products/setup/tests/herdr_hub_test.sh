@@ -315,7 +315,7 @@ else: sys.exit(98)
     def expect(case, rc):
         assert case[2].returncode == rc, (case[2].returncode, case[3], case[4])
 
-    def success(case, extra=(), new=False, jobs=False, account=()):
+    def success(case, extra=(), new=False, jobs=False, account=(), model='example-opus'):
         expect(case, 0)
         work, home, process, out, err, calls = case
         state = home / '.local/state/herdr-orch/lead-push/42'
@@ -326,7 +326,7 @@ else: sys.exit(98)
                   f'A "hub push check 7" event will arrive: record it and ack it.'
                   f' Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note.')
         actual = json.loads((work / 'cdl').read_text())
-        expected = dict(args=[*account,'--model','example-opus','--effort','high','--mcp-config',str(config),
+        expected = dict(args=[*account,'--model',model,'--effort','high','--mcp-config',str(config),
                               '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
                         task=None, launch=None, role='hub', pid=process.pid, cwd=str(work), umask=0o002)
         assert actual == expected, {'actual':actual, 'expected':expected}
@@ -532,6 +532,25 @@ else: sys.exit(98)
             if path.exists() and text in path.read_text(): return path.read_text()
             time.sleep(.05)
         raise AssertionError((path, path.read_text() if path.exists() else None))
+
+    refused = []
+    for args in [('42',), ('--new','example-hub'), ('move','42')]:
+        moving = args[0] == 'move'
+        c = run('hub-only lane ' + args[0], args=(*args,'--lane','other'), mode='move' if moving else '',
+                lane={'kind':'claude','model':'example-hub-model','effort':'high','prefixes':['hub']})
+        if c[2].returncode != 0:
+            refused.append((args, c[2].returncode, c[4]))
+            continue
+        if moving:
+            log = Path(c[3].splitlines()[0].split('; log ')[1])
+            wait_for(log, 'herdr-hub: moved 42: generation 9 live')
+            bindir = c[1] / '.local/bin'
+            assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
+                    '--lane','other','--session','sess-hub','--']
+            assert shlex.split((c[0] / 'typed').read_text()) == [str(bindir / 'herdr-hub'),'42','--lane','other']
+        else:
+            success(c, new=args[0] == '--new', model='example-hub-model')
+    assert not refused, refused
 
     c = run('move refuses without a handover since adopt', args=('move','42'))
     expect(c, 1)
