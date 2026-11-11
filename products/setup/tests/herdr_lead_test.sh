@@ -246,6 +246,17 @@ has() { grep -F -- "$2" "$case_dir/$1" >/dev/null || fail "$1 missing $2: $(cat 
 lacks() { if grep -F -- "$2" "$case_dir/$1" >/dev/null; then fail "$1 unexpectedly contains $2"; fi; }
 start() { run start 42 wA:p1 --worktree "$work" "$@"; }
 
+for command in start move; do
+    new_case "$command refuses a hub-only lane before any calls or state"
+    mkdir -p "$home/.config/herdr-fleet"
+    printf '%s\n' '{"hub-only":{"kind":"claude","model":"example-hub","effort":"high","prefixes":["hub"]}}' >"$home/.config/herdr-fleet/lanes.json"
+    run "$command" 42 wA:p1 --worktree "$work" --lane hub-only
+    expect_rc 2
+    has err 'lead lane must allow orch prefix'
+    [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+    [ ! -e "$home/.local/state" ] || fail 'created state'
+done
+
 new_case 'unsupported lane has no calls or state'
 start --jobs --lane sol-high
 expect_rc 2

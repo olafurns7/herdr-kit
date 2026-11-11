@@ -59,6 +59,8 @@ The hub registers one long-lived root per repository once, with its location fla
 
 ### Owner hub in its current pane
 
+`herdr-hub` start and move may use a `hub` lane, such as `fable-high`; leads use `orch` lanes.
+
 To restart a running hub onto a new session, the hub records its handover and then runs, in its own pane:
 
 ```bash
