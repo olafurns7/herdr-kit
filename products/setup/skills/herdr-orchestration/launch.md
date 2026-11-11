@@ -25,14 +25,31 @@ lowercase short hostname. The final line adds `machine=LABEL`.
 For manual recovery, add `--machine LABEL` to every Herdr command below.
 
 `herdr-launch --account NAME` selects a Codator account for a Claude or Codex
-lane and requires Codator on the target. Without the flag, `claude-fable-*`
-models pick the account with the most Fable quota left from the target's
-`~/.local/share/codator/claude/*/.claude-usage.json` snapshots (lowest name on
-a tie). Only usable, readable snapshots modified within 30 minutes with
-positive Fable quota left qualify; malformed snapshots are skipped. If none
-qualify, account selection follows the usual default. The final line reports
-`account=NAME` or `account=default`; selection reads no credentials and runs
-no Codator commands.
+lane and requires Codator on the target. Names must be 1–48 ASCII letters,
+digits, underscores or hyphens, starting with a letter or digit. Without the
+flag, every Claude lane selects from the target's
+`~/.local/share/codator/claude/*/.claude-usage.json` snapshots. Usable, readable
+snapshots modified within 30 minutes qualify when every applicable limit has
+at least 3% left: the overall week, five-hour limit when present, Fable for
+Fable lanes, and the Opus or Sonnet weekly limit when present for that model.
+A valid overall weekly reset time is required. Accounts resetting within
+24 hours go first (soonest reset, then lowest name); otherwise the latest
+weekly reset wins (then lowest name). Invalid snapshots and account names
+are skipped. No eligible account leaves selection to Codator. The final line
+reports `account=NAME drain=soon` or `account=NAME drain=latest` for an automatic
+pick, `account=default` for fallback, and `account=NAME` for an explicit choice.
+Selection reads no credentials, stores no state, and runs no Codator commands.
+
+`herdr-launch --quota` reads local snapshots without a pane, agent or taskr
+call; `--machine` is refused because reading the target would need a pane.
+It prints `account=NAME week_used=N fable_used=N|- reset=ISO role=ROLE` per
+validly named snapshot account. Roles are `soon` for a chosen imminent reset,
+`drain` for the chosen latest reset, `next` for other eligible Opus accounts,
+`out` for accounts below the margin, and `stale` for skipped snapshots.
+Unavailable values print `-`. It adds `alert account=NAME used=N` when the
+drain account is at least 97% used; it sends no alert itself.
+A lead living on a drained account stops until the owner resets it.
+It is unknown whether the reset restores the Fable limit.
 
 ## Workspaces and tabs
 

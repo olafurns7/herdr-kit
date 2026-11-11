@@ -8,6 +8,7 @@
 #        herdr-launch --reserved TASK LAUNCH LANE NAME BRIEF REPORT PARENT PANE
 #        herdr-launch --lanes
 #        herdr-launch [--push] --check [LANE...]
+#        herdr-launch --quota (local snapshots only)
 # Without PANE the tab goes to W (default: the caller's workspace) with cwd
 # DIR (default: pwd -P). A given PANE may be in any workspace; its workspace,
 # tab, and cwd come from herdr pane get. A pane cwd containing , { } " or \
@@ -29,7 +30,7 @@
 # line adds work_brief=<path>. Not with --reserved.
 set -u
 
-usage='usage: herdr-launch --lanes | herdr-launch [--push] --check [LANE...] | herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
+usage='usage: herdr-launch --lanes | herdr-launch --quota | herdr-launch [--push] --check [LANE...] | herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
 
 herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 2
 . "$herdr_bin_dir/herdr-lanes.sh"
@@ -165,7 +166,85 @@ check_lanes() {
     return "$check_status"
 }
 
-workspace= cwd= push= reserved_task= reserved_launch= work_id= machine= machine_host= check= account=
+# One reader serves local picks, the existing target-pane probe, and --quota.
+# It reads usage snapshots only and never invokes Codator or reads credentials.
+account_script() {
+    cat <<'PY'
+import datetime, json, math, pathlib, re, sys, time
+
+model, mode = sys.argv[1:3]
+now = time.time()
+records = []
+
+def utilization(limit):
+    used = limit["utilization"]
+    if isinstance(used, bool) or not isinstance(used, (int, float)) or not math.isfinite(used):
+        raise ValueError("invalid utilization")
+    return used
+
+def reset_time(limit):
+    reset = datetime.datetime.fromisoformat(limit["resets_at"].replace("Z", "+00:00"))
+    if reset.tzinfo is None:
+        raise ValueError("reset needs a timezone")
+    return reset
+
+for path in sorted((pathlib.Path.home() / ".local/share/codator/claude").glob("*/.claude-usage.json")):
+    name = path.parent.name
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,47}", name) is None:
+        continue
+    record = dict(name=name, week=None, fable=None, reset="-", role="stale")
+    records.append(record)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        limits = data["snapshot"]["rate_limits"]
+        record["week"] = utilization(limits["seven_day"])
+        reset = reset_time(limits["seven_day"])
+        record["reset"] = reset.isoformat().replace("+00:00", "Z")
+        record["stamp"] = reset.timestamp()
+        try:
+            row = next(row for row in limits.get("model_scoped", []) if row["display_name"] == "Fable")
+            record["fable"] = utilization(row)
+        except (KeyError, TypeError, ValueError, OverflowError, StopIteration):
+            pass
+        if now - path.stat().st_mtime > 1800 or data["outcome"] != "usable":
+            continue
+        applicable = [record["week"]]
+        for key in ("five_hour", "seven_day_opus" if model.startswith("claude-opus-") else
+                    "seven_day_sonnet" if model.startswith("claude-sonnet-") else ""):
+            if key and limits.get(key) is not None:
+                applicable.append(utilization(limits[key]))
+        if model.startswith("claude-fable-"):
+            if record["fable"] is None:
+                continue
+            applicable.append(record["fable"])
+        record["role"] = "next" if all(100 - used >= 3 for used in applicable) else "out"
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError):
+        continue
+
+eligible = [record for record in records if record["role"] == "next"]
+soon = [record for record in eligible if 0 <= record["stamp"] - now <= 24 * 3600]
+pick = None
+if soon:
+    pick = min(soon, key=lambda record: (record["stamp"], record["name"]))
+    pick["role"] = "soon"
+elif eligible:
+    pick = min(eligible, key=lambda record: (-record["stamp"], record["name"]))
+    pick["role"] = "drain"
+
+if mode == "quota":
+    def display(value):
+        return "-" if value is None else str(value)
+    for record in records:
+        print("account={} week_used={} fable_used={} reset={} role={}".format(
+            record["name"], display(record["week"]), display(record["fable"]), record["reset"], record["role"]))
+    if pick and pick["role"] == "drain" and pick["week"] >= 97:
+        print("alert account={} used={}".format(pick["name"], display(pick["week"])))
+else:
+    print(json.dumps({"account": pick["name"], "drain": "soon" if soon else "latest"} if pick else {}))
+PY
+}
+
+workspace= cwd= push= reserved_task= reserved_launch= work_id= machine= machine_host= check= account= quota= drain=
 while :; do
     case ${1-} in
         --lanes)
@@ -185,8 +264,16 @@ while :; do
             ;;
         --account)
             [ -n "${2-}" ] || die '--account needs NAME'
+            case $2 in
+                [!A-Za-z0-9]* | *[!A-Za-z0-9_-]*) die '--account needs one valid name (1-48 ASCII letters, digits, _ or -; first alphanumeric)' ;;
+            esac
+            [ "${#2}" -le 48 ] || die '--account needs one valid name (maximum 48 characters)'
             account=$2
             shift 2
+            ;;
+        --quota)
+            quota=1
+            shift
             ;;
         --workspace)
             [ -n "${2-}" ] || die "--workspace needs a workspace id; $usage"
@@ -221,11 +308,19 @@ while :; do
         *) break ;;
     esac
 done
+if [ -n "$quota" ]; then
+    [ -z "$machine" ] || die '--quota supports local snapshots only; --machine would require a pane'
+    [ $# -eq 0 ] && [ -z "$account$workspace$cwd$push$reserved_task$work_id$check" ] || die '--quota does not combine with launch or check options'
+    account_python=$(account_script)
+    python3 -c "$account_python" claude-opus-5-5 quota || die '--quota could not read snapshots with python3'
+    exit 0
+fi
 if [ -n "$check" ]; then
     [ -z "$account" ] || die '--account does not combine with --check'
     [ -z "$machine" ] || die '--machine does not combine with --check'
     for checked_arg do
         [ "$checked_arg" != --machine ] || die '--machine does not combine with --check'
+        [ "$checked_arg" != --quota ] || die '--quota does not combine with --check'
     done
 fi
 if [ -n "$machine" ]; then
@@ -534,53 +629,24 @@ else
     fi
 fi
 
-# The same picker runs locally or inside the existing target probe. It reads
-# only usage snapshots, never credentials or Codator commands. Missing Python
-# or unusable snapshots leave account choice to the ordinary Codator wrapper.
-fable_pick=
-case $model in
-    claude-fable-*)
-        if [ -z "$account" ]; then
-            fable_python=$(cat <<'PY'
-import json, math, pathlib, time
-now = time.time()
-candidates = []
-for path in (pathlib.Path.home() / ".local/share/codator/claude").glob("*/.claude-usage.json"):
-    try:
-        if now - path.stat().st_mtime > 1800:
-            continue
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if data["outcome"] != "usable":
-            continue
-        rows = data["snapshot"]["rate_limits"]["model_scoped"]
-        row = next(row for row in rows if row["display_name"] == "Fable")
-        used = row["utilization"]
-        if isinstance(used, bool) or not isinstance(used, (int, float)) or not math.isfinite(used):
-            continue
-        left = 100 - used
-        if left > 0:
-            candidates.append((-left, path.parent.name))
-    except (OSError, ValueError, KeyError, TypeError, OverflowError, StopIteration):
-        continue
-print(json.dumps(min(candidates)[1] if candidates else ""))
-PY
-            )
-            # Keep the pane command on one line; exec decodes the Python
-            # string literal without exposing its newlines to the shell.
-            fable_pick=$(jq -nr --arg script "$fable_python" \
-                '"python3 -c " + (("exec(" + ($script | tojson) + ")") | @sh)') \
-                || step_fail '1 (quote Fable picker)'
-        fi
-        ;;
-esac
+# Missing Python or unusable snapshots leave account choice to Codator.
+account_pick=
+if [ "$kind" = claude ] && [ -z "$account" ]; then
+    account_python=$(account_script)
+    # Keep the pane command on one line; exec decodes the Python string
+    # literal without exposing its newlines to the interactive shell.
+    account_pick=$(jq -nr --arg script "$account_python" --arg model "$model" \
+        '"python3 -c " + (("exec(" + ($script | tojson) + ")") | @sh) + " " + ($model | @sh) + " pick"') \
+        || step_fail '1 (quote account picker)'
+fi
 
 # Probe target facts once, before registration; the command echo cannot match
 # the marker lines because printf expands the marker variable only on output.
 if [ -n "$machine" ]; then
     probe_marker=herdr-launch-probe-$$-$(date +%s)
     probe_cwd=$(jq -nr --arg cwd "$cwd" '$cwd | @sh') || step_fail '1 (quote target cwd)'
-    probe=" probe_marker=$probe_marker; probe_cwd=0; test -d $probe_cwd && probe_cwd=1; probe_common=\$(git -C $probe_cwd rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || probe_common=; probe_cli=\$(command -v $kind) || probe_cli=; probe_codator=0; test ! -x \"\$HOME/.local/bin/codator\" || probe_codator=1; probe_account='\"\"';"
-    [ -z "$fable_pick" ] || probe="$probe if [ \"\$probe_codator\" = 1 ]; then probe_account=\$($fable_pick 2>/dev/null) || probe_account='\"\"'; fi;"
+    probe=" probe_marker=$probe_marker; probe_cwd=0; test -d $probe_cwd && probe_cwd=1; probe_common=\$(git -C $probe_cwd rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || probe_common=; probe_cli=\$(command -v $kind) || probe_cli=; probe_codator=0; test ! -x \"\$HOME/.local/bin/codator\" || probe_codator=1; probe_account='{}';"
+    [ -z "$account_pick" ] || probe="$probe if [ \"\$probe_codator\" = 1 ]; then probe_account=\$($account_pick 2>/dev/null) || probe_account='{}'; fi;"
     probe="$probe printf '\\n'; printf '%s\\n' \"\$probe_marker\" \"\$probe_cwd\" \"\$probe_common\" \"\$probe_cli\" \"\$probe_codator\" \"\$probe_account\" \"\$probe_marker-end\""
     herdr pane run "$pane" "$probe" >/dev/null || step_fail '1 (target probe run)'
     herdr pane wait-output "$pane" --match "$probe_marker-end" --timeout 15000 >/dev/null \
@@ -594,17 +660,22 @@ if [ -n "$machine" ]; then
         $0 == marker "-end" { inside=0 }' | jq -Rs --arg marker "$probe_marker" 'split("\n") | .[:-1] |
         select(length == 7 and .[0] == $marker and .[6] == ($marker + "-end")) | .[1:6] |
         select(.[0] == "1" and (.[2] | length > 0) and (.[3] == "0" or .[3] == "1")) |
-        .[4] |= (fromjson | strings)') \
+        .[4] |= (fromjson | objects)') \
         || step_fail '1 (target probe unreadable)'
     [ -n "$facts" ] || step_fail '1 (target cwd or CLI missing, or probe unreadable)'
     common=$(printf '%s\n' "$facts" | jq -r '.[1]')
     codator=$(printf '%s\n' "$facts" | jq -r '.[3]')
-    [ -z "$fable_pick" ] || account=$(printf '%s\n' "$facts" | jq -r '.[4]')
+    if [ -n "$account_pick" ]; then
+        account=$(printf '%s\n' "$facts" | jq -r '.[4].account // ""')
+        drain=$(printf '%s\n' "$facts" | jq -r '.[4].drain // ""')
+    fi
 else
     codator=0
     [ ! -x "$HOME/.local/bin/codator" ] || codator=1
-    if [ "$codator" = 1 ] && [ -n "$fable_pick" ]; then
-        account=$(sh -c "$fable_pick" 2>/dev/null | jq -r 'strings') || account=
+    if [ "$codator" = 1 ] && [ -n "$account_pick" ]; then
+        picked=$(sh -c "$account_pick" 2>/dev/null) || picked='{}'
+        account=$(printf '%s\n' "$picked" | jq -r '.account // ""') || account=
+        drain=$(printf '%s\n' "$picked" | jq -r '.drain // ""') || drain=
     fi
 fi
 [ -z "$account" ] || [ "$codator" = 1 ] || die '--account requires Codator on the target'
@@ -813,5 +884,5 @@ if [ -n "$push" ] && [ "$kind" = codex ]; then
 fi
 [ -z "$mcp_config" ] || extra=" mcp_config=$mcp_config"
 
-printf 'task=%s launch=%s tab=%s pane=%s%s%s%s%s account=%s\n' "$task" "$launch" "$tab" "$pane" "$extra" \
-    "${work_brief:+ work_brief=$work_brief}" "$submit_retry" "${machine:+ machine=$machine}" "${account:-default}"
+printf 'task=%s launch=%s tab=%s pane=%s%s%s%s%s account=%s%s\n' "$task" "$launch" "$tab" "$pane" "$extra" \
+    "${work_brief:+ work_brief=$work_brief}" "$submit_retry" "${machine:+ machine=$machine}" "${account:-default}" "${drain:+ drain=$drain}"

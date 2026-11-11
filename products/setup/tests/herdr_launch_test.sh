@@ -61,7 +61,7 @@ case "$1 $2" in
             fi
             marker=${4#' probe_marker='}; marker=${marker%%;*}
             printf '%s\n' "$marker" "${STUB_CWD_OK:-1}" "${STUB_COMMON:-/target/main/.git}" \
-                "${STUB_CLI-/target/bin/codex}" "${STUB_CODATOR:-0}" '""' "$marker-end" >"$STUB_CALLS.probe"
+                "${STUB_CLI-/target/bin/codex}" "${STUB_CODATOR:-0}" '{}' "$marker-end" >"$STUB_CALLS.probe"
             ;;
         esac
         case $3 in *:p8) [ "${STUB_PUSH_FAIL:-}" != run ] || exit 1 ;; esac
@@ -280,15 +280,27 @@ account_codator() {
     chmod 0755 "$1/.local/bin/codator"
 }
 usage_fixture() {
-    python3 - "$1" "$2" "$3" "${4:-usable}" "${5:-0}" <<'PY'
-import json, os, pathlib, sys, time
+    python3 - "$1" "$2" "$3" "${4:-usable}" "${5:-0}" "${6:-72}" <<'PY'
+import datetime, json, os, pathlib, sys, time
 path = pathlib.Path(sys.argv[1]) / '.local/share/codator/claude' / sys.argv[2] / '.claude-usage.json'
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps({'outcome': sys.argv[4], 'snapshot': {'rate_limits': {
+    'seven_day': {'utilization': 20, 'resets_at': (datetime.datetime.now(datetime.timezone.utc)
+        + datetime.timedelta(hours=float(sys.argv[6]))).isoformat()},
     'model_scoped': [{'display_name': 'Fable', 'utilization': json.loads(sys.argv[3])}]}}}))
 os.chmod(path, 0o600)
 mtime = time.time() - int(sys.argv[5])
 os.utime(path, (mtime, mtime))
+PY
+}
+# Replace individual limits without changing the rest of a synthetic snapshot.
+usage_limits() {
+    python3 - "$home/.local/share/codator/claude/$1/.claude-usage.json" "$2" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text())
+data['snapshot']['rate_limits'].update(json.loads(sys.argv[2]))
+path.write_text(json.dumps(data))
 PY
 }
 expect_account_start() {
@@ -301,11 +313,20 @@ expect_account_start() {
 for account_lane in opus-medium sol-high; do
     new_case "explicit account is passed first for $account_lane"
     account_codator "$home"
-    run_launch sh "$launch_sh" --account 'review seat' "$account_lane" impl-cart "$brief" "$report" 42
+    run_launch sh "$launch_sh" --account 'review-seat' "$account_lane" impl-cart "$brief" "$report" 42
     expect_rc 0
     native_flag=--model
     [ "$account_lane" != sol-high ] || native_flag=-m
-    expect_account_start 'review seat' "$native_flag"
+    expect_account_start 'review-seat' "$native_flag"
+    case $out in *' drain='*) fail 'explicit account reported a drain pick' ;; esac
+done
+for invalid_account in 'review seat' '-seat' '_seat' 'a.b' 'éclair' 'seat/name' \
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$(printf 'seat\nline')"; do
+    new_case 'invalid explicit account is refused before any calls'
+    run_launch sh "$launch_sh" --account "$invalid_account" opus-medium impl-cart "$brief" "$report" 42
+    expect_rc 2
+    expect_err '--account needs one valid name'
+    expect_no_calls
 done
 for account_arg in empty missing; do
     new_case "--account rejects $account_arg value"
@@ -322,14 +343,17 @@ expect_rc 2
 expect_err '--account requires Codator on the target'
 ! grep -q '^taskr|' "$case_dir/calls" || fail 'registered without target Codator'
 
-new_case 'Fable chooses most quota left and lowest name on a tie' reviewer
+new_case 'Fable chooses latest reset with lowest name on a tie' reviewer
 account_codator "$home"
 usage_fixture "$home" z-seat 10
 usage_fixture "$home" a-seat 10
-usage_fixture "$home" less-left 60
+# Copy the exact reset so this tests the name tie rather than clock drift.
+cp "$home/.local/share/codator/claude/z-seat/.claude-usage.json" "$home/.local/share/codator/claude/a-seat/.claude-usage.json"
+usage_fixture "$home" less-left 60 usable 0 48
 run_launch sh "$launch_sh" fable-high rev-cart "$brief" "$report" 42
 expect_rc 0
 expect_account_start a-seat --model
+case $out in *' drain=latest') ;; *) fail 'latest reason missing' ;; esac
 
 new_case 'Fable skips exhausted, stale, unusable, unreadable and malformed usage' reviewer
 account_codator "$home"
@@ -377,13 +401,144 @@ run_launch sh "$launch_sh" --account manual fable-high rev-cart "$brief" "$repor
 expect_rc 0
 expect_account_start manual --model
 
-new_case 'non-Fable model keeps default account despite Fable quota'
+new_case 'Opus picks independently of exhausted Fable quota'
 account_codator "$home"
-usage_fixture "$home" automatic 0
+usage_fixture "$home" automatic 100
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
+expect_account_start automatic --model
+case $out in *' drain=latest') ;; *) fail 'latest reason missing' ;; esac
+
+# The common weekly/five-hour margin applies to every Claude lane. Model
+# limits apply only to their own lanes, and exactly 3% left is eligible.
+for limit_case in week five-hour opus sonnet fable fable-week fable-five-hour missing-week missing-reset bad-reset \
+    bad-week boolean-week bad-five-hour missing-fable; do
+    new_case "drain skips an ineligible account: $limit_case" reviewer
+    account_codator "$home"
+    usage_fixture "$home" fallback 0 usable 0 48
+    usage_fixture "$home" latest 0 usable 0 96
+    drain_lane=opus-medium
+    case $limit_case in
+        week) usage_limits latest '{"seven_day":{"utilization":97.01,"resets_at":"2099-01-01T00:00:00Z"}}' ;;
+        five-hour) usage_limits latest '{"five_hour":{"utilization":98}}' ;;
+        opus) usage_limits latest '{"seven_day_opus":{"utilization":98}}' ;;
+        sonnet)
+            mkdir -p "$home/.config/herdr-fleet"
+            printf '%s\n' '{"sonnet-test":{"kind":"claude","model":"claude-sonnet-5-5","effort":"high","prefixes":["rev"]}}' >"$home/.config/herdr-fleet/lanes.json"
+            drain_lane=sonnet-test
+            usage_limits latest '{"seven_day_sonnet":{"utilization":98}}' ;;
+        fable) drain_lane=fable-high; usage_limits latest '{"model_scoped":[{"display_name":"Fable","utilization":98}]}' ;;
+        fable-week) drain_lane=fable-high; usage_limits latest '{"seven_day":{"utilization":98,"resets_at":"2099-01-01T00:00:00Z"}}' ;;
+        fable-five-hour) drain_lane=fable-high; usage_limits latest '{"five_hour":{"utilization":98}}' ;;
+        missing-week) usage_limits latest '{"seven_day":null}' ;;
+        missing-reset) usage_limits latest '{"seven_day":{"utilization":0}}' ;;
+        bad-reset) usage_limits latest '{"seven_day":{"utilization":0,"resets_at":"bad"}}' ;;
+        bad-week) usage_limits latest '{"seven_day":{"utilization":"0","resets_at":"2099-01-01T00:00:00Z"}}' ;;
+        boolean-week) usage_limits latest '{"seven_day":{"utilization":false,"resets_at":"2099-01-01T00:00:00Z"}}' ;;
+        bad-five-hour) usage_limits latest '{"five_hour":{"utilization":"0"}}' ;;
+        missing-fable) drain_lane=fable-high; usage_limits latest '{"model_scoped":[]}' ;;
+    esac
+    run_launch sh "$launch_sh" "$drain_lane" rev-cart "$brief" "$report" 42
+    expect_rc 0
+    expect_account_start fallback --model
+done
+
+new_case 'exact 3 percent margin and optional null limits qualify' reviewer
+account_codator "$home"
+usage_fixture "$home" margin 97
+usage_limits margin '{"seven_day":{"utilization":97,"resets_at":"2099-01-01T00:00:00Z"},"five_hour":{"utilization":97},"seven_day_opus":null,"seven_day_sonnet":null}'
+run_launch sh "$launch_sh" fable-high rev-cart "$brief" "$report" 42
+expect_rc 0
+expect_account_start margin --model
+
+new_case 'Opus ignores Sonnet limits and null five-hour limits'
+account_codator "$home"
+usage_fixture "$home" seat 100
+usage_limits seat '{"five_hour":null,"seven_day_opus":null,"seven_day_sonnet":{"utilization":100}}'
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_account_start seat --model
+
+new_case 'soonest reset wins before latest reset and ties use lowest name'
+account_codator "$home"
+usage_fixture "$home" latest 0 usable 0 120
+usage_fixture "$home" later-soon 0 usable 0 20
+usage_fixture "$home" z-soon 0 usable 0 2
+usage_fixture "$home" a-soon 0 usable 0 2
+cp "$home/.local/share/codator/claude/z-soon/.claude-usage.json" "$home/.local/share/codator/claude/a-soon/.claude-usage.json"
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_account_start a-soon --model
+case $out in *' drain=soon') ;; *) fail 'soon reason missing' ;; esac
+
+new_case 'invalid snapshot account labels are skipped'
+account_codator "$home"
+usage_fixture "$home" valid 0 usable 0 48
+for bad_label in 'bad name' '_bad' 'éclair' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do
+    usage_fixture "$home" "$bad_label" 0 usable 0 120
+done
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_account_start valid --model
+
+new_case 'Codex retains default despite Claude usage'
+account_codator "$home"
+usage_fixture "$home" claude-seat 0
+run_launch sh "$launch_sh" sol-high impl-cart "$brief" "$report" 42
+expect_rc 0
 expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
-! grep -q '|--account|' "$case_dir/calls" || fail 'picked for non-Fable model'
+! grep -q '|--account|' "$case_dir/calls" || fail 'picked a Claude account for Codex'
+
+new_case 'quota is read only and reports drain next out stale and alert'
+usage_fixture "$home" drain-seat 10
+usage_limits drain-seat '{"seven_day":{"utilization":97,"resets_at":"2099-01-01T00:00:00Z"}}'
+usage_fixture "$home" next-seat 100
+usage_limits next-seat '{"seven_day":{"utilization":20,"resets_at":"2098-01-01T00:00:00Z"}}'
+usage_fixture "$home" out-seat 0
+usage_limits out-seat '{"seven_day":{"utilization":98,"resets_at":"2099-01-01T00:00:00Z"}}'
+usage_fixture "$home" stale-seat 0 usable 1900
+usage_limits stale-seat '{"seven_day":{"utilization":30,"resets_at":"2099-01-01T00:00:00Z"}}'
+# Restore the stale mtime after updating limits.
+python3 - "$home/.local/share/codator/claude/stale-seat/.claude-usage.json" <<'PY'
+import os, sys, time
+stamp = time.time() - 1900
+os.utime(sys.argv[1], (stamp, stamp))
+PY
+usage_fixture "$home" broken 0
+printf '%s\n' '{broken' >"$home/.local/share/codator/claude/broken/.claude-usage.json"
+run_launch sh "$launch_sh" --quota
+expect_rc 0
+expect_out 'account=broken week_used=- fable_used=- reset=- role=stale
+account=drain-seat week_used=97 fable_used=10 reset=2099-01-01T00:00:00Z role=drain
+account=next-seat week_used=20 fable_used=100 reset=2098-01-01T00:00:00Z role=next
+account=out-seat week_used=98 fable_used=0 reset=2099-01-01T00:00:00Z role=out
+account=stale-seat week_used=30 fable_used=0 reset=2099-01-01T00:00:00Z role=stale
+alert account=drain-seat used=97'
+expect_no_calls
+
+new_case 'quota labels the soon pick and makes no drain alert'
+usage_fixture "$home" soon 0 usable 0 2
+usage_fixture "$home" later 0 usable 0 96
+run_launch sh "$launch_sh" --quota
+expect_rc 0
+printf '%s\n' "$out" | grep -q '^account=soon .* role=soon$' || fail 'soon role missing'
+printf '%s\n' "$out" | grep -q '^account=later .* role=next$' || fail 'next role missing'
+case $out in *'alert '*) fail 'soon pick made a drain alert' ;; esac
+expect_no_calls
+
+new_case 'quota with no snapshots succeeds without output'
+run_launch sh "$launch_sh" --quota
+expect_rc 0
+expect_out ''
+expect_no_calls
+for quota_flags in '--quota --machine devbox' '--machine devbox --quota' \
+    '--quota --account seat' '--quota --push' '--quota --check' '--check --quota' \
+    '--quota opus-medium' '--quota --workspace wA' '--quota --work 1' '--quota --reserved 2 3'; do
+    new_case "quota refuses launch or remote options: $quota_flags"
+    run_launch sh "$launch_sh" $quota_flags
+    expect_rc 2
+    expect_no_calls
+done
 
 # Discovery is the only local Herdr read; every control call must be forwarded.
 expect_machine_calls() {
@@ -437,7 +592,8 @@ for remote_kind in claude codex; do
     sed -n '6p' "$case_dir/probe-output" | grep -qx 1 || fail 'probe executable Codator fact missing'
 done
 
-new_case 'remote Fable selection reads target usage in the single existing probe' reviewer
+for remote_lane in fable-high opus-high; do
+new_case "remote $remote_lane selection reads target usage in the single existing probe" reviewer
 account_codator "$home"
 usage_fixture "$home" caller-only 0
 STUB_TARGET_HOME=$case_dir/target/home
@@ -446,13 +602,30 @@ mkdir -p "$STUB_TARGET_BIN"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$STUB_TARGET_BIN/claude"
 chmod 0755 "$STUB_TARGET_BIN/claude"
 account_codator "$STUB_TARGET_HOME"
-usage_fixture "$STUB_TARGET_HOME" target-less 80
-usage_fixture "$STUB_TARGET_HOME" target-best 30
-run_launch sh "$launch_sh" --machine devbox --workspace wT --cwd "$work" fable-high rev-cart "$brief" "$report" 42
+usage_fixture "$STUB_TARGET_HOME" target-less 10 usable 0 48
+usage_fixture "$STUB_TARGET_HOME" target-best 30 usable 0 96
+run_launch sh "$launch_sh" --machine devbox --workspace wT --cwd "$work" "$remote_lane" rev-cart "$brief" "$report" 42
 expect_rc 0
 expect_account_start target-best --model
 expect_machine_calls
 ! grep -q '|--account|caller-only|' "$case_dir/calls" || fail 'used caller usage'
+case $out in *' drain=latest') ;; *) fail 'remote latest reason missing' ;; esac
+done
+
+new_case 'remote unavailable Python falls back to Codator' reviewer
+STUB_TARGET_HOME=$case_dir/target/home
+STUB_TARGET_BIN=$case_dir/target/bin
+mkdir -p "$STUB_TARGET_BIN"
+printf '%s\n' '#!/bin/sh' 'exit 0' >"$STUB_TARGET_BIN/claude"
+printf '%s\n' '#!/bin/sh' 'exit 127' >"$STUB_TARGET_BIN/python3"
+chmod 0755 "$STUB_TARGET_BIN/claude" "$STUB_TARGET_BIN/python3"
+account_codator "$STUB_TARGET_HOME"
+usage_fixture "$STUB_TARGET_HOME" eligible 0
+run_launch sh "$launch_sh" --machine devbox --workspace wT --cwd "$work" fable-high rev-cart "$brief" "$report" 42
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wT:t7 pane=wT:p7 machine=devbox account=default'
+expect_machine_calls
+! grep -q '|--account|' "$case_dir/calls" || fail 'missing Python supplied an account'
 
 for target_codator in 0 1; do
     new_case "remote explicit account uses target Codator fact: $target_codator"
