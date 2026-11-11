@@ -469,9 +469,17 @@ pub(crate) fn ask_lines(app: &App, a: &Need, on: bool, width: usize) -> Vec<Line
     let (t, g) = (&app.theme, &app.data.glance);
     let body = width.saturating_sub(1);
     let tags = usize::from(a.blocking) * 9 + usize::from(a.dialog) * 4;
+    // Keep four campaign columns before the remote host takes its share.
+    let campaign_floor = 4;
     let right = vec![
         Span::raw(" "),
-        place(t, g, &a.host, &a.pane_id, body.saturating_sub(4 + tags + 5)),
+        place(
+            t,
+            g,
+            &a.host,
+            &a.pane_id,
+            body.saturating_sub(4 + tags + 5 + campaign_floor),
+        ),
         sp(format!("{:>4}", age(a.age_ms)), t.sub),
     ];
     // Campaign padding yields to the tags and the actual remote host/age width.
@@ -2503,20 +2511,17 @@ pub(crate) fn draw_detail(f: &mut Frame, app: &App) {
                 .iter()
                 .position(|r| std::mem::discriminant(r) == std::mem::discriminant(id))
                 .unwrap_or(app.row);
-            let (title, mut lines) = detail_lines(app, width).unwrap_or_default();
-            lines.insert(
-                0,
-                Line::from(sp(
-                    format!(
-                        "from {} · {} · row {}",
-                        target.from.name(),
-                        card(id),
-                        app.row - first + 1
-                    ),
-                    t.dim,
-                )),
+            let (title, lines) = detail_lines(app, width).unwrap_or_default();
+            let mut provenance = wrap_facts(
+                vec![
+                    vec![sp(format!("from {} · ", target.from.name()), t.dim)],
+                    vec![sp(format!("{} · ", card(id)), t.dim)],
+                    vec![sp(format!("row {}", app.row - first + 1), t.dim)],
+                ],
+                width,
             );
-            (title, lines)
+            provenance.extend(lines);
+            (title, provenance)
         }
     };
     let lines = fold(app, lines, width);
@@ -2538,6 +2543,20 @@ pub(crate) fn draw_detail(f: &mut Frame, app: &App) {
         Paragraph::new(lines.into_iter().skip(first).take(h).collect::<Vec<_>>()),
         inner,
     );
+}
+
+/// Wrap whole facts, keeping each separator with the fact before it.
+fn wrap_facts(facts: Vec<Vec<Span<'static>>>, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![];
+    let mut line = Line::default();
+    for spans in facts {
+        if !line.spans.is_empty() && line.width() + ui::width(&spans) > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        line.spans.extend(spans);
+    }
+    lines.push(line);
+    lines
 }
 
 /// The selected row's item in full: an ask's full text and options, what a "to check" row
@@ -2570,16 +2589,7 @@ fn detail_lines(app: &App, width: usize) -> Option<(String, Vec<Line<'static>>)>
                 ],
                 vec![at(&a.host, &a.pane_id)],
             ];
-            // Wrap whole facts, keeping each separator with the fact before it.
-            let mut lines = vec![];
-            let mut line = Line::default();
-            for spans in head {
-                if !line.spans.is_empty() && line.width() + ui::width(&spans) > width {
-                    lines.push(std::mem::take(&mut line));
-                }
-                line.spans.extend(spans);
-            }
-            lines.push(line);
+            let lines = wrap_facts(head, width);
             // A structured ask's options are listed under its text, so the text drops them.
             let text = if a.question.is_some() {
                 ask::parse(a).context

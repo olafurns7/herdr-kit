@@ -226,6 +226,8 @@ cargo run -p taskr-tui --example frames -- frames   # text and ANSI frames
 python3 crates/taskr-tui/tools/png.py frames        # PNGs (needs Pillow and DejaVu Sans Mono)
 ```
 
+Repaint PNG frames and `frames/sheet.png`, and remove the orphan `frames/glance-120x40-detail.png`.
+
 The four README images are the 120x40 glance and campaign frames, dark and
 light, reduced to a 256-color palette to keep them small:
 

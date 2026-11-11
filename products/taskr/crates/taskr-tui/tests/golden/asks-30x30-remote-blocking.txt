@@ -1,6 +1,6 @@
  taskr          ● 2 need you
   D  [A 2]  F 11   I
-▌? ◇  BLOCKING HUB rem… ↗  41s
+▌? ◇ tui… BLOCKING HUB  ↗  41s
  ask ios-widgets WIDGET BATCH…
 
 
