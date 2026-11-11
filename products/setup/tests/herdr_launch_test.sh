@@ -385,10 +385,11 @@ if [ -r "$usage_dir/unreadable/.claude-usage.json" ]; then
 else expect_account_start valid --model; fi
 chmod 600 "$usage_dir/unreadable/.claude-usage.json"
 
-for fallback in empty exhausted; do
+for fallback in empty exhausted below-margin; do
     new_case "Fable falls back without an account: $fallback" reviewer
     account_codator "$home"
     [ "$fallback" != exhausted ] || usage_fixture "$home" seat 100
+    [ "$fallback" != below-margin ] || usage_fixture "$home" seat 98
     run_launch sh "$launch_sh" fable-high rev-cart "$brief" "$report" 42
     expect_rc 0
     expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
@@ -415,7 +416,7 @@ for limit_case in week five-hour opus sonnet fable fable-week fable-five-hour mi
     bad-week boolean-week bad-five-hour missing-fable; do
     new_case "drain skips an ineligible account: $limit_case" reviewer
     account_codator "$home"
-    usage_fixture "$home" fallback 0 usable 0 48
+    usage_fixture "$home" fallback 40 usable 0 48
     usage_fixture "$home" latest 0 usable 0 96
     drain_lane=opus-medium
     case $limit_case in
