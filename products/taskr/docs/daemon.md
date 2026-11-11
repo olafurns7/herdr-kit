@@ -107,7 +107,7 @@ merged or closed, it is marked done with `merged owner/repo#N SHA`, once, using
 the same never-run backlog rules as `work done` and writing no acceptance receipt.
 
 - **Read-only, through `gh`.** Every 60 seconds one batched `gh api graphql`
-  query (as the hub user, so taskr never holds a token) reads at most 30 linked
+  query (as the hub user, so taskr never holds a token) reads at most 30 watched
   PRs, rotating through the rest; past 20 PRs the interval stretches to 60 s
   per 20. `gh` runs in a worker thread with a 20-second deadline; the result is
   applied in one short ledger transaction, never across the network call.
@@ -118,6 +118,8 @@ the same never-run backlog rules as `work done` and writing no acceptance receip
   the cached state, with no query and no event.
 - **Events:** kind `pr` (compact code `pu`), on change only, to the linked
   task's lead (a linked root gets its own); a closed lead's inbox is skipped.
+  The poller also reads PRs targeted only by an `after pr:` subscription;
+  each transition writes one `pr` event on a waiter root with no recipient.
   Subs: `checks_green`, `checks_failed` (each after two polls that agree, over
   the required checks, or all checks when none is required; more than 50
   checks, or a check GitHub could not return in full, is no verdict), `dirty`,
