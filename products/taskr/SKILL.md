@@ -39,7 +39,9 @@ Every current owner action is an owner ask, blocking only when it stops work;
 notes summarize context and link ask IDs. A choice is a structured ask:
 `taskr ask --owner --as ROOT --question '{"question":"Merge herdr-kit #12?","options":[{"label":"Merge","recommended":true},{"label":"Hold","description":"wait for CI"}]}'`
 (2-4 options, labels up to 60 characters, at most one recommended, optional `header` and
-`multiSelect`). The owner picks in taskr-tui; the answer arrives as text, `A: Merge — note`. Glance red means open owner asks
+`multiSelect`). The owner picks in taskr-tui; the answer arrives as text, `A: Merge — note`.
+Every owner ask puts its facts in short tagged lines; see [Owner ask format](references/orchestrator.md#owner-ask-format).
+Glance red means open owner asks
 only; sound is blocking-only, badges count all. `set ROOT glance.state=parked`
 (and `glance.state=` to resume) requires TASKR_TASK and TASKR_LAUNCH unset, on the root's host, and a root target.
 Parking suppresses coordination alarms, keeps asks red, and turns amber if
