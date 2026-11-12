@@ -100,6 +100,50 @@ Optional `header` and `multiSelect` control the owner picker. `preview` is dropp
 the question object is capped at 4 KiB. Add `--blocking` only when the decision
 stops dependent work.
 
+### Fact lines
+
+Every owner ask puts its facts in the ask TEXT as tagged lines, before any
+detail. The owner reads these lines and nothing more by default.
+
+- Write at most 8 tagged lines in total. Each line has at most 80 characters.
+  Use plain words: no file paths, line numbers, ask or event ids, or seat or
+  lane names.
+- Write the lines in this order: X lines (what this item leaves out, with its
+  follow-up), then N lines (what is not checked), then C lines (what changes
+  for a user, a behaviour or a test). Write `X0: none` or `N0: none` when
+  there is none. Merge many eval rows into one C line, for example
+  `C3: 6 eval rows: main 9/18, head 18/18`.
+- Write one fact per line. Start each line with its id and a colon (`C1: `).
+  Never put two facts in one line.
+- After the tagged lines, write a line `---` and then the detail paragraphs.
+  Start each paragraph with an anchor (`#a1`, `#a2`). A tagged line may end
+  with `[#a1]`. The hub shows the detail to the owner only when the owner
+  asks for it.
+
+Example (synthetic):
+
+```text
+Merge herdr-kit #12 (retry for the sync command)?
+X1: Retry on Windows is left out; a follow-up ticket is open
+N1: Not checked with a server slower than 30 seconds
+C1: Sync now retries 3 times on a network error before it fails
+C2: A new flag turns the retry off
+C3: 6 eval rows: main 9/18, head 18/18 [#a1]
+---
+#a1 Each eval row runs the sync against a server that drops the first two
+connections. Main fails all rows that need a retry.
+```
+
+A long blocking ask from a worker to its lead uses the same tagged lines.
+There the only limit is one fact per line.
+
+Hub relay: the hub shows the tagged lines to the owner word for word, one per
+line. It never shortens, merges or rewrites a lead's line. When it leaves a
+line out, it shows `dropped C3: reason` in its place. The hub refuses an ask
+over the limits and tells the lead to refile it. The lead withdraws the old
+ask first (`taskr answer ASK_ID --withdraw TEXT --as ROOT`) and then files a
+new ask.
+
 ## Claude owner-dialog hook
 
 Wire synchronous `taskr hook claude PreToolUse` and `PostToolUse` commands with
