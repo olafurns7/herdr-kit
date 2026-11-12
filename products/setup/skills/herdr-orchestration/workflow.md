@@ -51,6 +51,20 @@ A ticket that moves to another lead is a checkpoint, not a continuation. Its rev
 
 In a `sub-orchestrator` brief, write "Do not commit, push, open a PR, or update the issue tracker." instead, because that brief grants agent starts. Its Ownership field bounds every brief it writes, and it gives each of its helpers a tab in the task workspace under `launch.md`. It cannot nest or publish; ordinary worker briefs may not create a workspace, worktree, tab, or pane.
 
+### Zoom-out at round 3
+
+When round 2 of a review loop (PR, spec or plan) ends with a P0 or P1 finding, the lead seats one fresh, read-only zoom-out reviewer at that head, while the fixer works. The seat has read none of the earlier rounds. Its brief names the artifact, the ticket's intent, and the rule or behaviour that the fix rounds change; it does not quote or start from a finding. The seat answers four questions, widest first, then gives one of three verdicts. The template gives the seat's lines; the lead adds the core header and its `Task topology:`, `Acceptance:` and `Validation:` lines (`SKILL.md` "Brief and wait"). The owner merge ask carries that verdict as one line. The seat is not a round: the 5-round cap and the round-5 owner ask stay. The operator policy picks the seat's lane.
+
+```text
+Objective: zoom-out seat. Artifact: <PR, spec or plan> base=<OID> head=<OID>. Rule under repair: <rule or behaviour>.
+Read-only. Do not read earlier rounds, reviews or findings.
+1. What does the user need here, and which part owns each fact?
+2. Why does the rule under repair exist, and which upstream design makes it need so many cases?
+3. Trace one flow from top to bottom. List each place that decides the same thing.
+4. Where else does the same pattern occur, and does it have the same fault?
+5. Verdict, one of: the rule is right (give the full case table); a smaller design removes it (give its size and risk); ship this and redesign after.
+```
+
 ## Review journal
 
 Give each reviewer brief the author's stated intent, exact base/head, scope, and allowed checks. A code-reviewer brief names `head=OID` and the green proof at that head under the repository's proof rule (the CI run, or the gate receipt: attempt, command, scope, exit, log). The reviewer reads `BASE..OID`, checks that the receipt matches the head and names skipped suites, and runs no build or suite. For a check that the gate does not cover, it asks the parent with `taskr ask --blocking`; the parent runs that check under the proof rule (in the gate lane as a new attempt only where the rule is a local gate) and answers with its receipt. Without the receipt, the reviewer withholds READY. Gate green is evidence to inspect, not proof of correctness. A review fix goes to the done-but-open lane or a new fixer; its new head needs a new gate and review at that head.
