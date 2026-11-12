@@ -110,20 +110,34 @@ detail. The owner reads these lines and nothing more by default.
   lane names.
 - Write the lines in this order: X lines (what this item leaves out, with its
   follow-up), then N lines (what is not checked), then C lines (what changes
-  for a user, a behaviour or a test). Write `X0: none` or `N0: none` when
-  there is none. Merge many eval rows into one C line, for example
-  `C3: 6 eval rows: main 9/18, head 18/18`.
+  for a user, a behavior or a test). Write `X0: none` when there is no X
+  line, and `N0: none` when there is no N line. Merge many eval rows into one
+  C line, for example `C3: 6 eval rows: main 9/18, head 18/18`.
+- X, N and C lines are for an ask about a change. Any other ask (an action, a
+  hold, a review-cap ask) writes its facts as F lines (`F1:`, `F2:`), with the
+  same limits and no `X0` or `N0` line.
 - Write one fact per line. Start each line with its id and a colon (`C1: `).
   Never put two facts in one line.
+- When there are more than 8 facts, write the 7 that matter most to the owner,
+  and one last line that counts the rest and points to the detail, for example
+  `C7: 5 more changes in the detail [#a2]`. The detail lists each of those
+  facts as its own tagged line. Never put two facts in one line to fit.
 - After the tagged lines, write a line `---` and then the detail paragraphs.
   Start each paragraph with an anchor (`#a1`, `#a2`). A tagged line may end
   with `[#a1]`. The hub shows the detail to the owner only when the owner
   asks for it.
 
-Example (synthetic):
+A plain-text ask (no `--question`) starts TEXT with the question as line 1,
+at most 80 characters. In a structured ask, the question goes in the JSON
+`question` (at most 80 characters, plain words), and TEXT starts with the
+tagged lines (no question line):
+
+`taskr ask --owner --as ROOT "$TEXT" --question '<json>'`
+
+Example (synthetic), a structured ask. The JSON `question` is
+`Merge herdr-kit #12 (retry for the sync command)?`, and TEXT is:
 
 ```text
-Merge herdr-kit #12 (retry for the sync command)?
 X1: Retry on Windows is left out; a follow-up ticket is open
 N1: Not checked with a server slower than 30 seconds
 C1: Sync now retries 3 times on a network error before it fails

@@ -23,7 +23,7 @@ The owner clears an action with `taskr answer <ask id> done`, or in taskr-tui; t
 
 ## Review loop at its cap
 
-After round 5 of a review loop (`workflow.md` "Brief variants"), the lead asks the owner with a structured owner ask. The question gives six numbers: rounds; rounds since the last P1; whether all seats ever passed at one head; the artifact's size change; wall time; lanes started. Each option gives its cost in rounds and hours. The hub flags each review loop that reaches round 5 at its regular check. An ask that recommends against an independent review's remedy names the review, that remedy, and the reason.
+After round 5 of a review loop (`workflow.md` "Brief variants"), the lead asks the owner with a structured owner ask. The six numbers go in F lines ("Fact lines" under "Owner ask format" in taskr's references/orchestrator.md): rounds; rounds since the last P1; whether all seats ever passed at one head; the artifact's size change; wall time; lanes started. Each option gives its cost in rounds and hours. The hub flags each review loop that reaches round 5 at its regular check. An ask that recommends against an independent review's remedy names the review in plain words, not by seat name, and names that remedy and the reason.
 
 ## Owner notes
 
