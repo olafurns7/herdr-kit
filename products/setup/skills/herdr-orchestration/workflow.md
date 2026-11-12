@@ -53,17 +53,16 @@ In a `sub-orchestrator` brief, write "Do not commit, push, open a PR, or update 
 
 ### Zoom-out at round 3
 
-When a review loop (PR, spec or plan) is about to open round 3, the lead seats one fresh, read-only zoom-out reviewer beside the fix round. The seat has read none of the earlier rounds. Its brief names the artifact, the ticket's intent, and the rule or behaviour that the fix rounds change; it does not quote or start from a finding. It answers five questions, widest first, and gives one of three verdicts. The owner merge ask carries that verdict as one line. The seat is not a round: the 5-round cap and the round-5 owner ask stay. The operator policy picks the seat's lane.
+When round 2 of a review loop (PR, spec or plan) ends with a P0 or P1 finding, the lead seats one fresh, read-only zoom-out reviewer at that head, while the fixer works. The seat has read none of the earlier rounds. Its brief names the artifact, the ticket's intent, and the rule or behaviour that the fix rounds change; it does not quote or start from a finding. The seat answers four questions, widest first, then gives one of three verdicts. The template gives the seat's lines; the lead adds the core header and its `Task topology:`, `Acceptance:` and `Validation:` lines (`SKILL.md` "Brief and wait"). The owner merge ask carries that verdict as one line. The seat is not a round: the 5-round cap and the round-5 owner ask stay. The operator policy picks the seat's lane.
 
 ```text
-HERDR-BRIEF role=reviewer orchestrator=<lead root> report=<path>
-Zoom-out seat. Artifact: <PR, spec or plan> at head=<OID>. Intent: <ticket intent>. Rule under repair: <rule or behaviour>.
+Objective: zoom-out seat. Artifact: <PR, spec or plan> base=<OID> head=<OID>. Rule under repair: <rule or behaviour>.
 Read-only. Do not read earlier rounds, reviews or findings.
 1. What does the user need here, and which part owns each fact?
 2. Why does the rule under repair exist, and which upstream design makes it need so many cases?
 3. Trace one flow from top to bottom. List each place that decides the same thing.
 4. Where else does the same pattern occur, and does it have the same fault?
-5. Verdict, one of: the rule is right (give the full case table); a smaller design removes it (size, risk); ship this and redesign after.
+5. Verdict, one of: the rule is right (give the full case table); a smaller design removes it (give its size and risk); ship this and redesign after.
 ```
 
 ## Review journal

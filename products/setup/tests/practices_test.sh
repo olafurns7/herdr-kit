@@ -48,8 +48,8 @@ for name, criteria in continuity.items():
 # Slice C allows about 25 lines above the 382-line core baseline. The head-gate loop adds about 13 lines.
 # The owner's review-loop rules (stop line, round cap, fresh seat, round-5 ask) add 10 lines.
 # The push restart rule (W1154) adds 3 lines.
-# The zoom-out at round 3 rule (W1918) adds 15 lines.
-if sum(len((orchestration / name).read_text().splitlines()) for name in continuity) > 449:  # Gather helper rule adds 1 line.
+# The zoom-out at round 3 rule (W1918) adds 14 lines.
+if sum(len((orchestration / name).read_text().splitlines()) for name in continuity) > 448:  # Gather helper rule adds 1 line.
     errors.append("orchestration continuity core exceeds its line budget")
 review = (root / "products/setup/skills/herdr-practices/references/review.md").read_text()
 if len(review.splitlines()) > 80:
