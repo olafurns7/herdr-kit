@@ -105,23 +105,20 @@ stops dependent work.
 Every owner ask puts its facts in the ask TEXT as tagged lines, before any
 detail. The owner reads these lines and nothing more by default.
 
-- Write at most 8 tagged lines in total. Each line has at most 80 characters.
-  Use plain words: no file paths, line numbers, ask or event ids, or seat or
-  lane names.
+- Each line has at most 80 characters. Use plain words: no file paths, line
+  numbers, ask or event ids, or seat or lane names.
 - Write the lines in this order: X lines (what this item leaves out, with its
   follow-up), then N lines (what is not checked), then C lines (what changes
   for a user, a behavior or a test). Write `X0: none` when there is no X
-  line, and `N0: none` when there is no N line. Merge many eval rows into one
-  C line, for example `C3: 6 eval rows: main 9/18, head 18/18`.
+  line, and `N0: none` when there is no N line. Several eval rows with one
+  result are one fact: `C3: 6 eval rows: main 9/18, head 18/18`.
+- Write every X, N and C line. Never drop a line or merge two facts to make
+  the ask shorter.
 - X, N and C lines are for an ask about a change. Any other ask (an action, a
   hold, a review-cap ask) writes its facts as F lines (`F1:`, `F2:`), with the
   same limits and no `X0` or `N0` line.
 - Write one fact per line. Start each line with its id and a colon (`C1: `).
   Never put two facts in one line.
-- When there are more than 8 facts, write the 7 that matter most to the owner,
-  and one last line that counts the rest and points to the detail, for example
-  `C7: 5 more changes in the detail [#a2]`. The detail lists each of those
-  facts as its own tagged line. Never put two facts in one line to fit.
 - After the tagged lines, write a line `---` and then the detail paragraphs.
   Start each paragraph with an anchor (`#a1`, `#a2`). A tagged line may end
   with `[#a1]`. The hub shows the detail to the owner only when the owner
@@ -154,9 +151,12 @@ There the only limit is one fact per line.
 Hub relay: the hub shows the tagged lines to the owner word for word, one per
 line. It never shortens, merges or rewrites a lead's line. When it leaves a
 line out, it shows `dropped C3: reason` in its place. The hub refuses an ask
-over the limits and tells the lead to refile it. The lead withdraws the old
-ask first (`taskr answer ASK_ID --withdraw TEXT --as ROOT`) and then files a
-new ask.
+with a line over 80 characters, or with two facts in one line, and tells the
+lead to refile it. The lead withdraws the old ask first
+(`taskr answer ASK_ID --withdraw TEXT --as ROOT`) and then files a new ask.
+The hub shows a short ask (at most 8 tagged lines) as a dialog. It sends a
+longer ask, unshortened, to a place where the owner reads it without a time
+limit, for example a browser inbox.
 
 ## Claude owner-dialog hook
 
