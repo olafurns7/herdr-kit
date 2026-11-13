@@ -93,7 +93,7 @@ struct Run {
     purpose: String,
     #[arg(long, conflicts_with = "cost")]
     kind: Option<String>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_cost)]
     cost: Option<u64>,
     #[arg(long)]
     lease: Option<String>,
@@ -187,6 +187,18 @@ fn execute(cli: Cli) -> Result<i32> {
             _ => anyhow::bail!("run, stop and touch require Linux and a systemd user bus"),
         }
     }
+}
+/// `--cost` is MiB. A value under 512 is almost always GiB typed by mistake:
+/// `--cost 10` caps the run at 10 MiB and the kernel OOM-kills it.
+fn parse_cost(value: &str) -> Result<u64, String> {
+    let mib: u64 = value.parse().map_err(|e| format!("{e}"))?;
+    if mib < 512 {
+        return Err(format!(
+            "--cost is MiB and must be at least 512; for {mib} GiB pass {}",
+            mib.saturating_mul(1024)
+        ));
+    }
+    Ok(mib)
 }
 fn main() {
     let code = match execute(Cli::parse()) {
