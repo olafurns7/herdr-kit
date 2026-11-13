@@ -200,9 +200,10 @@ mod rpc {
             std::thread::yield_now();
         }
         assert_eq!(h.count("select count(*) from events where kind='note' and summary='busy-child' and task_id=?", root), 0);
-        // Hold beyond both former 5 s waits; result storage must survive the child busy exit.
+        // Hold past the child's 5 s wait and its one retry (2 x 5 s) with 7 s to spare;
+        // result storage (30 s) must survive the child busy exit.
         assert!(matches!(
-            recv.recv_timeout(Duration::from_secs(12)),
+            recv.recv_timeout(Duration::from_secs(17)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
         blocker.execute_batch("rollback").unwrap();
@@ -260,7 +261,7 @@ mod rpc {
             std::thread::yield_now();
         }
         assert!(matches!(
-            recv.recv_timeout(Duration::from_secs(14)),
+            recv.recv_timeout(Duration::from_secs(19)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
         blocker.execute_batch("rollback").unwrap();

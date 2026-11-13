@@ -1842,3 +1842,28 @@ fn wait_clears_its_marker_before_a_failing_skipped_print() {
     let (_, out, _) = run(&h, &[], &["wait", "--as", &r, "--timeout", "0"]);
     assert!(!out.contains("e1\t"), "the ask was skipped: {out}");
 }
+
+/// A worker's idle push check (no --as: TASKR_TASK/TASKR_LAUNCH) only reads: it times
+/// out at once while another connection holds the write lock, instead of queueing for
+/// it (30 s, then BUSY).
+#[test]
+fn idle_worker_push_check_takes_no_write_lock() {
+    let h = Harness::new();
+    let (_, _, env) = h.lane("claude", "implementer");
+    stdout(
+        &h,
+        &env,
+        &["consumer", "take", "--holder", "pi", "--ttl", "600000"],
+    );
+    let check = ["wait", "--fence", "1", "--timeout", "0", "--push"];
+    assert!(stdout(&h, &env, &check).starts_with("w1 "));
+    let blocker = h.conn();
+    blocker.execute_batch("begin immediate").unwrap();
+    let start = Instant::now();
+    let (code, out, err) = run(&h, &env, &check);
+    let took = start.elapsed();
+    blocker.execute_batch("rollback").unwrap();
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.starts_with("w1 "), "{out}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+}

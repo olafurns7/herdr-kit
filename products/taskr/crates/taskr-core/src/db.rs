@@ -13,9 +13,15 @@ pub fn path() -> Result<PathBuf, String> {
     }
     Ok(PathBuf::from(home).join(".local/state/taskr/taskr.db"))
 }
+/// The busy wait of an RPC child and of the daemon's request claim.
+pub const RPC_BUSY_SECS: u64 = 5;
 pub fn open(path: &Path) -> Result<Connection, String> {
     if crate::store::rpc_context().is_some() {
-        return open_migrated(path);
+        // An RPC child must stay inside the client's window (store::transaction retries once).
+        let db = open_migrated(path)?;
+        db.busy_timeout(std::time::Duration::from_secs(RPC_BUSY_SECS))
+            .map_err(|e| error_text(&e))?;
+        return Ok(db);
     }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -163,7 +169,7 @@ mod tests {
         assert_eq!(
             db.query_row("pragma busy_timeout", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            5000
+            30000
         );
         assert_eq!(
             db.query_row("pragma foreign_keys", [], |r| r.get::<_, i64>(0))

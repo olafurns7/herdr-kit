@@ -94,7 +94,19 @@ pub fn id(s: &str, field: &str) -> Result<i64> {
         .ok_or_else(|| usage(format!("{field} must be a positive integer, got {s:?}")))
 }
 pub fn transaction<T>(db: &mut Connection, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // An RPC child waits only RPC_BUSY_SECS; nothing ran yet, so one more BEGIN is safe.
+    // Shorter deliberate waits (the hook's 150 ms) keep their single try.
+    let retry = rpc_context().is_some()
+        && db.pragma_query_value(None, "busy_timeout", |r| r.get::<_, i64>(0))?
+            == crate::db::RPC_BUSY_SECS as i64 * 1000;
+    let mut begin = db.transaction_with_behavior(TransactionBehavior::Immediate);
+    if retry
+        && matches!(&begin, Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::DatabaseBusy)
+    {
+        drop(begin);
+        begin = db.transaction_with_behavior(TransactionBehavior::Immediate);
+    }
+    let tx = begin?;
     let result = f(&tx)?;
     tx.commit()?;
     Ok(result)
