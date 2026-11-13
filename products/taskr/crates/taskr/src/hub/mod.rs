@@ -496,6 +496,7 @@ async fn stored(hub: Arc<Hub>, machine: String, req: RpcRequest) -> RpcReply {
     let rerun_busy = crate::net::spoolable(&req.argv);
     let claim = tokio::task::spawn_blocking(move || -> store::Result<Option<RpcReply>> {
         let mut db = db::open_migrated(&db_hub.cfg.db_path).map_err(|message| store::Error { code: taskr_core::ExitCode::Database, message })?;
+        db.busy_timeout(Duration::from_secs(db::RPC_BUSY_SECS))?;
         store::transaction(&mut db, |tx| {
             tx.execute("delete from requests where created_at < ?", [store::stamp((db_hub.cfg.clock)() - time::Duration::days(7))])?;
             let old = tx.query_row("select coalesce(machine,''),argv_sha,state,coalesce(exit,0),coalesce(stdout,''),coalesce(stderr,''),upload from requests where key=?", [&key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i32>(3)?, r.get::<_, String>(4)?, r.get::<_, String>(5)?, r.get::<_, Option<String>>(6)?))).optional()?;

@@ -63,7 +63,8 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
 
 pub(crate) fn connect(path: &Path, flags: rusqlite::OpenFlags) -> rusqlite::Result<Connection> {
     let db = Connection::open_with_flags(path, flags)?;
-    db.busy_timeout(std::time::Duration::from_secs(5))?;
+    // The CLI's wait; daemon jobs and start-up writes lost to CLI writers at 5 s.
+    db.busy_timeout(std::time::Duration::from_secs(30))?;
     db.pragma_update(None, "journal_mode", "WAL")?;
     db.pragma_update(None, "foreign_keys", true)?;
     Ok(db)

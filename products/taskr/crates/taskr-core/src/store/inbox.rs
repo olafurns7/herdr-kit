@@ -240,49 +240,75 @@ pub fn offer_push(
     as_id: i64,
     fence: Option<&Fence>,
 ) -> Result<(Option<Value>, bool, bool)> {
+    // Most push checks find nothing to change: answer those from a read snapshot and
+    // queue for the write lock only when the scan must write; it then runs again under it.
+    let tx = db.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    if let Some(out) = push_scan(&tx, as_id, fence, false)? {
+        return Ok(out);
+    }
+    drop(tx);
     transaction(db, |tx| {
-        let t = task(tx, as_id)?;
-        check_host(tx, as_id)?;
-        guard(tx, as_id, fence)?;
-        let head = tx
-            .query_row(
-                "select id from events where recipient_task_id=? and id>? order by id limit 1",
-                params![as_id, t.acked],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()?;
-        let Some(head) = head else {
-            return Ok((None, false, false));
-        };
-        let ev = load_event(tx, head)?;
-        if coalesce(tx, as_id, &ev, t.pending, false)? {
-            tx.execute(
-                "update tasks set acked_event_id=?,pending_event_id=null where id=?",
-                params![head, as_id],
-            )?;
-            return Ok((None, false, true));
-        }
-        // got and pr are never pushed: leave them out of the scan.
-        let ids = tx
-            .prepare("select id from events where recipient_task_id=? and id>? and kind not in('got','pr') order by id")?
-            .query_map(params![as_id, t.acked], |r| r.get::<_, i64>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        for eid in ids {
-            let ev = load_event(tx, eid)?;
-            if !pushed(tx, &ev)? {
-                continue;
-            }
-            let replay = t.pending == Some(eid);
-            if !replay {
-                tx.execute(
-                    "update tasks set pending_event_id=? where id=?",
-                    params![eid, as_id],
-                )?;
-            }
-            return Ok((Some(ev), replay, false));
-        }
-        Ok((None, false, false))
+        Ok(push_scan(tx, as_id, fence, true)?.expect("a writing scan always decides"))
     })
+}
+/// One offer_push pass. Without `write` it returns None where the pass would write.
+fn push_scan(
+    tx: &Connection,
+    as_id: i64,
+    fence: Option<&Fence>,
+    write: bool,
+) -> Result<Option<(Option<Value>, bool, bool)>> {
+    let t = task(tx, as_id)?;
+    check_host(tx, as_id)?;
+    guard(tx, as_id, fence)?;
+    let head = tx
+        .query_row(
+            "select id from events where recipient_task_id=? and id>? order by id limit 1",
+            params![as_id, t.acked],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?;
+    let Some(head) = head else {
+        return Ok(Some((None, false, false)));
+    };
+    let ev = load_event(tx, head)?;
+    // Unfiltered coalescing writes only for late_receipt (it deletes a meta row).
+    if !write && ev["kind"] == "prompt_outcome" && ev["summary"] == "late_receipt" {
+        return Ok(None);
+    }
+    if coalesce(tx, as_id, &ev, t.pending, false)? {
+        if !write {
+            return Ok(None);
+        }
+        tx.execute(
+            "update tasks set acked_event_id=?,pending_event_id=null where id=?",
+            params![head, as_id],
+        )?;
+        return Ok(Some((None, false, true)));
+    }
+    // got and pr are never pushed: leave them out of the scan.
+    let ids = tx
+        .prepare("select id from events where recipient_task_id=? and id>? and kind not in('got','pr') order by id")?
+        .query_map(params![as_id, t.acked], |r| r.get::<_, i64>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for eid in ids {
+        let ev = load_event(tx, eid)?;
+        if !pushed(tx, &ev)? {
+            continue;
+        }
+        let replay = t.pending == Some(eid);
+        if !replay {
+            if !write {
+                return Ok(None);
+            }
+            tx.execute(
+                "update tasks set pending_event_id=? where id=?",
+                params![eid, as_id],
+            )?;
+        }
+        return Ok(Some((Some(ev), replay, false)));
+    }
+    Ok(Some((None, false, false)))
 }
 pub fn counts(db: &Connection, as_id: i64) -> Result<(i64, i64)> {
     let owed=db.query_row("select count(*) from tasks t where parent_id=? and current_launch_id is not null and status!='closed' and coalesce((select max(id) from events where launch_id=t.current_launch_id and kind='prompt'),0)>coalesce((select max(id) from events where launch_id=t.current_launch_id and kind in('done','fail')),0)",[as_id],|r|r.get(0))?;
@@ -378,4 +404,56 @@ pub fn peek(db: &mut Connection, as_id: i64, limit: i64) -> Result<Value> {
         out["more"] = json!(true);
     }
     Ok(out)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn push_check_takes_the_write_lock_only_when_it_has_work() {
+        let dir = std::env::temp_dir().join(format!("taskr-offer-push-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ledger.db");
+        let mut db = crate::schema::open(&path).unwrap();
+        db.busy_timeout(std::time::Duration::ZERO).unwrap();
+        db.execute("insert into tasks(id,name,role,created_at,updated_at) values(1,'lead','orchestrator',?,?)", params![now(), now()]).unwrap();
+        let emit = |db: &Connection, kind, data| {
+            let e = Event {
+                task: 1,
+                to: Some(1),
+                kind,
+                data,
+                ..Event::default()
+            };
+            event(db, e).unwrap()
+        };
+        let blocker = crate::schema::open(&path).unwrap();
+        let held = |f: &mut dyn FnMut()| {
+            blocker.execute_batch("begin immediate").unwrap();
+            f();
+            blocker.execute_batch("rollback").unwrap();
+        };
+        // Empty inbox, then a pr snapshot that is never pushed: no write, no BUSY.
+        held(&mut || assert_eq!(offer_push(&mut db, 1, None).unwrap(), (None, false, false)));
+        emit(&db, "pr", Some(json!({"pr":"o/r#1"})));
+        held(&mut || assert_eq!(offer_push(&mut db, 1, None).unwrap(), (None, false, false)));
+        // A pushable event must set pending: that still needs the lock.
+        let eid = emit(&db, "ready", None);
+        held(&mut || {
+            let e = offer_push(&mut db, 1, None).unwrap_err();
+            assert!(e.message.starts_with("database is locked"), "{}", e.message);
+        });
+        let (ev, replay, skip) = offer_push(&mut db, 1, None).unwrap();
+        assert_eq!(
+            (ev.unwrap()["id"].as_i64(), replay, skip),
+            (Some(eid), false, false)
+        );
+        assert_eq!(task(&db, 1).unwrap().pending, Some(eid));
+        // Its replay changes nothing, so it is answered from the read.
+        held(&mut || {
+            let (ev, replay, _) = offer_push(&mut db, 1, None).unwrap();
+            assert_eq!((ev.unwrap()["id"].as_i64(), replay), (Some(eid), true));
+        });
+        drop((db, blocker));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

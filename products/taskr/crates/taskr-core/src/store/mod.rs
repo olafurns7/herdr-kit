@@ -94,7 +94,15 @@ pub fn id(s: &str, field: &str) -> Result<i64> {
         .ok_or_else(|| usage(format!("{field} must be a positive integer, got {s:?}")))
 }
 pub fn transaction<T>(db: &mut Connection, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut begin = db.transaction_with_behavior(TransactionBehavior::Immediate);
+    // An RPC child waits only 5 s; nothing ran yet, so one more BEGIN is safe.
+    if rpc_context().is_some()
+        && matches!(&begin, Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::DatabaseBusy)
+    {
+        drop(begin);
+        begin = db.transaction_with_behavior(TransactionBehavior::Immediate);
+    }
+    let tx = begin?;
     let result = f(&tx)?;
     tx.commit()?;
     Ok(result)
