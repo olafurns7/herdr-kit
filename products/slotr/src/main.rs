@@ -194,8 +194,7 @@ fn parse_cost(value: &str) -> Result<u64, String> {
     let mib: u64 = value.parse().map_err(|e| format!("{e}"))?;
     if mib < 512 {
         return Err(format!(
-            "--cost is MiB and must be at least 512; for {mib} GiB pass {}",
-            mib.saturating_mul(1024)
+            "--cost is MiB and must be at least 512, not {mib} (10 GiB is --cost 10240)"
         ));
     }
     Ok(mib)

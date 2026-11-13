@@ -2657,7 +2657,7 @@ class AdmissionTest(unittest.TestCase):
                               for q in json.loads((self.runtime/'slotr/state.json').read_text())['holders']))
         (self.root/'state/slotr/priority.json').write_text('{bad')
         self.assertIn('priority_policy_error',self.status()['priority']['error'])
-        result=self.invoke('run','--cost','0','--','true')
+        result=self.invoke('run','--','true')
         self.assertEqual(result.returncode,2); self.assertIn('priority_policy_error',result.stderr)
         self.set_stats(1000)
         self.wait(lambda: low.poll() is not None)
