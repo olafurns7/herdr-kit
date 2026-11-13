@@ -169,7 +169,12 @@ pub fn wait(f: &FlagSet) -> Result<Value> {
     }
     let mut db = open()?;
     if !as_given || !caller.is_empty() && !store::env("TASKR_LAUNCH").is_empty() {
-        let t = store::transaction(&mut db, |tx| worker::resolve(tx, 0))?;
+        // resolve only reads: a deferred read keeps every push check off the write lock.
+        let tx = db
+            .transaction_with_behavior(db::rusqlite::TransactionBehavior::Deferred)
+            .map_err(Error::from)?;
+        let t = worker::resolve(&tx, 0)?;
+        drop(tx);
         if !as_given {
             as_id = t.id;
         }
