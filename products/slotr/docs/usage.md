@@ -52,7 +52,8 @@ slotr --version
   names are supplied by the caller; use one consistent name for each campaign.
 - `--pool NAME` selects the pool. The default is `default`.
 - `--kind NAME` selects a configured cost, or `--cost MIB` supplies it
-  directly. Otherwise the pool's `default_cost_mib` applies. You cannot pass
+  directly; a `--cost` under 512 exits 2, because it is almost always GiB
+  typed as MiB. Otherwise the pool's `default_cost_mib` applies. You cannot pass
   both `--kind` and `--cost`. Kinds are per-pool; an unknown name exits 2
   before admission and lists the selected pool's valid keys (or `none`).
   Admission and terminal events preserve that requested kind; explicit and
