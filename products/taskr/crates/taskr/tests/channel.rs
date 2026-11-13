@@ -1428,6 +1428,54 @@ fn hints_wake_a_check_and_a_reset_reconnects_without_a_duplicate() {
 }
 
 #[test]
+fn a_state_only_hint_wakes_a_check_after_the_state_gap_not_the_poll() {
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let (_hub, _, loopback) = start_hub(&h);
+    h.conn()
+        .execute(
+            "insert into meta(key,value) values('dashboard_url',?) on conflict(key) do update set value=excluded.value",
+            [format!("{loopback}/")],
+        )
+        .unwrap();
+    // Production intervals: a 5 s state gap and a 30 s poll.
+    let mut c = Chan::start(&h, &env, &[], 1);
+    held(&h, &ws);
+    until("the hint stream", Duration::from_secs(20), || {
+        c.stderr().contains("hint stream connected")
+    });
+    assert!(c.quiet(Duration::from_secs(1)).is_empty());
+    let e1 = insert_event(&h, "1", &ws, "note", "first", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(10));
+    assert_eq!(meta(&push, "event"), e1);
+    let a = meta(&push, "attempt");
+    let r = c.call("taskr_received", json!({"attempt":n(&a)}));
+    assert_eq!(r["structuredContent"]["outcome"], "committed");
+    // E2's 'events' hint wakes a check, which still offers the pending E1 and pushes
+    // nothing. Only then the ack, which writes no event row: its hint is 'state' only.
+    let inserted = Instant::now();
+    let e2 = insert_event(&h, "1", &ws, "note", "second", "{}");
+    assert!(
+        c.quiet(Duration::from_secs(1)).is_empty(),
+        "E1 pushed again"
+    );
+    let r = c.call("taskr_ack", json!({"event":n(&e1),"fence":1}));
+    assert_eq!(r["structuredContent"]["outcome"], "committed", "{r}");
+    let (at, push) = c.expect_push(Duration::from_secs(40));
+    assert_eq!(meta(&push, "event"), e2);
+    // The last check ran on E2's hint, after `inserted`, so the state-woken check is at
+    // least 5 s after `inserted`; 4 s keeps a second of margin, and a 250 ms gap would
+    // push about 1.3 s after it. That check also set the 30 s poll, due no sooner than
+    // 30 s after `inserted`; 20 s leaves 10 s for a slow host on either side.
+    let after = at - inserted;
+    assert!(after >= Duration::from_secs(4), "pushed after {after:?}");
+    assert!(after < Duration::from_secs(20), "pushed after {after:?}");
+    let (code, _) = c.close();
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn lost_replies_reconcile_with_their_own_keys_and_a_receipt_may_precede_submitted() {
     let h = Harness::new();
     let (_hub, tailnet, _) = start_hub(&h);
