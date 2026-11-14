@@ -92,10 +92,11 @@ Glance targets: `needs_you[].asker_task_id`, `host` and `pane_id` refer to the a
 
 ## Owner ask format
 
-`taskr ask --owner --as ROOT --question '{"question":"Merge herdr-kit #12?","options":[{"label":"Merge","recommended":true},{"label":"Hold","description":"wait for CI"}]}'`
+`taskr ask --owner --as ROOT --question '{"question":"Merge herdr-kit #12?","options":[{"label":"Merge now"},{"label":"Merge after CI","recommended":true},{"label":"Hold","description":"keep it open"}]}'`
 
 Supply one object with `question` and 2–4 `options`, each with a `label` up to 60
 characters and optional `description`; at most one option may set `recommended`.
+Keep the options in their natural order; never move the recommended one first.
 Optional `header` and `multiSelect` control the owner picker. `preview` is dropped;
 the question object is capped at 4 KiB. Add `--blocking` only when the decision
 stops dependent work.
@@ -154,9 +155,11 @@ line out, it shows `dropped C3: reason` in its place. The hub refuses an ask
 with a line over 80 characters, or with two facts in one line, and tells the
 lead to refile it. The lead withdraws the old ask first
 (`taskr answer ASK_ID --withdraw TEXT --as ROOT`) and then files a new ask.
-The hub shows a short ask (at most 8 tagged lines) as a dialog. It sends a
-longer ask, unshortened, to a place where the owner reads it without a time
-limit, for example a browser inbox.
+One channel: the ledger ask comes first (the lead's ask, or the hub's own on
+the hub root); then the hub sends one question block per decision, unshortened,
+to the owner's inbox, a place where the owner reads it without a time limit.
+The hub shows an ask as a pane dialog only when the owner asks for it in the
+pane.
 
 ## Claude owner-dialog hook
 

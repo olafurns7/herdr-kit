@@ -6,6 +6,8 @@ Load when: before any resume and before prompting a restored pane; when your own
 
 Before a planned stop, handover, or context compaction, finish or back out of the current atomic step. Refresh the [campaign plan](workflow.md#goal-plan-and-documents) if intent changed and record `taskr next`; checkpoint with `taskr handover --as <me> --note "<checkpoint>"`: evidence for done work, each in-flight lane's expected next event, and proof gaps. Under "Session timers to re-arm" list each session-scoped timer (Claude CronCreate job, background loop) with its schedule and full prompt; they die with the session, and the successor re-creates them and notes the new ids. Use the existing ledger and reports, not a new checkpoint format.
 
+Hub: after a context compaction, before the next `herdr` or `taskr` command, read your standing-rules file again and load again the skills that "Herdr environment" in the global instructions lists.
+
 On resume, read the campaign plan, ledger, and latest reports before re-deriving work; use `taskr search <terms> --root <root>` for a missing decision.
 
 For a plain orchestrator, a new session starts with `taskr adopt <me>` and continues from the handover and inbox (`workflow.md` "Goal, plan, and documents"). Stop the predecessor's wait before adoption, then arm your own `taskr wait`.
@@ -97,8 +99,8 @@ herdr agent start rev-<slug> --kind claude --pane "$helper_pane_id" --timeout 90
 An OpenCode lane resumes its saved session with `herdr-launch`'s process-local model config:
 
 ```bash
-# Use the recorded lane's model in place of this example.
-herdr pane run "$helper_pane_id" ' export PATH="$PATH:$HOME/.opencode/bin" OPENCODE_CONFIG_CONTENT='\''{"model":"opencode/minimax-m3.1-flash-free","default_agent":"build","agents":{"build":{"model":"opencode/minimax-m3.1-flash-free"}}}'\'' '
+# Put the recorded lane's model (provider/model form) in both <recorded-model> places.
+herdr pane run "$helper_pane_id" ' export PATH="$PATH:$HOME/.opencode/bin" OPENCODE_CONFIG_CONTENT='\''{"model":"<recorded-model>","default_agent":"build","agents":{"build":{"model":"<recorded-model>"}}}'\'' '
 herdr agent start glm-<slug> --kind opencode --pane "$helper_pane_id" --timeout 90000 -- \
   --standalone --auto --session "$opencode_sid"
 ```
