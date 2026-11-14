@@ -572,7 +572,7 @@ has calls 'herdr-lead-env=//worker/1/'
 has calls 'taskr|adopt|42|--workspace|wA|--tab|wA:t1|--pane|wA:p1|env=/'
 has calls 'herdr|pane|send-keys|wA:p1|Enter'
 has calls 'herdr|agent|wait|orch-example|--until|idle|--timeout|90000'
-has calls '--model|claude-opus-5-5|--effort|high|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false}}'
+has calls '--model|claude-opus-5-5|--effort|high|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}'
 has calls "--mcp-config|$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json|--dangerously-load-development-channels|server:taskr"
 has calls 'do not run taskr adopt'
 lacks calls 'Additional brief.'
