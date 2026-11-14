@@ -26,7 +26,6 @@ const VERDICT: &[&str] = &[
     "--kv",
     "p3=0",
 ];
-
 fn gh(h: &Harness) {
     h.script("gh", &format!("#!/bin/sh\n[ \"$*\" = 'pr view 42 --repo example/project --json number,commits' ] || exit 1\nprintf '%s\\n' '{{\"number\":42,\"commits\":[{{\"oid\":\"{HEAD}\"}}]}}'\n"));
 }
@@ -223,7 +222,6 @@ fn r21_seat_verdict_prints_stores_and_binds_to_brief() {
         "seat brief needs",
         2,
     );
-    seat_brief(&h, task, "example/project#42");
     // A captured task brief can use the task's role without a HERDR-BRIEF header.
     documents::capture_brief(
         &h.conn(),

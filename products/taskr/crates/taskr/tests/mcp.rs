@@ -877,7 +877,7 @@ fn bound_writes_commit_and_stale_bindings_are_rejected() {
         ("taskr_ask", json!({"text":"which way?","blocking":true})),
         (
             "taskr_ready",
-            json!({"summary":"slice one","report_path":report}),
+            json!({"summary":"slice one","report_path":report,"kv":{"repo":"example/project","pr":"none","reason":"test fixture"}}),
         ),
     ] {
         assert_eq!(outcome(&worker(&env, name, a)), "committed");
@@ -1611,7 +1611,7 @@ fn client_mode_keeps_queued_unknown_and_replay_apart() {
             &current,
             &[],
             "taskr_ready",
-            json!({"summary":summary,"report_path":path}),
+            json!({"summary":summary,"report_path":path,"kv":{"repo":"example/project","pr":"none","reason":"test fixture"}}),
         );
         assert_eq!(outcome(&r), "committed", "{r}");
     }
@@ -1637,7 +1637,7 @@ fn client_mode_keeps_queued_unknown_and_replay_apart() {
         &current,
         &[],
         "taskr_ready",
-        json!({"summary":"upload lost","report_path":captured}),
+        json!({"summary":"upload lost","report_path":captured,"kv":{"repo":"example/project","pr":"none","reason":"test fixture"}}),
     );
     assert_eq!(outcome(&unsent), "committed", "{unsent}");
     assert_eq!(doc("upload lost"), "", "committed does not prove capture");
