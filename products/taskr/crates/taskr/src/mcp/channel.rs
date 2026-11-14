@@ -117,6 +117,9 @@ enum Msg {
     /// A hub hint; `state_only` when its change has only 'state' kinds.
     Wake {
         state_only: bool,
+        /// Test-only: the hint's hub revision, named in the wake log line.
+        #[cfg(feature = "contract")]
+        rev: i64,
     },
     Stop,
     /// The queue sink's submission ended.
@@ -342,7 +345,12 @@ fn read_hints(
                 }
                 if hint {
                     let state_only = !std::mem::take(&mut first) && state_only(&v);
-                    if send.send(Msg::Wake { state_only }).is_err() {
+                    let wake = Msg::Wake {
+                        state_only,
+                        #[cfg(feature = "contract")]
+                        rev: v["rev"].as_i64().unwrap_or(-1),
+                    };
+                    if send.send(wake).is_err() {
                         return;
                     }
                 }
@@ -488,13 +496,16 @@ impl Loop {
             let wait = self.next().saturating_duration_since(Instant::now());
             match receive.recv_timeout(wait) {
                 Ok(Msg::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Ok(Msg::Wake { state_only }) => {
+                Ok(Msg::Wake {
+                    state_only,
                     #[cfg(feature = "contract")]
-                    log(if state_only {
-                        "contract: wake state"
-                    } else {
-                        "contract: wake fast"
-                    });
+                    rev,
+                }) => {
+                    #[cfg(feature = "contract")]
+                    log(format!(
+                        "contract: wake {} rev={rev}",
+                        if state_only { "state" } else { "fast" }
+                    ));
                     self.hinted(state_only)
                 }
                 Ok(Msg::Done(done)) => self.settle(done),

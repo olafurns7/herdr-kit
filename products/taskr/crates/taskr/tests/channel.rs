@@ -1470,14 +1470,10 @@ fn a_state_only_hint_wakes_a_check_after_the_state_gap_not_the_poll() {
     // E2's 'events' hint wakes a check, which still offers the pending E1 and pushes
     // nothing. Only after that check ends the ack, which writes no event row: its hint
     // is 'state' only.
-    let from = c.stderr().len();
     let inserted = Instant::now();
     let e2 = insert_event(&h, "1", &ws, "note", "second", "{}");
     until("the check on E2's hint", Duration::from_secs(20), || {
-        in_order(
-            &c.stderr()[from..],
-            &["contract: wake fast", "contract: checked"],
-        )
+        woke_then_checked(&c.stderr(), n(&e2))
     });
     assert!(c.quiet(Duration::ZERO).is_empty(), "E1 pushed again");
     let r = c.call("taskr_ack", json!({"event":n(&e1),"fence":1}));
@@ -1495,16 +1491,17 @@ fn a_state_only_hint_wakes_a_check_after_the_state_gap_not_the_poll() {
     assert_eq!(code, Some(0));
 }
 
-/// Each of `lines` in `err`, in this order.
-fn in_order(err: &str, lines: &[&str]) -> bool {
-    let mut rest = err;
-    lines.iter().all(|l| match rest.find(l) {
-        Some(i) => {
-            rest = &rest[i + l.len()..];
-            true
-        }
-        None => false,
-    })
+/// In `err`: a fast wake on a hint for hub revision `rev` or later (the first change
+/// that can carry event `rev`), then a check that completed after it. The loop is one
+/// thread, so that check started after the hint was handled. A line still partly
+/// collected only shows a lower revision.
+fn woke_then_checked(err: &str, rev: i64) -> bool {
+    let mut lines = err.lines();
+    lines.by_ref().any(|l| {
+        l.split_once("contract: wake fast rev=")
+            .and_then(|(_, r)| r.trim().parse::<i64>().ok())
+            .is_some_and(|r| r >= rev)
+    }) && lines.any(|l| l.contains("contract: checked"))
 }
 /// A loopback forwarder to the hub at `hub` (an http:// URL) that rewrites Host. The
 /// first connection passes at once; each later one waits for `open`. Its URL, the
@@ -1636,16 +1633,13 @@ fn a_restarted_hint_child_wakes_at_once_on_a_state_only_first_hint() {
     until("the hint stream", Duration::from_secs(20), || {
         c.stderr().contains("hint stream connected")
     });
-    // A check on a 'pr' event's hint (not pushed): the last check is now recent.
-    let from = c.stderr().len();
-    insert_event(&h, "1", &ws, "pr", "not pushed", "{}");
+    // A check on a 'pr' event's hint (not pushed): the last check started after
+    // `inserted`.
+    let inserted = Instant::now();
+    let pr = insert_event(&h, "1", &ws, "pr", "not pushed", "{}");
     until("the check on the pr hint", Duration::from_secs(20), || {
-        in_order(
-            &c.stderr()[from..],
-            &["contract: wake fast", "contract: checked"],
-        )
+        woke_then_checked(&c.stderr(), n(&pr))
     });
-    let checked = Instant::now();
     kill_hints(&c);
     // While the new child's stream is held: E, then a state-only change, so the hub's
     // current change (the new stream's first frame) is 'state' only.
@@ -1664,15 +1658,14 @@ fn a_restarted_hint_child_wakes_at_once_on_a_state_only_first_hint() {
     until("the new hint child", Duration::from_secs(20), || {
         accepted.load(Ordering::SeqCst) >= 2
     });
-    let from = c.stderr().len();
     open.store(true, Ordering::SeqCst);
     let released = Instant::now();
-    // A state gap from the last check would end at `checked` + 5 s, at least 2 s after
-    // `released`.
+    // A state gap from the last check would end no sooner than `inserted` + 5 s, at
+    // least 2 s after `released`.
     assert!(
-        released - checked < Duration::from_secs(3),
+        released - inserted < Duration::from_secs(3),
         "slow restart: {:?}",
-        released - checked
+        released - inserted
     );
     let (at, push) = c.expect_push(Duration::from_secs(20));
     assert_eq!(meta(&push, "event"), e);
@@ -1681,13 +1674,16 @@ fn a_restarted_hint_child_wakes_at_once_on_a_state_only_first_hint() {
         "pushed {:?} after the reconnect",
         at - released
     );
-    let err = c.stderr();
-    assert!(
-        in_order(
-            &err[from..],
-            &["hint stream connected", "contract: wake fast"]
-        ),
-        "{err}"
+    // The new child's stream (the second connection) woke fast on E's revision.
+    until(
+        "the new stream's fast wake",
+        Duration::from_secs(20),
+        || {
+            let err = c.stderr();
+            err.match_indices("hint stream connected")
+                .nth(1)
+                .is_some_and(|(i, _)| woke_then_checked(&err[i..], rev))
+        },
     );
     let _ = watch.kill();
     let _ = watch.wait();
