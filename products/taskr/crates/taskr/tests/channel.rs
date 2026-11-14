@@ -213,6 +213,17 @@ impl Chan {
             ] {
                 assert!(instructions.contains(rule), "{rule}: {instructions}");
             }
+            // The digest rule is added only with the opt-in.
+            let digest = env
+                .iter()
+                .any(|(k, v)| k == "TASKR_CHANNEL_DIGEST" && v == "1");
+            assert_eq!(
+                instructions.contains("Digests are on")
+                    && instructions.contains("in the listed order")
+                    && instructions.contains("out_of_order"),
+                digest,
+                "{instructions}"
+            );
         }
         c.write(READY);
         c
@@ -1262,6 +1273,8 @@ enum Act {
     LoseRequest,
     /// The hub runs it, then this runs, then the reply goes back.
     After(Box<dyn FnOnce() + Send>),
+    /// The hub runs it; after this long the connection closes with no reply.
+    LateLoss(Duration),
 }
 type Rule = Arc<dyn Fn(&[String]) -> Act + Send + Sync>;
 /// An RPC proxy to the hub, one thread per connection. Each request's argv goes through
@@ -1329,6 +1342,7 @@ fn proxy(hub_port: u16, rule: Rule) -> (u16, mpsc::Receiver<Value>) {
                 hub.read_to_end(&mut reply).unwrap();
                 match act {
                     Act::LoseReply | Act::LoseRequest | Act::Reply(_) => {}
+                    Act::LateLoss(d) => std::thread::sleep(d),
                     Act::Pass => {
                         let _ = client.write_all(&reply);
                     }
@@ -2595,5 +2609,764 @@ fn a_delayed_closed_lane_hint_carries_its_time_and_current_state() {
         "{content}"
     );
     assert!(content.contains("worker turn stalled"));
+    assert_eq!(c.close().0, Some(0));
+}
+
+/// The lane's environment with the digest opt-in.
+fn digest(env: &Env) -> Env {
+    let mut env = env.clone();
+    env.push(("TASKR_CHANNEL_DIGEST".into(), "1".into()));
+    env
+}
+/// A push's event ids: the digest's `events` meta, else the single event.
+fn pushed_ids(push: &Value) -> Vec<String> {
+    match push["params"]["meta"]["events"].as_str() {
+        Some(ids) => ids.split(',').map(String::from).collect(),
+        None => vec![meta(push, "event")],
+    }
+}
+fn ack(c: &mut Chan, e: &str, fence: &str) -> Value {
+    c.call("taskr_ack", json!({"event":n(e),"fence":n(fence)}))["structuredContent"].clone()
+}
+
+#[test]
+fn digest_off_keeps_the_single_event_envelope_and_instructions() {
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &env, &[], SCALE);
+    held(&h, &ws);
+    let a = insert_event(&h, "1", &ws, "note", "one", "{}");
+    let b = insert_event(&h, "1", &ws, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(pushed_ids(&push), std::slice::from_ref(&a));
+    assert!(push["params"]["meta"].get("events").is_none(), "{push}");
+    // Without the opt-in an ack of the second event is the ledger's own refusal.
+    let r = ack(&mut c, &b, "1");
+    assert_eq!(r["outcome"], "rejected", "{r}");
+    assert!(
+        r["error"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("event {b} is not the pending event {a}")),
+        "{r}"
+    );
+    assert_eq!(cursors(&h, &ws), format!("0|{a}|-"));
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_digest_batches_lines_each_acked_by_its_own_id_in_order() {
+    // ttl 3 s, poll 1.5 s, digest 3 s, ack wait 30 s.
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let (_, other, _) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&env), &[], SCALE);
+    let fence = held(&h, &ws);
+    let started = Instant::now();
+    let e1 = insert_event(&h, "1", &ws, "note", "first", "{}");
+    let pr = insert_event(&h, "1", &ws, "pr", "never pushed", r#"{"pr":"o/r#1"}"#);
+    let e2 = insert_event(&h, "1", &ws, "message", "second", "{}");
+    let e3 = insert_event(&h, "1", &ws, "ready", &"x".repeat(400), "{}");
+    // A done whose launch's ready is not on the inbox page ends the run; it comes later.
+    let done = insert_launched(&h, &ws, "done", "no ready before it", other);
+    let e5 = insert_event(&h, "1", &ws, "note", "after the done", "{}");
+    let (at, push) = c.expect_push(Duration::from_secs(20));
+    assert!(at - started >= Duration::from_millis(2500), "not held");
+    assert_eq!(pushed_ids(&push), [e1.clone(), e2.clone(), e3.clone()]);
+    assert_eq!(meta(&push, "event"), e1);
+    let content = push["params"]["content"].as_str().unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 4, "{content}");
+    assert!(lines[0].starts_with(&format!(
+        "taskr digest: 3 events, consumer fence {fence}; the adapter records each receipt."
+    )));
+    assert!(lines[0].contains("in the listed order") && lines[0].contains("untrusted"));
+    for (line, (e, kind)) in
+        lines[1..]
+            .iter()
+            .zip([(&e1, "note"), (&e2, "message"), (&e3, "ready")])
+    {
+        assert!(
+            line.starts_with(&format!("event {e} (kind {kind}) from task 1")),
+            "{line}"
+        );
+    }
+    assert!(lines[2].contains(", sender campaign \""), "{}", lines[2]);
+    assert!(
+        lines[3].ends_with("\" [truncated: the first 280 of 400 bytes]"),
+        "{}",
+        lines[3]
+    );
+    // One attempt per line, each received; nothing for the passed-over pr.
+    for e in [&e1, &e2, &e3] {
+        until("the adapter's receipt", Duration::from_secs(10), || {
+            attempts(&h, e).len() == 1 && attempts(&h, e)[0].ends_with("|received")
+        });
+    }
+    assert!(attempts(&h, &pr).is_empty() && attempts(&h, &done).is_empty());
+    assert_eq!(cursors(&h, &ws), format!("0|{e1}|-"));
+
+    // Out of order: refused, names the pending line, acks nothing.
+    let r = ack(&mut c, &e3, &fence);
+    assert_eq!(
+        (r["outcome"].as_str(), r["pending"].as_i64()),
+        (Some("out_of_order"), Some(n(&e1))),
+        "{r}"
+    );
+    assert_eq!(cursors(&h, &ws), format!("0|{e1}|-"));
+    assert_eq!(ack(&mut c, &e1, &fence)["outcome"], "committed");
+    // The offer before the ack of e3 makes e2 pending: still out of order.
+    let r = ack(&mut c, &e3, &fence);
+    assert_eq!(r["pending"].as_i64(), Some(n(&e2)), "{r}");
+    assert_eq!(cursors(&h, &ws), format!("{e1}|{e2}|-"));
+    for e in [&e2, &e3] {
+        let r = ack(&mut c, e, &fence);
+        assert_eq!(r["outcome"], "committed", "{r}");
+    }
+    assert_eq!(cursors(&h, &ws), format!("{e3}|-|-"));
+    // An already acked line is the ledger's own `already`.
+    let r = ack(&mut c, &e2, &fence);
+    assert_eq!(
+        (r["outcome"].as_str(), r["already"].as_bool()),
+        (Some("committed"), Some(true)),
+        "{r}"
+    );
+
+    // The done heads the next digest, with the note behind it.
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(pushed_ids(&push), [done.clone(), e5.clone()]);
+    for e in [&done, &e5] {
+        assert_eq!(ack(&mut c, e, &fence)["outcome"], "committed");
+    }
+    assert!(c.quiet(Duration::from_secs(4)).is_empty());
+    for e in [&e1, &e2, &e3, &done, &e5] {
+        assert_eq!(attempts(&h, e).len(), 1, "{e}");
+    }
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn urgent_kinds_bypass_the_digest_hold() {
+    // ttl 15 s, poll 7.5 s, digest 15 s, ack wait 150 s.
+    const S: u32 = 4;
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&env), &[], S);
+    let fence = held(&h, &ws);
+    let held_at = Instant::now();
+    let note = insert_event(&h, "1", &ws, "note", "can wait", "{}");
+    assert!(
+        c.quiet(Duration::from_secs(2)).is_empty(),
+        "held note pushed"
+    );
+    for kind in ["ask", "owner_ask", "answer", "owner_answer", "fail"] {
+        let started = Instant::now();
+        let urgent = insert_event(&h, "1", &ws, kind, "now", "{}");
+        let (at, push) = c.expect_push(Duration::from_secs(20));
+        // At most one poll, never the digest hold (15 s from the note).
+        assert!(at - started < Duration::from_secs(9), "{kind} waited");
+        if kind == "ask" {
+            assert!(
+                at - held_at < Duration::from_secs(13),
+                "the ask waited for the hold"
+            );
+        }
+        if kind == "ask" {
+            // The held note rides along, before the ask.
+            assert_eq!(pushed_ids(&push), [note.clone(), urgent.clone()]);
+            assert_eq!(ack(&mut c, &note, &fence)["outcome"], "committed");
+        } else {
+            // Alone, it is today's single-event envelope.
+            assert_eq!(pushed_ids(&push), std::slice::from_ref(&urgent));
+            assert!(push["params"]["meta"].get("events").is_none());
+            let content = push["params"]["content"].as_str().unwrap();
+            assert!(content.starts_with(&format!("taskr event {urgent} (kind {kind})")));
+        }
+        assert_eq!(ack(&mut c, &urgent, &fence)["outcome"], "committed");
+    }
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn unacked_digest_lines_are_pushed_again_then_alarm_per_event() {
+    // ttl 2 s, poll 1 s, digest 2 s, ack wait 20 s: a digest runs more ledger steps
+    // in one check than a single push, so the lease keeps more slack than at scale 60.
+    const S: u32 = 30;
+    let wait = Duration::from_secs(20);
+    let slack = Duration::from_millis(300);
+    let alarms = |h: &Harness, e: &str| {
+        text(
+            h,
+            &format!(
+                "select count(*)||'' from events where kind='herdr' and related_event_id={e} and json_extract(data,'$.reason')='push_exhausted'"
+            ),
+        )
+    };
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&env), &[], S);
+    held(&h, &ws);
+    let a = insert_event(&h, "1", &ws, "note", "dropped one", "{}");
+    // A tail message: its sender (root 1) gets message_unreceived too.
+    let b = insert_event(&h, "1", &ws, "message", "dropped two", "{}");
+    let mut seen = vec![c.expect_push(Duration::from_secs(20))];
+    for _ in 0..2 {
+        seen.push(c.expect_push(wait * 2));
+    }
+    for pair in seen.windows(2) {
+        assert!(pair[1].0 - pair[0].0 >= wait - slack);
+    }
+    for (_, p) in &seen {
+        assert_eq!(pushed_ids(p), [a.clone(), b.clone()]);
+    }
+    // One alarm per line, each after its own third push and ack wait.
+    until("the push_exhausted alarms", wait * 2, || {
+        alarms(&h, &a) == "1" && alarms(&h, &b) == "1"
+    });
+    assert!(c.quiet(wait / 2).is_empty(), "a fourth push");
+    assert_eq!(attempts(&h, &a).len(), 3);
+    assert_eq!(attempts(&h, &b).len(), 3);
+    assert_eq!(
+        text(
+            &h,
+            &format!(
+                "select count(*)||'' from events where kind='herdr' and task_id=1 and recipient_task_id=1 and related_event_id={b} and json_extract(data,'$.reason')='message_unreceived'"
+            )
+        ),
+        "1"
+    );
+    assert_eq!(cursors(&h, &ws), format!("0|{a}|-"));
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_refused_fence_on_a_digest_ack_is_the_ledgers_error_and_acks_nothing() {
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&env), &[], SCALE);
+    let fence = held(&h, &ws);
+    let a = insert_event(&h, "1", &ws, "note", "one", "{}");
+    let b = insert_event(&h, "1", &ws, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
+    assert_eq!(ack(&mut c, &a, &fence)["outcome"], "committed");
+    h.ok(
+        &env,
+        &[
+            "consumer", "take", "--holder", "operator", "--ttl", "60000", "--force",
+        ],
+    );
+    let r = ack(&mut c, &b, &fence);
+    assert_eq!(r["outcome"], "rejected", "{r}");
+    assert!(r["error"].as_str().unwrap().contains("fence"), "{r}");
+    assert_eq!(cursors(&h, &ws), format!("{a}|-|-"));
+    until("the stop", Duration::from_secs(20), || {
+        c.stderr().contains("stopped:")
+    });
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn an_urgent_head_behind_more_than_a_page_of_skipped_rows_is_not_held() {
+    // ttl 15 s, poll 7.5 s, digest 15 s.
+    const S: u32 = 4;
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&env), &[], S);
+    held(&h, &ws);
+    for _ in 0..210 {
+        insert_event(
+            &h,
+            "1",
+            &ws,
+            "herdr",
+            "agent_status idle",
+            r#"{"agent_status":"idle","present":true}"#,
+        );
+    }
+    let started = Instant::now();
+    let ask = insert_event(&h, "1", &ws, "ask", "past the page", "{}");
+    let (at, push) = c.expect_push(Duration::from_secs(20));
+    assert!(at - started < Duration::from_secs(12), "the ask was held");
+    assert_eq!(pushed_ids(&push), [ask]);
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_failed_inbox_read_pushes_the_head_at_once_alone() {
+    // ttl 20 s, poll 10 s, digest 20 s; every inbox read through the proxy fails.
+    const S: u32 = 3;
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let direct = client(&h, &tailnet);
+    let (w, worker) = client_lane(&h, &direct);
+    let (p, _) = proxy(
+        port(&tailnet),
+        Arc::new(|argv: &[String]| {
+            if argv.iter().any(|a| a == "inbox") {
+                Act::LoseRequest
+            } else {
+                Act::Pass
+            }
+        }),
+    );
+    client(&h, &format!("http://[::1]:{p}"));
+    let mut c = Chan::start(&h, &digest(&worker), &[], S);
+    let fence = held(&h, &w);
+    let started = Instant::now();
+    let ask = insert_event(&h, "1", &w, "ask", "urgent", "{}");
+    let note = insert_event(&h, "1", &w, "note", "behind it", "{}");
+    let (at, push) = c.expect_push(Duration::from_secs(30));
+    assert!(at - started < Duration::from_secs(16), "the ask was held");
+    assert_eq!(pushed_ids(&push), std::slice::from_ref(&ask));
+    assert!(c.stderr().contains("digest inbox read"), "{}", c.stderr());
+    assert_eq!(ack(&mut c, &ask, &fence)["outcome"], "committed");
+    // A failed read is not a reason to hold a plain note either.
+    let started = Instant::now();
+    let (at, push) = c.expect_push(Duration::from_secs(30));
+    assert!(at - started < Duration::from_secs(16), "the note was held");
+    assert_eq!(pushed_ids(&push), [note]);
+    assert_eq!(c.close().0, Some(0));
+}
+
+/// A client-host digest lane whose proxy runs `act` for the `n`th `delivery new`
+/// (0 is the head's attempt, 1 the first tail line's).
+fn digest_client(
+    h: &Harness,
+    hub: &str,
+    n: usize,
+    act: impl Fn() -> Act + Send + Sync + 'static,
+) -> (String, Env, mpsc::Receiver<Value>) {
+    digest_client_on(h, hub, &["delivery", "new"], n, act)
+}
+/// The same, for the `n`th request whose argv has every word.
+fn digest_client_on(
+    h: &Harness,
+    hub: &str,
+    words: &'static [&'static str],
+    n: usize,
+    act: impl Fn() -> Act + Send + Sync + 'static,
+) -> (String, Env, mpsc::Receiver<Value>) {
+    digest_rule(h, hub, nth(words, n, act))
+}
+
+#[test]
+fn a_refused_tail_attempt_writes_nothing_and_stops() {
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let operator: Arc<Mutex<Env>> = Arc::new(Mutex::new(Vec::new()));
+    let (bin, home, op) = (
+        env!("CARGO_BIN_EXE_taskr"),
+        h.home.clone(),
+        operator.clone(),
+    );
+    let takeover = Mutex::new(Some(move || {
+        // After the head's attempt commits, before the tail's: another holder takes over.
+        let out = std::process::Command::new(bin)
+            .env_clear()
+            .current_dir(&home)
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", home.join("bin").display()),
+            )
+            .env("TASKR_TMP_BASE", home.join("taskr-tmp"))
+            .env("TMPDIR", &home)
+            .envs(op.lock().unwrap().iter().cloned())
+            .args([
+                "--json", "consumer", "take", "--holder", "operator", "--ttl", "60000", "--force",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }));
+    let (w, worker, _) = digest_client(&h, &tailnet, 0, move || {
+        Act::After(Box::new(takeover.lock().unwrap().take().unwrap()))
+    });
+    *operator.lock().unwrap() = worker.clone();
+    let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    until("the stop", Duration::from_secs(30), || {
+        c.stderr().contains("stopped:")
+    });
+    assert!(
+        c.quiet(Duration::from_secs(3)).is_empty(),
+        "a push after the refusal"
+    );
+    let err = c.stderr();
+    assert!(
+        err.contains("digest not written") && err.contains("delivery new refused"),
+        "{err}"
+    );
+    assert_eq!(attempts(&h, &a).len(), 1);
+    assert!(
+        attempts(&h, &a)[0].ends_with("|attempted"),
+        "{:?}",
+        attempts(&h, &a)
+    );
+    assert!(attempts(&h, &b).is_empty());
+    assert_eq!(lease(&h, &w), "2|operator");
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_lease_that_lapses_during_the_last_tail_attempt_writes_nothing() {
+    // ttl 3 s: the last tail attempt's reply is held 4 s, past the lease.
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let (w, worker, _) = digest_client(&h, &tailnet, 1, || {
+        Act::After(Box::new(|| std::thread::sleep(Duration::from_secs(4))))
+    });
+    let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    until("the stop", Duration::from_secs(30), || {
+        c.stderr().contains("stopped:")
+    });
+    assert!(
+        c.quiet(Duration::from_secs(3)).is_empty(),
+        "a push on a lapsed lease"
+    );
+    let err = c.stderr();
+    assert!(
+        err.contains("digest not written: no authority to write"),
+        "{err}"
+    );
+    // Both attempts committed; neither was submitted.
+    for e in [&a, &b] {
+        assert_eq!(attempts(&h, e).len(), 1, "{e}");
+        assert!(attempts(&h, e)[0].ends_with("|attempted"), "{e}");
+    }
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn eof_during_the_last_tail_attempt_writes_nothing() {
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let (w, worker, seen) = digest_client(&h, &tailnet, 1, || {
+        Act::After(Box::new(|| std::thread::sleep(Duration::from_millis(1500))))
+    });
+    let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    // EOF while the tail's attempt is at the hub.
+    let mut news = 0;
+    while news < 2 {
+        let req = seen
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the tail attempt");
+        let argv: Vec<String> = serde_json::from_value(req["argv"].clone()).unwrap();
+        if argv.iter().any(|x| x == "delivery") && argv.iter().any(|x| x == "new") {
+            news += 1;
+        }
+    }
+    drop(c.stdin.take());
+    let start = Instant::now();
+    while c.child.try_wait().unwrap().is_none() {
+        assert!(start.elapsed() < Duration::from_secs(60), "{}", c.stderr());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let mut lines = Vec::new();
+    while let Some((_, v)) = c.line(Duration::from_millis(100)) {
+        lines.push(v);
+    }
+    assert!(lines.iter().all(|v| v["method"] != PUSH), "{lines:?}");
+    let err = c.stderr();
+    assert!(
+        err.contains("digest not written: no authority to write"),
+        "{err}"
+    );
+    for e in [&a, &b] {
+        assert!(
+            attempts(&h, e).iter().all(|x| x.ends_with("|attempted")),
+            "{e}"
+        );
+    }
+}
+
+#[test]
+fn a_root_consumer_digest_acks_with_its_session() {
+    let h = Harness::new();
+    let root = ["--as", "1", "--session", "0"];
+    let (w, _, _) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&Vec::new()), &root, SCALE);
+    let fence = held(&h, "1");
+    let a = insert_event(&h, &ws, "1", "note", "one", "{}");
+    let b = insert_event(&h, &ws, "1", "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
+    let content = push["params"]["content"].as_str().unwrap();
+    assert!(!content.contains("taskr ack"), "{content}");
+    for e in [&a, &b] {
+        assert_eq!(ack(&mut c, e, &fence)["outcome"], "committed");
+    }
+    assert_eq!(cursors(&h, "1"), format!("{b}|-|-"));
+    assert_eq!(c.close().0, Some(0));
+}
+
+/// Each proxied request's argv words, in arrival order, with its request key.
+fn requests(seen: &mpsc::Receiver<Value>) -> Vec<(Vec<String>, String)> {
+    seen.try_iter()
+        .map(|r| {
+            (
+                serde_json::from_value(r["argv"].clone()).unwrap(),
+                r["request_key"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+fn has(argv: &[String], words: &[&str]) -> bool {
+    words.iter().all(|w| argv.iter().any(|a| a == w))
+}
+/// A client-host digest lane whose proxy applies `rule` to every request.
+fn digest_rule(h: &Harness, hub: &str, rule: Rule) -> (String, Env, mpsc::Receiver<Value>) {
+    let direct = client(h, hub);
+    let (w, worker) = client_lane(h, &direct);
+    let (p, seen) = proxy(port(hub), rule);
+    client(h, &format!("http://[::1]:{p}"));
+    (w, worker, seen)
+}
+
+#[test]
+fn a_stamp_reply_late_past_the_lease_starts_no_receipt_on_the_stale_lease() {
+    // ttl 3 s: the first `submitted` reply is held 4 s, past the lease.
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let (w, worker, seen) = digest_client_on(&h, &tailnet, &["delivery", "submitted"], 0, || {
+        Act::After(Box::new(|| std::thread::sleep(Duration::from_secs(4))))
+    });
+    let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
+    held(&h, &w);
+    insert_event(&h, "1", &w, "note", "one", "{}");
+    insert_event(&h, "1", &w, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(pushed_ids(&push).len(), 2);
+    until("the stop", Duration::from_secs(30), || {
+        c.stderr().contains("stopped:")
+    });
+    assert!(c.stderr().contains("renew refused"), "{}", c.stderr());
+    std::thread::sleep(Duration::from_secs(1));
+    let reqs = requests(&seen);
+    let stamps: Vec<&Vec<String>> = reqs
+        .iter()
+        .map(|(a, _)| a)
+        .filter(|a| has(a, &["delivery", "submitted"]) || has(a, &["delivery", "received"]))
+        .collect();
+    assert_eq!(stamps.len(), 1, "{stamps:?}");
+    assert!(has(stamps[0], &["submitted"]));
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn an_uncertain_renew_past_the_deadline_holds_every_stamp_until_a_fresh_renew() {
+    // ttl 6 s, renew every 2 s. The first `submitted` reply is held 2.5 s, so a renew is
+    // due before `received`. That renew commits at the hub but its reply is lost 4.6 s
+    // later: past the local deadline (the last confirmed renew + 6 s), before the hub's
+    // (this renew + 6 s). No stamp may start until a later renew commits.
+    const S: u32 = 10;
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let stamped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (st, lo) = (stamped.clone(), lost.clone());
+    let rule: Rule = Arc::new(move |argv: &[String]| {
+        if has(argv, &["delivery", "submitted"]) && !st.swap(true, Ordering::SeqCst) {
+            return Act::After(Box::new(|| std::thread::sleep(Duration::from_millis(2500))));
+        }
+        if has(argv, &["consumer", "renew"])
+            && st.load(Ordering::SeqCst)
+            && !lo.swap(true, Ordering::SeqCst)
+        {
+            return Act::LateLoss(Duration::from_millis(4600));
+        }
+        Act::Pass
+    });
+    let (w, worker, seen) = digest_rule(&h, &tailnet, rule);
+    let mut c = Chan::start(&h, &digest(&worker), &[], S);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(30));
+    assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
+    for e in [&a, &b] {
+        until("every receipt", Duration::from_secs(40), || {
+            attempts(&h, e).iter().all(|x| x.ends_with("|received"))
+        });
+    }
+    let reqs = requests(&seen);
+    // The lost renew: the first renew after the first `submitted`.
+    let sub = reqs
+        .iter()
+        .position(|(a, _)| has(a, &["delivery", "submitted"]))
+        .expect("a submitted stamp");
+    let lost_at = sub
+        + reqs[sub..]
+            .iter()
+            .position(|(a, _)| has(a, &["consumer", "renew"]))
+            .expect("the lost renew");
+    assert!(lost.load(Ordering::SeqCst));
+    let lost_key = reqs[lost_at].1.clone();
+    let next_stamp = reqs
+        .iter()
+        .enumerate()
+        .skip(lost_at)
+        .find(|(_, (a, _))| has(a, &["delivery", "submitted"]) || has(a, &["delivery", "received"]))
+        .map(|(i, _)| i)
+        .expect("a stamp after the lost renew");
+    // Between them: the lost renew's own retry, then a renew with a new key.
+    let fresh = reqs[lost_at + 1..next_stamp]
+        .iter()
+        .any(|(a, k)| has(a, &["consumer", "renew"]) && *k != lost_key);
+    assert!(
+        fresh,
+        "a stamp before a fresh renew: {:?}",
+        &reqs[lost_at..=next_stamp]
+    );
+    // The local view of that renew was uncertain, and the loop kept going.
+    let err = c.stderr();
+    assert!(
+        err.lines()
+            .any(|l| l.contains("channel: renew ") && l.contains(", retrying")),
+        "{err}"
+    );
+    assert!(!err.contains("stopped:"), "{err}");
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_slow_stamp_is_followed_by_a_renew_before_the_next_stamp() {
+    // ttl 6 s, renew every 2 s; the first `submitted` reply is held 2.5 s.
+    const S: u32 = 10;
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let (w, worker, seen) = digest_client_on(&h, &tailnet, &["delivery", "submitted"], 0, || {
+        Act::After(Box::new(|| std::thread::sleep(Duration::from_millis(2500))))
+    });
+    let mut c = Chan::start(&h, &digest(&worker), &[], S);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(30));
+    assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
+    for e in [&a, &b] {
+        until("every receipt", Duration::from_secs(30), || {
+            attempts(&h, e).iter().all(|x| x.ends_with("|received"))
+        });
+    }
+    let reqs = requests(&seen);
+    let sub = reqs
+        .iter()
+        .position(|(a, _)| has(a, &["delivery", "submitted"]))
+        .unwrap();
+    let rec = reqs
+        .iter()
+        .position(|(a, _)| has(a, &["delivery", "received"]))
+        .unwrap();
+    assert!(sub < rec);
+    assert!(
+        reqs[sub + 1..rec]
+            .iter()
+            .any(|(a, _)| has(a, &["consumer", "renew"])),
+        "no renew between the slow submitted and the next stamp: {:?}",
+        &reqs[sub..=rec]
+    );
+    assert!(!c.stderr().contains("stopped:"), "{}", c.stderr());
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_paused_stamp_queue_keeps_an_uncertain_stamp_first_with_its_key() {
+    // ttl 6 s, renew every 2 s, fresh while more than 2 s from the deadline. The first
+    // `submitted` is sent to the hub 4.6 s after the last take or renew (not fresh, not
+    // expired) and its reply is lost: uncertain, re-queued with its key. The renew due
+    // before `received` commits but its reply is lost too, so the lease is not fresh and
+    // the queue pauses. The replayed renew restores freshness; the retry must start
+    // with that same `submitted`, then `received`, then the next line.
+    const S: u32 = 10;
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let last = Arc::new(Mutex::new(Instant::now()));
+    let submitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let renew_lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (la, su, rl) = (last.clone(), submitted.clone(), renew_lost.clone());
+    let rule: Rule = Arc::new(move |argv: &[String]| {
+        if has(argv, &["consumer"]) && (has(argv, &["renew"]) || has(argv, &["take"])) {
+            if has(argv, &["renew"])
+                && su.load(Ordering::SeqCst)
+                && !rl.swap(true, Ordering::SeqCst)
+            {
+                return Act::LoseReply;
+            }
+            *la.lock().unwrap() = Instant::now();
+            return Act::Pass;
+        }
+        if has(argv, &["delivery", "submitted"]) && !su.swap(true, Ordering::SeqCst) {
+            let at = *la.lock().unwrap() + Duration::from_millis(4600);
+            std::thread::sleep(at.saturating_duration_since(Instant::now()));
+            return Act::LoseReply;
+        }
+        Act::Pass
+    });
+    let (w, worker, seen) = digest_rule(&h, &tailnet, rule);
+    let mut c = Chan::start(&h, &digest(&worker), &[], S);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(30));
+    assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
+    for e in [&a, &b] {
+        until("every receipt", Duration::from_secs(40), || {
+            attempts(&h, e).iter().all(|x| x.ends_with("|received"))
+        });
+    }
+    assert!(renew_lost.load(Ordering::SeqCst));
+    let stamps: Vec<(String, String, String)> = requests(&seen)
+        .into_iter()
+        .filter(|(a, _)| has(a, &["delivery", "submitted"]) || has(a, &["delivery", "received"]))
+        .map(|(a, k)| (a[2].clone(), a[3].clone(), k))
+        .collect();
+    let (aa, ab) = (meta(&push, "attempt"), {
+        let mut ids: Vec<String> = stamps.iter().map(|s| s.1.clone()).collect();
+        ids.dedup();
+        ids.into_iter()
+            .find(|x| *x != meta(&push, "attempt"))
+            .unwrap()
+    });
+    let order: Vec<(&str, &str)> = stamps
+        .iter()
+        .map(|(c, a, _)| (c.as_str(), a.as_str()))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("submitted", aa.as_str()),
+            ("submitted", aa.as_str()),
+            ("received", aa.as_str()),
+            ("submitted", ab.as_str()),
+            ("received", ab.as_str()),
+        ],
+        "{stamps:?}"
+    );
+    assert_eq!(
+        stamps[0].2, stamps[1].2,
+        "the uncertain stamp's key changed"
+    );
+    assert!(!c.stderr().contains("stopped:"), "{}", c.stderr());
     assert_eq!(c.close().0, Some(0));
 }
