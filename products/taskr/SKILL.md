@@ -77,6 +77,8 @@ stay the same; without `--supersede`, a second answer exits 6.
 "Not today" is an answer; ask again later. Withdraw a stale ask with
 `answer ASK_ID --withdraw TEXT --as ROOT` (the asker's root or a hub root; else exit 6).
 
+## Records, documents and exit codes
+
 Client records: `got`, `ready`, `done`, `fail`, `decide`, `next`, `note` and `close` print `qd1 <request key>` and exit 0 when the server is unreachable or earlier records wait in this host's spool. A full or unwritable spool: exit 5 with `retry with:`; rerun that line. Delivery: a running client daemon after a pass that reaches the server, or `taskr spool send` on that host; without a daemon they stay queued until manual send. Do not retry a queued record or treat it as failure. Other commands still exit 5 with `retry with: taskr --request-key KEY ...`: rerun that exact line before any wait; never wait on an unstored ask. If killed, use the announce line's retry command.
 
 `taskr spool ls` lists this host's queued, refused and bad files; `spool send` tries delivery now on a client host only; `spool rm SEQ|FILE` removes one after inspection. A stuck head (401/403/408/429) holds the whole queue in order: fix this host's token or wait for the server to be free. A refused `outcome unknown` record: check `taskr log` and run again only if missing. Other refused records will not be sent again; the server's error says why. A bad file could not be read; inspect it, then `spool rm` it.
