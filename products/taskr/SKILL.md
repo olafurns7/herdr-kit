@@ -79,9 +79,10 @@ Roots communicate with `taskr prompt TARGET --as SENDER_ROOT --text TEXT` (up to
 Root only: owner notes (`note --owner`) and `taskr notes`: see [orchestrator](references/orchestrator.md).
 Every current owner action is an owner ask, blocking only when it stops work;
 notes summarize context and link ask IDs. A choice is a structured ask:
-`taskr ask --owner --as ROOT --question '{"question":"Merge herdr-kit #12?","options":[{"label":"Merge","recommended":true},{"label":"Hold","description":"wait for CI"}]}'`
-(2-4 options, labels up to 60 characters, at most one recommended, optional `header` and
-`multiSelect`). The owner picks in taskr-tui; the answer arrives as text, `A: Merge — note`.
+`taskr ask --owner --as ROOT --question '{"question":"Merge herdr-kit #12?","options":[{"label":"Merge now"},{"label":"Merge after CI","recommended":true},{"label":"Hold","description":"keep it open"}]}'`
+(2-4 options in their natural order, labels up to 60 characters, at most one recommended and
+never moved first, optional `header` and `multiSelect`). The owner picks in taskr-tui; the
+answer arrives as text, `A: Merge after CI — note`.
 Every owner ask puts its facts in short tagged lines; see [Owner ask format](references/orchestrator.md#owner-ask-format).
 Glance red means open owner asks
 only; sound is blocking-only, badges count all. `set ROOT glance.state=parked`
@@ -89,7 +90,9 @@ only; sound is blocking-only, badges count all. `set ROOT glance.state=parked`
 Parking suppresses coordination alarms, keeps asks red, and turns amber if
 lane events or prompts to the lead follow it; root notes and handovers do not.
 Park after your final note. The clear verdict is "no owner action".
-The ledger is the single record of owner questions. Before a dialog, record
+The ledger is the single record of owner questions. The hub's channel: the ledger
+ask first, then one question block per decision in the owner's inbox; a pane
+dialog only when the owner asks for it in the pane. Before a dialog, record
 `ask --owner --dialog --question JSON --as ROOT`; record its answer at once.
 A pane conversation is allowed; an unrecorded dialog is not. Answer an open
 ask on that ask, never re-ask it. Claude's synchronous AskUserQuestion

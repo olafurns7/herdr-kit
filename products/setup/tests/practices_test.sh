@@ -49,7 +49,9 @@ for name, criteria in continuity.items():
 # The owner's review-loop rules (stop line, round cap, fresh seat, round-5 ask) add 10 lines.
 # The push restart rule (W1154) adds 3 lines.
 # The zoom-out at round 3 rule (W1918) adds 14 lines.
-if sum(len((orchestration / name).read_text().splitlines()) for name in continuity) > 449:  # Gather helper rule adds 1 line. The R21 brief PR line adds 1 line.
+# W2168: the hub's reload after a compaction adds 2 lines (recovery.md); the hub's gate before
+# an owner fact adds 2 lines and the closing-message rule adds 4 lines (owner.md).
+if sum(len((orchestration / name).read_text().splitlines()) for name in continuity) > 457:  # Gather helper rule adds 1 line. The R21 brief PR line adds 1 line.
     errors.append("orchestration continuity core exceeds its line budget")
 review = (root / "products/setup/skills/herdr-practices/references/review.md").read_text()
 if len(review.splitlines()) > 80:

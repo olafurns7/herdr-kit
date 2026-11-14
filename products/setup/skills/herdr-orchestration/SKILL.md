@@ -11,7 +11,7 @@ herdr-kit (github.com/olafurns7/herdr-kit) is the canonical home. Its installer 
 
 A host may carry a private `lanes.json` and fleet `local.md`. Review against source text; use the installed text for what a host does today.
 
-Two upstream defaults are overridden. Inside Herdr (`HERDR_ENV=1`), working in Herdr is the request: delegate without waiting for the word. Each helper gets its own tab in the task workspace, not a sibling pane of the caller; in a task workspace that was just created, the first helper takes its root tab.
+Two upstream defaults are overridden. Inside Herdr (`HERDR_ENV=1`), working in Herdr is the request: do not wait for the word "Herdr" before you delegate. Delegate work that needs a writer, an independent reviewer, or several lanes in parallel. Each lane costs a full agent session, a ticket, a brief, a report to read and a teardown, so do a read-only lookup or a check of a few commands yourself. Each helper gets its own tab in the task workspace, not a sibling pane of the caller; in a task workspace that was just created, the first helper takes its root tab.
 
 ## Owner questions
 
