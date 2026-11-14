@@ -253,6 +253,43 @@ fn backlog_disabled_parked_claim_replay_conflict_and_generation() {
         6,
     );
 }
+
+#[test]
+fn r21_controller_progress_commands_commit() {
+    let w = Work::new();
+    w.configure();
+    let id = w.queued(w.contract(false));
+    let run = w.claim(&id, "progress");
+    let ass = &run["assignments"][0];
+    w.running(ass);
+    let result = w.h.home.join("result.json");
+    let report = w.h.home.join("report.md");
+    std::fs::write(&report, "work report").unwrap();
+    std::fs::write(&result,json!({"kind":"execution","result":{"source":w.source(),"report":"implemented","artifacts":[]}}).to_string()).unwrap();
+    let cli = env!("CARGO_BIN_EXE_taskr");
+    let launch = ass["launch_id"].as_i64().unwrap();
+    let script = format!(
+        "'{cli}' work submit {launch} --file '{}' && '{cli}' ready 'work result submitted' --report '{}' && '{cli}' done 'work result submitted'",
+        result.display(),
+        report.display()
+    );
+    let output = std::process::Command::new("sh")
+        .args(["-c", &script])
+        .env_clear()
+        .env("HOME", &w.h.home)
+        .env("TASKR_DB", &w.h.db)
+        .envs(w.env(ass))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        w.h.count(
+            "select count(*) from events where launch_id=? and kind in ('ready','done')",
+            launch
+        ),
+        2
+    );
+}
 #[test]
 fn independent_review_acceptance_and_immutable_replay_with_quiet_reports() {
     let w = Work::new();
@@ -300,7 +337,7 @@ fn independent_review_acceptance_and_immutable_replay_with_quiet_reports() {
         .code(),
         Some(6)
     );
-    w.h.report(&w.env(ass), &["done", "routine report"]);
+    w.h.ok(&w.env(ass), &["done", "routine report"]);
     let recipient: Option<i64> =
         w.h.conn()
             .query_row(
@@ -1256,11 +1293,11 @@ fn block_is_idempotent_and_reports_before_submit_stay_quiet() {
     w.running(ass);
     let report = w.h.home.join("report.md");
     std::fs::write(&report, "synthetic progress").unwrap();
-    w.h.report(
+    w.h.ok(
         &w.env(ass),
         &["ready", "progress", "--report", report.to_str().unwrap()],
     );
-    w.h.report(&w.env(ass), &["done", "routine"]);
+    w.h.ok(&w.env(ass), &["done", "routine"]);
     assert_eq!(w.h.conn().query_row("select count(*) from events where kind in ('ready','done') and recipient_task_id is not null",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     w.h.ok(&w.env(ass), &["fail", "urgent exception"]);
     assert_eq!(

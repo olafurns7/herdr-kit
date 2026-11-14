@@ -40,6 +40,26 @@ fn repo_ok(repo: &str) -> bool {
         .is_some_and(|(a, b)| part(a) && part(b))
 }
 
+fn number(s: &str) -> Option<u64> {
+    (!s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
+        .then(|| s.parse().ok())
+        .flatten()
+}
+fn target(line: &str) -> Option<&str> {
+    let value = line
+        .strip_prefix("PR: ")
+        .or_else(|| line.strip_prefix("Review: "))?;
+    let (repo, pr) = value.split_once('#')?;
+    (repo_ok(repo) && number(pr).is_some_and(|n| n > 0)).then_some(value)
+}
+fn assigned(db: &Connection, t: &Task) -> Result<bool> {
+    Ok(db.query_row(
+        "select exists(select 1 from work_assignments where launch_id=? and lane_id=?)",
+        params![t.launch, t.id],
+        |r| r.get(0),
+    )?)
+}
+
 pub(super) fn prepare(
     db: &Connection,
     t: &Task,
@@ -48,110 +68,93 @@ pub(super) fn prepare(
 ) -> Result<()> {
     let brief = brief(db, t)?;
     let (required, seat) = roles(t, &brief);
-    if !required {
+    if !required || assigned(db, t)? {
         return Ok(());
     }
     let d = data.get_or_insert_with(|| json!({}));
-    // A bare done carries the latest ready from this launch, then checks it again.
     if kind == "done" && d.get("kv").is_none() {
         let raw: Option<String> = db.query_row(
-            "select json_extract(data,'$.kv') from events where task_id=? and launch_id=? and kind='ready' order by id desc limit 1",
-            params![t.id, t.launch], |r| r.get(0),
-        ).optional()?.flatten();
+            "select data from events where task_id=? and launch_id=? and kind='ready' order by id desc limit 1",
+            params![t.id,t.launch], |r| r.get(0),
+        ).optional()?;
         if let Some(raw) = raw {
-            d["kv"] = serde_json::from_str(&raw)?;
+            let saved: Value = serde_json::from_str(&raw)?;
+            for key in ["kv", "verdict_line", "pr_verified"] {
+                if let Some(value) = saved.get(key) {
+                    d[key] = value.clone();
+                }
+            }
+            if saved["pr_verified"] == true {
+                return Ok(());
+            }
         }
     }
     let kv = &d["kv"];
     let (repo, pr, head) = (text(kv, "repo"), text(kv, "pr"), text(kv, "head"));
+    let mut errors = Vec::new();
     if !repo_ok(repo) {
-        return Err(usage("writer/seat report needs --kv repo=OWNER/NAME"));
+        errors.push("--kv repo=OWNER/NAME".to_string());
     }
-    if pr != "none"
-        && (pr.is_empty()
-            || !pr.bytes().all(|c| c.is_ascii_digit())
-            || pr.parse::<u64>().ok().filter(|n| *n > 0).is_none())
-    {
-        return Err(usage(
-            "writer/seat report needs --kv pr=NUMBER or --kv pr=none --kv reason=TEXT",
-        ));
+    if pr != "none" && !number(pr).is_some_and(|n| n > 0) {
+        errors.push("--kv pr=NUMBER (or --kv pr=none --kv reason=TEXT)".into());
     }
     if pr == "none" && text(kv, "reason").trim().is_empty() {
-        return Err(usage("pr=none needs a non-empty --kv reason=TEXT"));
+        errors.push("--kv reason=TEXT".into());
     }
     if (pr != "none" || seat || !head.is_empty())
         && (head.len() != 40 || !head.bytes().all(|c| c.is_ascii_hexdigit()))
     {
-        return Err(usage("report needs --kv head=FULL_40_HEX_SHA"));
+        errors.push("--kv head=FULL_40_HEX_SHA".into());
     }
-    let mut verdict_line = None;
+    let targets: Vec<_> = brief.lines().filter_map(target).collect();
     if seat {
-        if pr != "none" {
-            let targets: Vec<_> = brief
-                .lines()
-                .filter_map(|line| {
-                    line.strip_prefix("PR:")
-                        .or_else(|| line.strip_prefix("Review:"))
-                        .map(str::trim)
-                })
-                .collect();
-            if targets.len() != 1
-                || !targets[0].split_once('#').is_some_and(|(r, n)| {
-                    repo_ok(r)
-                        && !n.is_empty()
-                        && n.bytes().all(|c| c.is_ascii_digit())
-                        && n.parse::<u64>().is_ok_and(|n| n > 0)
-                })
-            {
-                return Err(usage(format!(
-                    "seat brief needs one PR: {repo}#{pr} or Review: {repo}#{pr} line; report with --kv repo={repo} --kv pr={pr}"
-                )));
-            }
-            if targets[0] != format!("{repo}#{pr}") {
-                return Err(reject(
-                    "seat PR must equal its brief's single PR: OWNER/NAME#NUMBER or Review: OWNER/NAME#NUMBER line",
-                ));
-            }
+        if pr != "none" && targets.len() != 1 {
+            errors.push(
+                "taskr ask 'Need one exact PR: OWNER/NAME#NUMBER line from the lead' --blocking"
+                    .into(),
+            );
         }
-        let verdict = text(kv, "verdict");
-        if !matches!(verdict, "PASS" | "FAIL") {
-            return Err(usage("seat report needs --kv verdict=PASS|FAIL"));
+        if !matches!(text(kv, "verdict"), "PASS" | "FAIL") {
+            errors.push("--kv verdict=PASS|FAIL".into());
         }
-        let mut counts = Vec::new();
         for key in ["p0", "p1", "p2", "p3"] {
-            let value = text(kv, key);
-            if value.is_empty()
-                || !value.bytes().all(|c| c.is_ascii_digit())
-                || value.parse::<u64>().is_err()
-            {
-                return Err(usage(format!(
-                    "seat report needs --kv {key}=NON_NEGATIVE_INTEGER"
-                )));
+            if number(text(kv, key)).is_none() {
+                errors.push(format!("--kv {key}=NON_NEGATIVE_INTEGER"));
             }
-            counts.push(format!("{key}={value}"));
         }
-        verdict_line = Some(format!(
-            "VERDICT {repo}#{pr} {head} {verdict} {}",
-            counts.join(" ")
+        if text(kv, "verdict") == "PASS"
+            && ["p0", "p1"]
+                .iter()
+                .any(|k| number(text(kv, k)).is_some_and(|n| n > 0))
+        {
+            errors.push("--kv verdict=FAIL (PASS requires --kv p0=0 --kv p1=0)".into());
+        }
+    }
+    if !errors.is_empty() {
+        return Err(usage(format!("report needs {}", errors.join("; "))));
+    }
+    if seat && pr != "none" && targets[0] != format!("{repo}#{pr}") {
+        return Err(reject(
+            "seat PR must equal its brief's single PR: OWNER/NAME#NUMBER or Review: OWNER/NAME#NUMBER line",
         ));
     }
+    let verdict_line = seat.then(|| {
+        format!(
+            "VERDICT {repo}#{pr} {head} {} {}",
+            text(kv, "verdict"),
+            ["p0", "p1", "p2", "p3"]
+                .iter()
+                .map(|key| format!("{key}={}", text(kv, key)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    });
     if pr != "none" {
         // PATH can point to a fake gh in isolated tests. There is no production bypass.
-        let output = std::process::Command::new("gh")
-            .args(["pr", "view", pr, "--repo", repo, "--json", "number,commits"])
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| {
-                transport(format!(
-                    "cannot verify PR with gh (required): {e}; retry after gh is available"
-                ))
-            })?;
-        if !output.status.success() {
-            return Err(transport(
-                "cannot verify PR: gh failed; check GitHub access and the PR number, then retry",
-            ));
-        }
-        let value: Value = serde_json::from_slice(&output.stdout)
+        let mut command = std::process::Command::new("gh");
+        command.args(["pr", "view", pr, "--repo", repo, "--json", "number,commits"]);
+        let stdout = gh_output(command, std::time::Duration::from_secs(20))?;
+        let value: Value = serde_json::from_slice(&stdout)
             .map_err(|_| transport("cannot verify PR: invalid gh response; retry"))?;
         let number = value["number"]
             .as_u64()
@@ -178,10 +181,77 @@ pub(super) fn prepare(
             ));
         }
     }
+    if pr != "none" {
+        d["pr_verified"] = json!(true);
+    }
     if let Some(line) = verdict_line {
         d["verdict_line"] = json!(line);
     }
     Ok(())
+}
+
+fn gh_output(mut command: std::process::Command, timeout: std::time::Duration) -> Result<Vec<u8>> {
+    use std::{
+        io::Read,
+        os::unix::process::CommandExt,
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let mut child = command
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| {
+            transport(format!(
+                "cannot verify PR with gh (required): {e}; retry after gh is available"
+            ))
+        })?;
+    let mut pipe = child.stdout.take().expect("pipe");
+    let (send, recv) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = pipe.read_to_end(&mut bytes).map(|_| bytes);
+        let _ = send.send(result);
+    });
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| transport(format!("cannot verify PR: {e}; retry")))?
+        {
+            let bytes = recv.recv_timeout(timeout.saturating_sub(start.elapsed()));
+            if let Ok(Ok(bytes)) = bytes {
+                if status.success() {
+                    return Ok(bytes);
+                }
+                return Err(transport(
+                    "cannot verify PR: gh failed; check GitHub access and the PR number, then retry",
+                ));
+            }
+            break;
+        }
+        if start.elapsed() >= timeout {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    terminate_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(transport(
+        "cannot verify PR: gh timed out or output failed; retry",
+    ))
+}
+#[test]
+fn r21_gh_deadline() {
+    let mut command = std::process::Command::new("sh");
+    command.args(["-c", "sleep 2"]);
+    let error = gh_output(command, std::time::Duration::from_millis(20)).unwrap_err();
+    assert_eq!(error.code, ExitCode::Transport);
+    assert!(error.message.contains("retry"));
 }
 
 fn transport(message: impl Into<String>) -> Error {
@@ -192,7 +262,7 @@ fn transport(message: impl Into<String>) -> Error {
 }
 
 pub(super) fn refs(db: &Connection, t: &Task, data: Option<&Value>) -> Result<()> {
-    if !roles(t, &brief(db, t)?).0 {
+    if !roles(t, &brief(db, t)?).0 || assigned(db, t)? {
         return Ok(());
     }
     let Some(kv) = data.and_then(|d| d.get("kv")) else {

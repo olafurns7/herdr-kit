@@ -12,6 +12,9 @@ use std::{
     time::{Duration, Instant},
 };
 use taskr_core::{ExitCode, compact_json};
+pub(crate) fn pr_retry(exit: i64, error: &str) -> bool {
+    exit == 5 && error.starts_with("cannot verify PR")
+}
 
 #[derive(Clone, Debug)]
 struct Error {

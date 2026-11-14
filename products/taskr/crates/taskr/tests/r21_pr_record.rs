@@ -27,7 +27,7 @@ const VERDICT: &[&str] = &[
     "p3=0",
 ];
 fn gh(h: &Harness) {
-    h.script("gh", &format!("#!/bin/sh\n[ \"$*\" = 'pr view 42 --repo example/project --json number,commits' ] || exit 1\nprintf '%s\\n' '{{\"number\":42,\"commits\":[{{\"oid\":\"{HEAD}\"}}]}}'\n"));
+    h.script("gh", &format!("#!/bin/sh\n[ \"$*\" = 'pr view 42 --repo example/project --json number,commits' ] || exit 1\n[ \"$GH_PROMPT_DISABLED\" = 1 ] || exit 1\nprintf '%s\\n' '{{\"number\":42,\"commits\":[{{\"oid\":\"{HEAD}\"}}]}}'\n"));
 }
 fn refused(h: &Harness, env: &Env, args: &[&str], expected: &str, code: i32) {
     let before: i64 = h
@@ -40,7 +40,10 @@ fn refused(h: &Harness, env: &Env, args: &[&str], expected: &str, code: i32) {
     assert!(v["error"].as_str().unwrap().contains(expected), "{v}");
     if code == 2 {
         let error = v["error"].as_str().unwrap();
-        assert!(!error.contains('\n') && error.contains("--kv"), "{v}");
+        assert!(
+            !error.contains('\n') && (error.contains("--kv") || error.contains("taskr ask")),
+            "{v}"
+        );
     }
     if code == 5 {
         assert!(v["error"].as_str().unwrap().contains("retry"), "{v}");
@@ -91,42 +94,28 @@ fn r21_writer_requires_pr_reason_and_membership() {
             2,
         );
     }
+    let report = |fields: &[&str], expected, code| {
+        refused(
+            &h,
+            &env,
+            &[&["ready", "slice"][..], fields].concat(),
+            expected,
+            code,
+        )
+    };
     gh(&h);
-    refused(
-        &h,
-        &env,
-        &[&["ready", "slice"][..], FIELDS, &["--kv", "head=bad"]].concat(),
-        "--kv head=FULL_40_HEX_SHA",
-        2,
-    );
-    let fields = [
+    let bad = [FIELDS, &["--kv", "head=bad"]].concat();
+    report(&bad, "--kv head=FULL_40_HEX_SHA", 2);
+    let wrong = [
         FIELDS,
         &["--kv", "head=2222222222222222222222222222222222222222"],
     ]
     .concat();
-    refused(
-        &h,
-        &env,
-        &[&["ready", "slice"][..], &fields].concat(),
-        "not a commit",
-        6,
-    );
+    report(&wrong, "not a commit", 6);
     h.script("gh", "#!/bin/sh\nexit 1\n");
-    refused(
-        &h,
-        &env,
-        &[&["ready", "slice"][..], FIELDS].concat(),
-        "gh failed",
-        5,
-    );
+    report(FIELDS, "gh failed", 5);
     h.script("gh", "#!/bin/sh\necho '{}'\n");
-    refused(
-        &h,
-        &env,
-        &[&["ready", "slice"][..], FIELDS].concat(),
-        "missing gh PR number",
-        5,
-    );
+    report(FIELDS, "missing gh PR number", 5);
     std::fs::remove_file(h.home.join("bin/gh")).unwrap();
     let mut no_gh = env.clone();
     no_gh.push(("PATH".into(), h.home.join("bin").to_str().unwrap().into()));
@@ -145,6 +134,7 @@ fn r21_writer_refs_done_inheritance_and_none() {
     let (task, _, env) = h.lane("codex", "implementer");
     gh(&h);
     h.ok(&env, &[&["ready", "slice"][..], FIELDS].concat());
+    h.script("gh", "#!/bin/sh\nexit 1\n");
     let done = h.ok(&env, &["done"])["event_id"].as_i64().unwrap();
     let data: String = h
         .conn()
@@ -205,6 +195,13 @@ fn r21_writer_refs_done_inheritance_and_none() {
 fn r21_seat_verdict_prints_stores_and_binds_to_brief() {
     let h = Harness::new();
     let (task, _, env) = h.lane("claude", "reviewer");
+    let missing = h.output(&env, &["--json", "ready", "missing fields"], b"");
+    assert_eq!(missing.status.code(), Some(2));
+    let value: Value = serde_json::from_slice(&missing.stdout).unwrap();
+    let error = value["error"].as_str().unwrap();
+    for key in ["repo", "pr", "head", "verdict", "p0", "p1", "p2", "p3"] {
+        assert!(error.contains(&format!("--kv {key}=")), "{error}");
+    }
     gh(&h);
     seat_brief(&h, task, "example/project#41");
     refused(
@@ -219,14 +216,17 @@ fn r21_seat_verdict_prints_stores_and_binds_to_brief() {
         &h,
         &env,
         &[&["ready", "seat"][..], FIELDS, VERDICT].concat(),
-        "seat brief needs",
+        "taskr ask",
         2,
     );
     // A captured task brief can use the task's role without a HERDR-BRIEF header.
     documents::capture_brief(
         &h.conn(),
         task,
-        Some(&documents::body(b"PR: example/project#42\n", "seat.md")),
+        Some(&documents::body(
+            b"PR: prose about the review\nPR: example/project#42\nReview: further context\n",
+            "seat.md",
+        )),
     )
     .unwrap();
     refused(
@@ -241,6 +241,13 @@ fn r21_seat_verdict_prints_stores_and_binds_to_brief() {
         &env,
         &[&["ready", "seat"][..], FIELDS].concat(),
         "verdict=",
+        2,
+    );
+    refused(
+        &h,
+        &env,
+        &[&["ready", "seat"][..], FIELDS, VERDICT, &["--kv", "p1=1"]].concat(),
+        "--kv verdict=FAIL",
         2,
     );
     let expected = format!("VERDICT example/project#42 {HEAD} PASS p0=0 p1=0 p2=2 p3=0");
@@ -272,7 +279,6 @@ fn r21_seat_verdict_prints_stores_and_binds_to_brief() {
             .iter()
             .any(|v| v["data"]["verdict_line"] == expected)
     );
-    gh(&h);
     let done = h.output(&env, &["done"], b"");
     assert!(done.status.success(), "{done:?}");
     assert!(

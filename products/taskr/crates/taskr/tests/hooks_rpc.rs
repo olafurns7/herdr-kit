@@ -500,6 +500,57 @@ mod rpc {
         assert_ne!(requests[1]["request_key"], requests[2]["request_key"]);
     }
     #[test]
+    fn r21_spool_retries_pr_verification_then_delivers() {
+        let h = Harness::new();
+        h.script("tailscale", include_str!("hook/tailscale.sh"));
+        let (task, launch, env) = h.lane("codex", "implementer");
+        h.conn()
+            .execute("update tasks set machine='host-a' where id=?", [task])
+            .unwrap();
+        h.conn()
+            .execute("update launches set machine='host-a' where id=?", [launch])
+            .unwrap();
+        let state = h.home.join("client/.local/state/taskr");
+        fs::create_dir_all(&state).unwrap();
+        fs::write(state.join("server.url"), "http://[::1]:1\n").unwrap();
+        let client = client_env(&h, &env);
+        assert_eq!(
+            h.ok(
+                &client,
+                &[
+                    "ready",
+                    "queued PR",
+                    "--kv",
+                    "repo=example/project",
+                    "--kv",
+                    "pr=42",
+                    "--kv",
+                    "head=1111111111111111111111111111111111111111"
+                ]
+            )["queued"],
+            true
+        );
+        h.script("gh", "#!/bin/sh\nexit 1\n");
+        let (_hub, port) = start_hub(&h);
+        fs::write(state.join("server.url"), format!("http://[::1]:{port}\n")).unwrap();
+        h.ok(&client, &["spool", "send"]);
+        let held = h.ok(&client, &["spool", "ls"]);
+        assert_eq!(held["queued"].as_array().unwrap().len(), 1);
+        assert!(held["refused"].as_array().unwrap().is_empty());
+        h.script("gh","#!/bin/sh\nprintf '%s' '{\"number\":42,\"commits\":[{\"oid\":\"1111111111111111111111111111111111111111\"}]}'\n");
+        h.ok(&client, &["spool", "send"]);
+        let sent = h.ok(&client, &["spool", "ls"]);
+        assert!(sent["queued"].as_array().unwrap().is_empty());
+        assert!(sent["refused"].as_array().unwrap().is_empty());
+        assert_eq!(
+            h.count(
+                "select count(*) from events where task_id=? and kind='ready'",
+                task
+            ),
+            1
+        );
+    }
+    #[test]
     fn client_rpc_normalized_fields_and_host_check() {
         let h = Harness::new();
         h.script("tailscale", include_str!("hook/tailscale.sh"));
