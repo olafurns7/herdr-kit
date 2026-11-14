@@ -132,21 +132,9 @@ pub(crate) fn read_peaks(
         if at < cutoff {
             return false;
         }
-        if at > now
-            || event["event"] != "end"
-            || !event["accounting_error"].is_null()
-            || event["stopped"] == true
-        {
+        if at > now || event["event"] != "end" {
             return true;
         }
-        let Some(peak) = event["memory_peak_bytes"].as_u64().filter(|n| *n > 0) else {
-            return true;
-        };
-        let peak = if event["oom_killed"] == true {
-            u64::MAX
-        } else {
-            peak
-        };
         let Some(pool) = event["pool"].as_str() else {
             return true;
         };
@@ -160,6 +148,17 @@ pub(crate) fn read_peaks(
                 };
                 crate::admission::class(pool, None, cost)
             }
+        };
+        let peak = if event["oom_killed"] == true {
+            u64::MAX
+        } else {
+            if !event["accounting_error"].is_null() || event["stopped"] == true {
+                return true;
+            }
+            let Some(peak) = event["memory_peak_bytes"].as_u64().filter(|n| *n > 0) else {
+                return true;
+            };
+            peak
         };
         samples.entry(class).or_default().push(peak);
         true
@@ -628,6 +627,27 @@ mod peak_tests {
         assert_eq!(peaks.len(), 1);
         assert_eq!(peaks["default:build"].samples, 20);
         assert_eq!(peaks["default:build"].mib, 20.0);
+    }
+
+    #[test]
+    fn oom_peaks_survive_stopped_accounting_and_missing_peak_filters() {
+        for fields in [
+            json!({"stopped":true,"memory_peak_bytes":1048576}),
+            json!({"accounting_error":"unavailable","memory_peak_bytes":1048576}),
+            json!({"memory_peak_bytes":null}),
+            json!({"memory_peak_bytes":0}),
+        ] {
+            let mut event = fields;
+            event["at"] = json!(100000);
+            event["event"] = json!("end");
+            event["pool"] = json!("default");
+            event["kind"] = json!("build");
+            event["oom_killed"] = json!(true);
+            let peaks = read_peaks(&mut Cursor::new(event.to_string()), 100000.0, 1).unwrap();
+            let peak = peaks.get("default:build").expect("OOM sample must count");
+            assert_eq!(peak.samples, 1);
+            assert_eq!(peak.mib, u64::MAX as f64 / 1048576.0);
+        }
     }
 
     #[test]

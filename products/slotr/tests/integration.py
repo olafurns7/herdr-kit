@@ -1085,12 +1085,15 @@ class AdmissionTest(unittest.TestCase):
         self.cfg['light'] = dict(kinds=dict(check=dict(cost_mib=1024,
                                                      env=dict(BUILD_THREADS='4'))))
         self.write_config()
-        override = dict(self.env, SLOTR_POOLS__LIGHT__KINDS__CHECK__ENV__BUILD_THREADS='2')
+        override = dict(self.env, SLOTR_POOLS__LIGHT__KINDS__CHECK__ENV__BUILD_THREADS='2',
+                        SLOTR_POOLS__LIGHT__KINDS__CHECK__ENV___FOO='value')
         result = self.invoke('config', 'show', env=override)
         self.assertEqual(result.returncode, 0, result.stderr)
         env = json.loads(result.stdout)['config']['pools']['light']['kinds']['check']['env']
         self.assertEqual(env['BUILD_THREADS'], '2')
         self.assertNotIn('build_threads', env)
+        self.assertEqual(env.get('_FOO'), 'value')
+        self.assertNotIn('FOO', env)
 
     def test_explicit_config_required_and_file_precedence(self):
         config = self.root / 'config/slotr/config.toml'
@@ -3678,7 +3681,7 @@ class ReplayTest(unittest.TestCase):
 
     def test_overlap_reports_both_admission_charges(self):
         m = self.replay
-        runs = [m.Run(str(i), 0, 0, 4, 'test', str(i), 0, 10, 7) for i in range(3)]
+        runs = [m.Run(str(i), 0, 0, 4, 'test', str(i), 0, 'heavy', 10, 7) for i in range(3)]
         cost = m.metrics(runs, m.replay(runs, 12, 3, 0, charge='cost'), 12)
         peak = m.metrics(runs, m.replay(runs, 12, 3, 0, charge='max_cost_peak'), 12)
         self.assertEqual(cost['maximum_concurrency'], 3)
@@ -3691,9 +3694,9 @@ class ReplayTest(unittest.TestCase):
 
     def test_replay_backfill_stops_at_eight_and_head_wins(self):
         m = self.replay
-        runs = [m.Run('holder', 0, 0, 4, '', 'holder', 0, 10, 4),
-                m.Run('head', 1, 1, 10, '', 'head', 0, 11, 10)]
-        runs += [m.Run(str(i), 1, 1, 1, '', str(i), 0, 2, 1) for i in range(10)]
+        runs = [m.Run('holder', 0, 0, 4, '', 'holder', 0, 'heavy', 10, 4),
+                m.Run('head', 1, 1, 10, '', 'head', 0, 'heavy', 11, 10)]
+        runs += [m.Run(str(i), 1, 1, 1, '', str(i), 0, 'heavy', 2, 1) for i in range(10)]
         schedule = m.replay(runs, 12, 20, 0)
         self.assertEqual(sum(i >= 2 and start < 10 for start, _, i in schedule), 8)
         self.assertEqual(next(start for start, _, i in schedule if i == 1), 10)
@@ -3701,11 +3704,11 @@ class ReplayTest(unittest.TestCase):
 
     def test_peak_table_uses_nearest_rank_without_a_config_proposal(self):
         m = self.replay
-        runs = [m.Run(str(i), 0, 0, 1000, 'test', '', 0, 1, peak)
+        runs = [m.Run(str(i), 0, 0, 1000, 'test', '', 0, 'heavy', 1, peak)
                 for i, peak in enumerate([256, 513, 900])]
         groups = m.peak_groups(runs)
-        self.assertEqual(m.percentile(groups['test'], .5), 513)
-        self.assertEqual(m.percentile(groups['test'], .95), 900)
+        self.assertEqual(m.percentile(groups['heavy:test'], .5), 513)
+        self.assertEqual(m.percentile(groups['heavy:test'], .95), 900)
 
     def test_reused_run_names_and_journal_deduplication(self):
         m = self.replay

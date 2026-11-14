@@ -355,7 +355,7 @@ fn load_with_env(
     {
         let mut parts: Vec<_> = key[6..].split("__").map(str::to_lowercase).collect();
         if parts.len() == 6 && parts[0] == "pools" && parts[2] == "kinds" && parts[4] == "env" {
-            parts[5] = key.rsplit("__").next().unwrap().to_owned();
+            parts[5] = key[6..].split("__").nth(5).unwrap().to_owned();
         }
         let path = parts.join(".");
         let mut cursor = &mut value;
