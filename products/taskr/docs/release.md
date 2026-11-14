@@ -78,7 +78,7 @@ or other build version is refused. The script runs on Linux and:
 7. **Publish**, without `--dry-run`: tag, push the tag, and
    `gh release create` as a stable release.
 
-- After publication, update the `taskr/v0.30.2` example pins to the published tag
+- After publication, update the `taskr/v0.31.0` example pins to the published tag
   in the repository [README.md](../../../README.md) and
   [QUICKSTART.md](../../../QUICKSTART.md), the taskr [README.md](../README.md),
   [AGENTS_SETUP.md](../AGENTS_SETUP.md), [docs/install.md](install.md), and
