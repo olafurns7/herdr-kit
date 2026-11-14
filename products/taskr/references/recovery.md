@@ -34,6 +34,8 @@ A running client daemon sends `$HOME/.local/state/taskr/spool/` in order after a
 - Other refused records will not be sent again; the server's error says why. Resolve that error before issuing corrected work.
 - A bad file could not be read. Inspect it, then remove it with `spool rm`.
 
+A refused queued ready/done must be sent again by hand after its error is fixed.
+
 ## Receipt alarms
 
 - `prompt_outcome` `no_receipt` (data `outcome`, `window_ms`, `async:true`): the lane did not run `got` within the deadline. It is written on a daemon pass or at your next `wait`. Run `taskr log ID` for that attempt's `got`, then `herdr agent read`. Resend only when the prompt is shown as never received, and never while the pane shows work.

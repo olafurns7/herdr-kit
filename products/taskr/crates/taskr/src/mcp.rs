@@ -529,13 +529,13 @@ impl Server {
                 tool(
                     "taskr_ready",
                     "Report a slice ready (`ready`), with an optional report file. committed refers to the ledger write; the report's document capture is best effort, as in the CLI.",
-                    json!({"summary":text("the slice summary"),"report_path":text("an absolute path to the report on this host"),"retry_handle":handle}),
+                    json!({"summary":text("the slice summary"),"report_path":text("an absolute path to the report on this host"),"kv":{"type":"object","additionalProperties":{"type":"string"},"description":"PR report fields: repo, pr, head, reason; seats also verdict and p0-p3"},"retry_handle":handle}),
                     &["summary"],
                 ),
                 tool(
                     "taskr_done",
                     "Finish the task (`done`).",
-                    json!({"summary":text("the final summary"),"retry_handle":handle}),
+                    json!({"summary":text("the final summary"),"kv":{"type":"object","additionalProperties":{"type":"string"},"description":"Complete PR report fields; omit to use the latest ready in this launch"},"retry_handle":handle}),
                     &["summary"],
                 ),
                 tool(
@@ -667,17 +667,40 @@ impl Server {
                 },
                 string("text"),
             ),
-            "taskr_ready" => {
+            "taskr_ready" | "taskr_done" => {
                 let mut flags = vec![];
+                if let Some(kv) = args.get("kv") {
+                    let kv = kv
+                        .as_object()
+                        .ok_or_else(|| invalid_params("kv must be an object of strings"))?;
+                    for (key, value) in kv {
+                        let value = value
+                            .as_str()
+                            .ok_or_else(|| invalid_params("kv values must be strings"))?;
+                        if key.is_empty() || key.contains('=') {
+                            return Err(invalid_params(
+                                "kv keys must be non-empty and contain no '='",
+                            ));
+                        }
+                        flags.extend(["--kv".into(), format!("{key}={value}")]);
+                    }
+                }
                 if let Some(path) = args["report_path"].as_str() {
                     if !std::path::Path::new(path).is_absolute() {
                         return Err(invalid_params("report_path must be an absolute path"));
                     }
                     flags.extend(["--report".into(), path.into()]);
                 }
-                literal("ready", flags, string("summary"))
+                literal(
+                    if name == "taskr_ready" {
+                        "ready"
+                    } else {
+                        "done"
+                    },
+                    flags,
+                    string("summary"),
+                )
             }
-            "taskr_done" => literal("done", vec![], string("summary")),
             "taskr_fail" => literal("fail", vec![], string("summary")),
             _ => return Err(invalid_params(format!("unknown tool {name}"))),
         };
@@ -862,6 +885,11 @@ fn check(schema: &Value, args: &Value) -> Result<(), RpcError> {
                     && p["maximum"].as_i64().is_none_or(|m| n <= m)
             }),
             Some("boolean") => v.is_boolean(),
+            Some("object") => v.as_object().is_some_and(|map| {
+                map.iter().all(|(key, value)| {
+                    !key.contains('\0') && value.as_str().is_some_and(|s| !s.contains('\0'))
+                })
+            }),
             _ => v.as_str().is_some_and(|s| !s.contains('\0')),
         };
         if !ok {

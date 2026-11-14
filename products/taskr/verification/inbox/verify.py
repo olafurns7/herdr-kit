@@ -237,6 +237,8 @@ class CLI:
         report = folder / "report.md"
         report.write_text("Synthetic ready event; ASK_ONLY deliberately excludes this kind.\n")
         self.ready = self.call("ready", "fixture", "--report", report,
+                               "--kv", "repo=example/project", "--kv", "pr=none",
+                               "--kv", "reason=verification fixture",
                                worker=True)["event_id"]
         self.ask = self.call("ask", "fixture question", worker=True)["ask_id"]
 

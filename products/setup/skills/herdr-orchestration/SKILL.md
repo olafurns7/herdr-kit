@@ -113,6 +113,7 @@ Every brief starts with the header and ends with the report contract:
 HERDR-BRIEF role=<orchestrator|sub-orchestrator|implementer|mechanical-worker|researcher|code-reviewer|reviewer|architect|code-validator>
 orchestrator=<your agent name or pane id>   report=<absolute path>.md
 Task topology: workspace=<task-workspace-id> tab=<owned-helper-tab-id> pane=<owned-pane-id> cwd=<task-worktree-path>
+PR: OWNER/NAME#N
 
 Objective: <one bounded outcome>
 Intent: <optional: the orchestrator's own words for what done looks like for the owner>
@@ -133,8 +134,8 @@ changed files, summary, validation evidence, risks, and blockers to the report
 path, then reply with the path and three lines.
 ```
 
-An implementer or fixer brief replaces the sentence that starts "Do not commit" with: "You MAY commit your owned paths only, with exactly `git add -- PATHS && git commit -m MSG -- PATHS` and only the hook switch that the Leaf checks slot names. On `index.lock`, retry up to 3 times, a few seconds apart through normal commands, not a sleep loop, then `taskr ask --blocking`; never delete a lock. Do not push, amend, rebase, open a PR, update the issue tracker, or start agents. When committed: `taskr ready SLICE --report REPORT --kv head=<full OID>`, then `taskr done`. Stay in your pane: the lane stays done but open until a green gated head that contains your head (`git merge-base --is-ancestor`) is reviewed READY." Ownership must be disjoint: a path-limited commit does not separate two lanes' edits to one file. Reviewer and researcher briefs stay read-only.
-Reviewer and researcher briefs replace the sentence that starts "Do not commit" with: "Do not commit, push, open a PR, or update the issue tracker. Do not start agents except gather helpers (taskr references/review.md); a brief may say Gather helpers: none. A gather- lane never starts helpers". They name taskr `references/review.md` in Skills to load.
+An implementer or fixer brief replaces the sentence that starts "Do not commit" with: "You MAY commit your owned paths only, with exactly `git add -- PATHS && git commit -m MSG -- PATHS` and only the hook switch that the Leaf checks slot names. On `index.lock`, retry up to 3 times, a few seconds apart through normal commands, not a sleep loop, then `taskr ask --blocking`; never delete a lock. Do not push, amend, rebase, open a PR, update the issue tracker, or start agents. When committed: `taskr ready SLICE --report REPORT --kv repo=OWNER/NAME --kv pr=NUMBER --kv head=<full OID>`, then `taskr done`. For an unpushed slice, keep repo/head and use `--kv pr=none --kv reason=unpushed`. Stay in your pane: the lane stays done but open until a green gated head that contains your head (`git merge-base --is-ancestor`) is reviewed READY." Ownership must be disjoint: a path-limited commit does not separate two lanes' edits to one file. Reviewer and researcher briefs stay read-only.
+Reviewer and researcher briefs replace the sentence that starts "Do not commit" with: "Do not commit, push, open a PR, or update the issue tracker. Do not start agents except gather helpers (taskr references/review.md); a brief may say Gather helpers: none. A gather- lane never starts helpers". Reviewer briefs include one exact `PR: OWNER/NAME#N` line for the reviewed PR, plus any prose context. They name taskr `references/review.md` in Skills to load.
 
 A brief that hands a slotr runtime to a worker (`herdr-fleet`) says the worker stops its run with `slotr stop <run>` before `taskr done`, unless the brief hands the runtime to the lead.
 

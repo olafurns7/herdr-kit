@@ -89,6 +89,27 @@ impl Harness {
         );
         serde_json::from_slice(&out.stdout).unwrap()
     }
+    // Transport/hook fixtures have no PR. Keep that fact explicit at report call sites.
+    pub fn report(&self, env: &[(String, String)], args: &[&str]) -> Value {
+        if !matches!(args.first(), Some(&"ready" | &"done")) {
+            return self.ok(env, args);
+        }
+        self.ok(
+            env,
+            &[
+                args,
+                &[
+                    "--kv",
+                    "repo=example/project",
+                    "--kv",
+                    "pr=none",
+                    "--kv",
+                    "reason=test fixture",
+                ],
+            ]
+            .concat(),
+        )
+    }
     pub fn rows(&self, env: &[(String, String)], args: &[&str]) -> Vec<Value> {
         let mut argv = vec!["--json"];
         argv.extend_from_slice(args);

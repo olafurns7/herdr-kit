@@ -370,13 +370,16 @@ pub fn send(dir: &Path, raw: &str) -> Result<usize> {
 #[derive(Debug, PartialEq)]
 enum Outcome {
     Keep,
+    Retry,
     Unknown,
     Refuse,
     Remove,
     Delivered,
 }
 fn outcome(argv: &[String], rep: &Value) -> Outcome {
-    if taskr_core::db::busy_reply(rep["exit"].as_i64().unwrap_or(-1), &reply_error(rep)) {
+    if super::pr_retry(rep["exit"].as_i64().unwrap_or(-1), &reply_error(rep)) {
+        Outcome::Retry
+    } else if taskr_core::db::busy_reply(rep["exit"].as_i64().unwrap_or(-1), &reply_error(rep)) {
         Outcome::Keep
     } else if rep["exit"] == 5
         && rep["stdout"]
@@ -443,6 +446,7 @@ fn send_count(dir: &Path, raw: &str, sent: &mut usize) -> Result<()> {
                 let outcome = outcome(&argv, &rep);
                 let r = busy(dir, &p, outcome == Outcome::Keep)?;
                 match outcome {
+                    Outcome::Retry => return Ok(()),
                     Outcome::Keep => {
                         if super::now() - parsed_time(r["busy_since"].as_str().unwrap()).unwrap()
                             < time::Duration::minutes(10)

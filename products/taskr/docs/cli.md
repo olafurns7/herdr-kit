@@ -60,11 +60,19 @@ they say which lane is speaking.
 ```sh
 taskr got ATTEMPT                      # "I received the prompt"
 taskr note "progress"
-taskr ready "slice done" --report PATH # a result the orchestrator should read
+taskr ready "slice done" --report PATH \
+  --kv repo=OWNER/NAME --kv pr=NUMBER --kv head=FULL_40_HEX_SHA
 taskr ask "question" --blocking        # add --owner to ask you
 taskr wait --for answer                # block until the answer arrives
-taskr done "summary"                   # or: taskr fail "why"
+taskr done "summary"                   # reuses the latest ready fields; or: taskr fail "why"
 ```
+
+Writer and seat reports need the lane's own PR and head. For a result without a
+PR, keep `repo` and use `--kv pr=none --kv reason=TEXT`; a writer may omit `head`
+in that case. A seat also supplies `--kv verdict=PASS|FAIL --kv p0=N --kv p1=N
+--kv p2=N --kv p3=N` with the open finding counts at that head. A direct `done`
+without an earlier `ready` needs the complete record. See the
+[report rules](../SKILL.md#taskr) for validation and role matching.
 
 ## What an orchestrator runs
 

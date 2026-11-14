@@ -285,7 +285,7 @@ def run(go, rust, output):
             eventually(heartbeat)
             record(rust,e,'answer',str(silent),'done')
             record(rust,e,'answer',str(audible),'done')
-            record(rust,we,'ready','slice')
+            record(rust,we,'ready','slice','--kv','repo=example/project','--kv','pr=none','--kv','reason=test fixture')
             fake.wake('w1:p1')
             def ready_token():
                 return any('taskr_state=ready' in json.loads(line) for line in (home/'calls').read_text().splitlines())

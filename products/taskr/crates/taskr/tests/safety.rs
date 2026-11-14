@@ -361,10 +361,10 @@ fn filtered_wait_skips_without_deleting_and_validates_before_ack() {
     let skip_kind = h.ok(&env, &["ask", "which pin?"])["event_id"]
         .as_i64()
         .unwrap();
-    let skip_source = h.ok(&other_env, &["ready", "beta"])["event_id"]
+    let skip_source = h.report(&other_env, &["ready", "beta"])["event_id"]
         .as_i64()
         .unwrap();
-    let matched = h.ok(&env, &["ready", "alpha"])["event_id"]
+    let matched = h.report(&env, &["ready", "alpha"])["event_id"]
         .as_i64()
         .unwrap();
     h.ok(&[], &["wait", "--as", "1", "--timeout", "0"]);
@@ -522,7 +522,7 @@ fn capacity_quota_and_stall_bypass_filters_and_replay_until_acked() {
         let other = new_task(&h, "beta", "implementer", 1);
         let other_env = launch(&h, other);
         let protected = inject(&h, other, other_env[1].1.parse().unwrap(), "herdr", data);
-        let ready = h.ok(&env, &["ready", "alpha"])["event_id"].clone();
+        let ready = h.report(&env, &["ready", "alpha"])["event_id"].clone();
         let args = [
             "wait",
             "--as",
@@ -557,7 +557,7 @@ fn ordinary_herdr_hints_do_not_bypass_wait_filters() {
     for data in [json!({"reason":"other"}), json!({"agent_status":"idle"})] {
         inject(&h, other, other_env[1].1.parse().unwrap(), "herdr", data);
     }
-    let ready = h.ok(&env, &["ready", "alpha"])["event_id"]
+    let ready = h.report(&env, &["ready", "alpha"])["event_id"]
         .as_i64()
         .unwrap();
     let out = h.output(
@@ -1452,7 +1452,7 @@ fn reused_task_names_reject_closed_stale_and_missing_launch_ready_events() {
         6,
         "TASKR_LAUNCH is not set",
     );
-    let event = h.ok(&fresh_env, &["ready", "new worker"])["event_id"].clone();
+    let event = h.report(&fresh_env, &["ready", "new worker"])["event_id"].clone();
     assert_eq!(
         h.ok(&[], &["wait", "--as", "1", "--timeout", "0"])["event"]["id"],
         event

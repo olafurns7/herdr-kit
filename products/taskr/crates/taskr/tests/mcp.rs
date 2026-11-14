@@ -573,7 +573,7 @@ fn tools_take_no_authority_and_invalid_params_run_nothing() {
 }
 
 #[test]
-fn literal_text_never_becomes_a_flag_or_recipient() {
+fn r21_mcp_report_fields_keep_literal_text() {
     let h = Harness::new();
     let (w, _, env) = h.lane("claude", "implementer");
     let (ws, r) = (w.to_string(), parent(&h, w));
@@ -595,7 +595,7 @@ fn literal_text_never_becomes_a_flag_or_recipient() {
     calls.push(tool("taskr_ask", json!({"text":"--blocking"})));
     calls.push(tool(
         "taskr_ready",
-        json!({"summary":"--help","report_path":report}),
+        json!({"summary":"--help","report_path":report,"kv":{"repo":"example/project","pr":"none","reason":"test fixture"}}),
     ));
     calls.push(tool("taskr_done", json!({"summary":"--"})));
     let replies = session(&h, &env, &[], &calls);
@@ -877,7 +877,7 @@ fn bound_writes_commit_and_stale_bindings_are_rejected() {
         ("taskr_ask", json!({"text":"which way?","blocking":true})),
         (
             "taskr_ready",
-            json!({"summary":"slice one","report_path":report}),
+            json!({"summary":"slice one","report_path":report,"kv":{"repo":"example/project","pr":"none","reason":"test fixture"}}),
         ),
     ] {
         assert_eq!(outcome(&worker(&env, name, a)), "committed");
@@ -1486,7 +1486,7 @@ fn client_mode_keeps_queued_unknown_and_replay_apart() {
         &current,
         &[],
         "taskr_ready",
-        json!({"summary":"queued ready","report_path":report}),
+        json!({"summary":"queued ready","report_path":report,"kv":{"repo":"example/project","pr":"none","reason":"test fixture"}}),
     );
     assert_eq!(outcome(&ready), "queued", "{ready}");
     std::fs::write(&report, "changed after queueing\n").unwrap();
@@ -1611,7 +1611,7 @@ fn client_mode_keeps_queued_unknown_and_replay_apart() {
             &current,
             &[],
             "taskr_ready",
-            json!({"summary":summary,"report_path":path}),
+            json!({"summary":summary,"report_path":path,"kv":{"repo":"example/project","pr":"none","reason":"test fixture"}}),
         );
         assert_eq!(outcome(&r), "committed", "{r}");
     }
@@ -1637,7 +1637,7 @@ fn client_mode_keeps_queued_unknown_and_replay_apart() {
         &current,
         &[],
         "taskr_ready",
-        json!({"summary":"upload lost","report_path":captured}),
+        json!({"summary":"upload lost","report_path":captured,"kv":{"repo":"example/project","pr":"none","reason":"test fixture"}}),
     );
     assert_eq!(outcome(&unsent), "committed", "{unsent}");
     assert_eq!(doc("upload lost"), "", "committed does not prove capture");

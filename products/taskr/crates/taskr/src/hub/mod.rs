@@ -503,7 +503,7 @@ async fn stored(hub: Arc<Hub>, machine: String, req: RpcRequest) -> RpcReply {
             if let Some((host, sha, state, exit, stdout, stderr, upload)) = old {
                 if host != claim_machine || sha != hash { return Err(store::reject(format!("request key {key} belongs to another command"))); }
                 if state != "done" { return Err(store::Error { code: taskr_core::ExitCode::Transport, message: format!("request {key}: outcome unknown (still running, or the server stopped during it); inspect `taskr log` before any resend") }); }
-                if !(rerun_busy && db::busy_reply(exit.into(), &crate::net::reply_error(&json!({"exit":exit,"stdout":stdout,"stderr":stderr})))) {
+                if !(rerun_busy && (db::busy_reply(exit.into(), &crate::net::reply_error(&json!({"exit":exit,"stdout":stdout,"stderr":stderr}))) || crate::net::pr_retry(exit.into(), &crate::net::reply_error(&json!({"exit":exit,"stdout":stdout,"stderr":stderr}))))) {
                     return Ok(Some(RpcReply { exit, stdout, stderr, upload: upload.map(|s| serde_json::from_str(&s)).transpose()?.flatten() }));
                 }
                 tx.execute("delete from requests where key=?", [&key])?;
@@ -543,6 +543,12 @@ async fn stored(hub: Arc<Hub>, machine: String, req: RpcRequest) -> RpcReply {
     let exited = matches!(&result, Execution::Exited(_));
     let rep = result.into_reply();
     let exited = exited
+        && !crate::net::pr_retry(
+            rep.exit.into(),
+            &crate::net::reply_error(
+                &json!({"exit":rep.exit,"stdout":rep.stdout,"stderr":rep.stderr}),
+            ),
+        )
         && !(crate::net::spoolable(&req.argv)
             && db::busy_reply(
                 rep.exit.into(),

@@ -188,7 +188,7 @@ pub fn flags(cmd: &str, json: bool) -> FlagSet {
                 .bool("owner", false, "for the owner; root orchestrators only")
                 .int("as", 0, "a root orchestrator's own task id");
         }
-        "ready" => {
+        "ready" | "done" => {
             f.string("report", "", "report path")
                 .string("key", "", "idempotency key")
                 .strings("kv", "KEY=VALUE, repeatable");
@@ -213,7 +213,7 @@ pub fn flags(cmd: &str, json: bool) -> FlagSet {
             .string("key", "", "idempotency key")
             .int("as", 0, "a root orchestrator's own task id");
         }
-        "done" | "fail" => {
+        "fail" => {
             f.string("key", "", "idempotency key");
         }
         "close" => {
@@ -391,6 +391,9 @@ pub fn emit(cmd: &str, json_mode: bool, v: &Value) {
     if json_mode {
         println!("{}", compact_json(v).expect("JSON"));
         return;
+    }
+    if let Some(line) = v["verdict_line"].as_str() {
+        println!("{line}");
     }
     let suffix = if v["duplicate"] == true { " dup" } else { "" };
     match cmd {
@@ -1084,7 +1087,7 @@ fn run(cmd: &str, f: &FlagSet) -> Result<Value> {
             let mut data = match cmd {
                 "ask" => Some(json!({"blocking":f.get_bool("blocking"),"owner":owner})),
                 "note" if owner => Some(json!({"owner":true})),
-                "ready" => Some(json!({})),
+                "ready" | "done" => Some(json!({})),
                 _ => None,
             };
             if cmd == "ask" {
@@ -1104,7 +1107,7 @@ fn run(cmd: &str, f: &FlagSet) -> Result<Value> {
                     d["dialog"] = json!(true);
                 }
             }
-            if cmd == "ready" {
+            if matches!(cmd, "ready" | "done") {
                 let d = data.as_mut().expect("ready data");
                 if !f.get_string("report").is_empty() {
                     let cwd = store::caller_cwd()?;
@@ -1126,6 +1129,9 @@ fn run(cmd: &str, f: &FlagSet) -> Result<Value> {
                 }
                 if !kv.as_object().expect("object").is_empty() {
                     d["kv"] = kv;
+                }
+                if cmd == "done" && d.as_object().expect("object").is_empty() {
+                    data = None;
                 }
             }
             worker::write(
