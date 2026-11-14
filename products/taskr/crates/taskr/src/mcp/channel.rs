@@ -319,6 +319,9 @@ fn read_hints(
             }
         };
         let mut connected = false;
+        // A new child's first hint is the hub's current change, which can be
+        // state-only: it takes the hint gap, so a restart never waits for the state gap.
+        let mut first = true;
         if let Some(out) = stdout {
             for line in std::io::BufReader::new(out).lines() {
                 let Ok(line) = line else { break };
@@ -337,14 +340,11 @@ fn read_hints(
                     log("hint stream connected");
                     last.clear();
                 }
-                if hint
-                    && send
-                        .send(Msg::Wake {
-                            state_only: state_only(&v),
-                        })
-                        .is_err()
-                {
-                    return;
+                if hint {
+                    let state_only = !std::mem::take(&mut first) && state_only(&v);
+                    if send.send(Msg::Wake { state_only }).is_err() {
+                        return;
+                    }
                 }
             }
         }
@@ -488,7 +488,15 @@ impl Loop {
             let wait = self.next().saturating_duration_since(Instant::now());
             match receive.recv_timeout(wait) {
                 Ok(Msg::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Ok(Msg::Wake { state_only }) => self.hinted(state_only),
+                Ok(Msg::Wake { state_only }) => {
+                    #[cfg(feature = "contract")]
+                    log(if state_only {
+                        "contract: wake state"
+                    } else {
+                        "contract: wake fast"
+                    });
+                    self.hinted(state_only)
+                }
                 Ok(Msg::Done(done)) => self.settle(done),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -565,6 +573,9 @@ impl Loop {
             self.next_check = Instant::now() + self.t.poll;
             self.retry_stamps();
             self.check();
+            // Test-only: the timing fixtures order their steps on this line.
+            #[cfg(feature = "contract")]
+            log("contract: checked");
         }
     }
 
