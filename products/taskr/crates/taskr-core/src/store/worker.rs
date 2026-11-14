@@ -1,4 +1,5 @@
 use super::*;
+mod pr_record;
 
 pub fn resolve(db: &Connection, as_id: i64) -> Result<Task> {
     resolve_inner(db, as_id, true)
@@ -168,7 +169,7 @@ pub struct Write<'a> {
     pub owner: bool,
     pub as_id: i64,
 }
-pub fn write(db: &mut Connection, w: Write<'_>) -> Result<Value> {
+pub fn write(db: &mut Connection, mut w: Write<'_>) -> Result<Value> {
     for p in [
         "got:",
         "no_receipt:",
@@ -181,6 +182,17 @@ pub fn write(db: &mut Connection, w: Write<'_>) -> Result<Value> {
                 "--key prefix {p:?} is reserved for events taskr writes itself"
             )));
         }
+    }
+    // Validate before taking the ledger write lock. Replays retain the original record.
+    let replay: bool = !w.key.is_empty()
+        && db.query_row(
+            "select exists(select 1 from events where event_key=?)",
+            [w.key],
+            |r| r.get(0),
+        )?;
+    if matches!(w.kind, "ready" | "done") && !replay {
+        let t = resolve(db, w.as_id)?;
+        pr_record::prepare(db, &t, w.kind, &mut w.data)?;
     }
     let report = if matches!(w.kind, "ready" | "done" | "fail") {
         let t = resolve(db, w.as_id)?;
@@ -230,6 +242,14 @@ pub fn write(db: &mut Connection, w: Write<'_>) -> Result<Value> {
                     )));
                 }
                 let mut out = json!({"ok":true,"kind":w.kind,"event_id":eid,"task_id":tid,"status":t.status,"duplicate":true});
+                let line: Option<String> = tx.query_row(
+                    "select json_extract(data,'$.verdict_line') from events where id=?",
+                    [eid],
+                    |r| r.get(0),
+                )?;
+                if let Some(line) = line {
+                    out["verdict_line"] = json!(line);
+                }
                 if w.kind == "ask" {
                     out["ask_id"] = json!(eid);
                 }
@@ -283,6 +303,12 @@ pub fn write(db: &mut Connection, w: Write<'_>) -> Result<Value> {
             super::orch::relay_owner(tx, eid, None)?;
         }
         documents::capture_report(tx, t.id, eid, report.as_ref())?;
+        if matches!(w.kind, "ready" | "done") {
+            pr_record::refs(tx, &t, w.data.as_ref())?;
+            if let Some(line) = w.data.as_ref().and_then(|d| d.get("verdict_line")) {
+                out["verdict_line"] = line.clone();
+            }
+        }
         Ok(out)
     })?;
     if warn_owner_items {

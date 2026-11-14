@@ -115,7 +115,7 @@ fn fixture_flows_and_receipts() {
         assert_eq!(h.got(a2), 1);
         let report = h.home.join("report.md");
         fs::write(&report, "ready").unwrap();
-        h.ok(
+        h.report(
             &env,
             &["ready", "slice", "--report", report.to_str().unwrap()],
         );
@@ -208,7 +208,7 @@ fn no_stall_after_done_fail_or_ask() {
             fixture("claude-session-start.json"),
         );
         let a = h.prompt(w, false);
-        h.ok(&env, &[outcome, "result"]);
+        h.report(&env, &[outcome, "result"]);
         h.hook(&env, "claude", "Stop", fixture("claude-stop.json"));
         assert_eq!(h.stalls(a), 0, "{outcome}");
     }
@@ -731,7 +731,7 @@ fn delayed_hints_describe_ready_then_closed_without_changing_the_audit() {
     h.daemon();
     let report = h.home.join("report.md");
     fs::write(&report, "ready").unwrap();
-    h.ok(
+    h.report(
         &env,
         &["ready", "slice", "--report", report.to_str().unwrap()],
     );

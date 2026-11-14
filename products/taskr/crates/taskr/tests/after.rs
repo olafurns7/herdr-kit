@@ -91,7 +91,7 @@ fn subscribe_list_cancel_and_a_filtered_wait_wakes() {
     );
     assert_eq!(code(&h, &[], &["after", "--cancel", &id]), Some(6));
     // The lane is done: a wait filtered to other kinds and tasks still wakes on af.
-    h.ok(&env, &["done", "finished"]);
+    h.report(&env, &["done", "finished"]);
     let text = stdout(
         &h,
         &[],

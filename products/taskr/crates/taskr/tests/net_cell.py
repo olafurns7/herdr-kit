@@ -265,7 +265,7 @@ def run(cell):
     report=cell.tmp/'client.md';report.write_text('report <&> Þ😀\n')
     current=cell.count('select current_launch_id from tasks where id=?',(lane,))
     worker={'TASKR_TASK':str(lane),'TASKR_LAUNCH':str(current)}
-    cell.record(['ready','report uploaded','--report',str(report)],env=worker)
+    cell.record(['ready','report uploaded','--report',str(report),'--kv','repo=example/project','--kv','pr=none','--kv','reason=test fixture'],env=worker)
     assert cell.count("select count(*) from documents where task_id=? and kind='report' and captured=1",(lane,))==1
     goal=cell.tmp/'goal.md';goal.write_bytes(b'')
     cell.record(['doc','set',str(root),'goal','--file',str(goal)])
@@ -451,7 +451,7 @@ def isolated_uploads(go, rust):
                     worker = {'TASKR_TASK': str(lane), 'TASKR_LAUNCH': str(launch)}
                     for cmd in ('ready', 'done'):
                         args = [cmd, f'{cmd} {name}']
-                        if cmd == 'ready': args += ['--report', str(path)]
+                        if cmd == 'ready': args += ['--report', str(path), '--kv', 'repo=example/project', '--kv', 'pr=none', '--kv', 'reason=test fixture']
                         reply = cell.cli(client, ['--json', *args], worker)
                         result[f'{cmd}-{name}'] = (reply.returncode, reply.stderr.decode().replace(str(cell.tmp), '<tmp>'))
                 plan = cell.tmp / 'plan.md'; plan.write_text('plan body\n')

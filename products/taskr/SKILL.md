@@ -30,6 +30,36 @@ taskr ready "slice" --report PATH [--kv K=V]   # after a commit: --kv head=FULL_
 taskr ask "question" --blocking [--owner]
 taskr done "report"                   # or fail
 ```
+Writer and seat reports require PR fields on `ready` and `done`. A writer has
+brief role `implementer` or `mechanical-worker`, or a name starting `impl-` or
+`fix-`. A seat has role `code-reviewer`, `reviewer` or `code-validator`, or a name
+starting `rev-`. Use the latest captured HERDR-BRIEF for the current launch
+(or task brief); without a header role, the task role applies. Other roles
+do not need these fields.
+
+Use `--kv repo=OWNER/NAME --kv pr=NUMBER --kv head=FULL_40_HEX_SHA`.
+Use the lane's own PR on a stack. A report without a PR uses `--kv pr=none
+--kv reason=TEXT` plus `repo`; writers may omit `head` in that case. A bare
+`done` carries the latest `ready` fields from the same launch and validates
+them again. With any explicit `--kv`, supply the complete record.
+Numbered PRs need a successful `gh pr view NUMBER --repo OWNER/NAME --json
+number,commits` read on the ledger host. Missing gh, failed access, malformed
+output or a head absent from that commit list refuses the report with exit 6.
+The existing `repo` and `pr` lane refs are updated after validation; `pr=none`
+clears the lane's PR ref. No PR is inferred from another lane or a base branch.
+
+A seat brief has exactly one line `PR: OWNER/NAME#NUMBER` or
+`Review: OWNER/NAME#NUMBER`. Its numbered PR must equal that line. A seat also
+supplies `head`, `--kv verdict=PASS|FAIL` and `--kv p0=N --kv p1=N --kv p2=N
+--kv p3=N`; each count is a non-negative integer of open findings at that head.
+Compact output prints one line before the usual receipt:
+`VERDICT OWNER/NAME#NUMBER HEAD PASS|FAIL p0=N p1=N p2=N p3=N`.
+JSON output includes that line as `verdict_line`. `log --json` and
+`campaign --json` expose `data.kv` and `data.verdict_line` on the ready/done
+event. An idempotent replay returns the stored verdict without a new gh read.
+The `taskr_ready` and `taskr_done` MCP tools accept the same keys in a `kv`
+object with string values.
+
 Plain lane blocking ask: `taskr wait --for answer` (it uses TASKR_TASK/TASKR_LAUNCH; `--as` other than TASKR_TASK exits 6). Handle the answer to your ask, then `taskr ack EVENT --as $TASKR_TASK`. Timeout: wait again. Answers never reopen finished work. --key: idempotent; got: reserved.
 
 ## Root and orchestrator actions

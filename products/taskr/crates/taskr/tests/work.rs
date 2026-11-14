@@ -300,7 +300,7 @@ fn independent_review_acceptance_and_immutable_replay_with_quiet_reports() {
         .code(),
         Some(6)
     );
-    w.h.ok(&w.env(ass), &["done", "routine report"]);
+    w.h.report(&w.env(ass), &["done", "routine report"]);
     let recipient: Option<i64> =
         w.h.conn()
             .query_row(
@@ -1256,11 +1256,11 @@ fn block_is_idempotent_and_reports_before_submit_stay_quiet() {
     w.running(ass);
     let report = w.h.home.join("report.md");
     std::fs::write(&report, "synthetic progress").unwrap();
-    w.h.ok(
+    w.h.report(
         &w.env(ass),
         &["ready", "progress", "--report", report.to_str().unwrap()],
     );
-    w.h.ok(&w.env(ass), &["done", "routine"]);
+    w.h.report(&w.env(ass), &["done", "routine"]);
     assert_eq!(w.h.conn().query_row("select count(*) from events where kind in ('ready','done') and recipient_task_id is not null",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     w.h.ok(&w.env(ass), &["fail", "urgent exception"]);
     assert_eq!(

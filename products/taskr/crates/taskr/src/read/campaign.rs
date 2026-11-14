@@ -172,7 +172,7 @@ pub(super) fn snapshot(db: &Connection, root: i64, page: i64, all: bool) -> Resu
     let mut log = rows(
         db,
         &format!(
-            "{TREE}select e.id,e.kind,e.task_id,e.recipient_task_id,e.created_at as at,t.name as lane,coalesce(e.summary,'') as text,e.kind='ask' and e.answered_by is null as open,coalesce(json_extract(e.data,'$.owner'),0) as owner,coalesce(json_extract(e.data,'$.blocking'),0) as blocking from events e join tasks t on t.id=e.task_id where (e.task_id in (select id from tree) or (e.kind='message' and e.recipient_task_id in (select id from tree))) and not {} order by e.id desc limit 100 offset ?",
+            "{TREE}select e.id,e.kind,e.task_id,e.recipient_task_id,case when e.kind in ('ready','done') then e.data end as data,e.created_at as at,t.name as lane,coalesce(e.summary,'') as text,e.kind='ask' and e.answered_by is null as open,coalesce(json_extract(e.data,'$.owner'),0) as owner,coalesce(json_extract(e.data,'$.blocking'),0) as blocking from events e join tasks t on t.id=e.task_id where (e.task_id in (select id from tree) or (e.kind='message' and e.recipient_task_id in (select id from tree))) and not {} order by e.id desc limit 100 offset ?",
             super::TMP_NOISE
         ),
         vec![root.into(), ((page - 1) * 100).into()],

@@ -799,7 +799,7 @@ fn got_and_ready_pending_at_start_push_before_the_next_poll() {
     let report = h.home.join("ready.md");
     std::fs::write(&report, "ready").unwrap();
     let ready = id(
-        &h.ok(
+        &h.report(
             &env,
             &["ready", "slice", "--report", report.to_str().unwrap()],
         ),
@@ -837,7 +837,7 @@ fn got_is_quiet_then_ready_pushes_once_and_the_overdue_alarm_still_pushes() {
     let report = h.home.join("ready.md");
     std::fs::write(&report, "ready").unwrap();
     let ready = id(
-        &h.ok(
+        &h.report(
             &env,
             &["ready", "slice", "--report", report.to_str().unwrap()],
         ),
