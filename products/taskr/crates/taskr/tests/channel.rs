@@ -213,6 +213,17 @@ impl Chan {
             ] {
                 assert!(instructions.contains(rule), "{rule}: {instructions}");
             }
+            // The digest rule is added only with the opt-in.
+            let digest = env
+                .iter()
+                .any(|(k, v)| k == "TASKR_CHANNEL_DIGEST" && v == "1");
+            assert_eq!(
+                instructions.contains("Digests are on")
+                    && instructions.contains("in the listed order")
+                    && instructions.contains("out_of_order"),
+                digest,
+                "{instructions}"
+            );
         }
         c.write(READY);
         c
@@ -2595,5 +2606,254 @@ fn a_delayed_closed_lane_hint_carries_its_time_and_current_state() {
         "{content}"
     );
     assert!(content.contains("worker turn stalled"));
+    assert_eq!(c.close().0, Some(0));
+}
+
+/// The lane's environment with the digest opt-in.
+fn digest(env: &Env) -> Env {
+    let mut env = env.clone();
+    env.push(("TASKR_CHANNEL_DIGEST".into(), "1".into()));
+    env
+}
+/// A push's event ids: the digest's `events` meta, else the single event.
+fn pushed_ids(push: &Value) -> Vec<String> {
+    match push["params"]["meta"]["events"].as_str() {
+        Some(ids) => ids.split(',').map(String::from).collect(),
+        None => vec![meta(push, "event")],
+    }
+}
+fn ack(c: &mut Chan, e: &str, fence: &str) -> Value {
+    c.call("taskr_ack", json!({"event":n(e),"fence":n(fence)}))["structuredContent"].clone()
+}
+
+#[test]
+fn digest_off_keeps_the_single_event_envelope_and_instructions() {
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &env, &[], SCALE);
+    held(&h, &ws);
+    let a = insert_event(&h, "1", &ws, "note", "one", "{}");
+    let b = insert_event(&h, "1", &ws, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(pushed_ids(&push), [a.clone()]);
+    assert!(push["params"]["meta"].get("events").is_none(), "{push}");
+    // Without the opt-in an ack of the second event is the ledger's own refusal.
+    let r = ack(&mut c, &b, "1");
+    assert_eq!(r["outcome"], "rejected", "{r}");
+    assert!(
+        r["error"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("event {b} is not the pending event {a}")),
+        "{r}"
+    );
+    assert_eq!(cursors(&h, &ws), format!("0|{a}|-"));
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_digest_batches_lines_each_acked_by_its_own_id_in_order() {
+    // ttl 3 s, poll 1.5 s, digest 3 s, ack wait 30 s.
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let (_, other, _) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&env), &[], SCALE);
+    let fence = held(&h, &ws);
+    let started = Instant::now();
+    let e1 = insert_event(&h, "1", &ws, "note", "first", "{}");
+    let pr = insert_event(&h, "1", &ws, "pr", "never pushed", r#"{"pr":"o/r#1"}"#);
+    let e2 = insert_event(&h, "1", &ws, "message", "second", "{}");
+    let e3 = insert_event(&h, "1", &ws, "ready", &"x".repeat(400), "{}");
+    // A done whose launch's ready is not on the inbox page ends the run; it comes later.
+    let done = insert_launched(&h, &ws, "done", "no ready before it", other);
+    let e5 = insert_event(&h, "1", &ws, "note", "after the done", "{}");
+    let (at, push) = c.expect_push(Duration::from_secs(20));
+    assert!(at - started >= Duration::from_millis(2500), "not held");
+    assert_eq!(pushed_ids(&push), [e1.clone(), e2.clone(), e3.clone()]);
+    assert_eq!(meta(&push, "event"), e1);
+    let content = push["params"]["content"].as_str().unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 4, "{content}");
+    assert!(lines[0].starts_with(&format!(
+        "taskr digest: 3 events, consumer fence {fence}; the adapter records each receipt."
+    )));
+    assert!(lines[0].contains("in the listed order") && lines[0].contains("untrusted"));
+    for (line, (e, kind)) in
+        lines[1..]
+            .iter()
+            .zip([(&e1, "note"), (&e2, "message"), (&e3, "ready")])
+    {
+        assert!(
+            line.starts_with(&format!("event {e} (kind {kind}) from task 1")),
+            "{line}"
+        );
+    }
+    assert!(lines[2].contains(", sender campaign \""), "{}", lines[2]);
+    assert!(
+        lines[3].ends_with("\" [truncated: the first 280 of 400 bytes]"),
+        "{}",
+        lines[3]
+    );
+    // One attempt per line, each received; nothing for the passed-over pr.
+    for e in [&e1, &e2, &e3] {
+        until("the adapter's receipt", Duration::from_secs(10), || {
+            attempts(&h, e).len() == 1 && attempts(&h, e)[0].ends_with("|received")
+        });
+    }
+    assert!(attempts(&h, &pr).is_empty() && attempts(&h, &done).is_empty());
+    assert_eq!(cursors(&h, &ws), format!("0|{e1}|-"));
+
+    // Out of order: refused, names the pending line, acks nothing.
+    let r = ack(&mut c, &e3, &fence);
+    assert_eq!(
+        (r["outcome"].as_str(), r["pending"].as_i64()),
+        (Some("out_of_order"), Some(n(&e1))),
+        "{r}"
+    );
+    assert_eq!(cursors(&h, &ws), format!("0|{e1}|-"));
+    assert_eq!(ack(&mut c, &e1, &fence)["outcome"], "committed");
+    // The offer before the ack of e3 makes e2 pending: still out of order.
+    let r = ack(&mut c, &e3, &fence);
+    assert_eq!(r["pending"].as_i64(), Some(n(&e2)), "{r}");
+    assert_eq!(cursors(&h, &ws), format!("{e1}|{e2}|-"));
+    for e in [&e2, &e3] {
+        let r = ack(&mut c, e, &fence);
+        assert_eq!(r["outcome"], "committed", "{r}");
+    }
+    assert_eq!(cursors(&h, &ws), format!("{e3}|-|-"));
+    // An already acked line is the ledger's own `already`.
+    let r = ack(&mut c, &e2, &fence);
+    assert_eq!(
+        (r["outcome"].as_str(), r["already"].as_bool()),
+        (Some("committed"), Some(true)),
+        "{r}"
+    );
+
+    // The done heads the next digest, with the note behind it.
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(pushed_ids(&push), [done.clone(), e5.clone()]);
+    for e in [&done, &e5] {
+        assert_eq!(ack(&mut c, e, &fence)["outcome"], "committed");
+    }
+    assert!(c.quiet(Duration::from_secs(4)).is_empty());
+    for e in [&e1, &e2, &e3, &done, &e5] {
+        assert_eq!(attempts(&h, e).len(), 1, "{e}");
+    }
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn urgent_kinds_bypass_the_digest_hold() {
+    // ttl 15 s, poll 7.5 s, digest 15 s, ack wait 150 s.
+    const S: u32 = 4;
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&env), &[], S);
+    let fence = held(&h, &ws);
+    let held_at = Instant::now();
+    let note = insert_event(&h, "1", &ws, "note", "can wait", "{}");
+    assert!(
+        c.quiet(Duration::from_secs(2)).is_empty(),
+        "held note pushed"
+    );
+    for kind in ["ask", "owner_ask", "answer", "owner_answer", "fail"] {
+        let started = Instant::now();
+        let urgent = insert_event(&h, "1", &ws, kind, "now", "{}");
+        let (at, push) = c.expect_push(Duration::from_secs(20));
+        // At most one poll, never the digest hold (15 s from the note).
+        assert!(at - started < Duration::from_secs(9), "{kind} waited");
+        if kind == "ask" {
+            assert!(
+                at - held_at < Duration::from_secs(13),
+                "the ask waited for the hold"
+            );
+        }
+        if kind == "ask" {
+            // The held note rides along, before the ask.
+            assert_eq!(pushed_ids(&push), [note.clone(), urgent.clone()]);
+            assert_eq!(ack(&mut c, &note, &fence)["outcome"], "committed");
+        } else {
+            // Alone, it is today's single-event envelope.
+            assert_eq!(pushed_ids(&push), [urgent.clone()]);
+            assert!(push["params"]["meta"].get("events").is_none());
+            let content = push["params"]["content"].as_str().unwrap();
+            assert!(content.starts_with(&format!("taskr event {urgent} (kind {kind})")));
+        }
+        assert_eq!(ack(&mut c, &urgent, &fence)["outcome"], "committed");
+    }
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn unacked_digest_lines_are_pushed_again_then_alarm_per_event() {
+    // ttl 2 s, poll 1 s, digest 2 s, ack wait 20 s: a digest runs more ledger steps
+    // in one check than a single push, so the lease keeps more slack than at scale 60.
+    const S: u32 = 30;
+    let wait = Duration::from_secs(20);
+    let slack = Duration::from_millis(300);
+    let alarms = |h: &Harness, e: &str| {
+        text(
+            h,
+            &format!(
+                "select count(*)||'' from events where kind='herdr' and related_event_id={e} and json_extract(data,'$.reason')='push_exhausted'"
+            ),
+        )
+    };
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&env), &[], S);
+    held(&h, &ws);
+    let a = insert_event(&h, "1", &ws, "note", "dropped one", "{}");
+    let b = insert_event(&h, "1", &ws, "note", "dropped two", "{}");
+    let mut seen = vec![c.expect_push(Duration::from_secs(20))];
+    for _ in 0..2 {
+        seen.push(c.expect_push(wait * 2));
+    }
+    for pair in seen.windows(2) {
+        assert!(pair[1].0 - pair[0].0 >= wait - slack);
+    }
+    for (_, p) in &seen {
+        assert_eq!(pushed_ids(p), [a.clone(), b.clone()]);
+    }
+    until("the push_exhausted alarm", wait * 2, || {
+        alarms(&h, &a) == "1"
+    });
+    assert!(c.quiet(wait / 2).is_empty(), "a fourth push");
+    assert_eq!(attempts(&h, &a).len(), 3);
+    assert_eq!(attempts(&h, &b).len(), 3);
+    assert_eq!(alarms(&h, &b), "0");
+    assert_eq!(cursors(&h, &ws), format!("0|{a}|-"));
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_refused_fence_on_a_digest_ack_is_the_ledgers_error_and_acks_nothing() {
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&env), &[], SCALE);
+    let fence = held(&h, &ws);
+    let a = insert_event(&h, "1", &ws, "note", "one", "{}");
+    let b = insert_event(&h, "1", &ws, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
+    assert_eq!(ack(&mut c, &a, &fence)["outcome"], "committed");
+    h.ok(
+        &env,
+        &[
+            "consumer", "take", "--holder", "operator", "--ttl", "60000", "--force",
+        ],
+    );
+    let r = ack(&mut c, &b, &fence);
+    assert_eq!(r["outcome"], "rejected", "{r}");
+    assert!(r["error"].as_str().unwrap().contains("fence"), "{r}");
+    assert_eq!(cursors(&h, &ws), format!("{a}|-|-"));
+    until("the stop", Duration::from_secs(20), || {
+        c.stderr().contains("stopped:")
+    });
     assert_eq!(c.close().0, Some(0));
 }

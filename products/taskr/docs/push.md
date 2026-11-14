@@ -50,6 +50,51 @@ every event or to skipping any. Restart it after the server upgrade.
 
 Local adapters share 32 hint streams; beyond that they fall back to the 30 s poll and retry the stream with a 1–60 s backoff.
 
+## Digest pushes (opt-in)
+
+A digest push wakes a Claude session once for several pending events instead of once
+for each event. It is off by default. While it is off, nothing on this page changes.
+It is for Claude MCP receivers only. The receiver must ack through `taskr_ack`, because
+only that tool moves the offer from one line to the next. The pi shim and the Codex
+sidecar ack by CLI, so do not opt them in.
+
+Turn it on for one consumer: set `TASKR_CHANNEL_DIGEST=1` in the environment of that
+consumer's `taskr mcp --channel` (for example, the `env` block of its MCP config). The
+server reads it once at start. Restart the server to change it.
+
+With digests on:
+
+- An event that is pushed but not urgent waits up to 60 s from when the adapter first
+  sees it pending. Then one notification carries it and the pushed events behind it,
+  up to 20 lines. The push table above still decides which events are pushed.
+- Urgent events do not wait. If an `ask`, `owner_ask`, `answer`, `owner_answer` or
+  `fail` is pending anywhere in the inbox, the adapter pushes at once, and the held
+  lines go in the same push. An urgent event alone gets today's single-event envelope.
+- The serial rule still holds. A later event is not pushed while a pushed one is
+  unacked, so an urgent event that arrives during a digest is pushed after the
+  receiver acks the digest's lines.
+- Each line names the event id, kind, sender task and attempt, followed by a summary
+  of up to 280 bytes. The summary is escaped and marked untrusted. The fence appears
+  once, in the header.
+- Each line gets its own `delivery new` under the fence. After the single write, each
+  line also gets its own `delivery submitted` and `delivery received`. If a line's
+  attempt does not commit, the digest ends before that line, and the line goes out in a
+  later push.
+- Re-offer and alarms count per event, as without digests. A line still unacked 600 s
+  after its last push is pushed again, together with the lines behind it. After 3
+  pushes it raises `push_exhausted`. A refused fence stops the loop.
+- The run of lines stops at the first event the adapter cannot classify from the inbox
+  page: a `done` whose launch's `ready` is not on the page. That event heads a later
+  digest.
+
+The receiver handles every line, then acks each event by its own id with `taskr_ack`,
+in the listed order. The ledger keeps one pending event per inbox. So when an ack names
+an event above the cursor that is not yet pending, the tool first runs one fenced
+`wait --fence N --timeout 0 --push`, which makes the next line pending, and then acks.
+If that offer makes a different event pending, the tool acks nothing. It returns
+`out_of_order` with the event that is pending, and the receiver acks that one first.
+A refused fence comes back as the ledger's own error.
+
 ## Start a Herdr worker
 
 Fleet users get `herdr-launch` from `install.sh --fleet` (see the
@@ -110,7 +155,9 @@ See [first-time setup](../AGENTS_SETUP.md#start-a-worker) for the taskr-only pat
   hub outage, a stuck command), it pushes nothing on the stale lease, the refused renew
   stops it for good, and the adapter must be restarted to resume pushes.
 - One event at a time. The push offer takes the oldest pending event that is pushed, so a
-  later event is not pushed while an earlier pushed one is unacked. If the model never
+  later event is not pushed while an earlier pushed one is unacked. A
+  [digest](#digest-pushes-opt-in) carries several events in one push, but they are still
+  acked one at a time, in order. If the model never
   acks, pushes of that event stop after 3 and its alarm fires; the inbox then waits for an
   ack, a handoff or a restart.
 - The lease fences consumption. While an adapter holds it, a plain `taskr wait` or `ack`
