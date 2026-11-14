@@ -503,8 +503,43 @@ fn remote_blocking_cards_keep_the_tag_before_campaign_padding() {
                     "{width}/{host}/{dialog}:\n{text}"
                 );
                 assert!(card.contains('↗'), "{card}");
+                assert!(
+                    card.contains("tui…") || card.contains("tui-"),
+                    "campaign needs at least four columns at {width}/{host}/{dialog}:\n{text}"
+                );
             }
         }
+    }
+}
+
+#[test]
+fn narrow_detail_provenance_wraps_whole_facts() {
+    // Detail has four columns of pane padding: 26-34 usable columns.
+    for width in 30..=38 {
+        let mut app = configured_app(frames::fixture());
+        app.fetch.loaded = true;
+        input::key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('I'), KeyModifiers::NONE),
+        );
+        let (text, _) = render(&app, width, 30);
+        let provenance: Vec<_> = text
+            .lines()
+            .skip_while(|l| !l.contains("from Dashboard"))
+            .take_while(|l| !l.contains("asker "))
+            .map(|l| l.trim_matches(['│', ' ']))
+            .collect();
+        assert!(!provenance.is_empty(), "{width}:\n{text}");
+        for fact in ["from Dashboard", "NEEDS YOU", "row 1"] {
+            assert!(
+                provenance.iter().any(|l| l.contains(fact)),
+                "{width}: missing whole fact {fact}:\n{text}"
+            );
+        }
+        assert!(
+            provenance.iter().all(|l| !l.starts_with('·')),
+            "{width}:\n{text}"
+        );
     }
 }
 
