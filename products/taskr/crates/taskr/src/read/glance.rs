@@ -211,6 +211,13 @@ pub(super) fn sparks(db: &Connection, root: i64) -> Result<BTreeMap<i64, Vec<i64
     }
     Ok(out)
 }
+/// `{TREES}` plus `latest(id)`: the newest event matching `filter` per lane of root ?1, sent by
+/// it or a message to it. Each lookup walks an events index backwards; a tree-wide join sorted all history.
+fn latest(filter: &str) -> String {
+    format!(
+        "{TREES},latest(id) as (select (select e.id from events e where e.task_id=tree.id and {filter} order by e.id desc limit 1) from tree where tree.root=?1 union all select (select e.id from events e where e.kind='message' and e.recipient_task_id=tree.id and {filter} order by e.id desc limit 1) from tree where tree.root=?1) "
+    )
+}
 struct Root {
     v: Value,
     activity: String,
@@ -298,8 +305,10 @@ pub(super) fn snapshot(db: &Connection) -> Result<Value> {
         if let Some(a) = one(
             db,
             &format!(
-                "{TREES}select e.id,e.created_at from tree join events e on (e.task_id=tree.id or (e.kind='message' and e.recipient_task_id=tree.id)) where tree.root=? and not (e.kind='prompt' and json_extract(e.data,'$.nudge') is not null) and not (e.kind='prompt_outcome' and exists(select 1 from events p where p.id=e.related_event_id and json_extract(p.data,'$.nudge') is not null)) and not {noise} order by e.id desc limit 1",
-                noise = noise
+                "{}select e.id,e.created_at from events e where e.id=(select max(id) from latest)",
+                latest(&format!(
+                    "not (e.kind='prompt' and json_extract(e.data,'$.nudge') is not null) and not (e.kind='prompt_outcome' and exists(select 1 from events p where p.id=e.related_event_id and json_extract(p.data,'$.nudge') is not null)) and not {noise}"
+                ))
             ),
             vec![rid.into()],
         )? {
@@ -309,7 +318,7 @@ pub(super) fn snapshot(db: &Connection) -> Result<Value> {
         if let Some(ms) = one(
             db,
             &format!(
-                "{TREES}select e.id,e.kind,coalesce(e.summary,'') as summary,e.created_at,coalesce(json_extract(e.data,'$.key'),'') as key,coalesce(json_extract(e.data,'$.value'),'') as value,coalesce(json_extract(e.data,'$.owner'),0) as owner from tree join tasks t on t.id=tree.id join events e on e.task_id=t.id where tree.root=? and (e.kind in ('ready','done','fail','handover','adopt','decision') or (e.kind in ('note','next') and t.parent_id is null) or (e.kind='ref' and json_extract(e.data,'$.key') in ('pr','release','tag','merged') and coalesce(json_extract(e.data,'$.value'),'')!='')) order by e.id desc limit 1"
+                "{TREES},latest(id) as (select (select e.id from events e where e.task_id=t.id and (e.kind in ('ready','done','fail','handover','adopt','decision') or (e.kind in ('note','next') and t.parent_id is null) or (e.kind='ref' and json_extract(e.data,'$.key') in ('pr','release','tag','merged') and coalesce(json_extract(e.data,'$.value'),'')!='')) order by e.id desc limit 1) from tree join tasks t on t.id=tree.id where tree.root=?1) select e.id,e.kind,coalesce(e.summary,'') as summary,e.created_at,coalesce(json_extract(e.data,'$.key'),'') as key,coalesce(json_extract(e.data,'$.value'),'') as value,coalesce(json_extract(e.data,'$.owner'),0) as owner from events e where e.id=(select max(id) from latest)"
             ),
             vec![rid.into()],
         )? {
@@ -335,8 +344,8 @@ pub(super) fn snapshot(db: &Connection) -> Result<Value> {
             r.activity_id = one(
                 db,
                 &format!(
-                    "{TREES}select max(e.id) as id from tree join events e on (e.task_id=tree.id or (e.kind='message' and e.recipient_task_id=tree.id)) where tree.root=? and (e.task_id!=tree.root or e.kind='prompt' or (e.kind='message' and e.recipient_task_id=tree.root)) and not (e.kind='prompt' and json_extract(e.data,'$.nudge') is not null) and not {noise}",
-                    noise = noise
+                    "{}select max(id) as id from latest",
+                    latest(&format!("(e.task_id!=?1 or e.kind='prompt' or (e.kind='message' and e.recipient_task_id=?1)) and not (e.kind='prompt' and json_extract(e.data,'$.nudge') is not null) and not {noise}"))
                 ),
                 vec![rid.into()],
             )?
@@ -905,6 +914,45 @@ mod tests {
         let before = activity(&db);
         event(&db, 2, "pr", r#"{"pr":"o/r#1","sub":"merged"}"#);
         assert_ne!(activity(&db), before);
+    }
+    #[test]
+    fn newest_spans_lanes_and_inbound_messages() {
+        let db = fixture();
+        let root = |db: &Connection| {
+            snapshot(db).unwrap()["campaigns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == 1)
+                .unwrap()
+                .clone()
+        };
+        let message = |db: &Connection, from: i64, to: i64| {
+            db.execute("insert into events(task_id,recipient_task_id,kind,summary,data,created_at) values(?,?,'message','x','{}',?)",params![from,to,q::now()]).unwrap();
+            db.last_insert_rowid()
+        };
+        event(&db, 2, "ready", "{}");
+        event(&db, 1, "note", "{}");
+        let note = db.last_insert_rowid();
+        event(&db, 2, "pr", r#"{"pr":"o/r#1","sub":"thread_opened"}"#);
+        event(&db, 2, "note", "{}");
+        let lane_note = db.last_insert_rowid();
+        let r = root(&db);
+        assert_eq!(r["activity_id"], lane_note, "newest across lanes");
+        assert_eq!(r["last"]["event_id"], note, "root note is a milestone");
+        event(&db, 2, "pr", r#"{"pr":"o/r#1","sub":"thread_opened"}"#);
+        assert_eq!(
+            root(&db)["activity_id"],
+            lane_note,
+            "noise after a lane event"
+        );
+        assert_eq!(root(&db)["last"]["event_id"], note);
+        let to_lane = message(&db, 3, 2);
+        assert_eq!(root(&db)["activity_id"], to_lane, "message to a lane");
+        event(&db, 1, "ref", r#"{"key":"glance.state","value":"parked"}"#);
+        assert!(!parked_active(&db));
+        message(&db, 3, 1);
+        assert!(parked_active(&db), "message to a parked root");
     }
     /// The real firing path: `store::event` inserts the source row and fires any
     /// matching subscription's `after` notification in the same transaction.
