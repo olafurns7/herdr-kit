@@ -43,7 +43,7 @@ A resource read returns `contents:[{uri, mimeType:"application/json", text}]`; a
 | `unknown` | exit 5 saying `outcome unknown`, or a command that started but gave no whole JSON answer: it may have committed | yes |
 | `transport` | any other exit 5: the execution state is unconfirmed, not failed | yes |
 | `rejected`, `usage`, `error` | exit 6, exit 2, anything else | yes |
-| `out_of_order` | digests only: `taskr_ack` named a line while an earlier line is pending; `pending` names it; nothing was acked | yes |
+| `out_of_order` | digests only: `taskr_ack` named a line while an earlier line is pending; `pending` names it; nothing was acked. Ack it first only if it was a line you handled; if not, wait for its push | yes |
 
 The server never retries. After `unknown` or `transport`, inspect and reconcile (`taskr log`, `consumer show`, `delivery ls`) before retrying; to retry, repeat the identical call with its `retry_handle`. On a client host (a `server.url` without `TASKR_DB`) each write gets a fresh handle; the request key it maps to is derived from the bound task, launch or generation and the handle, so two bindings never share a key, and a handle names one call (another call with it is invalid params). A replayed result is historical: it never shows that a launch, generation or lease is still current. On a ledger host there are no handles.
 
@@ -106,7 +106,11 @@ event E (kind K) from task S[, sender campaign "..."], attempt A: "..." [truncat
 ```
 
 The summary is escaped as above, cut to 280 bytes. The sender campaign appears only on
-`message` lines. The initialization instructions add the ack order rule.
+`message` lines. A push with one line uses the single-event envelope above. The
+initialization instructions add the ack order rule, the `out_of_order` rule, the
+600 s clock that starts at the digest push, and where a root finds its id: a digest
+has no CLI commands, so a root's id and generation for CLI reads are the `task_id` and
+`session_gen` of `taskr_task`'s consumer lease.
 
 `taskr_ack {event: E, fence: N}` on a digest server works like this:
 
@@ -115,7 +119,8 @@ The summary is escaped as above, cut to 280 bytes. The sender campaign appears o
    `wait --fence N --timeout 0 --push` with the same fence.
 3. If that offer makes E pending, it acks as usual.
 4. If the offer makes another event P pending, it acks nothing and returns
-   `out_of_order` with `pending: P`.
+   `out_of_order` with `pending: P`. Ack P first only if it was a line the receiver
+   handled; if not, wait for its push.
 5. Any other outcome of the offer, a refused fence included, is returned as that
    command's own tool result.
 6. An unreadable cursor, E at or below the cursor, or no event offered goes straight to

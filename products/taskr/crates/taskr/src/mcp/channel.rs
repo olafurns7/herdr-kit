@@ -251,6 +251,7 @@ fn setup(
         stranded: false,
         digest: false,
         hold: None,
+        spare: HashMap::new(),
     };
     (send, receive, hints, state)
 }
@@ -421,6 +422,9 @@ struct Loop {
     digest: bool,
     /// Digest mode: the held head and when this process first saw it pending.
     hold: Option<(i64, Instant)>,
+    /// Digest mode: committed attempts of tail lines whose digest was not written,
+    /// by event, used again by the next digest instead of a new attempt.
+    spare: HashMap<i64, i64>,
 }
 
 /// A child's outcome as the tools report it, and its JSON.
@@ -900,44 +904,37 @@ impl Loop {
             return log(format!("wait returned no event id: {}", ran.value));
         };
         let t = self.t;
+        // Digest mode: a line behind E that was pushed CAP times and has waited its own
+        // ack wait since raises its own alarm (a message line also alarms its sender).
+        if self.digest {
+            let now = Instant::now();
+            let mut due: Vec<i64> = self
+                .tracks
+                .iter()
+                .filter(|(id, tr)| {
+                    **id > e
+                        && tr.count >= CAP
+                        && tr.delivered
+                        && !tr.exhausted
+                        && tr.last.is_some_and(|last| now >= last + t.ack_wait)
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            due.sort_unstable();
+            for id in due {
+                self.alarm(id, fence);
+                if matches!(self.lease, Lease::Stopped) {
+                    return;
+                }
+            }
+        }
         let track = self.tracks.entry(e).or_default();
         let (count, last, delivered) = (track.count, track.last, track.delivered);
         let gap = if delivered { t.ack_wait } else { t.spacing };
         let waiting = last.is_some_and(|last| Instant::now() < last + gap);
         // A delivered push gets its full ack wait before the alarm; failed ones do not.
         if count >= CAP && !(delivered && waiting) {
-            if !track.exhausted {
-                let ran = self.exec(
-                    self.argv(
-                        &[
-                            "delivery",
-                            "exhausted",
-                            &e.to_string(),
-                            "--fence",
-                            &fence.to_string(),
-                        ],
-                        true,
-                    ),
-                    None,
-                );
-                if ran.outcome == "rejected" {
-                    return self.stopped(format!("delivery alarm refused: {}", ran.error()));
-                }
-                if ran.outcome == "usage" {
-                    self.tracks.get_mut(&e).expect("tracked event").exhausted = true;
-                }
-                if ran.outcome != "committed" {
-                    return log(format!("event {e} alarm {}: {}", ran.outcome, ran.error()));
-                }
-            }
-            let track = self.tracks.get_mut(&e).expect("tracked event");
-            if !track.exhausted {
-                track.exhausted = true;
-                log(format!(
-                    "event {e}: {CAP} pushes without an ack; no more pushes until an ack, a handoff or a restart"
-                ));
-            }
-            return;
+            return self.alarm(e, fence);
         }
         if let Some(last) = last.filter(|_| waiting) {
             self.next_check = self.next_check.min(last + gap);
@@ -988,7 +985,11 @@ impl Loop {
         // Digest mode: the pushable events behind E, and a first push of E that is not
         // urgent waits up to DIGEST for company.
         let tail = if self.digest {
-            let (tail, urgent) = self.digest_run(e);
+            // An urgent head is never held, whatever the inbox page shows; a failed
+            // inbox read pushes the head now, alone.
+            let urgent_head = URGENT.contains(&kind_of(&event));
+            let run = self.digest_run(e);
+            let urgent = urgent_head || run.as_ref().is_none_or(|(_, urgent)| *urgent);
             // A head an earlier server already pushed is a re-push: it is not held.
             let first = self.tracks.get(&e).is_none_or(|tr| tr.count == 0)
                 && state.value["received"] != true;
@@ -1006,7 +1007,7 @@ impl Loop {
                     return;
                 }
             }
-            tail
+            run.map(|(tail, _)| tail).unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -1034,16 +1035,16 @@ impl Loop {
     /// Digest mode: the pushable events after head `e` in one raw inbox page, in order,
     /// up to the first one this side cannot classify (a `done` whose launch's `ready` is
     /// not on the page), so the lines are exactly the offers that follow E; and whether
-    /// any pending event on the page is urgent. A failed read is no tail, not urgent.
-    fn digest_run(&self, e: i64) -> (Vec<Value>, bool) {
+    /// any pending event on the page is urgent. None when the read failed.
+    fn digest_run(&self, e: i64) -> Option<(Vec<Value>, bool)> {
         let ran = self.exec(self.argv(&["inbox", "--limit", "200"], false), None);
         if ran.outcome != "committed" {
             log(format!(
-                "digest inbox read {}: {}",
+                "digest inbox read {}: {}; event {e} is pushed alone",
                 ran.outcome,
                 ran.error()
             ));
-            return (Vec::new(), false);
+            return None;
         }
         let events = ran.value["events"].as_array().cloned().unwrap_or_default();
         let urgent = events
@@ -1067,7 +1068,68 @@ impl Loop {
             }
             tail.push(ev.clone());
         }
-        (tail, urgent)
+        Some((tail, urgent))
+    }
+
+    /// One `delivery exhausted` for E under the fence, once per event; a refusal stops
+    /// the loop. Without digests only the head ever gets here, exactly as before.
+    fn alarm(&mut self, e: i64, fence: i64) {
+        if !self.tracks.entry(e).or_default().exhausted {
+            let ran = self.exec(
+                self.argv(
+                    &[
+                        "delivery",
+                        "exhausted",
+                        &e.to_string(),
+                        "--fence",
+                        &fence.to_string(),
+                    ],
+                    true,
+                ),
+                None,
+            );
+            if ran.outcome == "rejected" {
+                return self.stopped(format!("delivery alarm refused: {}", ran.error()));
+            }
+            if ran.outcome == "usage" {
+                self.tracks.get_mut(&e).expect("tracked event").exhausted = true;
+            }
+            if ran.outcome != "committed" {
+                return log(format!("event {e} alarm {}: {}", ran.outcome, ran.error()));
+            }
+        }
+        let track = self.tracks.get_mut(&e).expect("tracked event");
+        if !track.exhausted {
+            track.exhausted = true;
+            log(format!(
+                "event {e}: {CAP} pushes without an ack; no more pushes until an ack, a handoff or a restart"
+            ));
+        }
+    }
+
+    /// Digest mode, between its ledger steps: renew when due. false when the lease is
+    /// no longer held: nothing more is written.
+    fn keep_lease(&mut self) -> bool {
+        if matches!(self.lease, Lease::Held { renew_at, .. } if Instant::now() >= renew_at) {
+            self.renew();
+        }
+        matches!(self.lease, Lease::Held { .. })
+    }
+    /// Digest mode: may the digest be written now? The lease renewed when due, still
+    /// fresh, and no EOF or backlog.
+    fn may_write(&mut self) -> bool {
+        self.keep_lease() && self.fresh() && !self.quiet()
+    }
+    /// A digest that is not written: E keeps its attempt for the next check, and each
+    /// committed tail attempt is kept for the next digest.
+    fn unwritten(&mut self, e: i64, attempt: i64, lines: Vec<(i64, Value)>, why: &str) {
+        self.attempt = Some((e, Attempt::Known(attempt)));
+        for (a, ev) in lines.into_iter().skip(1) {
+            if let Some(id) = ev["id"].as_i64() {
+                self.spare.insert(id, a);
+            }
+        }
+        log(format!("event {e}: digest not written: {why}"));
     }
 
     /// `delivery new` for E, or the identical retry of an uncertain one. None when it
@@ -1177,16 +1239,23 @@ impl Loop {
     }
 
     /// Digest mode: one notification for head E and the tail behind it. Each tail line
-    /// gets its own `delivery new` under the fence; the first that does not commit ends
-    /// the digest there (it stays for a later push). Every line counts one push and,
-    /// after the one write, gets its own `submitted` and `received`.
+    /// gets its own `delivery new` under the fence (or its attempt from an unwritten
+    /// digest). A refused one stops the loop and nothing is written; an uncertain one,
+    /// EOF, a backlog or a lease that is not fresh write nothing either, and E keeps its
+    /// attempt for the next check. The lease is renewed between steps when due. Every
+    /// line counts one push and, after the one write, gets its own `submitted` and
+    /// `received`.
     fn push_digest(&mut self, e: i64, attempt: i64, fence: i64, event: &Value, tail: Vec<Value>) {
         let mut lines = vec![(attempt, event.clone())];
         for ev in tail {
-            if !self.fresh() || self.quiet() {
-                break;
-            }
             let Some(id) = ev["id"].as_i64() else { break };
+            if !self.may_write() {
+                return self.unwritten(e, attempt, lines, "no authority to write");
+            }
+            if let Some(a) = self.spare.remove(&id) {
+                lines.push((a, ev));
+                continue;
+            }
             let ran = self.exec(
                 self.argv(
                     &[
@@ -1202,20 +1271,22 @@ impl Loop {
                 ),
                 self.key().as_deref(),
             );
-            match ran.value["attempt_id"]
-                .as_i64()
-                .filter(|_| ran.outcome == "committed")
-            {
-                Some(a) => lines.push((a, ev)),
-                None => {
-                    log(format!(
-                        "event {id}: digest delivery new {}: {}; the digest ends before it",
-                        ran.outcome,
-                        ran.error()
-                    ));
-                    break;
+            match (ran.outcome, ran.value["attempt_id"].as_i64()) {
+                ("committed", Some(a)) => lines.push((a, ev)),
+                ("rejected" | "usage", _) => {
+                    let why = format!("event {id}: delivery new refused: {}", ran.error());
+                    self.unwritten(e, attempt, lines, &why);
+                    return self.stopped(why);
+                }
+                (outcome, _) => {
+                    let why = format!("event {id}: delivery new {outcome}: {}", ran.error());
+                    return self.unwritten(e, attempt, lines, &why);
                 }
             }
+        }
+        // The last tail step may have been slow or met EOF: recheck right before the write.
+        if !self.may_write() {
+            return self.unwritten(e, attempt, lines, "no authority to write");
         }
         let now = Instant::now();
         for (_, ev) in &lines {
@@ -1245,6 +1316,10 @@ impl Loop {
         }
         log(format!("digest pushed events {}", ids.join(",")));
         for (a, ev) in lines {
+            // The stamps renew between lines too; a lost lease stops them.
+            if !self.keep_lease() {
+                break;
+            }
             self.delivered(ev["id"].as_i64().unwrap_or(e), a);
         }
     }

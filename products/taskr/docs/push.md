@@ -67,9 +67,12 @@ With digests on:
 - An event that is pushed but not urgent waits up to 60 s from when the adapter first
   sees it pending. Then one notification carries it and the pushed events behind it,
   up to 20 lines. The push table above still decides which events are pushed.
-- Urgent events do not wait. If an `ask`, `owner_ask`, `answer`, `owner_answer` or
-  `fail` is pending anywhere in the inbox, the adapter pushes at once, and the held
-  lines go in the same push. An urgent event alone gets today's single-event envelope.
+- Urgent events do not wait. The adapter pushes at once when the head event (the one
+  the offer makes pending) is an `ask`, `owner_ask`, `answer`, `owner_answer` or
+  `fail`, or when one of those is pending in the first 200 inbox events. The held lines
+  go in the same push. If the inbox read fails, the head is pushed at once, alone.
+- A push with one line, urgent or not, uses today's single-event envelope. Only a push
+  with two or more lines is a digest.
 - The serial rule still holds. A later event is not pushed while a pushed one is
   unacked, so an urgent event that arrives during a digest is pushed after the
   receiver acks the digest's lines.
@@ -77,12 +80,19 @@ With digests on:
   of up to 280 bytes. The summary is escaped and marked untrusted. The fence appears
   once, in the header.
 - Each line gets its own `delivery new` under the fence. After the single write, each
-  line also gets its own `delivery submitted` and `delivery received`. If a line's
-  attempt does not commit, the digest ends before that line, and the line goes out in a
-  later push.
-- Re-offer and alarms count per event, as without digests. A line still unacked 600 s
-  after its last push is pushed again, together with the lines behind it. After 3
-  pushes it raises `push_exhausted`. A refused fence stops the loop.
+  line also gets its own `delivery submitted` and `delivery received`. The adapter
+  renews the lease between these steps when a renew is due.
+- Nothing is written without authority. If a line's `delivery new` is refused (a
+  refused fence), the adapter writes nothing and stops. If it is uncertain, or if EOF,
+  a stdin backlog or a lease within 20 s of its end comes up during the steps or right
+  before the write, the adapter writes nothing and tries again at the next check. The
+  committed attempts are kept for that next try.
+- Re-offer and alarms count per event, as without digests. Each line's 600 s clock
+  starts at the digest push, not when the receiver reaches that line. A line still
+  unacked 600 s after its last push is pushed again, together with the lines behind it.
+  After 3 pushes and its own 600 s wait, each unacked line raises its own
+  `push_exhausted`, and a `message` line also raises `message_unreceived` for its
+  sender. A refused fence stops the loop.
 - The run of lines stops at the first event the adapter cannot classify from the inbox
   page: a `done` whose launch's `ready` is not on the page. That event heads a later
   digest.
@@ -92,8 +102,12 @@ in the listed order. The ledger keeps one pending event per inbox. So when an ac
 an event above the cursor that is not yet pending, the tool first runs one fenced
 `wait --fence N --timeout 0 --push`, which makes the next line pending, and then acks.
 If that offer makes a different event pending, the tool acks nothing. It returns
-`out_of_order` with the event that is pending, and the receiver acks that one first.
-A refused fence comes back as the ledger's own error.
+`out_of_order` with the event that is pending. The receiver acks that event first only
+if it was a line the receiver handled; if not, the receiver waits for its push. A
+refused fence comes back as the ledger's own error.
+
+A digest carries no CLI commands. A root receiver that needs CLI reads takes its id and
+generation from `taskr_task`: the `task_id` and `session_gen` of its consumer lease.
 
 ## Start a Herdr worker
 

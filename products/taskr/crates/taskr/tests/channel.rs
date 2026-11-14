@@ -2808,7 +2808,8 @@ fn unacked_digest_lines_are_pushed_again_then_alarm_per_event() {
     let mut c = Chan::start(&h, &digest(&env), &[], S);
     held(&h, &ws);
     let a = insert_event(&h, "1", &ws, "note", "dropped one", "{}");
-    let b = insert_event(&h, "1", &ws, "note", "dropped two", "{}");
+    // A tail message: its sender (root 1) gets message_unreceived too.
+    let b = insert_event(&h, "1", &ws, "message", "dropped two", "{}");
     let mut seen = vec![c.expect_push(Duration::from_secs(20))];
     for _ in 0..2 {
         seen.push(c.expect_push(wait * 2));
@@ -2819,13 +2820,22 @@ fn unacked_digest_lines_are_pushed_again_then_alarm_per_event() {
     for (_, p) in &seen {
         assert_eq!(pushed_ids(p), [a.clone(), b.clone()]);
     }
-    until("the push_exhausted alarm", wait * 2, || {
-        alarms(&h, &a) == "1"
+    // One alarm per line, each after its own third push and ack wait.
+    until("the push_exhausted alarms", wait * 2, || {
+        alarms(&h, &a) == "1" && alarms(&h, &b) == "1"
     });
     assert!(c.quiet(wait / 2).is_empty(), "a fourth push");
     assert_eq!(attempts(&h, &a).len(), 3);
     assert_eq!(attempts(&h, &b).len(), 3);
-    assert_eq!(alarms(&h, &b), "0");
+    assert_eq!(
+        text(
+            &h,
+            &format!(
+                "select count(*)||'' from events where kind='herdr' and task_id=1 and recipient_task_id=1 and related_event_id={b} and json_extract(data,'$.reason')='message_unreceived'"
+            )
+        ),
+        "1"
+    );
     assert_eq!(cursors(&h, &ws), format!("0|{a}|-"));
     assert_eq!(c.close().0, Some(0));
 }
@@ -2855,5 +2865,248 @@ fn a_refused_fence_on_a_digest_ack_is_the_ledgers_error_and_acks_nothing() {
     until("the stop", Duration::from_secs(20), || {
         c.stderr().contains("stopped:")
     });
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn an_urgent_head_behind_more_than_a_page_of_skipped_rows_is_not_held() {
+    // ttl 15 s, poll 7.5 s, digest 15 s.
+    const S: u32 = 4;
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&env), &[], S);
+    held(&h, &ws);
+    for _ in 0..210 {
+        insert_event(
+            &h,
+            "1",
+            &ws,
+            "herdr",
+            "agent_status idle",
+            r#"{"agent_status":"idle","present":true}"#,
+        );
+    }
+    let started = Instant::now();
+    let ask = insert_event(&h, "1", &ws, "ask", "past the page", "{}");
+    let (at, push) = c.expect_push(Duration::from_secs(20));
+    assert!(at - started < Duration::from_secs(12), "the ask was held");
+    assert_eq!(pushed_ids(&push), [ask]);
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_failed_inbox_read_pushes_the_head_at_once_alone() {
+    // ttl 20 s, poll 10 s, digest 20 s; every inbox read through the proxy fails.
+    const S: u32 = 3;
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let direct = client(&h, &tailnet);
+    let (w, worker) = client_lane(&h, &direct);
+    let (p, _) = proxy(
+        port(&tailnet),
+        Arc::new(|argv: &[String]| {
+            if argv.iter().any(|a| a == "inbox") {
+                Act::LoseRequest
+            } else {
+                Act::Pass
+            }
+        }),
+    );
+    client(&h, &format!("http://[::1]:{p}"));
+    let mut c = Chan::start(&h, &digest(&worker), &[], S);
+    let fence = held(&h, &w);
+    let started = Instant::now();
+    let ask = insert_event(&h, "1", &w, "ask", "urgent", "{}");
+    let note = insert_event(&h, "1", &w, "note", "behind it", "{}");
+    let (at, push) = c.expect_push(Duration::from_secs(30));
+    assert!(at - started < Duration::from_secs(16), "the ask was held");
+    assert_eq!(pushed_ids(&push), [ask.clone()]);
+    assert!(c.stderr().contains("digest inbox read"), "{}", c.stderr());
+    assert_eq!(ack(&mut c, &ask, &fence)["outcome"], "committed");
+    // A failed read is not a reason to hold a plain note either.
+    let started = Instant::now();
+    let (at, push) = c.expect_push(Duration::from_secs(30));
+    assert!(at - started < Duration::from_secs(16), "the note was held");
+    assert_eq!(pushed_ids(&push), [note]);
+    assert_eq!(c.close().0, Some(0));
+}
+
+/// A client-host digest lane whose proxy runs `act` for the `n`th `delivery new`
+/// (0 is the head's attempt, 1 the first tail line's).
+fn digest_client(
+    h: &Harness,
+    hub: &str,
+    n: usize,
+    act: impl Fn() -> Act + Send + Sync + 'static,
+) -> (String, Env, mpsc::Receiver<Value>) {
+    let direct = client(h, hub);
+    let (w, worker) = client_lane(h, &direct);
+    let (p, seen) = proxy(port(hub), nth(&["delivery", "new"], n, act));
+    client(h, &format!("http://[::1]:{p}"));
+    (w, worker, seen)
+}
+
+#[test]
+fn a_refused_tail_attempt_writes_nothing_and_stops() {
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let operator: Arc<Mutex<Env>> = Arc::new(Mutex::new(Vec::new()));
+    let (bin, home, op) = (
+        env!("CARGO_BIN_EXE_taskr"),
+        h.home.clone(),
+        operator.clone(),
+    );
+    let takeover = Mutex::new(Some(move || {
+        // After the head's attempt commits, before the tail's: another holder takes over.
+        let out = std::process::Command::new(bin)
+            .env_clear()
+            .current_dir(&home)
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", home.join("bin").display()),
+            )
+            .env("TASKR_TMP_BASE", home.join("taskr-tmp"))
+            .env("TMPDIR", &home)
+            .envs(op.lock().unwrap().iter().cloned())
+            .args([
+                "--json", "consumer", "take", "--holder", "operator", "--ttl", "60000", "--force",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }));
+    let (w, worker, _) = digest_client(&h, &tailnet, 0, move || {
+        Act::After(Box::new(takeover.lock().unwrap().take().unwrap()))
+    });
+    *operator.lock().unwrap() = worker.clone();
+    let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    until("the stop", Duration::from_secs(30), || {
+        c.stderr().contains("stopped:")
+    });
+    assert!(
+        c.quiet(Duration::from_secs(3)).is_empty(),
+        "a push after the refusal"
+    );
+    let err = c.stderr();
+    assert!(
+        err.contains("digest not written") && err.contains("delivery new refused"),
+        "{err}"
+    );
+    assert_eq!(attempts(&h, &a).len(), 1);
+    assert!(
+        attempts(&h, &a)[0].ends_with("|attempted"),
+        "{:?}",
+        attempts(&h, &a)
+    );
+    assert!(attempts(&h, &b).is_empty());
+    assert_eq!(lease(&h, &w), "2|operator");
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_lease_that_lapses_during_the_last_tail_attempt_writes_nothing() {
+    // ttl 3 s: the last tail attempt's reply is held 4 s, past the lease.
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let (w, worker, _) = digest_client(&h, &tailnet, 1, || {
+        Act::After(Box::new(|| std::thread::sleep(Duration::from_secs(4))))
+    });
+    let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    until("the stop", Duration::from_secs(30), || {
+        c.stderr().contains("stopped:")
+    });
+    assert!(
+        c.quiet(Duration::from_secs(3)).is_empty(),
+        "a push on a lapsed lease"
+    );
+    let err = c.stderr();
+    assert!(
+        err.contains("digest not written: no authority to write"),
+        "{err}"
+    );
+    // Both attempts committed; neither was submitted.
+    for e in [&a, &b] {
+        assert_eq!(attempts(&h, e).len(), 1, "{e}");
+        assert!(attempts(&h, e)[0].ends_with("|attempted"), "{e}");
+    }
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn eof_during_the_last_tail_attempt_writes_nothing() {
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let (w, worker, seen) = digest_client(&h, &tailnet, 1, || {
+        Act::After(Box::new(|| std::thread::sleep(Duration::from_millis(1500))))
+    });
+    let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    // EOF while the tail's attempt is at the hub.
+    let mut news = 0;
+    while news < 2 {
+        let req = seen
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the tail attempt");
+        let argv: Vec<String> = serde_json::from_value(req["argv"].clone()).unwrap();
+        if argv.iter().any(|x| x == "delivery") && argv.iter().any(|x| x == "new") {
+            news += 1;
+        }
+    }
+    drop(c.stdin.take());
+    let start = Instant::now();
+    while c.child.try_wait().unwrap().is_none() {
+        assert!(start.elapsed() < Duration::from_secs(60), "{}", c.stderr());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let mut lines = Vec::new();
+    while let Some((_, v)) = c.line(Duration::from_millis(100)) {
+        lines.push(v);
+    }
+    assert!(lines.iter().all(|v| v["method"] != PUSH), "{lines:?}");
+    let err = c.stderr();
+    assert!(
+        err.contains("digest not written: no authority to write"),
+        "{err}"
+    );
+    for e in [&a, &b] {
+        assert!(
+            attempts(&h, e).iter().all(|x| x.ends_with("|attempted")),
+            "{e}"
+        );
+    }
+}
+
+#[test]
+fn a_root_consumer_digest_acks_with_its_session() {
+    let h = Harness::new();
+    let root = ["--as", "1", "--session", "0"];
+    let (w, _, _) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &digest(&Vec::new()), &root, SCALE);
+    let fence = held(&h, "1");
+    let a = insert_event(&h, &ws, "1", "note", "one", "{}");
+    let b = insert_event(&h, &ws, "1", "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
+    let content = push["params"]["content"].as_str().unwrap();
+    assert!(!content.contains("taskr ack"), "{content}");
+    for e in [&a, &b] {
+        assert_eq!(ack(&mut c, e, &fence)["outcome"], "committed");
+    }
+    assert_eq!(cursors(&h, "1"), format!("{b}|-|-"));
     assert_eq!(c.close().0, Some(0));
 }
