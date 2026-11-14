@@ -225,6 +225,16 @@ pub fn stall(tx: &Connection, t: &Task, launch: i64, error: &str) -> Result<()> 
     if error.is_empty() && ["orchestrator", "sub-orchestrator"].contains(&t.role.as_str()) {
         return Ok(());
     }
+    if error.is_empty() {
+        let service: bool = tx.query_row(
+            "select coalesce((select json_extract(data,'$.value') from events where task_id=? and kind='ref' and json_extract(data,'$.key')='service' order by id desc limit 1)='on',0)",
+            [t.id],
+            |r| r.get(0),
+        )?;
+        if service {
+            return Ok(());
+        }
+    }
     let (prompt,report):(i64,i64)=tx.query_row("select coalesce((select max(id) from events where launch_id=?1 and kind='prompt'),0),coalesce((select max(id) from events where launch_id=?1 and kind in('done','fail')),0)",[launch],|r|Ok((r.get(0)?,r.get(1)?)))?;
     if prompt == 0 || prompt <= report {
         return Ok(());
@@ -273,6 +283,68 @@ pub fn stall(tx: &Connection, t: &Task, launch: i64, error: &str) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stall_service_mark_plain_error_and_unmarked_lanes() {
+        for role in [
+            "implementer",
+            "reviewer",
+            "researcher",
+            "orchestrator",
+            "sub-orchestrator",
+        ] {
+            let mut db = Connection::open_in_memory().unwrap();
+            crate::schema::migrate(&mut db).unwrap();
+            db.execute("insert into tasks(id,name,role,created_at,updated_at) values(1,'parent','orchestrator',?,?)", params![now(), now()]).unwrap();
+            db.execute("insert into tasks(id,parent_id,name,role,created_at,updated_at) values(2,1,'lane',?,?,?)", params![role, now(), now()]).unwrap();
+            db.execute("insert into launches(id,task_id,provider,model,effort,recorded_at) values(1,2,'codex','test','none',?)", [now()]).unwrap();
+            db.execute("update tasks set current_launch_id=1 where id=2", [])
+                .unwrap();
+            let t = task(&db, 2).unwrap();
+            // Exercise no mark, opt-in, and clearing a previously enabled mark.
+            for mark in [None, Some("on"), Some("")] {
+                if let Some(value) = mark {
+                    orch::set(&mut db, t.id, &[("service".into(), value.into())]).unwrap();
+                }
+                for error in ["", "turn_error"] {
+                    let prompt = event(
+                        &db,
+                        Event {
+                            task: t.id,
+                            launch: Some(1),
+                            kind: "prompt",
+                            ..Event::default()
+                        },
+                    )
+                    .unwrap();
+                    stall(&db, &t, 1, error).unwrap();
+                    let actual: Option<(i64, String, String, Option<String>)> = db
+                        .query_row(
+                            "select recipient_task_id,summary,json_extract(data,'$.reason'),json_extract(data,'$.error') from events where kind='herdr' and event_key=?",
+                            [format!("stall:{prompt}")],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                        )
+                        .optional()
+                        .unwrap();
+                    let suppressed = error.is_empty()
+                        && (mark == Some("on")
+                            || ["orchestrator", "sub-orchestrator"].contains(&role));
+                    let expected = (!suppressed).then(|| {
+                        (
+                            1,
+                            "worker turn stalled".into(),
+                            "stall".into(),
+                            (!error.is_empty()).then(|| error.to_owned()),
+                        )
+                    });
+                    assert_eq!(
+                        actual, expected,
+                        "role={role} mark={mark:?} error={error:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn payload_boundary() {
         assert_eq!(
