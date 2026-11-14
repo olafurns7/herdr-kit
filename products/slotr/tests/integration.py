@@ -614,7 +614,14 @@ class AdmissionTest(unittest.TestCase):
                 legacy.unlink(missing_ok=True)
 
         (self.bin / 'systemd-run').write_text(stub)
-        result = self.invoke('run', '--cost', '0', '--', 'true')
+        launches = (self.runtime / 'launches').read_text()
+        for cost in ('0', '10', '511'):
+            with self.subTest(cost_below_512=cost):
+                result = self.invoke('run', '--cost', cost, '--', 'true')
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('--cost is MiB and must be at least 512', result.stderr)
+                self.assertEqual((self.runtime / 'launches').read_text(), launches)
+        result = self.invoke('run', '--', 'true')
         self.assertEqual(result.returncode, 0, result.stderr)
         flags = json.loads((self.runtime / 'launches').read_text().splitlines()[-1])
         self.assertIn('--property=MemoryMax=7680M', flags)
@@ -624,7 +631,7 @@ class AdmissionTest(unittest.TestCase):
             with self.subTest(zero_pool_default=True, override=override):
                 config.write_text(original.replace('default_cost_mib = 7680', 'default_cost_mib = 0\n' + override))
                 launches = (self.runtime / 'launches').read_text()
-                result = self.invoke('run', '--cost', '0', '--', 'true')
+                result = self.invoke('run', '--', 'true')
                 self.assertEqual(result.returncode, expected, result.stderr)
                 if expected:
                     self.assertIn('positive memory ceiling', result.stderr)
@@ -2650,7 +2657,7 @@ class AdmissionTest(unittest.TestCase):
                               for q in json.loads((self.runtime/'slotr/state.json').read_text())['holders']))
         (self.root/'state/slotr/priority.json').write_text('{bad')
         self.assertIn('priority_policy_error',self.status()['priority']['error'])
-        result=self.invoke('run','--cost','0','--','true')
+        result=self.invoke('run','--','true')
         self.assertEqual(result.returncode,2); self.assertIn('priority_policy_error',result.stderr)
         self.set_stats(1000)
         self.wait(lambda: low.poll() is not None)
