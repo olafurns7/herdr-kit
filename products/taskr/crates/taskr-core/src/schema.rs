@@ -66,6 +66,8 @@ pub(crate) fn connect(path: &Path, flags: rusqlite::OpenFlags) -> rusqlite::Resu
     // The CLI's wait; daemon jobs and start-up writes lost to CLI writers at 5 s.
     db.busy_timeout(std::time::Duration::from_secs(30))?;
     db.pragma_update(None, "journal_mode", "WAL")?;
+    // The limit applies at the next commit after a WAL reset, not at the checkpoint.
+    db.pragma_update(None, "journal_size_limit", 64 * 1024 * 1024)?;
     db.pragma_update(None, "foreign_keys", true)?;
     Ok(db)
 }
@@ -135,6 +137,44 @@ pub fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn checkpointed_wal_shrinks_on_next_committed_write() {
+        let root = std::env::temp_dir().join(format!("taskr-schema-wal-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("ledger.db");
+        let wal = root.join("ledger.db-wal");
+        let limit = 64 * 1024 * 1024;
+        let db = connect(&path, rusqlite::OpenFlags::default()).unwrap();
+        let other = connect(&path, rusqlite::OpenFlags::default()).unwrap();
+        for connection in [&db, &other] {
+            assert_eq!(
+                connection
+                    .pragma_query_value(None, "journal_size_limit", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                limit as i64
+            );
+        }
+        drop(other);
+        db.execute_batch(
+            "create table burst(data blob);
+             with recursive n(i) as (values(1) union all select i+1 from n where i<65)
+             insert into burst select zeroblob(1024*1024) from n;",
+        )
+        .unwrap();
+        assert!(std::fs::metadata(&wal).unwrap().len() > limit);
+        let (busy, frames, checkpointed): (i64, i64, i64) = db
+            .query_row("pragma wal_checkpoint(PASSIVE)", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(busy, 0);
+        assert_eq!(frames, checkpointed);
+        db.execute("insert into burst values (zeroblob(1))", [])
+            .unwrap();
+        assert!(std::fs::metadata(&wal).unwrap().len() <= limit);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn migration_effect_requires_schema_version_bump() {
         use sha2::{Digest, Sha256};
