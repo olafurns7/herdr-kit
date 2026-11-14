@@ -22,9 +22,9 @@ holder's cost, `reservation_mib`, and `peak_samples`.
 
 ```sh
 curl -fsSL -o slotr-install.sh \
-  https://github.com/olafurns7/herdr-kit/releases/download/slotr/v0.3.2/install.sh &&
+  https://github.com/olafurns7/herdr-kit/releases/download/slotr/v0.3.3/install.sh &&
   printf '%s  %s\n' dd11030f1a59b4bf828b0b5c388ce4793a02e6b6cc7a3383c1f0ba1f8636e919 slotr-install.sh | sha256sum -c - &&
-  SLOTR_VERSION=slotr/v0.3.2 sh slotr-install.sh
+  SLOTR_VERSION=slotr/v0.3.3 sh slotr-install.sh
 ```
 
 Downloads the Linux x86_64 release, verifies the installer and archive
@@ -36,7 +36,7 @@ different pin with `SLOTR_VERSION`, see [install](docs/install.md#versions).
 After downloading and verifying the installer above:
 
 ```sh
-SLOTR_VERSION=slotr/v0.3.2 sh slotr-install.sh --config
+SLOTR_VERSION=slotr/v0.3.3 sh slotr-install.sh --config
 ```
 
 This also creates the config from the example when none exists, then checks it.

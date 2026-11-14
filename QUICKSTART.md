@@ -100,10 +100,10 @@ and [setup assets](products/setup/README.md).
 Skip this step on macOS or if you only want the first worker. slotr requires
 a working systemd user manager; see [its requirements](products/slotr/docs/install.md).
 Pick a published slotr tag separately from taskr. The example pins
-`slotr/v0.3.2`; use a newer published tag if needed:
+`slotr/v0.3.3`; use a newer published tag if needed:
 
 ```sh
-SLOTR_VERSION=slotr/v0.3.2 sh products/slotr/install.sh --config
+SLOTR_VERSION=slotr/v0.3.3 sh products/slotr/install.sh --config
 slotr --version
 slotr config check
 ```
