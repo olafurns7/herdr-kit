@@ -65,24 +65,24 @@ pub(super) fn prepare(
     let kv = &d["kv"];
     let (repo, pr, head) = (text(kv, "repo"), text(kv, "pr"), text(kv, "head"));
     if !repo_ok(repo) {
-        return Err(reject("writer/seat report needs --kv repo=OWNER/NAME"));
+        return Err(usage("writer/seat report needs --kv repo=OWNER/NAME"));
     }
     if pr != "none"
         && (pr.is_empty()
             || !pr.bytes().all(|c| c.is_ascii_digit())
             || pr.parse::<u64>().ok().filter(|n| *n > 0).is_none())
     {
-        return Err(reject(
+        return Err(usage(
             "writer/seat report needs --kv pr=NUMBER or --kv pr=none --kv reason=TEXT",
         ));
     }
     if pr == "none" && text(kv, "reason").trim().is_empty() {
-        return Err(reject("pr=none needs a non-empty --kv reason=TEXT"));
+        return Err(usage("pr=none needs a non-empty --kv reason=TEXT"));
     }
     if (pr != "none" || seat || !head.is_empty())
         && (head.len() != 40 || !head.bytes().all(|c| c.is_ascii_hexdigit()))
     {
-        return Err(reject("report needs --kv head=FULL_40_HEX_SHA"));
+        return Err(usage("report needs --kv head=FULL_40_HEX_SHA"));
     }
     let mut verdict_line = None;
     if seat {
@@ -95,7 +95,19 @@ pub(super) fn prepare(
                         .map(str::trim)
                 })
                 .collect();
-            if targets.len() != 1 || targets[0] != format!("{repo}#{pr}") {
+            if targets.len() != 1
+                || !targets[0].split_once('#').is_some_and(|(r, n)| {
+                    repo_ok(r)
+                        && !n.is_empty()
+                        && n.bytes().all(|c| c.is_ascii_digit())
+                        && n.parse::<u64>().is_ok_and(|n| n > 0)
+                })
+            {
+                return Err(usage(format!(
+                    "seat brief needs one PR: {repo}#{pr} or Review: {repo}#{pr} line; report with --kv repo={repo} --kv pr={pr}"
+                )));
+            }
+            if targets[0] != format!("{repo}#{pr}") {
                 return Err(reject(
                     "seat PR must equal its brief's single PR: OWNER/NAME#NUMBER or Review: OWNER/NAME#NUMBER line",
                 ));
@@ -103,7 +115,7 @@ pub(super) fn prepare(
         }
         let verdict = text(kv, "verdict");
         if !matches!(verdict, "PASS" | "FAIL") {
-            return Err(reject("seat report needs --kv verdict=PASS|FAIL"));
+            return Err(usage("seat report needs --kv verdict=PASS|FAIL"));
         }
         let mut counts = Vec::new();
         for key in ["p0", "p1", "p2", "p3"] {
@@ -112,7 +124,7 @@ pub(super) fn prepare(
                 || !value.bytes().all(|c| c.is_ascii_digit())
                 || value.parse::<u64>().is_err()
             {
-                return Err(reject(format!(
+                return Err(usage(format!(
                     "seat report needs --kv {key}=NON_NEGATIVE_INTEGER"
                 )));
             }
@@ -129,21 +141,36 @@ pub(super) fn prepare(
             .args(["pr", "view", pr, "--repo", repo, "--json", "number,commits"])
             .stdin(std::process::Stdio::null())
             .output()
-            .map_err(|e| reject(format!("cannot verify PR with gh (required): {e}")))?;
+            .map_err(|e| {
+                transport(format!(
+                    "cannot verify PR with gh (required): {e}; retry after gh is available"
+                ))
+            })?;
         if !output.status.success() {
-            return Err(reject(
-                "cannot verify PR: gh failed; check GitHub access and the PR number",
+            return Err(transport(
+                "cannot verify PR: gh failed; check GitHub access and the PR number, then retry",
             ));
         }
         let value: Value = serde_json::from_slice(&output.stdout)
-            .map_err(|_| reject("cannot verify PR: invalid gh response"))?;
-        if value["number"].as_u64() != pr.parse::<u64>().ok()
-            || !value["commits"].as_array().is_some_and(|cs| {
-                cs.iter().any(|c| {
-                    c["oid"]
-                        .as_str()
-                        .is_some_and(|oid| oid.eq_ignore_ascii_case(head))
-                })
+            .map_err(|_| transport("cannot verify PR: invalid gh response; retry"))?;
+        let number = value["number"]
+            .as_u64()
+            .ok_or_else(|| transport("cannot verify PR: missing gh PR number; retry"))?;
+        let commits = value["commits"]
+            .as_array()
+            .ok_or_else(|| transport("cannot verify PR: missing gh commit list; retry"))?;
+        if commits.iter().any(|c| {
+            c["oid"]
+                .as_str()
+                .is_none_or(|s| s.len() != 40 || !s.bytes().all(|c| c.is_ascii_hexdigit()))
+        }) {
+            return Err(transport("cannot verify PR: invalid gh commit list; retry"));
+        }
+        if Some(number) != pr.parse::<u64>().ok()
+            || !commits.iter().any(|c| {
+                c["oid"]
+                    .as_str()
+                    .is_some_and(|oid| oid.eq_ignore_ascii_case(head))
             })
         {
             return Err(reject(
@@ -155,6 +182,13 @@ pub(super) fn prepare(
         d["verdict_line"] = json!(line);
     }
     Ok(())
+}
+
+fn transport(message: impl Into<String>) -> Error {
+    Error {
+        code: ExitCode::Transport,
+        message: message.into(),
+    }
 }
 
 pub(super) fn refs(db: &Connection, t: &Task, data: Option<&Value>) -> Result<()> {

@@ -30,15 +30,22 @@ const VERDICT: &[&str] = &[
 fn gh(h: &Harness) {
     h.script("gh", &format!("#!/bin/sh\n[ \"$*\" = 'pr view 42 --repo example/project --json number,commits' ] || exit 1\nprintf '%s\\n' '{{\"number\":42,\"commits\":[{{\"oid\":\"{HEAD}\"}}]}}'\n"));
 }
-fn refused(h: &Harness, env: &Env, args: &[&str], expected: &str) {
+fn refused(h: &Harness, env: &Env, args: &[&str], expected: &str, code: i32) {
     let before: i64 = h
         .conn()
         .query_row("select count(*) from events", [], |r| r.get(0))
         .unwrap();
     let out = h.output(env, &[&["--json"][..], args].concat(), b"");
-    assert_eq!(out.status.code(), Some(6), "{out:?}");
+    assert_eq!(out.status.code(), Some(code), "{out:?}");
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(v["error"].as_str().unwrap().contains(expected), "{v}");
+    if code == 2 {
+        let error = v["error"].as_str().unwrap();
+        assert!(!error.contains('\n') && error.contains("--kv"), "{v}");
+    }
+    if code == 5 {
+        assert!(v["error"].as_str().unwrap().contains("retry"), "{v}");
+    }
     assert_eq!(
         before,
         h.conn()
@@ -68,6 +75,7 @@ fn r21_writer_requires_pr_reason_and_membership() {
             &env,
             &[kind, "slice", "--kv", "repo=example/project"],
             "pr=NUMBER",
+            2,
         );
         refused(
             &h,
@@ -81,9 +89,17 @@ fn r21_writer_requires_pr_reason_and_membership() {
                 "pr=none",
             ],
             "reason",
+            2,
         );
     }
     gh(&h);
+    refused(
+        &h,
+        &env,
+        &[&["ready", "slice"][..], FIELDS, &["--kv", "head=bad"]].concat(),
+        "--kv head=FULL_40_HEX_SHA",
+        2,
+    );
     let fields = [
         FIELDS,
         &["--kv", "head=2222222222222222222222222222222222222222"],
@@ -94,6 +110,7 @@ fn r21_writer_requires_pr_reason_and_membership() {
         &env,
         &[&["ready", "slice"][..], &fields].concat(),
         "not a commit",
+        6,
     );
     h.script("gh", "#!/bin/sh\nexit 1\n");
     refused(
@@ -101,6 +118,15 @@ fn r21_writer_requires_pr_reason_and_membership() {
         &env,
         &[&["ready", "slice"][..], FIELDS].concat(),
         "gh failed",
+        5,
+    );
+    h.script("gh", "#!/bin/sh\necho '{}'\n");
+    refused(
+        &h,
+        &env,
+        &[&["ready", "slice"][..], FIELDS].concat(),
+        "missing gh PR number",
+        5,
     );
     std::fs::remove_file(h.home.join("bin/gh")).unwrap();
     let mut no_gh = env.clone();
@@ -110,6 +136,7 @@ fn r21_writer_requires_pr_reason_and_membership() {
         &no_gh,
         &[&["ready", "slice"][..], FIELDS].concat(),
         "cannot verify PR with gh",
+        5,
     );
 }
 
@@ -172,7 +199,7 @@ fn r21_writer_refs_done_inheritance_and_none() {
         .find(|(k, _)| k == "TASKR_LAUNCH")
         .unwrap()
         .1 = next;
-    refused(&h, &fresh, &["done"], "repo=");
+    refused(&h, &fresh, &["done"], "repo=", 2);
 }
 
 #[test]
@@ -186,6 +213,15 @@ fn r21_seat_verdict_prints_stores_and_binds_to_brief() {
         &env,
         &[&["ready", "seat"][..], FIELDS, VERDICT].concat(),
         "seat PR",
+        6,
+    );
+    seat_brief(&h, task, "bad target");
+    refused(
+        &h,
+        &env,
+        &[&["ready", "seat"][..], FIELDS, VERDICT].concat(),
+        "seat brief needs",
+        2,
     );
     seat_brief(&h, task, "example/project#42");
     // A captured task brief can use the task's role without a HERDR-BRIEF header.
@@ -198,8 +234,16 @@ fn r21_seat_verdict_prints_stores_and_binds_to_brief() {
     refused(
         &h,
         &env,
+        &[&["ready", "seat"][..], FIELDS, VERDICT, &["--kv", "p0=-1"]].concat(),
+        "--kv p0=NON_NEGATIVE_INTEGER",
+        2,
+    );
+    refused(
+        &h,
+        &env,
         &[&["ready", "seat"][..], FIELDS].concat(),
         "verdict=",
+        2,
     );
     let expected = format!("VERDICT example/project#42 {HEAD} PASS p0=0 p1=0 p2=2 p3=0");
     let args = [
@@ -271,7 +315,7 @@ fn r21_role_header_prefix_and_researcher() {
             .unwrap();
         }
         if required {
-            refused(&h, &env, &["ready", "slice"], "repo=");
+            refused(&h, &env, &["ready", "slice"], "repo=", 2);
         } else {
             h.ok(&env, &["ready", "slice"]);
             h.ok(&env, &["done"]);

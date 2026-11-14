@@ -15,17 +15,50 @@ pub(crate) struct Delivery<'a> {
     pub(crate) answer: Option<(&'a str, &'a str)>,
 }
 fn contract(role: &str) -> String {
-    if !["implementer", "researcher", "reviewer"].contains(&role) {
+    if ![
+        "implementer",
+        "mechanical-worker",
+        "researcher",
+        "reviewer",
+        "code-reviewer",
+        "code-validator",
+    ]
+    .contains(&role)
+    {
         return String::new();
     }
     format!(
-        " Worker: run that got even if a hook did (dup = success); {}honor Progress; no advisor calls in Herdr; taskr ready TEXT --report PATH per slice; missing decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, taskr ack EVENT_ID --as $TASKR_TASK (push lane: end the turn, the answer arrives pushed, ack with its --fence); end: taskr done [TEXT] or taskr fail TEXT; write report at brief's path, reply with it and three lines; no commit, push, PR, issue-tracker write or agent start unless the brief allows; never sleep waiting: use taskr wait, and herdr pane wait-output only for a non-agent process; exit 6: stop; qd1: queued, don't resend; other failure: read ~/.agents/skills/taskr/references/recovery.md.",
-        if role == "reviewer" {
+        " Worker: run that got even if a hook did (dup = success); {}honor Progress; no advisor calls in Herdr; taskr ready TEXT --report PATH per slice; writer/seat ready or direct done adds --kv repo=OWNER/NAME --kv pr=NUMBER --kv head=FULL_40_HEX_SHA (or keep repo/head and use --kv pr=none --kv reason=TEXT); a seat adds --kv verdict=PASS|FAIL --kv p0=N --kv p1=N --kv p2=N --kv p3=N; bare done reuses the latest ready fields; missing decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, taskr ack EVENT_ID --as $TASKR_TASK (push lane: end the turn, the answer arrives pushed, ack with its --fence); end: taskr done [TEXT] or taskr fail TEXT; write report at brief's path, reply with it and three lines; no commit, push, PR, issue-tracker write or agent start unless the brief allows; never sleep waiting: use taskr wait, and herdr pane wait-output only for a non-agent process; exit 6: stop; qd1: queued, don't resend; other failure: read ~/.agents/skills/taskr/references/recovery.md.",
+        if matches!(role, "reviewer" | "code-reviewer" | "code-validator") {
             "reviewer: first load ~/.agents/skills/taskr/references/review.md; "
         } else {
             ""
         }
     )
+}
+
+#[test]
+fn r21_worker_contract_names_report_fields() {
+    for role in [
+        "implementer",
+        "mechanical-worker",
+        "reviewer",
+        "code-reviewer",
+        "code-validator",
+    ] {
+        let text = contract(role);
+        for flags in [
+            "--kv repo=OWNER/NAME",
+            "--kv pr=NUMBER",
+            "--kv head=FULL_40_HEX_SHA",
+            "--kv pr=none --kv reason=TEXT",
+            "--kv verdict=PASS|FAIL",
+            "--kv p0=N --kv p1=N --kv p2=N --kv p3=N",
+            "bare done reuses the latest ready fields",
+        ] {
+            assert!(text.contains(flags), "{role}: {flags}");
+        }
+    }
 }
 pub fn answer(f: &FlagSet) -> Result<Value> {
     if f.get_bool("supersede") && !store::env("TASKR_TASK").is_empty() {

@@ -44,7 +44,9 @@ Use the lane's own PR on a stack. A report without a PR uses `--kv pr=none
 them again. With any explicit `--kv`, supply the complete record.
 Numbered PRs need a successful `gh pr view NUMBER --repo OWNER/NAME --json
 number,commits` read on the ledger host. Missing gh, failed access, malformed
-output or a head absent from that commit list refuses the report with exit 6.
+output refuses the report with exit 5; restore access and retry. Missing or
+malformed report fields return exit 2 with the flags to add. A head absent from
+that commit list, or a seat PR different from its brief, returns exit 6.
 The existing `repo` and `pr` lane refs are updated after validation; `pr=none`
 clears the lane's PR ref. No PR is inferred from another lane or a base branch.
 
