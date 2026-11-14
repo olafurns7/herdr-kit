@@ -423,7 +423,8 @@ mkdir ~/taskr-check && (
   # The worker reports (an orchestrator would start an agent with these set):
   TASKR_TASK=$lane TASKR_LAUNCH=$launch taskr note "install checked"
   printf 'All good.\n' > report.md
-  TASKR_TASK=$lane TASKR_LAUNCH=$launch taskr ready "setup check done" --report "$PWD/report.md"
+  TASKR_TASK=$lane TASKR_LAUNCH=$launch taskr ready "setup check done" --report "$PWD/report.md" \
+    --kv repo=example/project --kv pr=none --kv reason=setup-check
   # The orchestrator wakes on the report and marks it handled:
   event=$(taskr wait --as "$root" --for ready --timeout 5000 | tee /dev/stderr | cut -f2)
   taskr ack "$event" --as "$root"

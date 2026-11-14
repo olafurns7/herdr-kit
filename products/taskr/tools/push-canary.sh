@@ -113,7 +113,8 @@ fire() {
 	owned "$1"
 	read -r task launch <"$DIR/sender"
 	case "$task$launch" in '' | *[!0-9]*) die "$DIR/sender is not two ids" ;; esac
-	t TASKR_TASK="$task" TASKR_LAUNCH="$launch" "$TASKR" ready "canary event $2"
+	t TASKR_TASK="$task" TASKR_LAUNCH="$launch" "$TASKR" ready "canary event $2" \
+		--kv repo=example/project --kv pr=none --kv reason=canary
 }
 
 capture() {

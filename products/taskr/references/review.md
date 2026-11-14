@@ -6,7 +6,18 @@ A reviewer lane needs only this file and the core [SKILL.md](../SKILL.md); it do
 2. Stay read-only. Write only the report path and the journal path that the brief names (a temporary sibling is allowed for an atomic journal replace). No source edits, commits, pushes, PRs, issue-tracker writes, installs or daemon restarts. You may write briefs and start gather helpers only under Gather helpers below.
 3. Run probes and checks in a scratch directory: a scratch clone or copy, `HOME` and an explicit `TASKR_DB` under `mktemp -d`. Never touch the live ledger or another lane's worktree files.
 4. Missing decision: `taskr ask "question" --blocking`; in a plain lane, `taskr wait --for answer` and `taskr ack EVENT --as $TASKR_TASK` after you handle it; in a push lane, follow [Push lane](../SKILL.md#push-lane). On exit 5, rerun the printed `--request-key` line before you wait. Client `got`/`ready`/`done`/`fail` may instead print `qd1 <request key>` and exit 0 when the server is unreachable or earlier records wait in this host's spool: queued, not failure; do not retry. A full or unwritable spool: exit 5 with `retry with:`; rerun that line. Inspect `spool ls` after an outage; states: [recovery.md](recovery.md#spool).
-5. Finish: write the report, then `taskr ready "rev-SLUG" --report PATH`, then `taskr done "VERDICT: one line"` (or `taskr fail "reason"` when the review cannot finish). Reply with the report path and three lines.
+5. Finish: write the report, then run the seat report command below, then `taskr done "VERDICT: one line"` (or `taskr fail "reason"` when the review cannot finish). The bare `done` reuses the latest `ready` record. Reply with the report path and three lines.
+
+```sh
+taskr ready "rev-SLUG" --report PATH \
+  --kv repo=OWNER/NAME --kv pr=NUMBER --kv head=FULL_40_HEX_SHA \
+  --kv verdict=PASS --kv p0=0 --kv p1=0 --kv p2=0 --kv p3=0
+```
+
+Use the brief's own PR and the reviewed head. Set `verdict` to `PASS` or `FAIL`
+and each severity count to the number of open findings at that head; `PASS`
+requires p0=p1=0. For a review without a PR, keep `repo`, `head` and the verdict
+fields, and replace `--kv pr=NUMBER` with `--kv pr=none --kv reason=TEXT`.
 
 The report states: the verdict; each finding with file:line, a failure case and a fix; the checks that hold; every command run with its exit code; the source identity reviewed (commit or hashes); and each probe path with the exact command to rerun it. Keep probes outside the repository at the evidence paths named by the brief; list every artifact left there. Ask for an external evidence path if one is missing.
 
