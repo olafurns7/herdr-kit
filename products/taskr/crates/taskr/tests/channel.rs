@@ -13,7 +13,7 @@ use std::{
     process::{Child, ChildStdin, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -1428,15 +1428,265 @@ fn hints_wake_a_check_and_a_reset_reconnects_without_a_duplicate() {
         c.quiet(Duration::from_secs(1)).is_empty(),
         "a received event was pushed again"
     );
-    let fired = Instant::now();
-    let e2 = insert_event(&h, "1", &ws, "note", "after the reset", "{}");
-    // E is still pending (received, not acked), so wait offers E first; ack it.
+    // E is still pending (received, not acked), so wait would offer E first: ack it
+    // before E2 exists, so E2's 'events' hint finds E2 offered.
     let r = c.call("taskr_ack", json!({"event":n(&e),"fence":1}));
     assert_eq!(r["structuredContent"]["outcome"], "committed", "{r}");
+    let fired = Instant::now();
+    let e2 = insert_event(&h, "1", &ws, "note", "after the reset", "{}");
     let (at, push) = c.expect_push(Duration::from_secs(10));
     assert_eq!(meta(&push, "event"), e2);
     assert!(at - fired < Duration::from_secs(2), "{:?}", at - fired);
     assert_eq!(attempts(&h, &e).len(), 1);
+    let (code, _) = c.close();
+    assert_eq!(code, Some(0));
+}
+
+#[test]
+fn a_state_only_hint_wakes_a_check_after_the_state_gap_not_the_poll() {
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let (_hub, _, loopback) = start_hub(&h);
+    h.conn()
+        .execute(
+            "insert into meta(key,value) values('dashboard_url',?) on conflict(key) do update set value=excluded.value",
+            [format!("{loopback}/")],
+        )
+        .unwrap();
+    // Production intervals: a 5 s state gap and a 30 s poll.
+    let mut c = Chan::start(&h, &env, &[], 1);
+    held(&h, &ws);
+    until("the hint stream", Duration::from_secs(20), || {
+        c.stderr().contains("hint stream connected")
+    });
+    assert!(c.quiet(Duration::from_secs(1)).is_empty());
+    let e1 = insert_event(&h, "1", &ws, "note", "first", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(10));
+    assert_eq!(meta(&push, "event"), e1);
+    let a = meta(&push, "attempt");
+    let r = c.call("taskr_received", json!({"attempt":n(&a)}));
+    assert_eq!(r["structuredContent"]["outcome"], "committed");
+    // E2's 'events' hint wakes a check, which still offers the pending E1 and pushes
+    // nothing. Only after that check ends the ack, which writes no event row: its hint
+    // is 'state' only.
+    let inserted = Instant::now();
+    let e2 = insert_event(&h, "1", &ws, "note", "second", "{}");
+    until("the check on E2's hint", Duration::from_secs(20), || {
+        woke_then_checked(&c.stderr(), n(&e2))
+    });
+    assert!(c.quiet(Duration::ZERO).is_empty(), "E1 pushed again");
+    let r = c.call("taskr_ack", json!({"event":n(&e1),"fence":1}));
+    assert_eq!(r["structuredContent"]["outcome"], "committed", "{r}");
+    let (at, push) = c.expect_push(Duration::from_secs(40));
+    assert_eq!(meta(&push, "event"), e2);
+    // The last check ran on E2's hint, after `inserted`, so the state-woken check is at
+    // least 5 s after `inserted`; 4 s keeps a second of margin, and a 250 ms gap would
+    // push about 1.3 s after it. That check also set the 30 s poll, due no sooner than
+    // 30 s after `inserted`; 20 s leaves 10 s for a slow host on either side.
+    let after = at - inserted;
+    assert!(after >= Duration::from_secs(4), "pushed after {after:?}");
+    assert!(after < Duration::from_secs(20), "pushed after {after:?}");
+    let (code, _) = c.close();
+    assert_eq!(code, Some(0));
+}
+
+/// In `err`: a fast wake on a hint for hub revision `rev` or later (the first change
+/// that can carry event `rev`), then a check that completed after it. The loop is one
+/// thread, so that check started after the hint was handled. A line still partly
+/// collected only shows a lower revision.
+fn woke_then_checked(err: &str, rev: i64) -> bool {
+    let mut lines = err.lines();
+    lines.by_ref().any(|l| {
+        l.split_once("contract: wake fast rev=")
+            .and_then(|(_, r)| r.trim().parse::<i64>().ok())
+            .is_some_and(|r| r >= rev)
+    }) && lines.any(|l| l.contains("contract: checked"))
+}
+/// A loopback forwarder to the hub at `hub` (an http:// URL) that rewrites Host. The
+/// first connection passes at once; each later one waits for `open`. Its URL, the
+/// connections accepted and the open flag.
+fn forwarder(hub: &str) -> (String, Arc<AtomicUsize>, Arc<AtomicBool>) {
+    let target = hub
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let open = Arc::new(AtomicBool::new(false));
+    let (count, gate) = (accepted.clone(), open.clone());
+    std::thread::spawn(move || {
+        for client in listener.incoming() {
+            let Ok(client) = client else { break };
+            let n = count.fetch_add(1, Ordering::SeqCst);
+            let (target, gate) = (target.clone(), gate.clone());
+            std::thread::spawn(move || {
+                while n > 0 && !gate.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                let mut reader = BufReader::new(client.try_clone().unwrap());
+                let mut head = String::new();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    if line.to_ascii_lowercase().starts_with("host:") {
+                        line = format!("Host: {target}\r\n");
+                    }
+                    head.push_str(&line);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut hub = std::net::TcpStream::connect(&target).unwrap();
+                hub.write_all(head.as_bytes()).unwrap();
+                let (mut back, mut out) = (hub.try_clone().unwrap(), client);
+                std::thread::spawn(move || std::io::copy(&mut back, &mut out));
+                let _ = std::io::copy(&mut reader, &mut hub);
+            });
+        }
+    });
+    (url, accepted, open)
+}
+/// Kill the channel's `_events` child, as a transport error would end it.
+fn kill_hints(c: &Chan) {
+    let parent = c.child.id().to_string();
+    let pid = std::fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(|d| d.ok()?.file_name().into_string().ok())
+        .find(|pid| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+                == Some(parent.as_str())
+                && cmd.split(|b| *b == 0).any(|a| a == b"_events")
+        })
+        .expect("the hint child");
+    let status = std::process::Command::new("kill")
+        .arg(&pid)
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn a_restarted_hint_child_wakes_at_once_on_a_state_only_first_hint() {
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let (_hub, _, loopback) = start_hub(&h);
+    let set_url = |url: &str| {
+        h.conn()
+            .execute(
+                "insert into meta(key,value) values('dashboard_url',?) on conflict(key) do update set value=excluded.value",
+                [format!("{url}/")],
+            )
+            .unwrap();
+    };
+    set_url(&loopback);
+    // Another hub watcher keeps the hub's feed running, so a new stream starts from the
+    // hub's current change, not a fresh read.
+    let mut watch = h
+        .command(&env)
+        .args(["_events", "--json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let out = watch.stdout.take().unwrap();
+    let (send, frames) = mpsc::channel::<Value>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines() {
+            let Ok(v) = line.map(|l| serde_json::from_str::<Value>(&l)) else {
+                break;
+            };
+            let Ok(v) = v else { break };
+            if v["keepalive"] != true && send.send(v).is_err() {
+                break;
+            }
+        }
+    });
+    frames
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the watcher's first frame");
+    let frame = |what: &str, ok: &dyn Fn(&Value) -> bool| {
+        let start = Instant::now();
+        loop {
+            let left = Duration::from_secs(20).saturating_sub(start.elapsed());
+            let v = frames
+                .recv_timeout(left)
+                .unwrap_or_else(|_| panic!("no {what} frame"));
+            if ok(&v) {
+                return;
+            }
+        }
+    };
+    let (url, accepted, open) = forwarder(&loopback);
+    set_url(&url);
+    // Production intervals: a 250 ms hint gap, a 5 s state gap, a 1 s backoff.
+    let mut c = Chan::start(&h, &env, &[], 1);
+    held(&h, &ws);
+    until("the hint stream", Duration::from_secs(20), || {
+        c.stderr().contains("hint stream connected")
+    });
+    // A check on a 'pr' event's hint (not pushed): the last check started after
+    // `inserted`.
+    let inserted = Instant::now();
+    let pr = insert_event(&h, "1", &ws, "pr", "not pushed", "{}");
+    until("the check on the pr hint", Duration::from_secs(20), || {
+        woke_then_checked(&c.stderr(), n(&pr))
+    });
+    kill_hints(&c);
+    // While the new child's stream is held: E, then a state-only change, so the hub's
+    // current change (the new stream's first frame) is 'state' only.
+    let e = insert_event(&h, "1", &ws, "note", "during the restart", "{}");
+    let rev = n(&e);
+    frame("E's", &|v| v["rev"] == rev);
+    h.conn()
+        .execute(
+            "insert into meta(key,value) values('restart_probe','1')",
+            [],
+        )
+        .unwrap();
+    frame("the state-only", &|v| {
+        v["rev"] == rev && v["event"] == "change" && v["kinds"] == json!(["state"])
+    });
+    until("the new hint child", Duration::from_secs(20), || {
+        accepted.load(Ordering::SeqCst) >= 2
+    });
+    open.store(true, Ordering::SeqCst);
+    let released = Instant::now();
+    // A state gap from the last check would end no sooner than `inserted` + 5 s, at
+    // least 2 s after `released`.
+    assert!(
+        released - inserted < Duration::from_secs(3),
+        "slow restart: {:?}",
+        released - inserted
+    );
+    let (at, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(meta(&push, "event"), e);
+    assert!(
+        at - released < Duration::from_secs(2),
+        "pushed {:?} after the reconnect",
+        at - released
+    );
+    // The new child's stream (the second connection) woke fast on E's revision.
+    until(
+        "the new stream's fast wake",
+        Duration::from_secs(20),
+        || {
+            let err = c.stderr();
+            err.match_indices("hint stream connected")
+                .nth(1)
+                .is_some_and(|(i, _)| woke_then_checked(&err[i..], rev))
+        },
+    );
+    let _ = watch.kill();
+    let _ = watch.wait();
     let (code, _) = c.close();
     assert_eq!(code, Some(0));
 }

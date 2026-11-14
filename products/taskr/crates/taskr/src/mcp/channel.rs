@@ -60,6 +60,9 @@ struct Timing {
     backoff_max: Duration,
     /// At most one hint-woken check per gap.
     hint_gap: Duration,
+    /// A hint with only 'state' kinds (a renew, a stamp, a note, an ack) wakes a check
+    /// no sooner than this after the last one: later, never skipped.
+    state_gap: Duration,
     /// The queue sink's wall clock per submission, output draining included.
     queue: Duration,
     /// Digest mode: how long a pushable head that is not urgent waits for company.
@@ -75,6 +78,7 @@ fn timing() -> Timing {
         backoff: Duration::from_secs(1),
         backoff_max: Duration::from_secs(60),
         hint_gap: Duration::from_millis(250),
+        state_gap: Duration::from_secs(5),
         queue: Duration::from_secs(60),
         digest: Duration::from_secs(60),
     };
@@ -95,6 +99,7 @@ fn timing() -> Timing {
             backoff: t.backoff / n,
             backoff_max: t.backoff_max / n,
             hint_gap: t.hint_gap / n,
+            state_gap: t.state_gap / n,
             queue: t.queue / n,
             digest: t.digest / n,
         };
@@ -109,7 +114,13 @@ fn log(message: impl std::fmt::Display) {
 }
 
 enum Msg {
-    Wake,
+    /// A hub hint; `state_only` when its change has only 'state' kinds.
+    Wake {
+        state_only: bool,
+        /// Test-only: the hint's hub revision, named in the wake log line.
+        #[cfg(feature = "contract")]
+        rev: i64,
+    },
     Stop,
     /// The queue sink's submission ended.
     Done(push::Done),
@@ -263,8 +274,10 @@ fn end_hints(hints: &Hints) {
 }
 
 /// The hub's verified hint stream (`taskr _events`, a child, so this server still never
-/// opens the ledger): each change or reset only wakes a check. Reconnects back off
-/// from 1 s to 60 s; the loop's own poll keeps delivering without it.
+/// opens the ledger): each change or reset only wakes a check. A change whose kinds are
+/// all 'state' wakes it later (`state_gap`), never skips it; a reset, an 'events'
+/// kind, or no or unknown kinds wake it as soon as `hint_gap` allows. Reconnects back
+/// off from 1 s to 60 s; the loop's own poll keeps delivering without it.
 fn read_hints(
     cwd: &std::path::Path,
     t: Timing,
@@ -309,6 +322,9 @@ fn read_hints(
             }
         };
         let mut connected = false;
+        // A new child's first hint is the hub's current change, which can be
+        // state-only: it takes the hint gap, so a restart never waits for the state gap.
+        let mut first = true;
         if let Some(out) = stdout {
             for line in std::io::BufReader::new(out).lines() {
                 let Ok(line) = line else { break };
@@ -327,8 +343,16 @@ fn read_hints(
                     log("hint stream connected");
                     last.clear();
                 }
-                if hint && send.send(Msg::Wake).is_err() {
-                    return;
+                if hint {
+                    let state_only = !std::mem::take(&mut first) && state_only(&v);
+                    let wake = Msg::Wake {
+                        state_only,
+                        #[cfg(feature = "contract")]
+                        rev: v["rev"].as_i64().unwrap_or(-1),
+                    };
+                    if send.send(wake).is_err() {
+                        return;
+                    }
                 }
             }
         }
@@ -346,6 +370,14 @@ fn read_hints(
         }
         backoff = (backoff * 2).min(t.backoff_max);
     }
+}
+
+/// A change hint whose kinds are present and all 'state'.
+fn state_only(v: &Value) -> bool {
+    v["event"] == "change"
+        && v["kinds"]
+            .as_array()
+            .is_some_and(|k| !k.is_empty() && k.iter().all(|k| k == "state"))
 }
 
 /// An uncertain mutation: the request key it ran with (None on a ledger host, where
@@ -451,7 +483,7 @@ impl Loop {
                 // follows its started tool, then release; a submission still settles.
                 loop {
                     match receive.recv() {
-                        Ok(Msg::Wake) => {}
+                        Ok(Msg::Wake { .. }) => {}
                         Ok(Msg::Done(done)) => self.settle(done),
                         Ok(Msg::Stop) | Err(_) => break,
                     }
@@ -464,7 +496,18 @@ impl Loop {
             let wait = self.next().saturating_duration_since(Instant::now());
             match receive.recv_timeout(wait) {
                 Ok(Msg::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Ok(Msg::Wake) => self.hinted(),
+                Ok(Msg::Wake {
+                    state_only,
+                    #[cfg(feature = "contract")]
+                    rev,
+                }) => {
+                    #[cfg(feature = "contract")]
+                    log(format!(
+                        "contract: wake {} rev={rev}",
+                        if state_only { "state" } else { "fast" }
+                    ));
+                    self.hinted(state_only)
+                }
                 Ok(Msg::Done(done)) => self.settle(done),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -516,9 +559,15 @@ impl Loop {
         }
     }
 
-    fn hinted(&mut self) {
+    /// Never moves a pending earlier check later.
+    fn hinted(&mut self, state_only: bool) {
         let now = Instant::now();
-        let due = self.last_check.map_or(now, |l| l + self.t.hint_gap);
+        let gap = if state_only {
+            self.t.state_gap
+        } else {
+            self.t.hint_gap
+        };
+        let due = self.last_check.map_or(now, |l| l + gap);
         self.next_check = self.next_check.min(due.max(now));
     }
 
@@ -535,6 +584,9 @@ impl Loop {
             self.next_check = Instant::now() + self.t.poll;
             self.retry_stamps();
             self.check();
+            // Test-only: the timing fixtures order their steps on this line.
+            #[cfg(feature = "contract")]
+            log("contract: checked");
         }
     }
 
