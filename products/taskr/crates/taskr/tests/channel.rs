@@ -2636,7 +2636,7 @@ fn digest_off_keeps_the_single_event_envelope_and_instructions() {
     let a = insert_event(&h, "1", &ws, "note", "one", "{}");
     let b = insert_event(&h, "1", &ws, "note", "two", "{}");
     let (_, push) = c.expect_push(Duration::from_secs(20));
-    assert_eq!(pushed_ids(&push), [a.clone()]);
+    assert_eq!(pushed_ids(&push), std::slice::from_ref(&a));
     assert!(push["params"]["meta"].get("events").is_none(), "{push}");
     // Without the opt-in an ack of the second event is the ledger's own refusal.
     let r = ack(&mut c, &b, "1");
@@ -2777,7 +2777,7 @@ fn urgent_kinds_bypass_the_digest_hold() {
             assert_eq!(ack(&mut c, &note, &fence)["outcome"], "committed");
         } else {
             // Alone, it is today's single-event envelope.
-            assert_eq!(pushed_ids(&push), [urgent.clone()]);
+            assert_eq!(pushed_ids(&push), std::slice::from_ref(&urgent));
             assert!(push["params"]["meta"].get("events").is_none());
             let content = push["params"]["content"].as_str().unwrap();
             assert!(content.starts_with(&format!("taskr event {urgent} (kind {kind})")));
@@ -2921,7 +2921,7 @@ fn a_failed_inbox_read_pushes_the_head_at_once_alone() {
     let note = insert_event(&h, "1", &w, "note", "behind it", "{}");
     let (at, push) = c.expect_push(Duration::from_secs(30));
     assert!(at - started < Duration::from_secs(16), "the ask was held");
-    assert_eq!(pushed_ids(&push), [ask.clone()]);
+    assert_eq!(pushed_ids(&push), std::slice::from_ref(&ask));
     assert!(c.stderr().contains("digest inbox read"), "{}", c.stderr());
     assert_eq!(ack(&mut c, &ask, &fence)["outcome"], "committed");
     // A failed read is not a reason to hold a plain note either.
