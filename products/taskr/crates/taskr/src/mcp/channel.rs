@@ -834,10 +834,10 @@ impl Loop {
         let mut queue = std::mem::take(&mut self.stamps).into_iter();
         for (attempt, key, column) in queue.by_ref() {
             if !self.keep_lease() {
-                let mut left = vec![(attempt, key, column)];
-                left.extend(queue);
-                left.append(&mut self.stamps);
-                self.stamps = left;
+                // Order kept: the ones re-queued as uncertain in this pass came first,
+                // then this one and the rest.
+                self.stamps.push((attempt, key, column));
+                self.stamps.extend(queue);
                 return;
             }
             self.stamp(attempt, key, column);

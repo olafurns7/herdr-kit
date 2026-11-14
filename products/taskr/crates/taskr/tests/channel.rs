@@ -3289,3 +3289,84 @@ fn a_slow_stamp_is_followed_by_a_renew_before_the_next_stamp() {
     assert!(!c.stderr().contains("stopped:"), "{}", c.stderr());
     assert_eq!(c.close().0, Some(0));
 }
+
+#[test]
+fn a_paused_stamp_queue_keeps_an_uncertain_stamp_first_with_its_key() {
+    // ttl 6 s, renew every 2 s, fresh while more than 2 s from the deadline. The first
+    // `submitted` is sent to the hub 4.6 s after the last take or renew (not fresh, not
+    // expired) and its reply is lost: uncertain, re-queued with its key. The renew due
+    // before `received` commits but its reply is lost too, so the lease is not fresh and
+    // the queue pauses. The replayed renew restores freshness; the retry must start
+    // with that same `submitted`, then `received`, then the next line.
+    const S: u32 = 10;
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let last = Arc::new(Mutex::new(Instant::now()));
+    let submitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let renew_lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (la, su, rl) = (last.clone(), submitted.clone(), renew_lost.clone());
+    let rule: Rule = Arc::new(move |argv: &[String]| {
+        if has(argv, &["consumer"]) && (has(argv, &["renew"]) || has(argv, &["take"])) {
+            if has(argv, &["renew"])
+                && su.load(Ordering::SeqCst)
+                && !rl.swap(true, Ordering::SeqCst)
+            {
+                return Act::LoseReply;
+            }
+            *la.lock().unwrap() = Instant::now();
+            return Act::Pass;
+        }
+        if has(argv, &["delivery", "submitted"]) && !su.swap(true, Ordering::SeqCst) {
+            let at = *la.lock().unwrap() + Duration::from_millis(4600);
+            std::thread::sleep(at.saturating_duration_since(Instant::now()));
+            return Act::LoseReply;
+        }
+        Act::Pass
+    });
+    let (w, worker, seen) = digest_rule(&h, &tailnet, rule);
+    let mut c = Chan::start(&h, &digest(&worker), &[], S);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(30));
+    assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
+    for e in [&a, &b] {
+        until("every receipt", Duration::from_secs(40), || {
+            attempts(&h, e).iter().all(|x| x.ends_with("|received"))
+        });
+    }
+    assert!(renew_lost.load(Ordering::SeqCst));
+    let stamps: Vec<(String, String, String)> = requests(&seen)
+        .into_iter()
+        .filter(|(a, _)| has(a, &["delivery", "submitted"]) || has(a, &["delivery", "received"]))
+        .map(|(a, k)| (a[2].clone(), a[3].clone(), k))
+        .collect();
+    let (aa, ab) = (meta(&push, "attempt"), {
+        let mut ids: Vec<String> = stamps.iter().map(|s| s.1.clone()).collect();
+        ids.dedup();
+        ids.into_iter()
+            .find(|x| *x != meta(&push, "attempt"))
+            .unwrap()
+    });
+    let order: Vec<(&str, &str)> = stamps
+        .iter()
+        .map(|(c, a, _)| (c.as_str(), a.as_str()))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("submitted", aa.as_str()),
+            ("submitted", aa.as_str()),
+            ("received", aa.as_str()),
+            ("submitted", ab.as_str()),
+            ("received", ab.as_str()),
+        ],
+        "{stamps:?}"
+    );
+    assert_eq!(
+        stamps[0].2, stamps[1].2,
+        "the uncertain stamp's key changed"
+    );
+    assert!(!c.stderr().contains("stopped:"), "{}", c.stderr());
+    assert_eq!(c.close().0, Some(0));
+}

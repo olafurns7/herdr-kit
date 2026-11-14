@@ -84,7 +84,9 @@ With digests on:
   these steps, each stamp included, the adapter renews the lease when a renew is due,
   and it starts the step only with a held lease that is still fresh (not within 20 s of
   its end). An uncertain renew is not enough. A stamp that cannot start yet waits for a
-  later check, with its own request key.
+  later check, in order, with its own request key. This per-stamp fresh-lease check
+  covers the stamps of a digest of two or more lines; a one-line push stamps as today,
+  the same as with digest off.
 - Nothing is written without authority. If a line's `delivery new` is refused (a
   refused fence), the adapter writes nothing and stops. If it is uncertain, or if EOF,
   a stdin backlog or a lease within 20 s of its end comes up during the steps or right
