@@ -820,7 +820,26 @@ impl Loop {
     }
 
     fn retry_stamps(&mut self) {
+        if self.digest {
+            return self.digest_stamps();
+        }
         for (attempt, key, column) in std::mem::take(&mut self.stamps) {
+            self.stamp(attempt, key, column);
+        }
+    }
+    /// Digest mode: each queued stamp starts only with a held, fresh lease, renewed
+    /// first when due. The ones that cannot start yet stay queued, in order, with their
+    /// request keys, for the next check; an uncertain one is queued again by `stamp`.
+    fn digest_stamps(&mut self) {
+        let mut queue = std::mem::take(&mut self.stamps).into_iter();
+        for (attempt, key, column) in queue.by_ref() {
+            if !self.keep_lease() {
+                let mut left = vec![(attempt, key, column)];
+                left.extend(queue);
+                left.append(&mut self.stamps);
+                self.stamps = left;
+                return;
+            }
             self.stamp(attempt, key, column);
         }
     }
@@ -1107,18 +1126,19 @@ impl Loop {
         }
     }
 
-    /// Digest mode, between its ledger steps: renew when due. false when the lease is
-    /// no longer held: nothing more is written.
+    /// Digest mode, before each ledger step: renew when due. true only with a held and
+    /// fresh lease: an uncertain renew keeps `Held` with its old deadline, which is not
+    /// authority.
     fn keep_lease(&mut self) -> bool {
         if matches!(self.lease, Lease::Held { renew_at, .. } if Instant::now() >= renew_at) {
             self.renew();
         }
-        matches!(self.lease, Lease::Held { .. })
+        self.fresh()
     }
-    /// Digest mode: may the digest be written now? The lease renewed when due, still
-    /// fresh, and no EOF or backlog.
+    /// Digest mode: may the digest be written now? A held, fresh lease (renewed when
+    /// due) and no EOF or backlog.
     fn may_write(&mut self) -> bool {
-        self.keep_lease() && self.fresh() && !self.quiet()
+        self.keep_lease() && !self.quiet()
     }
     /// A digest that is not written: E keeps its attempt for the next check, and each
     /// committed tail attempt is kept for the next digest.
@@ -1315,13 +1335,19 @@ impl Loop {
             return;
         }
         log(format!("digest pushed events {}", ids.join(",")));
+        // Every stamp waits its turn for a held, fresh lease (renewed when due), each
+        // with its own request key; what cannot start now runs at a later check.
         for (a, ev) in lines {
-            // The stamps renew between lines too; a lost lease stops them.
-            if !self.keep_lease() {
-                break;
+            self.tracks
+                .entry(ev["id"].as_i64().unwrap_or(e))
+                .or_default()
+                .delivered = true;
+            for column in ["submitted", "received"] {
+                let key = self.key();
+                self.stamps.push((a, key, column));
             }
-            self.delivered(ev["id"].as_i64().unwrap_or(e), a);
         }
+        self.digest_stamps();
     }
 }
 

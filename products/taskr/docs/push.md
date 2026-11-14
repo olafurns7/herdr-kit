@@ -80,8 +80,11 @@ With digests on:
   of up to 280 bytes. The summary is escaped and marked untrusted. The fence appears
   once, in the header.
 - Each line gets its own `delivery new` under the fence. After the single write, each
-  line also gets its own `delivery submitted` and `delivery received`. The adapter
-  renews the lease between these steps when a renew is due.
+  line also gets its own `delivery submitted` and `delivery received`. Before each of
+  these steps, each stamp included, the adapter renews the lease when a renew is due,
+  and it starts the step only with a held lease that is still fresh (not within 20 s of
+  its end). An uncertain renew is not enough. A stamp that cannot start yet waits for a
+  later check, with its own request key.
 - Nothing is written without authority. If a line's `delivery new` is refused (a
   refused fence), the adapter writes nothing and stops. If it is uncertain, or if EOF,
   a stdin backlog or a lease within 20 s of its end comes up during the steps or right

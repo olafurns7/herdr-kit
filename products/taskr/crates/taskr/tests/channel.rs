@@ -1273,6 +1273,8 @@ enum Act {
     LoseRequest,
     /// The hub runs it, then this runs, then the reply goes back.
     After(Box<dyn FnOnce() + Send>),
+    /// The hub runs it; after this long the connection closes with no reply.
+    LateLoss(Duration),
 }
 type Rule = Arc<dyn Fn(&[String]) -> Act + Send + Sync>;
 /// An RPC proxy to the hub, one thread per connection. Each request's argv goes through
@@ -1340,6 +1342,7 @@ fn proxy(hub_port: u16, rule: Rule) -> (u16, mpsc::Receiver<Value>) {
                 hub.read_to_end(&mut reply).unwrap();
                 match act {
                     Act::LoseReply | Act::LoseRequest | Act::Reply(_) => {}
+                    Act::LateLoss(d) => std::thread::sleep(d),
                     Act::Pass => {
                         let _ = client.write_all(&reply);
                     }
@@ -2940,11 +2943,17 @@ fn digest_client(
     n: usize,
     act: impl Fn() -> Act + Send + Sync + 'static,
 ) -> (String, Env, mpsc::Receiver<Value>) {
-    let direct = client(h, hub);
-    let (w, worker) = client_lane(h, &direct);
-    let (p, seen) = proxy(port(hub), nth(&["delivery", "new"], n, act));
-    client(h, &format!("http://[::1]:{p}"));
-    (w, worker, seen)
+    digest_client_on(h, hub, &["delivery", "new"], n, act)
+}
+/// The same, for the `n`th request whose argv has every word.
+fn digest_client_on(
+    h: &Harness,
+    hub: &str,
+    words: &'static [&'static str],
+    n: usize,
+    act: impl Fn() -> Act + Send + Sync + 'static,
+) -> (String, Env, mpsc::Receiver<Value>) {
+    digest_rule(h, hub, nth(words, n, act))
 }
 
 #[test]
@@ -3108,5 +3117,175 @@ fn a_root_consumer_digest_acks_with_its_session() {
         assert_eq!(ack(&mut c, e, &fence)["outcome"], "committed");
     }
     assert_eq!(cursors(&h, "1"), format!("{b}|-|-"));
+    assert_eq!(c.close().0, Some(0));
+}
+
+/// Each proxied request's argv words, in arrival order, with its request key.
+fn requests(seen: &mpsc::Receiver<Value>) -> Vec<(Vec<String>, String)> {
+    seen.try_iter()
+        .map(|r| {
+            (
+                serde_json::from_value(r["argv"].clone()).unwrap(),
+                r["request_key"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+fn has(argv: &[String], words: &[&str]) -> bool {
+    words.iter().all(|w| argv.iter().any(|a| a == w))
+}
+/// A client-host digest lane whose proxy applies `rule` to every request.
+fn digest_rule(h: &Harness, hub: &str, rule: Rule) -> (String, Env, mpsc::Receiver<Value>) {
+    let direct = client(h, hub);
+    let (w, worker) = client_lane(h, &direct);
+    let (p, seen) = proxy(port(hub), rule);
+    client(h, &format!("http://[::1]:{p}"));
+    (w, worker, seen)
+}
+
+#[test]
+fn a_stamp_reply_late_past_the_lease_starts_no_receipt_on_the_stale_lease() {
+    // ttl 3 s: the first `submitted` reply is held 4 s, past the lease.
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let (w, worker, seen) = digest_client_on(&h, &tailnet, &["delivery", "submitted"], 0, || {
+        Act::After(Box::new(|| std::thread::sleep(Duration::from_secs(4))))
+    });
+    let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
+    held(&h, &w);
+    insert_event(&h, "1", &w, "note", "one", "{}");
+    insert_event(&h, "1", &w, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(pushed_ids(&push).len(), 2);
+    until("the stop", Duration::from_secs(30), || {
+        c.stderr().contains("stopped:")
+    });
+    assert!(c.stderr().contains("renew refused"), "{}", c.stderr());
+    std::thread::sleep(Duration::from_secs(1));
+    let reqs = requests(&seen);
+    let stamps: Vec<&Vec<String>> = reqs
+        .iter()
+        .map(|(a, _)| a)
+        .filter(|a| has(a, &["delivery", "submitted"]) || has(a, &["delivery", "received"]))
+        .collect();
+    assert_eq!(stamps.len(), 1, "{stamps:?}");
+    assert!(has(stamps[0], &["submitted"]));
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn an_uncertain_renew_past_the_deadline_holds_every_stamp_until_a_fresh_renew() {
+    // ttl 6 s, renew every 2 s. The first `submitted` reply is held 2.5 s, so a renew is
+    // due before `received`. That renew commits at the hub but its reply is lost 4.6 s
+    // later: past the local deadline (the last confirmed renew + 6 s), before the hub's
+    // (this renew + 6 s). No stamp may start until a later renew commits.
+    const S: u32 = 10;
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let stamped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (st, lo) = (stamped.clone(), lost.clone());
+    let rule: Rule = Arc::new(move |argv: &[String]| {
+        if has(argv, &["delivery", "submitted"]) && !st.swap(true, Ordering::SeqCst) {
+            return Act::After(Box::new(|| std::thread::sleep(Duration::from_millis(2500))));
+        }
+        if has(argv, &["consumer", "renew"])
+            && st.load(Ordering::SeqCst)
+            && !lo.swap(true, Ordering::SeqCst)
+        {
+            return Act::LateLoss(Duration::from_millis(4600));
+        }
+        Act::Pass
+    });
+    let (w, worker, seen) = digest_rule(&h, &tailnet, rule);
+    let mut c = Chan::start(&h, &digest(&worker), &[], S);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(30));
+    assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
+    for e in [&a, &b] {
+        until("every receipt", Duration::from_secs(40), || {
+            attempts(&h, e).iter().all(|x| x.ends_with("|received"))
+        });
+    }
+    let reqs = requests(&seen);
+    // The lost renew: the first renew after the first `submitted`.
+    let sub = reqs
+        .iter()
+        .position(|(a, _)| has(a, &["delivery", "submitted"]))
+        .expect("a submitted stamp");
+    let lost_at = sub
+        + reqs[sub..]
+            .iter()
+            .position(|(a, _)| has(a, &["consumer", "renew"]))
+            .expect("the lost renew");
+    assert!(lost.load(Ordering::SeqCst));
+    let lost_key = reqs[lost_at].1.clone();
+    let next_stamp = reqs
+        .iter()
+        .enumerate()
+        .skip(lost_at)
+        .find(|(_, (a, _))| has(a, &["delivery", "submitted"]) || has(a, &["delivery", "received"]))
+        .map(|(i, _)| i)
+        .expect("a stamp after the lost renew");
+    // Between them: the lost renew's own retry, then a renew with a new key.
+    let fresh = reqs[lost_at + 1..next_stamp]
+        .iter()
+        .any(|(a, k)| has(a, &["consumer", "renew"]) && *k != lost_key);
+    assert!(
+        fresh,
+        "a stamp before a fresh renew: {:?}",
+        &reqs[lost_at..=next_stamp]
+    );
+    // The local view of that renew was uncertain, and the loop kept going.
+    let err = c.stderr();
+    assert!(
+        err.lines()
+            .any(|l| l.contains("channel: renew ") && l.contains(", retrying")),
+        "{err}"
+    );
+    assert!(!err.contains("stopped:"), "{err}");
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_slow_stamp_is_followed_by_a_renew_before_the_next_stamp() {
+    // ttl 6 s, renew every 2 s; the first `submitted` reply is held 2.5 s.
+    const S: u32 = 10;
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let (w, worker, seen) = digest_client_on(&h, &tailnet, &["delivery", "submitted"], 0, || {
+        Act::After(Box::new(|| std::thread::sleep(Duration::from_millis(2500))))
+    });
+    let mut c = Chan::start(&h, &digest(&worker), &[], S);
+    held(&h, &w);
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    let (_, push) = c.expect_push(Duration::from_secs(30));
+    assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
+    for e in [&a, &b] {
+        until("every receipt", Duration::from_secs(30), || {
+            attempts(&h, e).iter().all(|x| x.ends_with("|received"))
+        });
+    }
+    let reqs = requests(&seen);
+    let sub = reqs
+        .iter()
+        .position(|(a, _)| has(a, &["delivery", "submitted"]))
+        .unwrap();
+    let rec = reqs
+        .iter()
+        .position(|(a, _)| has(a, &["delivery", "received"]))
+        .unwrap();
+    assert!(sub < rec);
+    assert!(
+        reqs[sub + 1..rec]
+            .iter()
+            .any(|(a, _)| has(a, &["consumer", "renew"])),
+        "no renew between the slow submitted and the next stamp: {:?}",
+        &reqs[sub..=rec]
+    );
+    assert!(!c.stderr().contains("stopped:"), "{}", c.stderr());
     assert_eq!(c.close().0, Some(0));
 }
