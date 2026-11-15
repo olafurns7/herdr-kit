@@ -67,6 +67,8 @@ fn assert_folded_worker_contract(text: &str) {
         "run that got even if a hook did (dup = success), folded into your first read as one command",
         "ack in the same response as your next action",
         "never a response whose only tool call is got, ack or note",
+        "independent reads go together in one response",
+        "a writer ends the turn after ready or done and never watches CI or a long job (a failed run is sent back)",
     ] {
         assert!(text.contains(rule), "missing {rule}: {text}");
     }
@@ -276,7 +278,7 @@ fn remote_files_reference_the_captured_document_and_keep_the_contract() {
             .unwrap();
         let all_calls = calls(&h);
         let text = all_calls.last().unwrap()[5].as_str().unwrap();
-        assert!(text.starts_with(&format!("First taskr got {attempt}; run taskr got {attempt} && taskr doc get {doc} as one command, then execute that text exactly. Worker:")), "{text}");
+        assert!(text.starts_with(&format!("First taskr got {attempt}; do not run it alone: run taskr got {attempt} && taskr doc get {doc} as one command, then execute that text exactly. Worker:")), "{text}");
         assert_folded_worker_contract(text);
         assert!(!text.contains(file.to_str().unwrap()));
         let captured = h.output(&[], &["doc", "get", &doc.to_string()], b"");
@@ -379,7 +381,7 @@ fn local_file_prompts_keep_the_original_path_and_contract() {
     assert_eq!(all_calls[0][0], "agent");
     let text = all_calls[0][3].as_str().unwrap();
     assert!(text.starts_with(&format!(
-        "First taskr got {attempt}; combine that got and the read of {} in one command, then execute exactly. Worker:",
+        "First taskr got {attempt}; do not run it alone: run it and the read of {} in one command, then execute exactly. Worker:",
         file.display()
     )));
     assert_folded_worker_contract(text);
