@@ -330,7 +330,9 @@ else: sys.exit(98)
                               '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
                         task=None, launch=None, role='hub', pid=process.pid, cwd=str(work), umask=0o002)
         assert actual == expected, {'actual':actual, 'expected':expected}
-        servers = {'taskr':{'command':'taskr','args':['mcp','--channel','--as','42','--session','7']}}
+        # The hub takes digest pushes with a 2-minute hold.
+        servers = {'taskr':{'command':'taskr','args':['mcp','--channel','--as','42','--session','7'],
+                            'env':{'TASKR_CHANNEL_DIGEST':'1','TASKR_CHANNEL_DIGEST_HOLD_S':'120'}}}
         if jobs:
             binding = 'herdr-hub-root-42-gen-7'
             assert 16 <= len(binding) <= 128
