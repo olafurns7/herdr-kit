@@ -4,7 +4,7 @@
 # herdr agent start, taskr prompt --confirm (one Enter when no receipt
 # comes; the final line then includes submit_retry=enter). The first failed step
 # stops the run.
-# Usage: herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]
+# Usage: herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--mcp] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]
 #        herdr-launch --reserved TASK LAUNCH LANE NAME BRIEF REPORT PARENT PANE
 #        herdr-launch --lanes
 #        herdr-launch [--push] --check [LANE...]
@@ -21,6 +21,8 @@
 # the taskr development channel, whose start dialog step 6 answers; codex gets a
 # step 8 that runs `taskr push codex --codex-bin $HERDR_PUSH_CODEX_BIN` in its
 # own tab once the session has run `taskr start`.
+# --mcp (claude lanes only, W2317) keeps the user and project MCP servers for
+# this lane: no --strict-mcp-config, every other flag unchanged.
 # --work W12 (or 12) starts the lane from PARENT's ticket W12. Before step 1
 # it refuses (exit 2) a ticket that is missing, done or cancelled, lacks
 # intent/acceptance/scope/dependencies, or has a dependency not done. It
@@ -30,7 +32,7 @@
 # line adds work_brief=<path>. Not with --reserved.
 set -u
 
-usage='usage: herdr-launch --lanes | herdr-launch --quota | herdr-launch [--push] --check [LANE...] | herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
+usage='usage: herdr-launch --lanes | herdr-launch --quota | herdr-launch [--push] --check [LANE...] | herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--mcp] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
 
 herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 2
 . "$herdr_bin_dir/herdr-lanes.sh"
@@ -57,6 +59,7 @@ herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 2
 # user and project MCP servers (Hana production reads need Sentry,
 # PlanetScale, Cloudflare); its push --mcp-config adds to them. The name
 # prefix decides, not the role, so gather- researchers stay strict;
+# W2317: --mcp does the same for one claude lane of any name.
 # the settings turn off bundled skills, claude.ai synced skills and
 # connectors, and the easel and plugin-authoring builtin plugins. Every role
 # but sub-orchestrator also hides the herdr, herdr-orchestration and
@@ -73,8 +76,8 @@ start_agent() {
     case $kind in
         claude) set -- --model "$model" --effort "$effort" --dangerously-skip-permissions \
             --tools "$claude_tools"
-            case $name in
-                rs-* | arch-*) ;;
+            case $mcp:$name in
+                1:* | *:rs-* | *:arch-*) ;;
                 *) set -- "$@" --strict-mcp-config ;;
             esac
             set -- "$@" --settings "$(claude_settings)"
@@ -271,7 +274,7 @@ else:
 PY
 }
 
-workspace= cwd= push= reserved_task= reserved_launch= work_id= machine= machine_host= check= account= quota= drain=
+workspace= cwd= push= mcp= reserved_task= reserved_launch= work_id= machine= machine_host= check= account= quota= drain=
 while :; do
     case ${1-} in
         --lanes)
@@ -316,6 +319,10 @@ while :; do
             push=1
             shift
             ;;
+        --mcp)
+            mcp=1
+            shift
+            ;;
         --reserved)
             [ -z "$reserved_task" ] && [ $# -ge 3 ] || die '--reserved needs TASK LAUNCH once'
             reserved_task=$2 reserved_launch=$3
@@ -337,7 +344,7 @@ while :; do
 done
 if [ -n "$quota" ]; then
     [ -z "$machine" ] || die '--quota supports local snapshots only; --machine would require a pane'
-    [ $# -eq 0 ] && [ -z "$account$workspace$cwd$push$reserved_task$work_id$check" ] || die '--quota does not combine with launch or check options'
+    [ $# -eq 0 ] && [ -z "$account$workspace$cwd$push$mcp$reserved_task$work_id$check" ] || die '--quota does not combine with launch or check options'
     account_python=$(account_script)
     python3 -c "$account_python" claude-opus-5-5 quota || die '--quota could not read snapshots with python3'
     exit 0
@@ -345,6 +352,7 @@ fi
 if [ -n "$check" ]; then
     [ -z "$account" ] || die '--account does not combine with --check'
     [ -z "$machine" ] || die '--machine does not combine with --check'
+    [ -z "$mcp" ] || die '--mcp does not combine with --check'
     for checked_arg do
         [ "$checked_arg" != --machine ] || die '--machine does not combine with --check'
         [ "$checked_arg" != --quota ] || die '--quota does not combine with --check'
@@ -371,6 +379,7 @@ lane_info "$lane" || die "unknown lane '$lane'"
 if [ -n "$account" ]; then
     case $kind in claude | codex) ;; *) die '--account supports claude and codex only' ;; esac
 fi
+[ -z "$mcp" ] || [ "$kind" = claude ] || die "--mcp supports claude lanes only; lane $lane is $kind"
 if [ -n "$machine" ]; then
     case $kind in claude | codex) ;; *) die '--machine supports claude and codex only' ;; esac
     [ -n "$given_pane" ] || { [ -n "$workspace" ] && [ -n "$cwd" ]; } \
