@@ -1591,6 +1591,50 @@ expect_calls "$(tab_calls arch-x)" \
         "|$(claude_flags xhigh '' '' mcp)|--mcp-config|$mcp_config|--dangerously-load-development-channels|server:taskr")"
 printf '%s\n' "$mcp_want" | cmp -s - "$mcp_config" || fail 'private config content is wrong'
 
+# W2317: --mcp keeps the MCP servers for one claude lane of any name; every
+# other flag is unchanged, and a non-claude lane is refused before any call.
+new_case 'claude impl- --mcp lane keeps MCP servers'
+run_launch sh "$launch_sh" --mcp opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|$(claude_flags medium '' '' mcp)")"
+
+new_case 'claude impl- --push --mcp lane keeps MCP servers and adds the taskr config'
+run_launch sh "$launch_sh" --push --mcp opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|$(claude_flags medium '' '' mcp)|--mcp-config|$mcp_config|--dangerously-load-development-channels|server:taskr")"
+printf '%s\n' "$mcp_want" | cmp -s - "$mcp_config" || fail 'private config content is wrong'
+
+new_case 'claude arch- --mcp lane is unchanged' researcher
+run_launch sh "$launch_sh" --mcp opus-xhigh arch-x "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls arch-x)" \
+    "$(tail_calls arch-x researcher wA:p7 wA:t7 claude claude-opus-5-5 xhigh "$claude_setup" \
+        "|$(claude_flags xhigh '' '' mcp)")"
+
+new_case 'codex --mcp lane refuses before any call' reviewer
+run_launch sh "$launch_sh" --mcp sol-medium rev-cart "$brief" "$report" 42
+expect_rc 2
+expect_err '--mcp supports claude lanes only; lane sol-medium is codex'
+expect_no_calls
+
+for cheap_lane in glm-free glm-flash; do
+    new_case "OpenCode --mcp for $cheap_lane refuses before any call"
+    run_launch sh "$launch_sh" --mcp "$cheap_lane" glm-inventory "$brief" "$report" 42
+    expect_rc 2
+    expect_err "--mcp supports claude lanes only; lane $cheap_lane is opencode"
+    expect_no_calls
+done
+
+new_case '--mcp does not combine with --check'
+run_launch sh "$launch_sh" --mcp --check opus-medium
+expect_rc 2
+expect_err '--mcp does not combine with --check'
+expect_no_calls
+
 new_case 'claude impl- lane stays strict'
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
