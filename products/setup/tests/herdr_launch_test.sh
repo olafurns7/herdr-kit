@@ -242,9 +242,18 @@ expect_no_calls() {
     [ ! -s "$case_dir/calls" ] || fail "calls were made: $(head -n 3 "$case_dir/calls" | tr '\n' ' ')"
 }
 
-# The lane flags: full permissions, no sandbox (owner decision, 2026-10-07).
+# The lane flags: full permissions, no sandbox (owner decision, 2026-10-07),
+# and the W2305 lean launch: built-in tools, MCP servers, skills and plugins
+# cut to what workers use.
+# claude_settings [orch]: the --settings JSON; orch keeps the herdr skills.
+claude_settings() {
+    lean_skills=',"skillOverrides":{"herdr":"off","herdr-orchestration":"off","herdr-fleet":"off"}'
+    [ "${1-}" != orch ] || lean_skills=
+    printf '%s' "{\"agentPushNotifEnabled\":false,\"autoMemoryEnabled\":false,\"promptSuggestionEnabled\":false,\"awaySummaryEnabled\":false,\"idleCompaction\":false,\"disableBundledSkills\":true,\"syncClaudeAiSkills\":false,\"disableClaudeAiConnectors\":true,\"enabledPlugins\":{\"posthog@claude-plugins-official\":false,\"cc-plugin-you-should-know@builtin\":false,\"slack@claude-plugins-official\":false,\"stripe@claude-plugins-official\":false,\"cc-plugin-easel@builtin\":false,\"cc-plugin-plugin-authoring@builtin\":false}$lean_skills}"
+}
+# claude_flags EFFORT [MODEL] [orch]
 claude_flags() {
-    printf '%s' "--model|claude-opus-5-5|--effort|$1|--dangerously-skip-permissions|--settings|{\"agentPushNotifEnabled\":false,\"autoMemoryEnabled\":false,\"promptSuggestionEnabled\":false,\"awaySummaryEnabled\":false,\"idleCompaction\":false,\"enabledPlugins\":{\"posthog@claude-plugins-official\":false,\"cc-plugin-you-should-know@builtin\":false,\"slack@claude-plugins-official\":false,\"stripe@claude-plugins-official\":false}}"
+    printf '%s' "--model|${2:-claude-opus-5-5}|--effort|$1|--dangerously-skip-permissions|--tools|Bash,Read,Edit,Write,ToolSearch,Skill,WebFetch,WebSearch|--strict-mcp-config|--settings|$(claude_settings "${3-}")"
 }
 # codex_flags MODEL EFFORT TRUST
 codex_flags() {
@@ -890,7 +899,7 @@ run_launch sh "$launch_sh" haiku-gather gather-x "$brief" "$report" 42
 expect_rc 0
 expect_calls "$(tab_calls gather-x)" \
     "$(tail_calls gather-x researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$claude_setup" \
-        '|--model|claude-haiku-5-5|--effort|medium|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"autoMemoryEnabled":false,"promptSuggestionEnabled":false,"awaySummaryEnabled":false,"idleCompaction":false,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false,"slack@claude-plugins-official":false,"stripe@claude-plugins-official":false}}')"
+        "|$(claude_flags medium claude-haiku-5-5)")"
 
 new_case 'Luna gather launches as a researcher' researcher
 run_launch sh "$launch_sh" luna-gather gather-x "$brief" "$report" 42
@@ -1040,7 +1049,7 @@ run_launch sh "$launch_sh" opus-xhigh orch-x "$brief" "$report" 42
 expect_rc 0
 expect_calls "$(tab_calls orch-x)" \
     "$(tail_calls orch-x sub-orchestrator wA:p7 wA:t7 claude claude-opus-5-5 xhigh "$claude_setup" \
-        "|$(claude_flags xhigh)")"
+        "|$(claude_flags xhigh '' orch)")"
 
 new_case 'codex lane in a git worktree: both checkouts trusted' reviewer
 git init -q "$case_dir/main"
@@ -1140,7 +1149,7 @@ expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 account=default'
 expect_calls "herdr|pane|get|wA:p3" \
     "herdr|pane|process-info|--pane|wA:p3" "herdr|pane|send-keys|wA:p3|ctrl+c" \
     "$(tail_calls orch-cart sub-orchestrator wA:p3 wA:t5 claude claude-opus-5-5 high "$claude_setup" \
-        "|$(claude_flags high)")"
+        "|$(claude_flags high '' orch)")"
 
 new_case 'given pane in another workspace registers that workspace and tab'
 STUB_PANE_WS=wB
