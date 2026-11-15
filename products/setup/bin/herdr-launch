@@ -830,16 +830,28 @@ if [ -n "$push" ] && [ "$kind" = claude ]; then
 fi
 [ -z "$reserved_task" ] || reserved_check || step_fail '6 (reserved decision expired)'
 if ! start_agent; then
-    [ -n "$push" ] && [ "$kind" = claude ] || step_fail '6 (herdr agent start)'
-    screen=$(herdr pane read "$pane" --source visible --lines 40) \
-        || step_fail '6 (herdr agent start, then herdr pane read)'
-    case $screen in
-        *'Loading development channels'*) ;;
-        *) step_fail '6 (herdr agent start failed and the pane shows no development-channel dialog)' ;;
-    esac
-    herdr pane send-keys "$pane" Enter >/dev/null || step_fail '6 (herdr pane send-keys Enter at the development-channel dialog)'
-    herdr agent wait "$name" --until idle --timeout 90000 >/dev/null \
-        || step_fail '6 (the agent was not idle within 90 s after the development-channel dialog)'
+    if [ "$kind" = codex ]; then
+        screen=$(herdr pane read "$pane" --source visible --lines 40) \
+            || step_fail '6 (herdr agent start, then herdr pane read)'
+        # Only the update dialog may be skipped; leave other blocked screens alone.
+        printf '%s\n' "$screen" | grep -Eq '^[[:space:]]*Update available · ' \
+            && printf '%s\n' "$screen" | grep -Eq '^[[:space:]]*3\. Skip until next version[[:space:]]*$' \
+            || step_fail '6 (herdr agent start)'
+        herdr pane send-keys "$pane" esc >/dev/null || step_fail '6 (herdr pane send-keys esc at the Codex update dialog)'
+        herdr agent wait "$name" --until idle --timeout 30000 >/dev/null \
+            || step_fail '6 (the agent was not idle within 30 s after the Codex update dialog)'
+    else
+        [ -n "$push" ] && [ "$kind" = claude ] || step_fail '6 (herdr agent start)'
+        screen=$(herdr pane read "$pane" --source visible --lines 40) \
+            || step_fail '6 (herdr agent start, then herdr pane read)'
+        case $screen in
+            *'Loading development channels'*) ;;
+            *) step_fail '6 (herdr agent start failed and the pane shows no development-channel dialog)' ;;
+        esac
+        herdr pane send-keys "$pane" Enter >/dev/null || step_fail '6 (herdr pane send-keys Enter at the development-channel dialog)'
+        herdr agent wait "$name" --until idle --timeout 90000 >/dev/null \
+            || step_fail '6 (the agent was not idle within 90 s after the development-channel dialog)'
+    fi
 fi
 
 # Pin the actual native identity before a reserved worker can finish its brief.

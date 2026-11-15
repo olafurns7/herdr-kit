@@ -1732,6 +1732,60 @@ expect_err 'step 6 (herdr agent start) failed'
 grep -q '^herdr|pane|read' "$case_dir/calls" && fail 'the pane was read'
 [ ! -e "$work/.mcp.json" ] || fail '.mcp.json was written'
 
+# Captured from the Codex 0.166.0 update dialog offering 0.169.0.
+codex_update_screen='  Update available · 0.166.0 → 0.169.0
+  Release notes:
+  https://github.com/openai/codex/releases/lat
+  est
+
+› 1. Update now (runs `npm install -g @openai/
+     codex`)
+  2. Skip
+  3. Skip until next version
+
+  enter continue · esc skip'
+new_case 'codex skips the update dialog once before prompting'
+STUB_START_OK=0 STUB_SCREEN=$codex_update_screen
+run_launch sh "$launch_sh" sol-high impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 codex gpt-6.1-sol high "$setup" \
+        "$(codex_flags gpt-6.1-sol high "\"$tcwd\"={trust_level=\"trusted\"}")" | sed '$d')" \
+    "herdr|pane|read|wA:p7|--source|visible|--lines|40" \
+    "herdr|pane|send-keys|wA:p7|esc" \
+    "herdr|agent|wait|impl-cart|--until|idle|--timeout|30000" \
+    "taskr|prompt|2468|--file|$brief|--confirm|--confirm-timeout|60000"
+
+for blocked_screen in 'Trust this directory?' \
+    'Update available · 0.166.0 → 0.169.0' '  3. Skip until next version' \
+    'Other dialog: Update available · 0.166.0 → 0.169.0
+  3. Skip until next version'; do
+    new_case "codex leaves another blocked screen alone: $blocked_screen"
+    STUB_START_OK=0 STUB_SCREEN=$blocked_screen
+    run_launch sh "$launch_sh" sol-high impl-cart "$brief" "$report" 42
+    expect_rc 1
+    expect_err 'step 6 (herdr agent start) failed'
+    grep -q '^herdr|pane|send-keys' "$case_dir/calls" && fail 'Escape was sent'
+    grep -q '^herdr|agent|wait' "$case_dir/calls" && fail 'idle wait ran'
+    grep -q '^taskr|prompt' "$case_dir/calls" && fail 'prompt ran'
+done
+
+for failure in 'pane read' 'pane send-keys' 'agent wait'; do
+    new_case "codex update dialog recovery stops on failed $failure"
+    STUB_START_OK=0 STUB_SCREEN=$codex_update_screen STUB_FAIL="herdr $failure"
+    run_launch sh "$launch_sh" sol-high impl-cart "$brief" "$report" 42
+    expect_rc 1
+    case $failure in
+        'pane read') expect_err 'step 6 (herdr agent start, then herdr pane read) failed' ;;
+        'pane send-keys') expect_err 'step 6 (herdr pane send-keys esc at the Codex update dialog) failed' ;;
+        'agent wait') expect_err 'step 6 (the agent was not idle within 30 s after the Codex update dialog) failed' ;;
+    esac
+    grep -q '^taskr|prompt' "$case_dir/calls" && fail 'prompt ran'
+    [ "$(grep -c '^herdr|pane|send-keys|wA:p7|esc$' "$case_dir/calls")" -le 1 ] \
+        || fail 'Escape was retried'
+done
+
 codex_bin=$work/codex
 printf '%s\n' '#!/bin/sh' >"$codex_bin"
 chmod 0755 "$codex_bin"
