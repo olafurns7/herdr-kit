@@ -28,7 +28,7 @@ fn contract(role: &str) -> String {
         return String::new();
     }
     format!(
-        " Worker: run that got even if a hook did (dup = success); {}honor Progress; no advisor calls in Herdr; taskr ready TEXT --report PATH per slice; writer/seat ready or direct done adds --kv repo=OWNER/NAME --kv pr=NUMBER --kv head=FULL_40_HEX_SHA (or keep repo/head and use --kv pr=none --kv reason=TEXT); a seat adds --kv verdict=PASS|FAIL --kv p0=N --kv p1=N --kv p2=N --kv p3=N; bare done reuses the latest ready fields; missing decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, taskr ack EVENT_ID --as $TASKR_TASK (push lane: end the turn, the answer arrives pushed, ack with its --fence); end: taskr done [TEXT] or taskr fail TEXT; write report at brief's path, reply with it and three lines; no commit, push, PR, issue-tracker write or agent start unless the brief allows; never sleep waiting: use taskr wait, and herdr pane wait-output only for a non-agent process; exit 6: stop; qd1: queued, don't resend; other failure: read ~/.agents/skills/taskr/references/recovery.md.",
+        " Worker: run that got even if a hook did (dup = success), folded into your first read as one command; ack in the same response as your next action; never a response whose only tool call is got, ack or note; {}honor Progress; no advisor calls in Herdr; taskr ready TEXT --report PATH per slice; writer/seat ready or direct done adds --kv repo=OWNER/NAME --kv pr=NUMBER --kv head=FULL_40_HEX_SHA (or keep repo/head and use --kv pr=none --kv reason=TEXT); a seat adds --kv verdict=PASS|FAIL --kv p0=N --kv p1=N --kv p2=N --kv p3=N; bare done reuses the latest ready fields; missing decision: taskr ask TEXT --blocking, stop dependent work, taskr wait --for answer, taskr ack EVENT_ID --as $TASKR_TASK (push lane: end the turn, the answer arrives pushed, ack with its --fence); end: taskr done [TEXT] or taskr fail TEXT; write report at brief's path, reply with it and three lines; no commit, push, PR, issue-tracker write or agent start unless the brief allows; never sleep waiting: use taskr wait, and herdr pane wait-output only for a non-agent process; exit 6: stop; qd1: queued, don't resend; other failure: read ~/.agents/skills/taskr/references/recovery.md.",
         if matches!(role, "reviewer" | "code-reviewer" | "code-validator") {
             "reviewer: first load ~/.agents/skills/taskr/references/review.md; "
         } else {
@@ -473,17 +473,22 @@ pub(crate) fn begin(
         return Ok(None);
     };
     let text = if let Some((ask, text)) = d.answer {
-        format!("First taskr got {attempt}. ask {ask}: {text}")
+        format!(
+            "First taskr got {attempt}; fold it into your next action in the same response. ask {ask}: {text}"
+        )
     } else if d.file.is_empty() {
-        format!("First taskr got {attempt}. {}", d.body)
+        format!(
+            "First taskr got {attempt}; fold it into your next action in the same response. {}",
+            d.body
+        )
     } else if let Some(doc) = remote_doc {
         format!(
-            "First taskr got {attempt}; run taskr doc get {doc} and execute that text exactly.{}",
+            "First taskr got {attempt}; run taskr got {attempt} && taskr doc get {doc} as one command, then execute that text exactly.{}",
             contract(&role)
         )
     } else {
         format!(
-            "First taskr got {attempt}; read {}; execute exactly.{}",
+            "First taskr got {attempt}; combine that got and the read of {} in one command, then execute exactly.{}",
             d.file,
             contract(&role)
         )

@@ -62,6 +62,16 @@ fn event_data(h: &Harness, attempt: i64) -> Value {
     serde_json::from_str(&data).unwrap()
 }
 
+fn assert_folded_worker_contract(text: &str) {
+    for rule in [
+        "run that got even if a hook did (dup = success), folded into your first read as one command",
+        "ack in the same response as your next action",
+        "never a response whose only tool call is got, ack or note",
+    ] {
+        assert!(text.contains(rule), "missing {rule}: {text}");
+    }
+}
+
 fn refused(h: &Harness, task: i64, args: &[&str], code: i32, message: &str) {
     let before = h.count("select count(*) from events where task_id=?", task);
     let output = h.output(&[], &[&["--json"][..], args].concat(), b"");
@@ -95,7 +105,9 @@ fn ledger_host_forwards_with_the_normal_attempt_deadline_and_outcome() {
                 "agent",
                 "prompt",
                 "w9:p1",
-                format!("First taskr got {attempt}. work"),
+                format!(
+                    "First taskr got {attempt}; fold it into your next action in the same response. work"
+                ),
                 "--wait",
                 "--until",
                 "working",
@@ -264,8 +276,8 @@ fn remote_files_reference_the_captured_document_and_keep_the_contract() {
             .unwrap();
         let all_calls = calls(&h);
         let text = all_calls.last().unwrap()[5].as_str().unwrap();
-        assert!(text.starts_with(&format!("First taskr got {attempt}; run taskr doc get {doc} and execute that text exactly. Worker:")), "{text}");
-        assert!(text.contains("run that got even if a hook did (dup = success)"));
+        assert!(text.starts_with(&format!("First taskr got {attempt}; run taskr got {attempt} && taskr doc get {doc} as one command, then execute that text exactly. Worker:")), "{text}");
+        assert_folded_worker_contract(text);
         assert!(!text.contains(file.to_str().unwrap()));
         let captured = h.output(&[], &["doc", "get", &doc.to_string()], b"");
         assert!(captured.status.success(), "{captured:?}");
@@ -365,10 +377,12 @@ fn local_file_prompts_keep_the_original_path_and_contract() {
     let all_calls = calls(&h);
     assert_eq!(all_calls.len(), 1);
     assert_eq!(all_calls[0][0], "agent");
-    assert!(all_calls[0][3].as_str().unwrap().starts_with(&format!(
-        "First taskr got {attempt}; read {}; execute exactly. Worker:",
+    let text = all_calls[0][3].as_str().unwrap();
+    assert!(text.starts_with(&format!(
+        "First taskr got {attempt}; combine that got and the read of {} in one command, then execute exactly. Worker:",
         file.display()
     )));
+    assert_folded_worker_contract(text);
     assert!(event_data(&h, attempt)["machine"].is_null());
 }
 
@@ -407,7 +421,9 @@ fn answer_prompt_uses_the_same_machine_route() {
     let all_calls = calls(&h);
     assert_eq!(
         all_calls.last().unwrap()[5],
-        format!("First taskr got {attempt}. ask {ask}: Continue.")
+        format!(
+            "First taskr got {attempt}; fold it into your next action in the same response. ask {ask}: Continue."
+        )
     );
 }
 
