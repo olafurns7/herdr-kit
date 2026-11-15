@@ -459,7 +459,7 @@ tmp=
 
 step_line 6 'start Claude and answer development-channel dialog'
 set -- --model "$model" --effort "$effort" --dangerously-skip-permissions \
-    --settings '{"agentPushNotifEnabled":false,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}' \
+    --settings '{"agentPushNotifEnabled":false,"autoCompactWindow":250000,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}' \
     --add-dir "$worktree" --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr
 [ -z "$resume" ] || set -- --account "$account" --resume "$resume" "$@"
 latest=$(latest_gen) || fail 'read generation before agent start'
