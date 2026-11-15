@@ -68,7 +68,7 @@ fn assert_folded_worker_contract(text: &str) {
         "ack in the same response as your next action",
         "never a response whose only tool call is got, ack or note",
         "independent reads go together in one response",
-        "a writer ends the turn only after done or fail (never after a slice's ready) and never watches CI or a long job (a failed run is sent back)",
+        "a writer ends the turn only after done or fail, or after a blocking ask in a push lane (never after a slice's ready alone) and never watches CI or a long job (a failed run is sent back)",
     ] {
         assert!(text.contains(rule), "missing {rule}: {text}");
     }
