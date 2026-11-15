@@ -2,6 +2,7 @@
 #[allow(dead_code)]
 #[path = "hook/support.rs"]
 mod support;
+use std::time::{Duration, Instant};
 use support::*;
 
 fn id(h: &Harness, args: &[&str]) -> String {
@@ -193,4 +194,189 @@ fn late_and_superseding_owner_answers_count_as_newest_decisions() {
         !d.contains("rule number 06") && d.contains("rule number 07"),
         "{d}"
     );
+}
+
+#[test]
+fn handover_and_adopt_preserve_decision_and_owner_answer_scope() {
+    let h = Harness::new();
+    let root = id(&h, &["new", "hub", "--role", "orchestrator"]);
+    assert_eq!(root, "1");
+    h.conn()
+        .execute_batch(
+            "insert into tasks(id,parent_id,name,role,created_at,updated_at) values
+             (2,1,'child','implementer','2026-01-01','2026-01-01'),
+             (3,2,'nested','implementer','2026-01-01','2026-01-01'),
+             (4,null,'other','orchestrator','2026-01-01','2026-01-01');
+             insert into events(id,task_id,kind,summary,data,answered_by,created_at) values
+             (100,1,'decision','normal rule',null,null,'2026-01-01'),
+             (101,1,'decision','revoked rule',null,null,'2026-01-01'),
+             (102,1,'decision','foreign revoke rule',null,null,'2026-01-01'),
+             (103,2,'decision','child rule',null,null,'2026-01-01'),
+             (104,4,'decision','outside rule',null,null,'2026-01-01'),
+             (110,1,'ask','root question','{\"owner\":true}',111,'2026-01-01'),
+             (111,1,'answer','root answer',null,null,'2026-01-01'),
+             (112,3,'ask','nested question','{\"owner\":true}',113,'2026-01-01'),
+             (113,1,'answer','nested answer',null,null,'2026-01-01'),
+             (114,3,'ask','withdrawn question','{\"owner\":true}',115,'2026-01-01'),
+             (115,1,'answer','withdrawn answer','{\"withdrawn\":true}',null,'2026-01-01'),
+             (116,4,'ask','outside question','{\"owner\":true}',117,'2026-01-01'),
+             (117,4,'answer','outside answer',null,null,'2026-01-01'),
+             (118,2,'ask','peer question','{\"owner\":false}',119,'2026-01-01'),
+             (119,1,'answer','peer answer',null,null,'2026-01-01'),
+             (120,2,'ask','unanswered question','{\"owner\":true}',null,'2026-01-01'),
+             (121,2,'ask','revoked question','{\"owner\":true}',122,'2026-01-01'),
+             (122,1,'answer','revoked answer',null,null,'2026-01-01'),
+             (123,2,'ask','foreign revoke question','{\"owner\":true}',124,'2026-01-01'),
+             (124,1,'answer','foreign revoke answer',null,null,'2026-01-01');
+             insert into events(task_id,kind,related_event_id,created_at) values
+             (1,'revoke',101,'2026-01-01'),(1,'revoke',101,'2026-01-01'),
+             (4,'revoke',102,'2026-01-01'),(1,'revoke',null,'2026-01-01'),
+             (1,'revoke',121,'2026-01-01'),(4,'revoke',123,'2026-01-01');",
+        )
+        .unwrap();
+
+    for args in [
+        vec!["handover", "--as", &root],
+        vec!["adopt", &root, "--pane", "w1:p2"],
+    ] {
+        let md = handover(&h, &args);
+        let d = section(&md, "## Decisions in force");
+        let kept = [
+            "normal rule",
+            "foreign revoke rule",
+            "root question",
+            "nested question",
+            "foreign revoke question",
+        ];
+        let positions: Vec<_> = kept.iter().map(|s| d.find(s).expect(d)).collect();
+        assert!(positions.windows(2).all(|p| p[0] < p[1]), "{d}");
+        assert_eq!(d.matches("\n- ").count(), kept.len(), "{d}");
+        for answer in ["root answer", "nested answer", "foreign revoke answer"] {
+            assert!(d.contains(answer), "{d}");
+        }
+        for excluded in [
+            "revoked rule",
+            "child rule",
+            "outside rule",
+            "withdrawn question",
+            "outside question",
+            "peer question",
+            "unanswered question",
+            "revoked question",
+        ] {
+            assert!(!d.contains(excluded), "{d}");
+        }
+    }
+}
+
+#[test]
+fn handover_and_adopt_keep_goal_capture_preference_and_latest_plans() {
+    let h = Harness::new();
+    let root = id(&h, &["new", "hub", "--role", "orchestrator"]);
+    id(&h, &["new", "other", "--role", "orchestrator"]);
+    h.conn()
+        .execute_batch(
+            "insert into doc_blobs(sha256,bytes,body) values
+             ('old',8,'OLD GOAL'),('selected',13,'SELECTED GOAL'),('wrong',10,'WRONG GOAL');
+             insert into documents(id,root_id,task_id,kind,name,version,captured,sha256,created_at) values
+             (10,1,1,'goal','alpha',1,1,'old','2026-01-01'),
+             (11,1,1,'goal','alpha',2,1,'selected','2026-01-01'),
+             (12,1,1,'goal','alpha',3,0,null,'2026-01-01'),
+             (13,1,1,'goal','zeta',1,1,'wrong','2026-01-01'),
+             (20,1,1,'plan','',1,1,'old','2026-01-01'),
+             (21,1,1,'plan','',2,0,null,'2026-01-01'),
+             (22,1,1,'plan','alpha',1,1,'old','2026-01-01'),
+             (23,1,1,'plan','alpha',2,0,null,'2026-01-01'),
+             (24,1,1,'plan','zeta',1,1,'old','2026-01-01'),
+             (25,2,2,'goal','',9,1,'wrong','2026-01-01'),
+             (26,2,2,'plan','alpha',9,1,'wrong','2026-01-01'),
+             (27,1,1,'handover','',9,1,'wrong','2026-01-01');",
+        )
+        .unwrap();
+
+    for args in [
+        vec!["handover", "--as", &root],
+        vec!["adopt", &root, "--pane", "w1:p2"],
+    ] {
+        let md = handover(&h, &args);
+        assert!(md.contains("Goal (doc 11, v2):\nSELECTED GOAL"), "{md}");
+        assert!(
+            !md.contains("OLD GOAL") && !md.contains("WRONG GOAL"),
+            "{md}"
+        );
+        assert!(md.contains("Plan (doc 21, v2, event 0):"), "{md}");
+        assert!(md.contains("alpha (doc 23, v2), zeta (doc 24, v1)"), "{md}");
+    }
+}
+
+#[test]
+fn handover_and_adopt_scale_with_root_event_history() {
+    let h = Harness::new();
+    let root = id(&h, &["new", "hub", "--role", "orchestrator"]);
+    h.conn()
+        .execute_batch(
+            "with recursive history(n) as(values(1) union all select n+1 from history where n<100000)
+             insert into events(task_id,kind,summary,created_at)
+             select 1,'note','background','2026-01-01' from history;
+             with recursive decisions(n) as(values(1) union all select n+1 from decisions where n<1000)
+             insert into events(task_id,kind,summary,created_at)
+             select 1,'decision','scale rule '||n,'2026-01-01' from decisions;",
+        )
+        .unwrap();
+
+    for args in [
+        vec!["handover", "--as", &root],
+        vec!["adopt", &root, "--pane", "w1:p2"],
+    ] {
+        let start = Instant::now();
+        let md = handover(&h, &args);
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        let d = section(&md, "## Decisions in force");
+        assert!(d.contains("980 older entries are in force"), "{d}");
+        assert_eq!(d.matches("\n- ").count(), 20, "{d}");
+        assert!(
+            d.contains("scale rule 981") && d.contains("scale rule 1000"),
+            "{d}"
+        );
+    }
+}
+
+#[test]
+fn handover_and_adopt_scale_with_document_versions() {
+    let h = Harness::new();
+    let root = id(&h, &["new", "hub", "--role", "orchestrator"]);
+    h.conn()
+        .execute_batch(
+            "with recursive versions(v) as(values(1) union all select v+1 from versions where v<5000)
+             insert into documents(root_id,task_id,kind,name,version,captured,source_path,reason,created_at)
+             select 1,1,kind,'',v,0,'fixture','not captured','2026-01-01'
+             from versions cross join (select 'goal' as kind union all select 'plan');",
+        )
+        .unwrap();
+    let plan = h.count(
+        "select id from documents where kind='plan' and version=?",
+        5000,
+    );
+
+    for args in [
+        vec!["handover", "--as", &root],
+        vec!["adopt", &root, "--pane", "w1:p2"],
+    ] {
+        let start = Instant::now();
+        let md = handover(&h, &args);
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(md.contains("Goal: recorded at fixture"), "{md}");
+        assert!(
+            md.contains(&format!("Plan (doc {plan}, v5000, event 0):")),
+            "{md}"
+        );
+    }
 }
