@@ -50,10 +50,34 @@ herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 2
 # pane model/config and hook environment off the shared background server.
 # The root TUI has no model/effort flags; OPENCODE_CONFIG_CONTENT selects the
 # model for this process only. Lane effort is recorded but ignored.
+# Claude lean launch (W2305, launch.md "Lean Claude lanes"): --tools keeps
+# only the built-in tools workers use (MCP tools are unaffected);
+# --strict-mcp-config loads no MCP server but a push lane's --mcp-config.
+# W2316: a lane named rs- or arch- skips --strict-mcp-config and keeps the
+# user and project MCP servers (Hana production reads need Sentry,
+# PlanetScale, Cloudflare); its push --mcp-config adds to them. The name
+# prefix decides, not the role, so gather- researchers stay strict;
+# the settings turn off bundled skills, claude.ai synced skills and
+# connectors, and the easel and plugin-authoring builtin plugins. Every role
+# but sub-orchestrator also hides the herdr, herdr-orchestration and
+# herdr-fleet skills, which the worker contract says not to load.
+claude_tools=Bash,Read,Edit,Write,Grep,Glob,ToolSearch,Skill,WebFetch,WebSearch
+claude_settings() {
+    claude_skills=
+    [ "$role" = sub-orchestrator ] ||
+        claude_skills=',"skillOverrides":{"herdr":"off","herdr-orchestration":"off","herdr-fleet":"off"}'
+    printf '%s' '{"agentPushNotifEnabled":false,"autoMemoryEnabled":false,"promptSuggestionEnabled":false,"awaySummaryEnabled":false,"idleCompaction":false,"disableBundledSkills":true,"syncClaudeAiSkills":false,"disableClaudeAiConnectors":true,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false,"slack@claude-plugins-official":false,"stripe@claude-plugins-official":false,"cc-plugin-easel@builtin":false,"cc-plugin-plugin-authoring@builtin":false}'"$claude_skills}"
+}
+
 start_agent() {
     case $kind in
         claude) set -- --model "$model" --effort "$effort" --dangerously-skip-permissions \
-            --settings '{"agentPushNotifEnabled":false,"autoMemoryEnabled":false,"promptSuggestionEnabled":false,"awaySummaryEnabled":false,"idleCompaction":false,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false,"slack@claude-plugins-official":false,"stripe@claude-plugins-official":false}}'
+            --tools "$claude_tools"
+            case $name in
+                rs-* | arch-*) ;;
+                *) set -- "$@" --strict-mcp-config ;;
+            esac
+            set -- "$@" --settings "$(claude_settings)"
             [ -z "$push" ] || set -- "$@" --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr ;;
         codex) set -- -m "$model" -c "model_reasoning_effort=\"$effort\"" \
             --dangerously-bypass-approvals-and-sandbox \

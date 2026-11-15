@@ -242,9 +242,21 @@ expect_no_calls() {
     [ ! -s "$case_dir/calls" ] || fail "calls were made: $(head -n 3 "$case_dir/calls" | tr '\n' ' ')"
 }
 
-# The lane flags: full permissions, no sandbox (owner decision, 2026-10-07).
+# The lane flags: full permissions, no sandbox (owner decision, 2026-10-07),
+# and the W2305 lean launch: built-in tools, MCP servers, skills and plugins
+# cut to what workers use.
+# claude_settings [orch]: the --settings JSON; orch keeps the herdr skills.
+claude_settings() {
+    lean_skills=',"skillOverrides":{"herdr":"off","herdr-orchestration":"off","herdr-fleet":"off"}'
+    [ "${1-}" != orch ] || lean_skills=
+    printf '%s' "{\"agentPushNotifEnabled\":false,\"autoMemoryEnabled\":false,\"promptSuggestionEnabled\":false,\"awaySummaryEnabled\":false,\"idleCompaction\":false,\"disableBundledSkills\":true,\"syncClaudeAiSkills\":false,\"disableClaudeAiConnectors\":true,\"enabledPlugins\":{\"posthog@claude-plugins-official\":false,\"cc-plugin-you-should-know@builtin\":false,\"slack@claude-plugins-official\":false,\"stripe@claude-plugins-official\":false,\"cc-plugin-easel@builtin\":false,\"cc-plugin-plugin-authoring@builtin\":false}$lean_skills}"
+}
+# claude_flags EFFORT [MODEL] [orch] [mcp]; mcp (rs- and arch- lanes, W2316)
+# drops --strict-mcp-config.
 claude_flags() {
-    printf '%s' "--model|claude-opus-5-5|--effort|$1|--dangerously-skip-permissions|--settings|{\"agentPushNotifEnabled\":false,\"autoMemoryEnabled\":false,\"promptSuggestionEnabled\":false,\"awaySummaryEnabled\":false,\"idleCompaction\":false,\"enabledPlugins\":{\"posthog@claude-plugins-official\":false,\"cc-plugin-you-should-know@builtin\":false,\"slack@claude-plugins-official\":false,\"stripe@claude-plugins-official\":false}}"
+    strict_mcp='|--strict-mcp-config'
+    [ "${4-}" != mcp ] || strict_mcp=
+    printf '%s' "--model|${2:-claude-opus-5-5}|--effort|$1|--dangerously-skip-permissions|--tools|Bash,Read,Edit,Write,Grep,Glob,ToolSearch,Skill,WebFetch,WebSearch$strict_mcp|--settings|$(claude_settings "${3-}")"
 }
 # codex_flags MODEL EFFORT TRUST
 codex_flags() {
@@ -890,7 +902,7 @@ run_launch sh "$launch_sh" haiku-gather gather-x "$brief" "$report" 42
 expect_rc 0
 expect_calls "$(tab_calls gather-x)" \
     "$(tail_calls gather-x researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$claude_setup" \
-        '|--model|claude-haiku-5-5|--effort|medium|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"autoMemoryEnabled":false,"promptSuggestionEnabled":false,"awaySummaryEnabled":false,"idleCompaction":false,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false,"slack@claude-plugins-official":false,"stripe@claude-plugins-official":false}}')"
+        "|$(claude_flags medium claude-haiku-5-5)")"
 
 new_case 'Luna gather launches as a researcher' researcher
 run_launch sh "$launch_sh" luna-gather gather-x "$brief" "$report" 42
@@ -1040,7 +1052,7 @@ run_launch sh "$launch_sh" opus-xhigh orch-x "$brief" "$report" 42
 expect_rc 0
 expect_calls "$(tab_calls orch-x)" \
     "$(tail_calls orch-x sub-orchestrator wA:p7 wA:t7 claude claude-opus-5-5 xhigh "$claude_setup" \
-        "|$(claude_flags xhigh)")"
+        "|$(claude_flags xhigh '' orch)")"
 
 new_case 'codex lane in a git worktree: both checkouts trusted' reviewer
 git init -q "$case_dir/main"
@@ -1140,7 +1152,7 @@ expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 account=default'
 expect_calls "herdr|pane|get|wA:p3" \
     "herdr|pane|process-info|--pane|wA:p3" "herdr|pane|send-keys|wA:p3|ctrl+c" \
     "$(tail_calls orch-cart sub-orchestrator wA:p3 wA:t5 claude claude-opus-5-5 high "$claude_setup" \
-        "|$(claude_flags high)")"
+        "|$(claude_flags high '' orch)")"
 
 new_case 'given pane in another workspace registers that workspace and tab'
 STUB_PANE_WS=wB
@@ -1553,6 +1565,38 @@ printf '%s\n' "$mcp_want" | cmp -s - "$mcp_config" || fail 'private config conte
 [ "$(ls -l "$mcp_config" | cut -c 1-10)" = -rw------- ] || fail 'private config mode is not 0600'
 [ ! -e "$work/.mcp.json" ] || fail 'cwd .mcp.json was written'
 [ "$(find "${mcp_config%/*}" -type f | wc -l)" -eq 1 ] || fail 'temporary config was left behind'
+
+# W2316: rs- and arch- Claude lanes keep the user and project MCP servers
+# (no --strict-mcp-config); a push lane still adds its taskr --mcp-config.
+# Every other Claude lane stays strict.
+new_case 'claude rs- lane keeps MCP servers' researcher
+run_launch sh "$launch_sh" opus-medium rs-facts "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls rs-facts)" \
+    "$(tail_calls rs-facts researcher wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|$(claude_flags medium '' '' mcp)")"
+
+new_case 'claude arch- lane keeps MCP servers' researcher
+run_launch sh "$launch_sh" opus-xhigh arch-x "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls arch-x)" \
+    "$(tail_calls arch-x researcher wA:p7 wA:t7 claude claude-opus-5-5 xhigh "$claude_setup" \
+        "|$(claude_flags xhigh '' '' mcp)")"
+
+new_case 'claude arch- --push lane keeps MCP servers and adds the taskr config' researcher
+run_launch sh "$launch_sh" --push opus-xhigh arch-x "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls arch-x)" \
+    "$(tail_calls arch-x researcher wA:p7 wA:t7 claude claude-opus-5-5 xhigh "$claude_setup" \
+        "|$(claude_flags xhigh '' '' mcp)|--mcp-config|$mcp_config|--dangerously-load-development-channels|server:taskr")"
+printf '%s\n' "$mcp_want" | cmp -s - "$mcp_config" || fail 'private config content is wrong'
+
+new_case 'claude impl- lane stays strict'
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|--model|claude-opus-5-5|--effort|medium|--dangerously-skip-permissions|--tools|Bash,Read,Edit,Write,Grep,Glob,ToolSearch,Skill,WebFetch,WebSearch|--strict-mcp-config|--settings|$(claude_settings)")"
 
 new_case 'claude --push leaves a tracked project .mcp.json untouched'
 project_mcp='{"mcpServers":{"project":{"command":"project-mcp"}}}'
