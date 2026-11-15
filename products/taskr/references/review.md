@@ -2,7 +2,7 @@
 
 A reviewer lane needs only this file and the core [SKILL.md](../SKILL.md); it does not load the orchestration skill. Output codes: [format.md](format.md).
 
-1. Run `taskr got ATTEMPT` first, from the prompt's `First taskr got N`. A hook may have recorded it: `g1 ... dup` is fine.
+1. Fold `taskr got ATTEMPT`, from the prompt's `First taskr got N`, into your first read as one command (for example, `taskr got N && taskr doc get D`). A hook may have recorded it: `g1 ... dup` is fine.
 2. Stay read-only. Write only the report path and the journal path that the brief names (a temporary sibling is allowed for an atomic journal replace). No source edits, commits, pushes, PRs, issue-tracker writes, installs or daemon restarts. You may write briefs and start gather helpers only under Gather helpers below.
 3. Run probes and checks in a scratch directory: a scratch clone or copy, `HOME` and an explicit `TASKR_DB` under `mktemp -d`. Never touch the live ledger or another lane's worktree files.
 4. Missing decision: `taskr ask "question" --blocking`; in a plain lane, `taskr wait --for answer` and `taskr ack EVENT --as $TASKR_TASK` after you handle it; in a push lane, follow [Push lane](../SKILL.md#push-lane). On exit 5, rerun the printed `--request-key` line before you wait. Client `got`/`ready`/`done`/`fail` may instead print `qd1 <request key>` and exit 0 when the server is unreachable or earlier records wait in this host's spool: queued, not failure; do not retry. A full or unwritable spool: exit 5 with `retry with:`; rerun that line. Inspect `spool ls` after an outage; states: [recovery.md](recovery.md#spool).
