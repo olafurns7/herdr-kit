@@ -92,7 +92,7 @@ need this task's taskr environment; read `taskr inbox` and `taskr consumer show`
 ### Digests
 
 `TASKR_CHANNEL_DIGEST=1` in the channel server's environment, read once at start, turns
-on digest pushes for that consumer. It is for Claude MCP receivers only. Without it,
+on digest pushes for that consumer. It is for Claude MCP receivers only. `TASKR_CHANNEL_DIGEST_HOLD_S` sets the hold (default 60 s). Without it,
 everything in this section is absent: the envelope, the instructions and `taskr_ack`
 are exactly as described above. The behaviour is in [push.md](push.md#digest-pushes-opt-in).
 

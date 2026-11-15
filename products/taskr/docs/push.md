@@ -60,11 +60,15 @@ sidecar ack by CLI, so do not opt them in.
 
 Turn it on for one consumer: set `TASKR_CHANNEL_DIGEST=1` in the environment of that
 consumer's `taskr mcp --channel` (for example, the `env` block of its MCP config). The
-server reads it once at start. Restart the server to change it.
+server reads it once at start. Restart the server to change it. `herdr-lead` and
+`herdr-hub` set it in their generated MCP config with `TASKR_CHANNEL_DIGEST_HOLD_S=120`.
+
+`TASKR_CHANNEL_DIGEST_HOLD_S` sets the hold below in whole seconds, 1 to 600, read
+once at start. Any other value, or none, keeps 60 s.
 
 With digests on:
 
-- An event that is pushed but not urgent waits up to 60 s from when the adapter first
+- An event that is pushed but not urgent waits up to 60 s (or the set hold) from when the adapter first
   sees it pending. Then one notification carries it and the pushed events behind it,
   up to 20 lines. The push table above still decides which events are pushed.
 - Urgent events do not wait. The adapter pushes at once when the head event (the one

@@ -2998,6 +2998,29 @@ fn a_digest_batches_lines_each_acked_by_its_own_id_in_order() {
 }
 
 #[test]
+fn the_digest_hold_is_settable_in_seconds() {
+    // TASKR_CHANNEL_DIGEST_HOLD_S=120 at scale 20 holds 6 s, not the default 3 s.
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut env = digest(&env);
+    env.push(("TASKR_CHANNEL_DIGEST_HOLD_S".into(), "120".into()));
+    let mut c = Chan::start(&h, &env, &[], SCALE);
+    held(&h, &ws);
+    let started = Instant::now();
+    let e1 = insert_event(&h, "1", &ws, "note", "first", "{}");
+    let e2 = insert_event(&h, "1", &ws, "note", "second", "{}");
+    let (at, push) = c.expect_push(Duration::from_secs(20));
+    assert!(
+        at - started >= Duration::from_millis(5500),
+        "held only {:?}",
+        at - started
+    );
+    assert_eq!(pushed_ids(&push), [e1, e2]);
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
 fn urgent_kinds_bypass_the_digest_hold() {
     // ttl 15 s, poll 7.5 s, digest 15 s, ack wait 150 s.
     const S: u32 = 4;

@@ -13,7 +13,7 @@
 //! `taskr push codex` runs the same loop with the queue sink (push.rs): each push is
 //! one bounded `codex queue` child in flight beside the loop, never two at once.
 //! With `TASKR_CHANNEL_DIGEST=1` (channel only) a pushable head that is not urgent is
-//! held up to DIGEST, then one notification carries it and the pushable events behind
+//! held up to DIGEST (60 s, or `TASKR_CHANNEL_DIGEST_HOLD_S`), then one notification carries it and the pushable events behind
 //! it, one line each, each with its own attempt; the receiver acks them in order
 //! (mcp.rs `taskr_ack` advances the offer between lines).
 use super::{Who, push, run};
@@ -44,6 +44,17 @@ const URGENT: [&str; 5] = ["ask", "owner_ask", "answer", "owner_answer", "fail"]
 /// The per-consumer opt-in, read once at server start: `TASKR_CHANNEL_DIGEST=1`.
 pub(super) fn digest_on() -> bool {
     std::env::var("TASKR_CHANNEL_DIGEST").is_ok_and(|v| v == "1")
+}
+
+/// The digest hold, read once at server start: `TASKR_CHANNEL_DIGEST_HOLD_S` whole
+/// seconds from 1 to 600 (the ack wait), else 60.
+fn digest_hold() -> Duration {
+    let secs = std::env::var("TASKR_CHANNEL_DIGEST_HOLD_S")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|s| (1..=600).contains(s))
+        .unwrap_or(60);
+    Duration::from_secs(secs)
 }
 
 #[derive(Clone, Copy)]
@@ -80,7 +91,7 @@ fn timing() -> Timing {
         hint_gap: Duration::from_millis(250),
         state_gap: Duration::from_secs(5),
         queue: Duration::from_secs(60),
-        digest: Duration::from_secs(60),
+        digest: digest_hold(),
     };
     // Test-only scheduler: a contract build divides every interval (the TTL keeps the
     // CLI's 1 s floor). Release builds have no knob.
