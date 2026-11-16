@@ -69,9 +69,10 @@ else: model lanes, launch commands, accounts, layout, briefs, and teardown.
   cannot start another sub-orchestrator or publish. A top-orchestrator role
   grants no publication authority; that requires the task's authorization.
   A reviewer (`code-reviewer`, `reviewer`, `code-validator`) or researcher
-  (`researcher`, `architect`) may also start gather helpers for read-only
-  gathering under `~/.agents/skills/taskr/references/review.md`, unless its
-  brief says `Gather helpers: none`. A `gather-` lane never starts helpers.
+  (`researcher`, `architect`) starts gather helpers for read-only gathering
+  when `~/.agents/skills/taskr/references/review.md`'s size trigger holds,
+  unless its brief says `Gather helpers: none`. A `gather-` lane never starts
+  helpers.
   No other delegation is allowed.
 - The flag identifies the environment. It does not authorize destructive
   actions, closing others' workspaces, or publishing; those follow the task's
