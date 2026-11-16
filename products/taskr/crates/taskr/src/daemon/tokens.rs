@@ -141,7 +141,7 @@ impl Tokens {
         self.failed_workspaces = None;
     }
     pub fn panes(&mut self, db: &db::Connection, sock: &str, log: &Log) -> Result<usize> {
-        let mut stmt=db.prepare("select t.id,coalesce(l.pane_id,t.pane_id),t.status,coalesce(t.waiting_until>?,0),(select count(*) from events a where a.task_id=t.id and a.kind='ask' and a.answered_by is null),(select count(*) from events p where p.task_id=t.id and p.kind='prompt' and p.launch_id is t.current_launch_id),coalesce(l.present,1) from tasks t left join launches l on l.id=t.current_launch_id where t.status not in('closed','planned') and coalesce(l.pane_id,t.pane_id) is not null and(case when l.id is null then t.machine else l.machine end) is null order by t.id")?;
+        let mut stmt=db.prepare("select t.id,coalesce(l.pane_id,t.pane_id),t.status,coalesce(t.waiting_until>?,0),(select count(*) from events a where a.task_id=t.id and a.kind='ask' and a.answered_by is null),(select count(*) from events p where p.task_id=t.id and p.kind='prompt' and p.launch_id is t.current_launch_id),coalesce(case when l.id is null then t.lead_present else l.present end,1) from tasks t left join launches l on l.id=t.current_launch_id where t.status not in('closed','planned') and coalesce(l.pane_id,t.pane_id) is not null and(case when l.id is null then t.machine else l.machine end) is null order by t.id")?;
         let rows = stmt
             .query_map([store::now()], |r| {
                 Ok((
