@@ -2,7 +2,7 @@
 # Start one same-host Claude root lead, bound to one immutable adopt generation.
 set -u
 
-usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--resume SID --account NAME] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT | herdr-lead idle ROOT [--hours N] [--tokens N|NM]'
+usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--account NAME [--resume SID]] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--account NAME [--resume SID]] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT | herdr-lead idle ROOT [--hours N] [--tokens N|NM]'
 root= pane= gen= mcp_config= agent= lease=unknown check_task= step=0
 tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf=
 cleanup() {
@@ -361,9 +361,16 @@ case " $prefixes " in *' orch '* | *' hub '*) ;; *) die 'lead lane must allow or
 [ -n "$worktree" ] || die '--worktree is required'
 worktree=$(CDPATH= cd -- "$worktree" 2>/dev/null && pwd -P) || die '--worktree must be an existing directory'
 [ -z "$predecessor" ] || identifier "$predecessor" || die 'invalid predecessor pane'
-if [ -n "$resume" ] || [ -n "$account" ]; then
-    [ -n "$resume" ] && [ "$resume" != null ] && [ -n "$account" ] || die '--resume needs a nonempty SID (not null) and --account NAME'
-    [ -x "$HOME/.local/bin/codator" ] || die '--resume requires Codator for the recorded account'
+# --resume needs the account that holds its session; --account alone pins a fresh start to an account with quota.
+if [ -n "$resume" ]; then
+    [ "$resume" != null ] && [ -n "$account" ] || die '--resume needs a nonempty SID (not null) and --account NAME'
+fi
+if [ -n "$account" ]; then
+    case $account in
+        [!A-Za-z0-9]* | *[!A-Za-z0-9_-]*) die '--account needs one valid name (1-48 ASCII letters, digits, _ or -; first alphanumeric)' ;;
+    esac
+    [ "${#account}" -le 48 ] || die '--account needs one valid name (maximum 48 characters)'
+    [ -x "$HOME/.local/bin/codator" ] || die '--account requires Codator (~/.local/bin/codator)'
 fi
 if [ -n "$prompt_file" ]; then
     [ -f "$prompt_file" ] && [ -r "$prompt_file" ] || die '--prompt-file must be an existing readable file'
@@ -464,7 +471,8 @@ step_line 6 'start Claude and answer development-channel dialog'
 set -- --model "$model" --effort "$effort" --dangerously-skip-permissions \
     --settings '{"agentPushNotifEnabled":false,"autoCompactWindow":250000,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}' \
     --add-dir "$worktree" --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr
-[ -z "$resume" ] || set -- --account "$account" --resume "$resume" "$@"
+[ -z "$resume" ] || set -- --resume "$resume" "$@"
+[ -z "$account" ] || set -- --account "$account" "$@"
 latest=$(latest_gen) || fail 'read generation before agent start'
 [ "$latest" = "$gen" ] || fail 'generation conflict before agent start'
 lease=unknown

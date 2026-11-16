@@ -140,6 +140,8 @@ task_workspace_id=$(printf '%s\n' "$wt" | jq -er '.result.workspace.workspace_id
 ```bash
 # First start on a fresh root:
 herdr-lead start <root> <pane> --worktree <campaign worktree> --lane opus-high --prompt-file <lead brief>
+# Pin a fresh start or move to an account with quota for the lane (needs Codator; herdr-lead does not pick one by quota):
+herdr-lead start <root> <pane> --worktree <campaign worktree> --lane <lane> --account <account> --prompt-file <lead brief>
 # Alternatively, replace an existing plain lead after stopping it:
 herdr-lead start <root> <pane> --worktree <campaign worktree> --predecessor-pane <old pane> --prompt-file <lead brief>
 # Or move a running lead to a new session in one command (same pane, or name another):
@@ -169,7 +171,8 @@ herdr-lead move <root> <pane> --worktree <campaign worktree> --lane <lane> \
   --resume <session id> --account <account> --prompt-file <lead brief>
 ```
 
-Both commands restore the flag and keep the session. `check` reports
+Both commands restore the flag and keep the session. `herdr-lead`
+refuses `--resume` without `--account`. `check` reports
 `push-dropped` and prints a repair command if the current process lost the flag.
 See `recovery.md` "Your own session" before a move.
 
