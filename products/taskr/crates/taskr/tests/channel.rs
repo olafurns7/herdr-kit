@@ -2035,6 +2035,40 @@ fn a_fenced_offer_refused_for_a_lapse_renews_at_once_and_keeps_the_fence() {
 }
 
 #[test]
+fn a_delivery_new_that_committed_nothing_retries_with_a_new_key() {
+    // The hub stores a busy child's exit 4 as that request key's final result: a retry
+    // with the same key would replay it and never push the event (or any behind it).
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let direct = client(&h, &tailnet);
+    let (w, worker) = client_lane(&h, &direct);
+    let (p, seen) = proxy(
+        port(&tailnet),
+        nth(&["delivery", "new"], 0, || {
+            Act::Reply(
+                json!({"exit":4,"stdout":"{\"error\":\"database is locked (5)\"}\n","stderr":""}),
+            )
+        }),
+    );
+    client(&h, &format!("http://[::1]:{p}"));
+    let e = insert_event(&h, "1", &w, "note", "behind a busy attempt", "{}");
+    let mut c = Chan::start(&h, &worker, &[], SCALE);
+    let (_, push) = c.expect_push(Duration::from_secs(30));
+    assert_eq!(meta(&push, "event"), e);
+    let all: Vec<Value> = seen.try_iter().collect();
+    let news = keys(&all, &["delivery", "new"]);
+    assert!(news.len() >= 2, "{news:?}");
+    assert_ne!(news[0], news[1], "the failed attempt's key was reused");
+    assert!(
+        c.stderr().contains("delivery new error, reconciling"),
+        "{}",
+        c.stderr()
+    );
+    assert_eq!(attempts(&h, &e).len(), 1);
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
 fn a_renew_that_committed_nothing_retries_with_a_new_key() {
     // The hub stores a busy child's exit 4 as that request key's final result: a retry
     // with the same key would only replay it until the lease is gone.
@@ -3454,13 +3488,38 @@ fn a_lease_that_lapses_during_the_last_tail_attempt_renews_before_it_writes() {
     // lease it revives fence 1, then the digest goes out with the same attempts.
     let h = Harness::new();
     let (_hub, tailnet, _) = start_hub(&h);
-    let (w, worker, seen) = digest_client(&h, &tailnet, 1, || {
-        Act::After(Box::new(|| std::thread::sleep(Duration::from_secs(4))))
+    // The first renew after that late attempt is held 2 s before the hub runs it: a
+    // digest written on the lapsed lease would arrive while it is held.
+    let (news, armed, holding) = (
+        AtomicUsize::new(0),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let held_renew = holding.clone();
+    let rule: Rule = Arc::new(move |argv: &[String]| {
+        if has(argv, &["delivery", "new"]) && news.fetch_add(1, Ordering::SeqCst) == 1 {
+            armed.store(true, Ordering::SeqCst);
+            return Act::After(Box::new(|| std::thread::sleep(Duration::from_secs(4))));
+        }
+        if has(argv, &["consumer", "renew"]) && armed.swap(false, Ordering::SeqCst) {
+            holding.store(true, Ordering::SeqCst);
+            return Act::Before(Duration::from_secs(2));
+        }
+        Act::Pass
     });
+    let (w, worker, seen) = digest_rule(&h, &tailnet, rule);
     let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
     held(&h, &w);
     let a = insert_event(&h, "1", &w, "note", "one", "{}");
     let b = insert_event(&h, "1", &w, "note", "two", "{}");
+    until("the held renew", Duration::from_secs(30), || {
+        held_renew.load(Ordering::SeqCst)
+    });
+    assert!(
+        c.quiet(Duration::from_secs(1)).is_empty(),
+        "a digest written on the lapsed lease: {}",
+        c.stderr()
+    );
     let (_, push) = c.expect_push(Duration::from_secs(30));
     assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
     assert_eq!(meta(&push, "fence"), "1");

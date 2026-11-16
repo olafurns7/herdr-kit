@@ -1298,7 +1298,11 @@ impl Loop {
                     "event {e}: delivery new {outcome}, reconciling: {}",
                     ran.error()
                 ));
-                self.attempt = Some((e, Attempt::Uncertain(key, before)));
+                // A ledger host (no key) reconciles by the watermark; a client host's
+                // failure that committed nothing starts a new attempt with a new key.
+                if uncertain(outcome) || key.is_none() {
+                    self.attempt = Some((e, Attempt::Uncertain(key, before)));
+                }
                 None
             }
         }
@@ -1453,9 +1457,6 @@ impl Loop {
     }
 }
 
-/// The push table (taskr-core `inbox::pushed`) from inbox rows: Some(false) for an event
-/// that is never pushed, None for a `done` whose launch's `ready` is not among `before`
-/// (it may sit behind the cursor), Some(true) otherwise.
 /// An outcome that may have committed: its retry reuses the request key. Any other
 /// failure (a busy ledger's `error` included, which the hub stores as the key's final
 /// result) committed nothing, and a retry with the same key would only replay it.
@@ -1463,6 +1464,9 @@ fn uncertain(outcome: &str) -> bool {
     matches!(outcome, "unknown" | "transport")
 }
 
+/// The push table (taskr-core `inbox::pushed`) from inbox rows: Some(false) for an event
+/// that is never pushed, None for a `done` whose launch's `ready` is not among `before`
+/// (it may sit behind the cursor), Some(true) otherwise.
 fn pushable(ev: &Value, before: &[Value]) -> Option<bool> {
     let d = &ev["data"];
     Some(match ev["kind"].as_str().unwrap_or("") {
