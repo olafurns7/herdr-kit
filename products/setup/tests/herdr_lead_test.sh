@@ -770,6 +770,15 @@ moved_campaign='{"root":{"id":42,"name":"example","role":"orchestrator","status"
 old_lead='{"result":{"agents":[{"name":"orch-example","pane_id":"wA:p1","agent_session":{"value":"s1"}}]}}'
 move() { run move 42 wA:p1 --worktree "$work" "$@"; }
 
+new_case 'move --lane starts the successor on a hub-only lane'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead
+mkdir -p "$home/.config/herdr-fleet"
+printf '%s\n' '{"custom":{"kind":"claude","model":"example-hub","effort":"medium","prefixes":["hub"]}}' >"$home/.config/herdr-fleet/lanes.json"
+move --lane custom --no-handover
+expect_rc 0
+has calls '--model|example-hub|--effort|medium'
+lacks calls '--model|claude-opus-5-5'
+
 new_case 'jobs move carries opt-in through the stop and new generation render'
 CAMPAIGN=$moved_campaign AGENTS=$old_lead
 move --jobs --no-handover
