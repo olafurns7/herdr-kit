@@ -37,8 +37,7 @@ Load each file at the step that names it, not up front. Each says at its top whe
 
 ## Roles and briefs
 
-The operator authorizes scope and publication. Leads own plans, typed work
-contracts, worker briefs, integration and acceptance. Sub-orchestrators own only
+The operator authorizes scope and publication. Leads own plans, typed work contracts, worker briefs, integration and acceptance. Sub-orchestrators own only
 their assigned part and cannot publish or start another sub-orchestrator. Workers
 stay in their briefs; deterministic gates need no model; reviewers inspect independently.
 Model choices and restrictions come from `lanes.md` and the fleet's private overlay.
