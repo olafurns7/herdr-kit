@@ -328,6 +328,36 @@ expect_account_start() {
     printf '%s\n' "$out" | grep -F " account=$1" >/dev/null || fail 'chosen account not reported'
     [ -z "$err" ] || fail "unexpected stderr: $err"
 }
+# acct NAME WEEK_USED FABLE_USED|- RESET [FIVE_HOUR_USED]: a fresh usable
+# snapshot. RESET is hours from now or @EPOCH; - leaves out the Fable row.
+acct() {
+    python3 - "$home" "$@" <<'PY'
+import datetime, json, pathlib, sys, time
+home, name, week, fable, reset = sys.argv[1:6]
+stamp = float(reset[1:]) if reset.startswith('@') else time.time() + float(reset) * 3600
+limits = {'seven_day': {'utilization': json.loads(week), 'resets_at':
+          datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).isoformat()}, 'model_scoped': []}
+if fable != '-':
+    limits['model_scoped'].append({'display_name': 'Fable', 'utilization': json.loads(fable)})
+if len(sys.argv) > 6:
+    limits['five_hour'] = {'utilization': json.loads(sys.argv[6])}
+path = pathlib.Path(home) / '.local/share/codator/claude' / name / '.claude-usage.json'
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps({'outcome': 'usable', 'snapshot': {'rate_limits': limits}}))
+PY
+}
+# pick LANE NAME TAIL: a reviewer launch on LANE picks NAME and the final
+# line ends with " account=NAME TAIL".
+pick() {
+    run_launch sh "$launch_sh" "$1" rev-cart "$brief" "$report" 42
+    expect_rc 0
+    expect_account_start "$2" --model
+    case $out in *" account=$2 $3") ;; *) fail "$1 final line '$out' does not end with account=$2 $3" ;; esac
+}
+protect() {
+    mkdir -p "$home/.config/herdr-fleet"
+    printf '%s\n' "$1" >"$home/.config/herdr-fleet/accounts.json"
+}
 
 for account_lane in opus-medium sol-high; do
     new_case "explicit account is passed first for $account_lane"
@@ -362,17 +392,14 @@ expect_rc 2
 expect_err '--account requires Codator on the target'
 ! grep -q '^taskr|' "$case_dir/calls" || fail 'registered without target Codator'
 
-new_case 'Fable chooses latest reset with lowest name on a tie' reviewer
+new_case 'Fable chooses soonest reset with lowest name on a tie' reviewer
 account_codator "$home"
 usage_fixture "$home" z-seat 10
 usage_fixture "$home" a-seat 10
 # Copy the exact reset so this tests the name tie rather than clock drift.
 cp "$home/.local/share/codator/claude/z-seat/.claude-usage.json" "$home/.local/share/codator/claude/a-seat/.claude-usage.json"
-usage_fixture "$home" less-left 60 usable 0 48
-run_launch sh "$launch_sh" fable-high rev-cart "$brief" "$report" 42
-expect_rc 0
-expect_account_start a-seat --model
-case $out in *' drain=latest') ;; *) fail 'latest reason missing' ;; esac
+usage_fixture "$home" later-reset 60 usable 0 96
+pick fable-high a-seat drain=later
 
 new_case 'Fable skips exhausted, stale, unusable, unreadable and malformed usage' reviewer
 account_codator "$home"
@@ -427,20 +454,21 @@ usage_fixture "$home" automatic 100
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
 expect_account_start automatic --model
-case $out in *' drain=latest') ;; *) fail 'latest reason missing' ;; esac
+case $out in *' drain=later') ;; *) fail 'later reason missing' ;; esac
 
-# The common weekly/five-hour margin applies to every Claude lane. Model
-# limits apply only to their own lanes, and exactly 3% left is eligible.
+# The weekly margin (3% left) and the five-hour margin (15% left) apply to
+# every Claude lane. Model limits apply only to their own lanes.
 for limit_case in week five-hour opus sonnet fable fable-week fable-five-hour missing-week missing-reset bad-reset \
     bad-week boolean-week bad-five-hour missing-fable; do
-    new_case "drain skips an ineligible account: $limit_case" reviewer
+    new_case "picker skips an ineligible account: $limit_case" reviewer
     account_codator "$home"
-    usage_fixture "$home" fallback 40 usable 0 48
-    usage_fixture "$home" latest 0 usable 0 96
+    usage_fixture "$home" fallback 40
+    usage_limits fallback '{"seven_day":{"utilization":20,"resets_at":"2100-01-01T00:00:00Z"}}'
+    usage_fixture "$home" latest 0 usable 0 48
     drain_lane=opus-medium
     case $limit_case in
         week) usage_limits latest '{"seven_day":{"utilization":97.01,"resets_at":"2099-01-01T00:00:00Z"}}' ;;
-        five-hour) usage_limits latest '{"five_hour":{"utilization":98}}' ;;
+        five-hour) usage_limits latest '{"five_hour":{"utilization":85.01}}' ;;
         opus) usage_limits latest '{"seven_day_opus":{"utilization":98}}' ;;
         sonnet)
             mkdir -p "$home/.config/herdr-fleet"
@@ -463,10 +491,10 @@ for limit_case in week five-hour opus sonnet fable fable-week fable-five-hour mi
     expect_account_start fallback --model
 done
 
-new_case 'exact 3 percent margin and optional null limits qualify' reviewer
+new_case 'exact 3 and 15 percent margins and optional null limits qualify' reviewer
 account_codator "$home"
 usage_fixture "$home" margin 97
-usage_limits margin '{"seven_day":{"utilization":97,"resets_at":"2099-01-01T00:00:00Z"},"five_hour":{"utilization":97},"seven_day_opus":null,"seven_day_sonnet":null}'
+usage_limits margin '{"seven_day":{"utilization":97,"resets_at":"2099-01-01T00:00:00Z"},"five_hour":{"utilization":85},"seven_day_opus":null,"seven_day_sonnet":null}'
 run_launch sh "$launch_sh" fable-high rev-cart "$brief" "$report" 42
 expect_rc 0
 expect_account_start margin --model
@@ -490,6 +518,111 @@ run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
 expect_account_start a-soon --model
 case $out in *' drain=soon') ;; *) fail 'soon reason missing' ;; esac
+
+# W2765 account rule: soonest reset at every horizon; Fable lanes need Fable
+# room; other lanes prefer spare week (week left - 0.55 x Fable left >= 3).
+new_case 'tonight-like table: Opus takes the soonest spare, Fable the soonest Fable room' reviewer
+account_codator "$home"
+acct acct-a 95 100 3
+acct acct-b 93 100 5
+acct acct-c 26 46 19 44
+acct acct-d 86 100 104
+acct acct-e 54 98 164
+acct acct-f 61 93 165
+pick opus-medium acct-a drain=soon
+pick fable-high acct-c drain=soon
+acct acct-a 98 100 3
+acct acct-b 97.5 100 5
+pick opus-medium acct-c drain=soon
+
+new_case 'all accounts Fable-rich: tier B takes the largest spare and says fable_spend=1' reviewer
+account_codator "$home"
+acct acct-a 50 0 2
+acct acct-b 45 0 30
+acct acct-c 47 0 4
+pick opus-medium acct-b 'drain=later fable_spend=1'
+pick fable-high acct-a drain=soon
+
+new_case 'missing Fable row: Opus counts no Fable, a Fable lane skips the account' reviewer
+account_codator "$home"
+acct acct-a 50 - 3
+acct acct-b 50 0 2
+pick opus-medium acct-a drain=soon
+acct acct-a 50 - 1
+pick fable-high acct-b drain=soon
+
+new_case 'nothing resets within 24 hours: the soonest reset wins, not the latest' reviewer
+account_codator "$home"
+acct acct-a 20 100 48
+acct acct-b 20 100 96
+pick opus-medium acct-a drain=later
+acct acct-a 20 50 48
+acct acct-b 20 50 96
+pick fable-high acct-a drain=later
+
+new_case 'spare is week minus 0.55 x Fable: 74 and 54 is tier A, 3.25 is A, 0.5 is B' reviewer
+account_codator "$home"
+acct acct-a 26 46 30
+acct acct-b 0 100 40
+pick opus-medium acct-a drain=later
+acct acct-a 50 15 2
+acct acct-b 0 100 3
+pick opus-medium acct-a drain=soon
+acct acct-a 50 10 2
+pick opus-medium acct-b drain=soon
+
+new_case 'resets under a second apart in one minute tie by name' reviewer
+account_codator "$home"
+minute=$(python3 -c 'import time; print(int(time.time() // 60 * 60 + 3 * 3600))')
+acct acct-b 20 50 "@$minute.2"
+acct acct-a 20 50 "@$minute.84"
+pick opus-medium acct-a drain=soon
+pick fable-high acct-a drain=soon
+
+new_case 'five-hour window 86 percent used is not eligible' reviewer
+account_codator "$home"
+acct acct-a 20 100 2 86
+acct acct-b 20 100 3
+pick opus-medium acct-b drain=soon
+acct acct-a 20 0 2 86
+acct acct-b 20 0 3
+pick fable-high acct-b drain=soon
+
+new_case 'protected account with week 14 left and reserve 15 is not picked' reviewer
+account_codator "$home"
+protect '{"protect":["acct-a"],"reserve":15}'
+acct acct-a 86 100 2
+acct acct-b 20 100 3
+pick opus-medium acct-b drain=soon
+acct acct-a 0 85 2
+acct acct-b 20 50 3
+pick fable-high acct-b drain=soon
+# Spare 4.9 without the reserve, -1.85 with it: tier B, so acct-b wins.
+acct acct-a 50 18 2
+acct acct-b 20 100 3
+pick opus-medium acct-b drain=soon
+
+for bad_list in '{broken' '[]' '{"protect":"acct-a","reserve":15}' '{"protect":["acct-a"]}' \
+    '{"reserve":15}' '{"protect":["acct-a"],"reserve":"15"}' '{"protect":["acct-a"],"reserve":true}' \
+    '{"protect":[1],"reserve":15}' '{"protect":["acct-a"],"reserve":-1}'; do
+    new_case "malformed protect list means no list: $bad_list" reviewer
+    account_codator "$home"
+    protect "$bad_list"
+    acct acct-a 86 100 2
+    acct acct-b 20 100 3
+    pick opus-medium acct-a drain=soon
+done
+
+new_case 'remote pick reports fable_spend=1 and drops other values'
+STUB_CODATOR=1
+STUB_ACCOUNT='{"account":"seat","drain":"later","fable_spend":1}'
+run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=seat drain=later fable_spend=1'
+STUB_ACCOUNT='{"account":"seat","drain":"later","fable_spend":"yes"}'
+run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=seat drain=later'
 
 new_case 'invalid snapshot account labels are skipped'
 account_codator "$home"
@@ -515,8 +648,8 @@ expect_rerun_hint() {
 
 new_case 'refused auto-picked account: retry once on the next account'
 account_codator "$home"
-usage_fixture "$home" first-seat 0 usable 0 96
-usage_fixture "$home" second-seat 0 usable 0 72
+usage_fixture "$home" first-seat 0 usable 0 72
+usage_fixture "$home" second-seat 0 usable 0 96
 STUB_START_OK=once STUB_SCREEN=$refusal
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
@@ -531,8 +664,8 @@ expect_calls "$(tab_calls impl-cart)" \
 
 new_case 'refused explicit account: no retry, fails as before'
 account_codator "$home"
-usage_fixture "$home" first-seat 0 usable 0 96
-usage_fixture "$home" second-seat 0 usable 0 72
+usage_fixture "$home" first-seat 0 usable 0 72
+usage_fixture "$home" second-seat 0 usable 0 96
 STUB_START_OK=0 STUB_SCREEN=$refusal
 run_launch sh "$launch_sh" --account first-seat opus-medium impl-cart "$brief" "$report" 42
 expect_rc 1
@@ -543,8 +676,8 @@ expect_calls "$(tab_calls impl-cart)" \
 
 new_case 'auto-picked start failure without the refusal line: no retry'
 account_codator "$home"
-usage_fixture "$home" first-seat 0 usable 0 96
-usage_fixture "$home" second-seat 0 usable 0 72
+usage_fixture "$home" first-seat 0 usable 0 72
+usage_fixture "$home" second-seat 0 usable 0 96
 STUB_START_OK=0 STUB_SCREEN='claude: some other startup error'
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 1
@@ -576,15 +709,17 @@ expect_rc 0
 expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
 ! grep -q '|--account|' "$case_dir/calls" || fail 'picked a Claude account for Codex'
 
-new_case 'quota is read only and reports drain next out stale and alert'
+new_case 'quota is read only and reports later next out stale without an alert'
 usage_fixture "$home" drain-seat 10
 usage_limits drain-seat '{"seven_day":{"utilization":97,"resets_at":"2099-01-01T00:00:00Z"}}'
 usage_fixture "$home" next-seat 100
-usage_limits next-seat '{"seven_day":{"utilization":20,"resets_at":"2098-01-01T00:00:00Z"}}'
+usage_limits next-seat '{"seven_day":{"utilization":20,"resets_at":"2099-02-01T00:00:00Z"}}'
+usage_fixture "$home" pick-seat 100
+usage_limits pick-seat '{"seven_day":{"utilization":20,"resets_at":"2098-01-01T00:00:00Z"}}'
 usage_fixture "$home" out-seat 0
-usage_limits out-seat '{"seven_day":{"utilization":98,"resets_at":"2099-01-01T00:00:00Z"}}'
+usage_limits out-seat '{"seven_day":{"utilization":98,"resets_at":"2097-01-01T00:00:00Z"}}'
 usage_fixture "$home" stale-seat 0 usable 1900
-usage_limits stale-seat '{"seven_day":{"utilization":30,"resets_at":"2099-01-01T00:00:00Z"}}'
+usage_limits stale-seat '{"seven_day":{"utilization":30,"resets_at":"2096-01-01T00:00:00Z"}}'
 # Restore the stale mtime after updating limits.
 python3 - "$home/.local/share/codator/claude/stale-seat/.claude-usage.json" <<'PY'
 import os, sys, time
@@ -596,48 +731,32 @@ printf '%s\n' '{broken' >"$home/.local/share/codator/claude/broken/.claude-usage
 run_launch sh "$launch_sh" --quota
 expect_rc 0
 expect_out 'account=broken week_used=- fable_used=- reset=- role=stale
-account=drain-seat week_used=97 fable_used=10 reset=2099-01-01T00:00:00Z role=drain
-account=next-seat week_used=20 fable_used=100 reset=2098-01-01T00:00:00Z role=next
-account=out-seat week_used=98 fable_used=0 reset=2099-01-01T00:00:00Z role=out
-account=stale-seat week_used=30 fable_used=0 reset=2099-01-01T00:00:00Z role=stale
-alert account=drain-seat used=97'
+account=drain-seat week_used=97 fable_used=10 reset=2099-01-01T00:00:00Z role=next
+account=next-seat week_used=20 fable_used=100 reset=2099-02-01T00:00:00Z role=next
+account=out-seat week_used=98 fable_used=0 reset=2097-01-01T00:00:00Z role=out
+account=pick-seat week_used=20 fable_used=100 reset=2098-01-01T00:00:00Z role=later
+account=stale-seat week_used=30 fable_used=0 reset=2096-01-01T00:00:00Z role=stale'
 expect_no_calls
 
-new_case 'quota labels the soon pick and makes no drain alert'
+new_case 'quota labels the soon pick and makes no alert'
 usage_fixture "$home" soon 0 usable 0 2
 usage_fixture "$home" later 0 usable 0 96
 run_launch sh "$launch_sh" --quota
 expect_rc 0
 printf '%s\n' "$out" | grep -q '^account=soon .* role=soon$' || fail 'soon role missing'
 printf '%s\n' "$out" | grep -q '^account=later .* role=next$' || fail 'next role missing'
-case $out in *'alert '*) fail 'soon pick made a drain alert' ;; esac
+case $out in *'alert '*) fail 'soon pick made an alert' ;; esac
 expect_no_calls
 
-for target_used in 96 97 98 100; do
-    for soon_present in no yes; do
-        new_case "quota alerts on latest non-soon target at $target_used used with soon=$soon_present"
-        usage_fixture "$home" a-target 0 usable 0 120
-        usage_limits a-target "{\"seven_day\":{\"utilization\":$target_used,\"resets_at\":\"2099-01-01T00:00:00Z\"}}"
-        usage_fixture "$home" z-target 0
-        cp "$home/.local/share/codator/claude/a-target/.claude-usage.json" "$home/.local/share/codator/claude/z-target/.claude-usage.json"
-        usage_fixture "$home" eligible 0 usable 0 48
-        [ "$soon_present" != yes ] || usage_fixture "$home" soon 0 usable 0 2
-        run_launch sh "$launch_sh" --quota
-        expect_rc 0
-        if [ "$target_used" -ge 97 ]; then
-            [ "$(printf '%s\n' "$out" | tail -n 1)" = "alert account=a-target used=$target_used" ] || fail 'latest target alert missing or not last'
-            [ "$(printf '%s\n' "$out" | grep -c '^alert ')" -eq 1 ] || fail 'expected exactly one alert'
-        else
-            case $out in *'alert '*) fail 'alert below 97 used' ;; esac
-        fi
-        if [ "$soon_present" = yes ]; then
-            printf '%s\n' "$out" | grep -q '^account=soon .* role=soon$' || fail 'soon pick changed'
-        elif [ "$target_used" -gt 97 ]; then
-            printf '%s\n' "$out" | grep -q '^account=eligible .* role=drain$' || fail 'eligible pick changed'
-        fi
-        expect_no_calls
-    done
-done
+new_case 'quota marks a tier B pick with fable_spend=1 and alerts on nothing'
+acct acct-a 50 0 2
+acct acct-b 100 0 120
+run_launch sh "$launch_sh" --quota
+expect_rc 0
+printf '%s\n' "$out" | grep -q '^account=acct-a week_used=50 fable_used=0 reset=.* role=soon fable_spend=1$' || fail 'tier B pick not marked'
+printf '%s\n' "$out" | grep -q '^account=acct-b .* role=out$' || fail 'out role missing'
+case $out in *'alert '*) fail 'quota printed an alert' ;; esac
+expect_no_calls
 
 new_case 'quota without Python fails clearly without calls'
 mkdir -p "$case_dir/no-python"
@@ -725,20 +844,20 @@ mkdir -p "$STUB_TARGET_BIN"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$STUB_TARGET_BIN/claude"
 chmod 0755 "$STUB_TARGET_BIN/claude"
 account_codator "$STUB_TARGET_HOME"
-usage_fixture "$STUB_TARGET_HOME" target-less 10 usable 0 48
-usage_fixture "$STUB_TARGET_HOME" target-best 30 usable 0 96
+usage_fixture "$STUB_TARGET_HOME" target-later 10 usable 0 96
+usage_fixture "$STUB_TARGET_HOME" target-best 30 usable 0 48
 run_launch sh "$launch_sh" --machine devbox --workspace wT --cwd "$work" "$remote_lane" rev-cart "$brief" "$report" 42
 expect_rc 0
 expect_account_start target-best --model
 expect_machine_calls
 ! grep -q '|--account|caller-only|' "$case_dir/calls" || fail 'used caller usage'
-case $out in *' drain=latest') ;; *) fail 'remote latest reason missing' ;; esac
+case $out in *' drain=later') ;; *) fail 'remote later reason missing' ;; esac
 done
 
 for bad_pick in 'bad name' '_bad' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do
     new_case "remote invalid picked account falls back to Codator: $bad_pick"
     STUB_CODATOR=1
-    STUB_ACCOUNT=$(jq -cn --arg account "$bad_pick" '{account:$account,drain:"latest"}')
+    STUB_ACCOUNT=$(jq -cn --arg account "$bad_pick" '{account:$account,drain:"later"}')
     run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
     expect_rc 0
     expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=default'
@@ -1871,7 +1990,7 @@ STUB_START_OK=0 STUB_SCREEN='WARNING: Loading development channels
 > 1. I am using this for local development'
 run_launch sh "$launch_sh" --push opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 mcp_config=$mcp_config account=seat drain=latest"
+expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 mcp_config=$mcp_config account=seat drain=later"
 [ -z "$err" ] || fail "unexpected stderr: $err"
 expect_calls "$(tab_calls impl-cart)" \
     "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup$forward" "|--account|seat$(claude_push_flags)" \
@@ -2474,8 +2593,8 @@ taskr|set|2468|work=12')"
 new_case '--work: a refused picked account retries with a fresh W12 brief'
 ticket_list
 account_codator "$home"
-usage_fixture "$home" first-seat 0 usable 0 96
-usage_fixture "$home" second-seat 0 usable 0 72
+usage_fixture "$home" first-seat 0 usable 0 72
+usage_fixture "$home" second-seat 0 usable 0 96
 STUB_START_OK=once STUB_SCREEN='codator: selected account is ineligible: all applicable usage headroom is exhausted'
 run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
