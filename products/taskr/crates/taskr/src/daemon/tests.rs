@@ -362,3 +362,37 @@ fn local_identity_rejects_a_stale_or_corrupt_sidecar() {
     );
     assert!(child.0.try_wait().unwrap().is_none());
 }
+
+#[test]
+fn pane_tokens_skip_roots_whose_lead_pane_is_gone() {
+    let db = db::Connection::open_in_memory().unwrap();
+    db.execute_batch(taskr_core::schema::SCHEMA).unwrap();
+    let at = store::now();
+    for (id, parent, pane) in [(1, None, "w:p0"), (2, None, "w:p1"), (3, Some(1), "w:p2")] {
+        db.execute("insert into tasks(id,parent_id,name,role,status,pane_id,created_at,updated_at) values(?,?,'t','orchestrator','open',?,?,?)",params![id,parent,pane,at,at]).unwrap();
+    }
+    db.execute("insert into launches(id,task_id,provider,model,effort,pane_id,present,recorded_at) values(3,3,'fixture','fixture','medium','w:p2',1,?)",params![at]).unwrap();
+    db.execute("update tasks set current_launch_id=3 where id=3", [])
+        .unwrap();
+    let path = std::env::temp_dir().join(format!("taskr-pane-tokens-{}", std::process::id()));
+    // An unreachable socket runs no herdr; each attempted write logs a failure.
+    let attempted = |lead: [Option<i64>; 2]| {
+        for (id, present) in [1, 2].into_iter().zip(lead) {
+            db.execute(
+                "update tasks set lead_present=? where id=?",
+                params![present, id],
+            )
+            .unwrap();
+        }
+        let _ = fs::remove_file(&path);
+        let log = Log::open(&path);
+        let mut tokens = tokens::Tokens::default();
+        tokens.reattach();
+        assert_eq!(tokens.panes(&db, "", &log).unwrap(), 0);
+        let lines = fs::read_to_string(&path).unwrap_or_default();
+        [1, 2, 3].map(|id| lines.contains(&format!("token write for task {id} failed")))
+    };
+    assert_eq!(attempted([Some(0), Some(1)]), [false, true, true]);
+    assert_eq!(attempted([None, Some(0)]), [true, false, true]);
+    let _ = fs::remove_file(path);
+}
