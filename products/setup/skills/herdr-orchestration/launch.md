@@ -90,7 +90,7 @@ The hub registers one long-lived root per repository once, with its location fla
 
 ### Owner hub in its current pane
 
-`herdr-hub` start and move may use a `hub` lane, such as `fable-high`; leads use `orch` lanes.
+`herdr-hub` and `herdr-lead` start and move accept a `hub` lane, such as `fable-high`; a lead uses an `orch` lane unless the operator names a `hub` lane with `--lane`.
 The hub starts with Claude Code Mode on; leads only with `HERDR_LEAD_CODE_MODE=1`. A Code Mode session resumes only with Code Mode on: [setup README "Code Mode"](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/README.md#code-mode).
 
 To restart a running hub onto a new session, the hub records its handover and then runs, in its own pane:
@@ -149,7 +149,7 @@ herdr-lead check <root>
 
 `move` first checks the destination (free name and pane, location; for another pane also its shell prompt and host) and that the agent in the root's recorded pane is the root's lead `orch-<slug>` on this host. It then asks that lead for `taskr handover` (`--no-handover` skips this) and fails before stopping anything if none is recorded. It then stops that lead (`herdr-lead stop <root> <pane>`: wait for idle, `esc ctrl+c ctrl+c`, at most 120 s, shell prompt, lease free within 120 s) and runs `start` with that pane as predecessor. `stop` sends keys only to the root's lead: it rechecks the agent's name and Claude session right before each key sequence and refuses any other occupant of the pane. Run `start` or `move` detached or with a tool timeout of at least 30 min. Each run logs its steps to `lead-push/<root>/lead-start-<pid>.log`.
 
-Do not use `herdr-launch` for a lead: it registers a child. `herdr-lead` accepts any Claude lane that allows `orch-` (default `opus-high`), checks the target shell and predecessor lease, clears worker identity, adopts the root once, and keeps the worktree cwd. It writes immutable `0600` configs and handovers under `$HOME/.local/state/herdr-orch/lead-push/<root>/`, passes the config with `--mcp-config`, and answers the development-channel dialog. Only `herdr-hub` turns on digest pushes; leads and `herdr-launch` workers get one push per event. `herdr-lead` never writes `.mcp.json`. Its acceptance check must still pass on every start.
+Do not use `herdr-launch` for a lead: it registers a child. `herdr-lead` accepts any Claude lane that allows `orch-` or `hub-` (default `opus-high`), checks the target shell and predecessor lease, clears worker identity, adopts the root once, and keeps the worktree cwd. It writes immutable `0600` configs and handovers under `$HOME/.local/state/herdr-orch/lead-push/<root>/`, passes the config with `--mcp-config`, and answers the development-channel dialog. Only `herdr-hub` turns on digest pushes; leads and `herdr-launch` workers get one push per event. `herdr-lead` never writes `.mcp.json`. Its acceptance check must still pass on every start.
 
 After the lead is closed and its generation's work/recovery are settled, delete
 its `$HOME/.local/state/herdr-orch/lead-push/<root>/taskr-mcp-<gen>.json` by literal path.
@@ -305,7 +305,7 @@ A manual launch or resume copies these flags with the others.
 ## Launch matrix
 
 Read the resolved lane table described in `lanes.md`. Use `herdr-launch` for
-workers and `herdr-lead` for a Claude lane that allows the `orch` prefix.
+workers and `herdr-lead` for a Claude lane that allows the `orch` or `hub` prefix.
 Both use the same validated kind, model, effort, and prefixes.
 Run `herdr-launch --lanes` before choosing a worker lane to see the active table and its path.
 

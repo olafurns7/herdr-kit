@@ -357,7 +357,7 @@ herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || die 'resolve la
 . "$herdr_bin_dir/herdr-lanes.sh"
 lane_info "$lane" || die "unknown lane '$lane'"
 [ "$kind" = claude ] || die 'Claude leads only'
-case " $prefixes " in *' orch '*) ;; *) die 'lead lane must allow orch prefix' ;; esac
+case " $prefixes " in *' orch '* | *' hub '*) ;; *) die 'lead lane must allow orch or hub prefix' ;; esac
 [ -n "$worktree" ] || die '--worktree is required'
 worktree=$(CDPATH= cd -- "$worktree" 2>/dev/null && pwd -P) || die '--worktree must be an existing directory'
 [ -z "$predecessor" ] || identifier "$predecessor" || die 'invalid predecessor pane'
