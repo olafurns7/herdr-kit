@@ -183,6 +183,7 @@ products/setup/opencode/plugins/taskr-hook.js
 products/setup/pi/extensions/taskr-hook.ts
 products/setup/skills/herdr-fleet/SKILL.md
 products/setup/skills/herdr-orchestration/SKILL.md
+products/setup/skills/herdr-orchestration/decisions.md
 products/setup/skills/herdr-orchestration/lanes.md
 products/setup/skills/herdr-orchestration/launch.md
 products/setup/skills/herdr-orchestration/owner.md

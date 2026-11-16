@@ -336,7 +336,7 @@ new_file() {
 }
 
 skills="herdr herdr-orchestration herdr-fleet taskr"
-orchestration_refs="lanes.md launch.md workflow.md owner.md teardown.md recovery.md"
+orchestration_refs="lanes.md launch.md workflow.md owner.md decisions.md teardown.md recovery.md"
 
 cat >"$stub_dir/radar-runner.sh" <<'RUNNER'
 #!/bin/sh

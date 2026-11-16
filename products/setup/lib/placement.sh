@@ -142,6 +142,7 @@ is_managed() {
             .agents/skills/herdr-orchestration/launch.md | \
             .agents/skills/herdr-orchestration/workflow.md | \
             .agents/skills/herdr-orchestration/owner.md | \
+            .agents/skills/herdr-orchestration/decisions.md | \
             .agents/skills/herdr-orchestration/teardown.md | \
             .agents/skills/herdr-orchestration/recovery.md | \
             .agents/skills/herdr-fleet/SKILL.md | \

@@ -30,14 +30,14 @@ Load each file at the step that names it, not up front. Each says at its top whe
 | `launch.md` | a recurring watch or poll (`herdr-loop`); opening the hub workspace; creating a campaign or task worktree or workspace; starting a campaign lead; reusing or rearranging an existing tab or pane; a manual launch, or recovery after `herdr-launch` is missing or failed |
 | `workflow.md` | registering a campaign root or changing its plan; durable task-local loops; writing an orchestrator, sub-orchestrator, or code-reviewer brief; settled waits on a reviewer; a head gate; work without a ledger; a stalled, blocked, or odd-looking agent |
 | `owner.md` | (hub or campaign lead) asking the owner anything or handing the owner an action, each milestone, parking a campaign, going idle on unattended work, answering "what happened" |
+| `decisions.md` | (hub or campaign lead) deciding anything a brief or an owner answer did not settle, before asking the owner, and before sending another root a message |
 | `teardown.md` | stopping an owned worker, closing a tab or workspace, after a reboot or crash |
 | `recovery.md` | any resume or prompt to a restored pane; your own session restarted; the taskr server unreachable |
 | `model-selection.md` | choosing a model; operator-specific policy lives in the fleet overlay |
 
 ## Roles and briefs
 
-The operator authorizes scope and publication. Leads own plans, typed work
-contracts, worker briefs, integration and acceptance. Sub-orchestrators own only
+The operator authorizes scope and publication. Leads own plans, typed work contracts, worker briefs, integration and acceptance. Sub-orchestrators own only
 their assigned part and cannot publish or start another sub-orchestrator. Workers
 stay in their briefs; deterministic gates need no model; reviewers inspect independently.
 Model choices and restrictions come from `lanes.md` and the fleet's private overlay.
