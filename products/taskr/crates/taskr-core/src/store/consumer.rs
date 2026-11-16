@@ -50,7 +50,13 @@ fn load(db: &Connection, task_id: i64) -> Result<Option<Lease>> {
 /// Held, unexpired (expires_at is exclusive) and bound to the task's current launch or
 /// generation on an open task.
 fn live(db: &Connection, t: &Task, l: &Lease) -> Result<bool> {
-    if l.holder.is_none() || l.expires_at <= now() || t.status == "closed" {
+    Ok(l.expires_at > now() && bound(db, t, l)?)
+}
+
+/// Held (never released) and bound to the task's current launch or generation on an
+/// open task, expired or not.
+fn bound(db: &Connection, t: &Task, l: &Lease) -> Result<bool> {
+    if l.holder.is_none() || t.status == "closed" {
         return Ok(false);
     }
     Ok(match l.binding {
@@ -108,13 +114,14 @@ pub fn guard(db: &Connection, task_id: i64, fence: Option<&Fence>) -> Result<()>
             t.id
         )));
     }
-    holding(db, &t, binding, f.fence).map(|_| ())
+    holding(db, &t, binding, f.fence, false).map(|_| ())
 }
 
-/// The live lease the caller holds with `fence`, from the same binding and host.
-fn holding(db: &Connection, t: &Task, binding: Binding, fence: i64) -> Result<Lease> {
+/// The live lease the caller holds with `fence`, from the same binding and host. With
+/// `lapsed`, a lease that only expired counts too.
+fn holding(db: &Connection, t: &Task, binding: Binding, fence: i64, lapsed: bool) -> Result<Lease> {
     let l = match load(db, t.id)? {
-        Some(l) if live(db, t, &l)? => l,
+        Some(l) if live(db, t, &l)? || lapsed && bound(db, t, &l)? => l,
         _ => {
             return Err(reject(format!(
                 "fence {fence} is not live: task {} has no live consumer lease",
@@ -222,7 +229,10 @@ pub fn take(
     })
 }
 
-/// Extend the live lease the caller holds with `fence`.
+/// Extend the lease the caller holds with `fence`. One that only expired is revived with
+/// the same fence: nobody took it since (a take bumps the fence), it was not released
+/// (that clears the holder), and its binding and host are still the caller's. A stalled
+/// ledger (a long write) must not end a consumer whose fence nobody else replaced.
 pub fn renew(
     db: &mut Connection,
     as_id: i64,
@@ -232,7 +242,7 @@ pub fn renew(
 ) -> Result<Value> {
     transaction(db, |tx| {
         let (t, binding) = identify(tx, as_id, session)?;
-        holding(tx, &t, binding, fence)?;
+        holding(tx, &t, binding, fence, true)?;
         tx.execute(
             "update consumer_leases set expires_at=? where task_id=?",
             params![deadline(ttl), t.id],
@@ -245,7 +255,7 @@ pub fn renew(
 pub fn release(db: &mut Connection, as_id: i64, session: Option<i64>, fence: i64) -> Result<Value> {
     transaction(db, |tx| {
         let (t, binding) = identify(tx, as_id, session)?;
-        holding(tx, &t, binding, fence)?;
+        holding(tx, &t, binding, fence, false)?;
         tx.execute(
             "update consumer_leases set holder=null where task_id=?",
             [t.id],

@@ -538,6 +538,88 @@ fn a_takeover_stops_pushes_and_the_tools_keep_serving() {
 }
 
 #[test]
+fn a_write_lock_longer_than_the_lease_keeps_the_fence_and_pushes_resume() {
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let mut c = Chan::start(&h, &env, &[], SCALE);
+    assert_eq!(held(&h, &ws), "1");
+    // Another writer holds the ledger past the 3 s lease, as one slow adopt did; its event
+    // appears only at its commit. Every renew and offer waits behind it.
+    let lock = h.conn();
+    lock.execute_batch("begin immediate").unwrap();
+    lock.execute(
+        "insert into events(task_id,recipient_task_id,kind,summary,data,created_at) values(1,?,'note','behind the lock','{}','2026-01-01T00:00:00.000Z')",
+        [&ws],
+    )
+    .unwrap();
+    let e = lock.last_insert_rowid().to_string();
+    std::thread::sleep(Duration::from_secs(5));
+    lock.execute_batch("commit").unwrap();
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    assert_eq!(
+        (meta(&push, "event"), meta(&push, "fence")),
+        (e.clone(), "1".to_string()),
+        "{}",
+        c.stderr()
+    );
+    assert!(!c.stderr().contains("stopped:"), "{}", c.stderr());
+    assert!(lease(&h, &ws).starts_with("1|mcp-channel-"));
+    let r = c.call("taskr_ack", json!({"event":n(&e),"fence":1}));
+    assert_eq!(r["structuredContent"]["outcome"], "committed", "{r}");
+    let (code, err) = c.close();
+    assert_eq!(code, Some(0), "{err}");
+    assert!(err.contains("released the inbox lease, fence 1"), "{err}");
+}
+
+#[test]
+fn a_stopped_root_channel_leaves_an_alarm_note_for_the_hub() {
+    let h = Harness::new();
+    let r = id(
+        &h.ok(&[], &["new", "root", "--role", "orchestrator"]),
+        "task_id",
+    );
+    let (code, _, err) = run(&h, &[], &["adopt", &r, "--pane", "w1:p1"]);
+    assert_eq!(code, Some(0), "{err}");
+    let generation = err.trim_end().rsplit_once("event ").unwrap().1.to_string();
+    let args = ["--as", r.as_str(), "--session", generation.as_str()];
+    let c = Chan::start(&h, &[], &args, SCALE);
+    assert_eq!(held(&h, &r), "1");
+    h.ok(
+        &[],
+        &[
+            "consumer",
+            "take",
+            "--holder",
+            "operator",
+            "--ttl",
+            "60000",
+            "--force",
+            "--as",
+            &r,
+            "--session",
+            &generation,
+        ],
+    );
+    until("the recorded stop", Duration::from_secs(20), || {
+        c.stderr().contains("recorded the stop in the ledger")
+    });
+    let note = text(
+        &h,
+        &format!(
+            "select summary from events where task_id={r} and kind='note' and summary like 'ALARM push_stopped root {r} (mcp-channel-%'"
+        ),
+    );
+    assert!(note.contains("fence 1 is stale"), "{note}");
+    assert!(
+        note.contains("if this session should still receive pushes"),
+        "{note}"
+    );
+    let (code, _) = c.close();
+    assert_eq!(code, Some(0));
+}
+
+#[test]
 fn an_adopt_stops_a_root_channel_whose_envelope_uses_the_pinned_session() {
     let h = Harness::new();
     let r = id(
@@ -1275,6 +1357,8 @@ enum Act {
     After(Box<dyn FnOnce() + Send>),
     /// The hub runs it; after this long the connection closes with no reply.
     LateLoss(Duration),
+    /// Held this long before the hub runs it, then passed.
+    Before(Duration),
 }
 type Rule = Arc<dyn Fn(&[String]) -> Act + Send + Sync>;
 /// An RPC proxy to the hub, one thread per connection. Each request's argv goes through
@@ -1333,6 +1417,9 @@ fn proxy(hub_port: u16, rule: Rule) -> (u16, mpsc::Receiver<Value>) {
                 if matches!(act, Act::LoseRequest) {
                     return;
                 }
+                if let Act::Before(d) = act {
+                    std::thread::sleep(d);
+                }
                 let mut hub =
                     std::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, hub_port))
                         .unwrap();
@@ -1343,7 +1430,7 @@ fn proxy(hub_port: u16, rule: Rule) -> (u16, mpsc::Receiver<Value>) {
                 match act {
                     Act::LoseReply | Act::LoseRequest | Act::Reply(_) => {}
                     Act::LateLoss(d) => std::thread::sleep(d),
-                    Act::Pass => {
+                    Act::Pass | Act::Before(_) => {
                         let _ = client.write_all(&reply);
                     }
                     Act::After(f) => {
@@ -1877,7 +1964,7 @@ fn a_stalled_child_keeps_the_tools_serving_and_stale_authority_never_pushes() {
     let direct = client(&h, &tailnet);
     let (w, worker) = client_lane(&h, &direct);
     // The attempt commits, then its reply is held past the 3 s lease.
-    let (p, _) = proxy(
+    let (p, seen) = proxy(
         port(&tailnet),
         nth(&["delivery", "new"], 0, || {
             Act::After(Box::new(|| std::thread::sleep(Duration::from_secs(5))))
@@ -1895,21 +1982,122 @@ fn a_stalled_child_keeps_the_tools_serving_and_stale_authority_never_pushes() {
     let task = c.call("taskr_task", json!({}));
     assert_eq!(task["structuredContent"]["outcome"], "committed", "{task}");
     assert!(started.elapsed() < Duration::from_secs(4));
-    // Authority went stale during the stall: no push, and the refused renew stops it.
-    until("the stop", Duration::from_secs(20), || {
-        c.stderr().contains("stopped:")
+    // Authority went stale during the stall: nothing is written on it. Nobody took the
+    // lease, so the next renew revives fence 1 and the same attempt is pushed after it.
+    let (_, push) = c.expect_push(Duration::from_secs(20));
+    let err = c.stderr();
+    until("the receipt", Duration::from_secs(20), || {
+        attempts(&h, &e).iter().all(|x| x.ends_with("|received"))
     });
-    assert!(
-        c.quiet(Duration::from_secs(2)).is_empty(),
-        "pushed on stale authority"
-    );
+    renew_between(&requests(&seen));
     let rows = attempts(&h, &e);
-    assert!(
-        rows.len() == 1 && rows[0].ends_with("|attempted"),
-        "{rows:?}"
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (meta(&push, "attempt"), meta(&push, "fence")),
+        (rows[0].split('|').next().unwrap().to_string(), "1".into())
     );
+    assert!(!err.contains("stopped:"), "{err}");
     let (code, _) = c.close();
     assert_eq!(code, Some(0));
+}
+
+#[test]
+fn a_fenced_offer_refused_for_a_lapse_renews_at_once_and_keeps_the_fence() {
+    // The first fenced offer reaches the hub 4 s late, past the 3 s lease: it is refused
+    // for the lapse, the adapter renews at once (a revival), and the event goes out with
+    // fence 1.
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let direct = client(&h, &tailnet);
+    let (w, worker) = client_lane(&h, &direct);
+    let (p, _) = proxy(
+        port(&tailnet),
+        nth(&["wait", "--push"], 0, || {
+            Act::Before(Duration::from_secs(4))
+        }),
+    );
+    client(&h, &format!("http://[::1]:{p}"));
+    let e = insert_event(&h, "1", &w, "note", "behind a late offer", "{}");
+    let mut c = Chan::start(&h, &worker, &[], SCALE);
+    let (_, push) = c.expect_push(Duration::from_secs(30));
+    let err = c.stderr();
+    assert!(
+        err.contains("fenced wait refused: fence 1 is not live")
+            && err.contains("renewing at once"),
+        "{err}"
+    );
+    assert!(!err.contains("stopped:"), "{err}");
+    assert_eq!(
+        (meta(&push, "event"), meta(&push, "fence")),
+        (e, "1".to_string())
+    );
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_delivery_new_that_committed_nothing_retries_with_a_new_key() {
+    // The hub stores a busy child's exit 4 as that request key's final result: a retry
+    // with the same key would replay it and never push the event (or any behind it).
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let direct = client(&h, &tailnet);
+    let (w, worker) = client_lane(&h, &direct);
+    let (p, seen) = proxy(
+        port(&tailnet),
+        nth(&["delivery", "new"], 0, || {
+            Act::Reply(
+                json!({"exit":4,"stdout":"{\"error\":\"database is locked (5)\"}\n","stderr":""}),
+            )
+        }),
+    );
+    client(&h, &format!("http://[::1]:{p}"));
+    let e = insert_event(&h, "1", &w, "note", "behind a busy attempt", "{}");
+    let mut c = Chan::start(&h, &worker, &[], SCALE);
+    let (_, push) = c.expect_push(Duration::from_secs(30));
+    assert_eq!(meta(&push, "event"), e);
+    let all: Vec<Value> = seen.try_iter().collect();
+    let news = keys(&all, &["delivery", "new"]);
+    assert!(news.len() >= 2, "{news:?}");
+    assert_ne!(news[0], news[1], "the failed attempt's key was reused");
+    assert!(
+        c.stderr().contains("delivery new error, reconciling"),
+        "{}",
+        c.stderr()
+    );
+    assert_eq!(attempts(&h, &e).len(), 1);
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_renew_that_committed_nothing_retries_with_a_new_key() {
+    // The hub stores a busy child's exit 4 as that request key's final result: a retry
+    // with the same key would only replay it until the lease is gone.
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let direct = client(&h, &tailnet);
+    let (w, worker) = client_lane(&h, &direct);
+    let (p, seen) = proxy(
+        port(&tailnet),
+        nth(&["consumer", "renew"], 0, || {
+            Act::Reply(
+                json!({"exit":4,"stdout":"{\"error\":\"database is locked (5)\"}\n","stderr":""}),
+            )
+        }),
+    );
+    client(&h, &format!("http://[::1]:{p}"));
+    let c = Chan::start(&h, &worker, &[], SCALE);
+    assert_eq!(held(&h, &w), "1");
+    let mut all: Vec<Value> = Vec::new();
+    until("a second renew", Duration::from_secs(20), || {
+        all.extend(seen.try_iter());
+        keys(&all, &["consumer", "renew"]).len() >= 2
+    });
+    let renews = keys(&all, &["consumer", "renew"]);
+    assert_ne!(renews[0], renews[1], "the failed renew's key was reused");
+    let err = c.stderr();
+    assert!(err.contains("renew error, retrying"), "{err}");
+    assert!(!err.contains("stopped:"), "{err}");
+    assert_eq!(c.close().0, Some(0));
 }
 
 #[test]
@@ -3294,34 +3482,57 @@ fn a_refused_tail_attempt_writes_nothing_and_stops() {
 }
 
 #[test]
-fn a_lease_that_lapses_during_the_last_tail_attempt_writes_nothing() {
-    // ttl 3 s: the last tail attempt's reply is held 4 s, past the lease.
+fn a_lease_that_lapses_during_the_last_tail_attempt_renews_before_it_writes() {
+    // ttl 3 s: the last tail attempt's reply is held 4 s, past the lease. Nothing is
+    // written on the lapsed lease: the renew comes first, and since nobody took the
+    // lease it revives fence 1, then the digest goes out with the same attempts.
     let h = Harness::new();
     let (_hub, tailnet, _) = start_hub(&h);
-    let (w, worker, _) = digest_client(&h, &tailnet, 1, || {
-        Act::After(Box::new(|| std::thread::sleep(Duration::from_secs(4))))
+    // The first renew after that late attempt is held 2 s before the hub runs it: a
+    // digest written on the lapsed lease would arrive while it is held.
+    let (news, armed, holding) = (
+        AtomicUsize::new(0),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let held_renew = holding.clone();
+    let rule: Rule = Arc::new(move |argv: &[String]| {
+        if has(argv, &["delivery", "new"]) && news.fetch_add(1, Ordering::SeqCst) == 1 {
+            armed.store(true, Ordering::SeqCst);
+            return Act::After(Box::new(|| std::thread::sleep(Duration::from_secs(4))));
+        }
+        if has(argv, &["consumer", "renew"]) && armed.swap(false, Ordering::SeqCst) {
+            holding.store(true, Ordering::SeqCst);
+            return Act::Before(Duration::from_secs(2));
+        }
+        Act::Pass
     });
+    let (w, worker, seen) = digest_rule(&h, &tailnet, rule);
     let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
     held(&h, &w);
     let a = insert_event(&h, "1", &w, "note", "one", "{}");
     let b = insert_event(&h, "1", &w, "note", "two", "{}");
-    until("the stop", Duration::from_secs(30), || {
-        c.stderr().contains("stopped:")
+    until("the held renew", Duration::from_secs(30), || {
+        held_renew.load(Ordering::SeqCst)
     });
     assert!(
-        c.quiet(Duration::from_secs(3)).is_empty(),
-        "a push on a lapsed lease"
+        c.quiet(Duration::from_secs(1)).is_empty(),
+        "a digest written on the lapsed lease: {}",
+        c.stderr()
     );
-    let err = c.stderr();
-    assert!(
-        err.contains("digest not written: no authority to write"),
-        "{err}"
-    );
-    // Both attempts committed; neither was submitted.
+    let (_, push) = c.expect_push(Duration::from_secs(30));
+    assert_eq!(pushed_ids(&push), [a.clone(), b.clone()]);
+    assert_eq!(meta(&push, "fence"), "1");
     for e in [&a, &b] {
         assert_eq!(attempts(&h, e).len(), 1, "{e}");
-        assert!(attempts(&h, e)[0].ends_with("|attempted"), "{e}");
     }
+    assert!(!c.stderr().contains("stopped:"), "{}", c.stderr());
+    for e in [&a, &b] {
+        until("every receipt", Duration::from_secs(20), || {
+            attempts(&h, e).iter().all(|x| x.ends_with("|received"))
+        });
+    }
+    renew_between(&requests(&seen));
     assert_eq!(c.close().0, Some(0));
 }
 
@@ -3404,6 +3615,24 @@ fn requests(seen: &mpsc::Receiver<Value>) -> Vec<(Vec<String>, String)> {
         })
         .collect()
 }
+/// Nothing written on the lapsed lease: a `consumer renew` sits between the last
+/// `delivery new` and the first `delivery submitted`.
+fn renew_between(reqs: &[(Vec<String>, String)]) {
+    let first_submitted = reqs
+        .iter()
+        .position(|(a, _)| has(a, &["delivery", "submitted"]))
+        .expect("a submission");
+    let last_new = reqs[..first_submitted]
+        .iter()
+        .rposition(|(a, _)| has(a, &["delivery", "new"]))
+        .expect("an attempt before the submission");
+    assert!(
+        reqs[last_new + 1..first_submitted]
+            .iter()
+            .any(|(a, _)| has(a, &["consumer", "renew"])),
+        "no renew between the late attempt and the first submission: {reqs:?}"
+    );
+}
 fn has(argv: &[String], words: &[&str]) -> bool {
     words.iter().all(|w| argv.iter().any(|a| a == w))
 }
@@ -3426,23 +3655,33 @@ fn a_stamp_reply_late_past_the_lease_starts_no_receipt_on_the_stale_lease() {
     });
     let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
     held(&h, &w);
-    insert_event(&h, "1", &w, "note", "one", "{}");
-    insert_event(&h, "1", &w, "note", "two", "{}");
+    let a = insert_event(&h, "1", &w, "note", "one", "{}");
+    let b = insert_event(&h, "1", &w, "note", "two", "{}");
     let (_, push) = c.expect_push(Duration::from_secs(20));
     assert_eq!(pushed_ids(&push).len(), 2);
-    until("the stop", Duration::from_secs(30), || {
-        c.stderr().contains("stopped:")
-    });
-    assert!(c.stderr().contains("renew refused"), "{}", c.stderr());
-    std::thread::sleep(Duration::from_secs(1));
+    // Nobody took the lease: a renew revives fence 1, and only then do the other stamps
+    // start.
+    for e in [&a, &b] {
+        until("every receipt", Duration::from_secs(30), || {
+            attempts(&h, e).iter().all(|x| x.ends_with("|received"))
+        });
+    }
+    assert!(!c.stderr().contains("stopped:"), "{}", c.stderr());
     let reqs = requests(&seen);
-    let stamps: Vec<&Vec<String>> = reqs
+    let stamp =
+        |a: &Vec<String>| has(a, &["delivery", "submitted"]) || has(a, &["delivery", "received"]);
+    let first = reqs.iter().position(|(a, _)| stamp(a)).expect("a stamp");
+    assert!(has(&reqs[first].0, &["submitted"]));
+    let after = &reqs[first + 1..];
+    let renew = after
         .iter()
-        .map(|(a, _)| a)
-        .filter(|a| has(a, &["delivery", "submitted"]) || has(a, &["delivery", "received"]))
-        .collect();
-    assert_eq!(stamps.len(), 1, "{stamps:?}");
-    assert!(has(stamps[0], &["submitted"]));
+        .position(|(a, _)| has(a, &["consumer", "renew"]))
+        .expect("a renew after the late stamp");
+    let next = after
+        .iter()
+        .position(|(a, _)| stamp(a))
+        .expect("the other stamps");
+    assert!(renew < next, "{reqs:?}");
     assert_eq!(c.close().0, Some(0));
 }
 

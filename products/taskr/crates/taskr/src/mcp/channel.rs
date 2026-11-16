@@ -412,7 +412,7 @@ enum Lease {
         renew_at: Instant,
         op: Option<Op>,
     },
-    /// Refused for good (takeover, expiry, relaunch, adopt, close, a stale binding) or
+    /// Refused for good (takeover, release, relaunch, adopt, close, a stale binding) or
     /// ended by a failed stdout write: nothing more is pushed; the tools keep serving.
     Stopped,
 }
@@ -643,6 +643,44 @@ impl Loop {
             Sink::Queue(_) => log(format!("stopped: {why}; no more pushes")),
         }
         self.lease = Lease::Stopped;
+        self.trace(&why.to_string());
+    }
+    /// The stop in the ledger, not only on stderr (Claude Code does not keep an MCP
+    /// server's stderr): an `ALARM` note on the consumer's task, which the hub board lists
+    /// for a root, as `push_exhausted` does. Best effort: a refusal is logged.
+    fn trace(&self, why: &str) {
+        let why: String = why
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .take(600)
+            .collect();
+        let (kind, task) = match self.who {
+            Who::Worker { task, .. } => ("task", task),
+            Who::Root { task, .. } => ("root", task),
+        };
+        let summary = format!(
+            "ALARM push_stopped {kind} {task} ({}): {why}; no more pushes to this session, its tools keep serving; if this session should still receive pushes, restart its push adapter (Claude /restart, or a new taskr push codex)",
+            self.holder
+        );
+        let ran = self.exec(self.argv(&["note", &summary], false), self.key().as_deref());
+        match ran.outcome {
+            "committed" | "queued" => log("recorded the stop in the ledger"),
+            outcome => log(format!(
+                "could not record the stop in the ledger ({outcome}): {}",
+                ran.error()
+            )),
+        }
+    }
+    /// A fenced step refused because the lease lapsed (a stalled ledger, not a takeover):
+    /// renew at once, which revives it if nobody replaced it; a refused renew stops.
+    fn refused(&mut self, why: String) {
+        if why.contains("has no live consumer lease")
+            && let Lease::Held { renew_at, .. } = &mut self.lease
+        {
+            *renew_at = Instant::now();
+            return log(format!("{why}; renewing at once"));
+        }
+        self.stopped(why)
     }
     /// The queue sink's pinned binding, re-read: unreadable suspends, a change stops
     /// for good. Always true for a channel.
@@ -787,7 +825,7 @@ impl Loop {
                 log(format!("take {outcome}, reconciling: {}", ran.error()));
                 self.lease = Lease::Free {
                     at: now + self.t.poll,
-                    op: Some(op),
+                    op: uncertain(outcome).then_some(op),
                 };
             }
         }
@@ -848,7 +886,7 @@ impl Loop {
             outcome => {
                 log(format!("renew {outcome}, retrying: {}", ran.error()));
                 *renew_at = Instant::now() + self.t.backoff;
-                *pending = Some(op);
+                *pending = uncertain(outcome).then_some(op);
             }
         }
     }
@@ -931,6 +969,7 @@ impl Loop {
                     "attempt {attempt}: {column} {outcome}, retrying: {}",
                     ran.error()
                 ));
+                let key = if uncertain(outcome) { key } else { self.key() };
                 self.stamps.push((attempt, key, column));
             }
         }
@@ -971,7 +1010,7 @@ impl Loop {
         }
         match ran.outcome {
             "committed" => {}
-            "rejected" => return self.stopped(format!("fenced wait refused: {}", ran.error())),
+            "rejected" => return self.refused(format!("fenced wait refused: {}", ran.error())),
             // Never fall back to pushing every event, or to skipping any.
             "usage" => {
                 return self.stopped(format!(
@@ -1171,7 +1210,7 @@ impl Loop {
                 None,
             );
             if ran.outcome == "rejected" {
-                return self.stopped(format!("delivery alarm refused: {}", ran.error()));
+                return self.refused(format!("delivery alarm refused: {}", ran.error()));
             }
             if ran.outcome == "usage" {
                 self.tracks.get_mut(&e).expect("tracked event").exhausted = true;
@@ -1259,7 +1298,11 @@ impl Loop {
                     "event {e}: delivery new {outcome}, reconciling: {}",
                     ran.error()
                 ));
-                self.attempt = Some((e, Attempt::Uncertain(key, before)));
+                // A ledger host (no key) reconciles by the watermark; a client host's
+                // failure that committed nothing starts a new attempt with a new key.
+                if uncertain(outcome) || key.is_none() {
+                    self.attempt = Some((e, Attempt::Uncertain(key, before)));
+                }
                 None
             }
         }
@@ -1359,7 +1402,7 @@ impl Loop {
                 ("rejected" | "usage", _) => {
                     let why = format!("event {id}: delivery new refused: {}", ran.error());
                     self.unwritten(e, attempt, lines, &why);
-                    return self.stopped(why);
+                    return self.refused(why);
                 }
                 (outcome, _) => {
                     let why = format!("event {id}: delivery new {outcome}: {}", ran.error());
@@ -1412,6 +1455,13 @@ impl Loop {
         }
         self.digest_stamps();
     }
+}
+
+/// An outcome that may have committed: its retry reuses the request key. Any other
+/// failure (a busy ledger's `error` included, which the hub stores as the key's final
+/// result) committed nothing, and a retry with the same key would only replay it.
+fn uncertain(outcome: &str) -> bool {
+    matches!(outcome, "unknown" | "transport")
 }
 
 /// The push table (taskr-core `inbox::pushed`) from inbox rows: Some(false) for an event

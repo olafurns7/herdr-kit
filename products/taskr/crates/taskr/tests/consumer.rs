@@ -1173,11 +1173,8 @@ fn expiry_follows_the_frozen_clock() {
         q
     );
     // At the deadline it has expired: the old fence is refused, the plain wait replays.
+    // (Only the holder's renew could revive it, until the take below.)
     assert_eq!(show("1.000"), "cs1 1 free\n");
-    refuse(
-        "1.000",
-        &["consumer", "renew", "--fence", "1", "--ttl", "1000"],
-    );
     refuse("1.000", &["ack", &q, "--fence", "1"]);
     refuse("1.000", &["wait", "--fence", "1", "--timeout", "0"]);
     let plain = event(&stdout(
@@ -1210,6 +1207,95 @@ fn expiry_follows_the_frozen_clock() {
         format!("0/{q}"),
         "expiry never moves the cursor"
     );
+}
+
+#[cfg(feature = "contract")]
+#[test]
+fn a_renew_revives_a_lapsed_lease_only_while_nobody_replaced_it() {
+    let h = Harness::new();
+    let (w, _, env) = h.lane("claude", "implementer");
+    let ws = w.to_string();
+    let at = |env: &Env, t: &str| -> Env {
+        let mut e = env.clone();
+        e.push(("TASKR_FROZEN_NOW".into(), format!("2026-01-01T00:00:{t}Z")));
+        e
+    };
+    let take = |env: &Env, t: &str, holder: &str| {
+        stdout(
+            &h,
+            &at(env, t),
+            &["consumer", "take", "--holder", holder, "--ttl", "1000"],
+        )
+    };
+    let renew =
+        |fence: &str| ["consumer", "renew", "--fence", fence, "--ttl", "1000"].map(String::from);
+    fn args(a: &[String]) -> Vec<&str> {
+        a.iter().map(String::as_str).collect()
+    }
+    assert!(take(&env, "00.000", "ch").starts_with("cs1 1 live ch 2026-01-01T00:00:01.000Z"));
+    // Lapsed (a stalled ledger): nobody took or released it, so the holder's renew revives
+    // the same fence from now, and the fence works again.
+    assert_eq!(
+        stdout(&h, &at(&env, "05.000"), &["consumer", "show"]),
+        "cs1 1 free\n"
+    );
+    rejected(&h, &at(&env, "05.000"), &args(&renew("2")), 6);
+    assert!(
+        stdout(&h, &at(&env, "05.000"), &args(&renew("1")))
+            .starts_with("cs1 1 live ch 2026-01-01T00:00:06.000Z")
+    );
+    stdout(
+        &h,
+        &at(&env, "05.500"),
+        &["wait", "--fence", "1", "--timeout", "0"],
+    );
+    // Released: the holder is cleared, a lapse does not bring it back.
+    stdout(
+        &h,
+        &at(&env, "05.500"),
+        &["consumer", "release", "--fence", "1"],
+    );
+    rejected(&h, &at(&env, "08.000"), &args(&renew("1")), 6);
+    // The fence moved: another take after the lapse replaced it.
+    assert!(take(&env, "08.000", "ch").starts_with("cs1 2 live"));
+    assert!(take(&env, "10.000", "other").starts_with("cs1 3 live"));
+    rejected(&h, &at(&env, "12.000"), &args(&renew("2")), 6);
+    // The binding changed: a relaunch refuses the old launch and the new one alike.
+    let l = id(
+        &h.ok(
+            &[],
+            &[
+                "launch",
+                &ws,
+                "--provider",
+                "claude",
+                "--model",
+                "test",
+                "--effort",
+                "medium",
+            ],
+        ),
+        "launch_id",
+    );
+    let new: Env = env
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                if k == "TASKR_LAUNCH" {
+                    l.clone()
+                } else {
+                    v.clone()
+                },
+            )
+        })
+        .collect();
+    rejected(&h, &at(&env, "12.000"), &args(&renew("3")), 6);
+    rejected(&h, &at(&new, "12.000"), &args(&renew("3")), 6);
+    // The task closed.
+    assert!(take(&new, "13.000", "ch").starts_with("cs1 4 live"));
+    h.ok(&[], &["close", &ws]);
+    rejected(&h, &at(&new, "15.000"), &args(&renew("4")), 6);
 }
 
 /// A synthetic contract hub, killed on drop.
