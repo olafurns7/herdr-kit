@@ -33,7 +33,7 @@
 # line adds work_brief=<path>. Not with --reserved.
 # --gather SLUG QUESTION (a reviewer or researcher with TASKR_TASK) writes a
 # gather helper brief with QUESTION as its Objective to
-# <caller report dir>/gather/SLUG.brief.md (report SLUG.md beside it) and
+# <caller report dir>/gather/$TASKR_TASK/SLUG.brief.md (report SLUG.md beside it) and
 # launches gather-SLUG under $TASKR_TASK on LANE, else $HERDR_GATHER_LANE,
 # else haiku-gather. Every caller check below applies; the output adds the
 # report path and the two close commands.
@@ -320,6 +320,10 @@ while :; do
             [ "${#2}" -le 25 ] || die "--gather slug '$2' is longer than 25 characters"
             # One header line each: newlines in QUESTION become spaces.
             gather=$2 gather_question=$(printf '%s' "$3" | tr '\r\n' '  ')
+            case $gather_question in
+                *[![:space:]]*) ;;
+                *) die '--gather QUESTION is only whitespace' ;;
+            esac
             shift 3
             ;;
         --lane)
@@ -402,7 +406,8 @@ if [ -n "$gather" ]; then
     caller_report=$(printf '%s\n' "$caller_rows" | jq -ers --arg id "$TASKR_TASK" '
         [.[] | select((.id | tostring) == $id)] | select(length == 1) | .[0].report_path |
         strings | select(startswith("/"))') || die 'could not read caller report path'
-    gather_dir=${caller_report%/*}/gather
+    # The caller's id keeps two seats' helpers with one slug apart.
+    gather_dir=${caller_report%/*}/gather/$TASKR_TASK
     brief=$gather_dir/$gather.brief.md report=$gather_dir/$gather.md
     # A report there belongs to an earlier helper; never reuse its slug.
     [ ! -e "$report" ] && [ ! -L "$report" ] || die "gather report '$report' exists; choose another SLUG"

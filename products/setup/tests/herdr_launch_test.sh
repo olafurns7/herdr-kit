@@ -1038,7 +1038,7 @@ gather_fixture() {
     caller_fixture "$1"
     jq -c --arg r "$work/rev.md" '.report_path = $r' "$STUB_CALLER" >"$case_dir/updated"
     mv "$case_dir/updated" "$STUB_CALLER"
-    gather_brief=$work/gather/callers.brief.md gather_report=$work/gather/callers.md
+    gather_brief=$work/gather/42/callers.brief.md gather_report=$work/gather/42/callers.md
 }
 for caller_role in reviewer researcher; do
     new_case "$caller_role --gather writes the brief and launches haiku-gather" researcher
@@ -1059,6 +1059,22 @@ taskr close 2468 --outcome accepted   # or rejected
 herdr tab close wA:t7"
 done
 
+new_case '--gather: two callers with one slug get separate files' researcher
+gather_fixture reviewer
+run_launch TASKR_TASK=42 sh "$launch_sh" --gather callers 'QUESTION ONE'
+expect_rc 0
+jq -c '.id = 43' "$STUB_CALLER" >"$case_dir/updated" && mv "$case_dir/updated" "$STUB_CALLER"
+jq -c '.task_id = 43' "$STUB_CALLER_DOCS" >"$case_dir/updated" && mv "$case_dir/updated" "$STUB_CALLER_DOCS"
+run_launch TASKR_TASK=43 sh "$launch_sh" --gather callers 'QUESTION TWO'
+expect_rc 0
+for seat in 42:ONE 43:TWO; do
+    grep -qx "Objective: Gather read-only: QUESTION ${seat#*:}" "$work/gather/${seat%:*}/callers.brief.md" \
+        || fail "seat ${seat%:*} brief lost its question"
+    grep -qF "|--parent|${seat%:*}|" "$case_dir/calls" || fail "seat ${seat%:*} not ledgered"
+    grep -qF "|--brief|$work/gather/${seat%:*}/callers.brief.md|--report|$work/gather/${seat%:*}/callers.md" \
+        "$case_dir/calls" || fail "seat ${seat%:*} paths not its own"
+done
+
 for lane_source in env flag; do
     new_case "--gather lane from $lane_source" researcher
     gather_fixture reviewer
@@ -1070,23 +1086,28 @@ for lane_source in env flag; do
     grep -qF '|--kind|codex|' "$case_dir/calls" || fail 'lane override not used'
 done
 
-for refusal in forbidden no-task slug long-slug no-question lane-alone args report-exists; do
+for refusal in forbidden no-task slug dotdot blank long-slug no-question lane-alone args report-exists; do
     new_case "--gather refusal: $refusal" researcher
     gather_fixture reviewer
     set -- TASKR_TASK=42 sh "$launch_sh" --gather callers 'Q'
     case $refusal in
         forbidden) printf '%s\n' 'Gather helpers: none' >>"$STUB_CALLER_CAPTURE"; reason='brief says Gather helpers: none' ;;
         no-task) shift; reason='--gather needs TASKR_TASK' ;;
-        slug) set -- TASKR_TASK=42 sh "$launch_sh" --gather Callers 'Q'; reason='must match' ;;
+        slug) set -- TASKR_TASK=42 sh "$launch_sh" --gather Callers 'Q'; reason="--gather slug 'Callers' must match" ;;
+        dotdot) set -- TASKR_TASK=42 sh "$launch_sh" --gather ../x 'Q'; reason="--gather slug '../x' must match" ;;
+        blank) set -- TASKR_TASK=42 sh "$launch_sh" --gather callers "$(printf ' \n\t')"; reason='--gather QUESTION is only whitespace' ;;
         long-slug) set -- TASKR_TASK=42 sh "$launch_sh" --gather abcdefghijklmnopqrstuvwxyz 'Q'; reason='longer than 25' ;;
         no-question) set -- TASKR_TASK=42 sh "$launch_sh" --gather callers ''; reason='needs SLUG QUESTION' ;;
         lane-alone) set -- TASKR_TASK=42 sh "$launch_sh" --lane haiku-gather haiku-gather gather-x "$brief" "$report" 42; reason='--lane applies only with --gather' ;;
         args) set -- "$@" haiku-gather gather-x "$brief" "$report" 42; reason='--gather takes no LANE' ;;
-        report-exists) mkdir -p "$work/gather"; : >"$gather_report"; reason='choose another SLUG' ;;
+        report-exists) mkdir -p "${gather_report%/*}"; : >"$gather_report"; reason='choose another SLUG' ;;
     esac
     run_launch "$@"
     expect_rc 2
     expect_err "$reason"
+    case $refusal in slug | dotdot | blank | long-slug | no-question)
+        [ ! -e "$work/gather" ] || fail 'refused --gather wrote a file' ;;
+    esac
     grep -q '^herdr|' "$case_dir/calls" && fail 'refused --gather reached Herdr'
     grep -q '^taskr|new|' "$case_dir/calls" && fail 'refused --gather registered a child'
 done
