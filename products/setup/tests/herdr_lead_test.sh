@@ -587,9 +587,8 @@ has calls 'taskr|close|43|--outcome|accepted|env=/'
 case $(cat "$case_dir/prompt-sent") in *' lead-push-gen-7') ;; *) fail 'missing end token' ;; esac
 grep -F 'if the handover Note lists session timers to re-arm, create each again' "$case_dir/prompt-sent" >/dev/null || fail 'prompt does not ask to re-arm session timers'
 config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
-# Leads take digest pushes with a 2-minute hold; workers' configs carry no env.
-jq -e '.mcpServers.taskr == {command:"taskr",args:["mcp","--channel","--as","42","--session","7"],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}}' "$config" >/dev/null || fail 'bad config'
-printf '%s\n' '{"mcpServers":{"taskr":{"command":"taskr","args":["mcp","--channel","--as","42","--session","7"],"env":{"TASKR_CHANNEL_DIGEST":"1","TASKR_CHANNEL_DIGEST_HOLD_S":"120"}}}}' |
+jq -e '.mcpServers.taskr == {command:"taskr",args:["mcp","--channel","--as","42","--session","7"]}' "$config" >/dev/null || fail 'bad config'
+printf '%s\n' '{"mcpServers":{"taskr":{"command":"taskr","args":["mcp","--channel","--as","42","--session","7"]}}}' |
     cmp - "$config" || fail 'default config bytes changed'
 [ "$(ls -l "$config" | cut -c 1-10)" = -rw------- ] || fail 'config mode is not 0600'
 [ -z "$(find "$case_dir" -name .mcp.json -print)" ] || fail 'wrote .mcp.json'
@@ -607,7 +606,7 @@ new_case 'jobs start adds a generation-bound server without changing channel or 
 start --jobs --resume 'sid with spaces' --account example
 expect_rc 0
 config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
-jq -e '. == {mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as","42","--session","7"],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}},"taskr-jobs":{command:"taskr",args:["mcp","--jobs","--as","42","--session","7","--binding","herdr-lead-root-42-gen-7"]}}}' "$config" >/dev/null || fail 'bad jobs config'
+jq -e '. == {mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as","42","--session","7"]},"taskr-jobs":{command:"taskr",args:["mcp","--jobs","--as","42","--session","7","--binding","herdr-lead-root-42-gen-7"]}}}' "$config" >/dev/null || fail 'bad jobs config'
 [ "$(ls -l "$config" | cut -c 1-10)" = -rw------- ] || fail 'config mode is not 0600'
 has calls '--account|example|--resume|sid with spaces|--model|'
 has calls "--mcp-config|$config|--dangerously-load-development-channels|server:taskr"
@@ -725,7 +724,7 @@ new_case 'live check still fails when acks stop advancing'
 ACKS='1 2 3'
 start
 expect_rc 1
-has err 'check event was not received and acked within 360 s (acked through 3; backlog 2)'
+has err 'check event was not received and acked within 240 s (acked through 3; backlog 2)'
 lacks calls 'taskr|close'
 
 for mode in unreceived unacked wrong-generation wrong-holder; do

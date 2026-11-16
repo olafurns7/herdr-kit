@@ -454,7 +454,7 @@ mcp_config=$state_dir/taskr-mcp-$gen.json
 tmp=$(mktemp "$state_dir/.mcp.XXXXXX") || fail 'create config temporary file'
 jq -nc --arg root "$root" --arg gen "$gen" --argjson jobs "$jobs" \
     --arg binding "herdr-lead-root-$root-gen-$gen" \
-    '{mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as",$root,"--session",$gen],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}}}}
+    '{mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as",$root,"--session",$gen]}}}
      | if $jobs then .mcpServers["taskr-jobs"] = {command:"taskr",args:["mcp","--jobs","--as",$root,"--session",$gen,"--binding",$binding]} else . end' >"$tmp" || fail 'render config'
 chmod 0600 "$tmp" || fail 'protect config'
 mv -n -- "$tmp" "$mcp_config" && [ ! -e "$tmp" ] || fail 'generation config exists or could not be saved'
@@ -536,8 +536,6 @@ check_launch=$(printf '%s\n' "$out" | jq -er '.launch_id') || fail 'read check l
 number "$check_launch" || fail 'invalid check launch id'
 out=$(TASKR_TASK=$check_task TASKR_LAUNCH=$check_launch taskr --json ready "lead push check $gen" --report "$mcp_config") || fail 'send check event (inspect before retry)'
 event=$(printf '%s\n' "$out" | jq -er '.event_id') || fail 'check event not committed (queued or unknown; inspect before retry)'
-# The check event is not urgent: the digest may hold it 120 s before the push.
-deadline=$((deadline + 120))
 number "$event" || fail 'invalid check event id'
 # A successor drains older pushed events first; each new ack extends the wait, up to 30 min.
 inbox=$(ledger --json inbox --as "$root") || fail 'read inbox backlog'
@@ -559,11 +557,11 @@ while :; do
     now_acked=$(printf '%s\n' "$inbox" | jq -er '.acked_event_id // 0') || fail 'read check ack'
     if [ "$now_acked" -gt "$acked" ]; then
         acked=$now_acked
-        later=$(($(date +%s) + 360))
+        later=$(($(date +%s) + 240))
         [ "$later" -le "$cap" ] || later=$cap
         [ "$later" -le "$deadline" ] || deadline=$later
     fi
-    [ "$(date +%s)" -lt "$deadline" ] || fail "check event was not received and acked within 360 s (acked through $acked; backlog $backlog)"
+    [ "$(date +%s)" -lt "$deadline" ] || fail "check event was not received and acked within 240 s (acked through $acked; backlog $backlog)"
     sleep 3
 done
 out=$(ledger --json close "$check_task" --outcome accepted) || fail 'close check task (inspect before retry)'
