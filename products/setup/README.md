@@ -70,72 +70,96 @@ Claude Code feature. Claude writes JavaScript that makes several tool calls in
 one step, and Claude Code runs that code in the session.
 
 `herdr-hub` starts the Claude hub with `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`.
-If the shell that runs `herdr-hub` already sets the variable, `herdr-hub` keeps
-that value. `herdr-lead` starts leads without Code Mode, and `herdr-launch`
-starts workers without Code Mode.
+If the shell that runs `herdr-hub` already sets the variable to a nonempty
+value, `herdr-hub` keeps that value. `herdr-lead` starts leads with the
+variable at `0`, and `herdr-launch` starts workers without it.
 
-Requirements:
+Requirements. The kit does not check the version, the account, the
+organization or settings outside the kit. If Code Mode does not start, use the
+upstream [Code Mode doesn't start](https://code.claude.com/docs/en/code-mode#code-mode-doesnt-start)
+table.
 
-- Claude Code v2.1.323 or later, native build. `herdr-hub` does not check the
-  version.
-- A Claude subscription or Console account. Code Mode does not start with an
-  API key helper, `ANTHROPIC_AUTH_TOKEN`, a gateway or a custom
-  `ANTHROPIC_BASE_URL`.
-- Model Opus 5.5, Sonnet 5.5, Haiku 5.5 or Fable 5.2. The public `hub` and
-  `orch` lanes use these models.
-- None of these: `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `DISABLE_TELEMETRY`,
-  OpenTelemetry export, `--remote-control`, `--restricted`, a `--tools` list
-  without `REPL`, `REPL` in a deny rule, or an installed mod that checks tool
-  calls.
+- Claude Code v2.1.323 or later, native build.
+- An interactive `claude` session in a terminal. Code Mode does not work with
+  `-p`, the Agent SDK, the VS Code panel, the Desktop app or cloud sessions.
+- A Claude subscription or Console account with the Anthropic API. Code Mode
+  does not work through a gateway, a custom `ANTHROPIC_BASE_URL`, Amazon
+  Bedrock, Claude Platform on AWS, Google Cloud's Agent Platform or Microsoft
+  Foundry.
+- No API key helper, `ANTHROPIC_AUTH_TOKEN`, or `Authorization` or `X-Api-Key`
+  header in `ANTHROPIC_CUSTOM_HEADERS`.
+- The organization does not use the HIPAA configuration or zero data
+  retention, and its managed settings do not set the variable to `0`.
+- Model Opus 5.5, Sonnet 5.5, Haiku 5.5 or Fable 5.2. The public Claude `hub`
+  and `orch` lanes use these models.
+- Claude Code can fetch feature flags: `DISABLE_TELEMETRY` and other variables
+  that turn off feature-flag fetching are not set, and the network is up.
+- No OpenTelemetry export: `CLAUDE_CODE_ENABLE_TELEMETRY` and
+  `ENABLE_BETA_TRACING_DETAILED` are not set.
+- No `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `--remote-control` or
+  `--restricted`.
+- `REPL` is available: no `--tools` list without `REPL`, and no `REPL` in
+  `--disallowedTools` or a deny rule.
+- No installed mod that checks tool calls.
+- `~/.claude.json` is writable.
+- Project settings cannot turn on Code Mode; only the shell and user settings
+  can.
 
-If a requirement is not met, Claude starts without Code Mode. The reason shows
-near the top of the session and in `/status`.
+If Code Mode does not start, a line near the top of the session and `/status`
+usually give the reason. An older version can show no line: then run
+`claude --version`.
 
-First start: Claude Code asks for confirmation once for each Claude config
-home, which is once for each Codator account. Select **Yes, turn on Code Mode**
-in the hub pane; Claude Code then restarts. The `herdr-hub` prover does not
+First start: Claude Code asks for confirmation before the first Code Mode
+session. Select **Yes, turn on Code Mode** in the hub pane; Claude Code then
+restarts. We expect this once for each Claude config home, which is once for
+each Codator account; this is not verified. The `herdr-hub` prover does not
 answer this dialog, and it answers the development-channel dialog only once.
 If that dialog shows again after the restart, press Enter. Do the first start
-on each account by hand: an unattended `herdr-hub move` to a new account stops
-at the dialog, and the prover fails after 600 s.
+on each account by hand. If the dialog stops an unattended `herdr-hub move`
+before the channel lease, the prover fails after 600 s.
 
 Resume: a Code Mode session resumes only with the variable at `1`.
 `herdr-hub ROOT -- --resume SID` and `herdr-hub move` set it again. With the
 variable at `0`, Claude refuses to resume a Code Mode session: start a new
 session. A session that started without Code Mode resumes without it. After a
-Herdr server restart, Herdr resumes panes with a plain `claude --resume`
-without the variable, which a Code Mode session refuses; quit it and resume
-with `herdr-hub` as `recovery.md` says.
+Herdr server restart, Herdr may resume panes with a plain `claude --resume`.
+That command can be without the variable, and then a Code Mode session refuses
+to resume. Quit it and resume with `herdr-hub` as `recovery.md` says.
 
 To turn off Code Mode for the hub, export `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0`
 in the hub pane shell before you run `herdr-hub`. Export it; a value in front
 of one command does not reach the `herdr-hub` command that `herdr-hub move`
 types in that shell. You can also set the variable to `"0"` in the `env` block
-of `~/.claude/settings.json`; a `0` in one place wins. A running session keeps
-its mode until it stops.
+of `~/.claude/settings.json`, or in managed settings for an organization. A `0`
+in one place wins. A running session keeps its mode until it stops.
 
 Leads: to turn on Code Mode for leads, set `HERDR_LEAD_CODE_MODE=1` in the
 environment of the process that runs `herdr-lead`. For example, export it in
 the hub pane shell before `herdr-hub`; the hub's shell commands then get it.
-Without it, `herdr-lead` removes `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE` from the
-lead pane shell. Keep the same switch for `herdr-lead move --resume` of a lead
-that started with Code Mode, or Claude refuses to resume it.
+Without it, `herdr-lead` exports `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0` in the
+lead pane shell, which also overrides a `1` in user settings. With it,
+`herdr-lead` exports `1`, but a `0` in user or managed settings still wins.
+Keep the same switch for `herdr-lead move --resume` of a lead that started
+with Code Mode, or Claude refuses to resume it.
 
 Limits for a fleet:
 
 - On a tool call from Claude's code, a `PreToolUse` hook that cannot start, is
-  killed, exits 126, 127 or above 128, or times out refuses the call. After code
-  has run, a timeout refuses later calls too. The shipped `AskUserQuestion`
-  hook has a 5 s timeout: a slow ledger then refuses the question.
-- `UserPromptSubmit` command hooks also run on background code output (input
-  `source` is `poll_event`). The shipped hooks never block. A local hook must
-  not block when `source` is `poll_event`.
+  killed, exits 126, 127 or above 128, returns an HTTP error or invalid output,
+  or times out refuses the call. After code has run, a timeout refuses later
+  calls too. `"onFailure": "continue"` on a `command` or `http` hook lets the
+  call go ahead. The shipped synchronous hooks do not set `onFailure`. The
+  shipped `AskUserQuestion` hook has a 5 s timeout: a slow ledger can then
+  refuse the question.
+- `UserPromptSubmit` command, `http` and `mcp_tool` hooks also run on
+  background code output (input `source` is `poll_event`). The shipped hooks
+  do not block. A local hook must not block when `source` is `poll_event`.
 - Remote Control, Claude in Chrome, computer use and background sessions are
   not available. Code that does not run in the background stops after ten
   minutes. Background code needs auto or bypass permission mode. Leads start
   with `--dangerously-skip-permissions`; the hub gets bypass mode from the
   shipped `settings.json` default.
-- A Herdr server started from a Code Mode session passes the variable to new
+- A Herdr server started from a Code Mode session can pass the variable to new
   pane shells. Do not start the Herdr server from an agent session.
 
 Not verified live: the taskr push channel under Code Mode, the confirmation

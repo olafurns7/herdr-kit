@@ -39,7 +39,7 @@ case "$1 $2" in
         # cwd quoting works, and the Codator functions forward their argv.
         case $4 in
             *'unset TASKR_TASK TASKR_LAUNCH'*)
-                TASKR_TASK=99 TASKR_LAUNCH=100 CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 sh -c "$4 && test -z \"\${TASKR_TASK-}\" && test -z \"\${TASKR_LAUNCH-}\" && test \"\${CLAUDE_CODE_EXPERIMENTAL_CODE_MODE-off}\" = \"\${EXPECT_CODE_MODE:-off}\" && test \"\$FLEET_ROLE/\$CLAUDE_CODE_SANDBOXED\" = worker/1 && test \"\$PWD\" = \"\$WORK\" && claude --version && codex --version" || exit 1
+                TASKR_TASK=99 TASKR_LAUNCH=100 CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 sh -c "$4 && test -z \"\${TASKR_TASK-}\" && test -z \"\${TASKR_LAUNCH-}\" && test \"\${CLAUDE_CODE_EXPERIMENTAL_CODE_MODE-unset}\" = \"\${EXPECT_CODE_MODE:-0}\" && test \"\$FLEET_ROLE/\$CLAUDE_CODE_SANDBOXED\" = worker/1 && test \"\$PWD\" = \"\$WORK\" && claude --version && codex --version" || exit 1
                 ;;
         esac
         ;;
@@ -571,6 +571,7 @@ has out 'herdr-lead: 42 live at 7 (event 9 received and acked)'
 has calls 'codator|claude|--version'
 has calls 'codator|codex|--version'
 has calls 'herdr-lead-env=//worker/1/'
+has calls 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0 && '
 has calls 'taskr|adopt|42|--workspace|wA|--tab|wA:t1|--pane|wA:p1|env=/'
 has calls 'herdr|pane|send-keys|wA:p1|Enter'
 has calls 'herdr|agent|wait|orch-example|--until|idle|--timeout|90000'
@@ -595,7 +596,7 @@ printf '%s\n' '{"mcpServers":{"taskr":{"command":"taskr","args":["mcp","--channe
 [ "$(grep -c 'taskr|adopt' "$case_dir/calls")" = 1 ] || fail 'adopted twice'
 [ "$(grep -c 'herdr|agent|start' "$case_dir/calls")" = 1 ] || fail 'started twice'
 
-# Every start above ran its pane setup with an inherited Code Mode export and proved it cleared.
+# Every start above ran its pane setup with an inherited Code Mode 1 and proved it became an explicit 0.
 new_case 'HERDR_LEAD_CODE_MODE=1 exports Code Mode in the lead pane'
 LEAD_CODE_MODE=1 EXPECT_CODE_MODE=1
 start --resume 'sid with spaces' --account example
