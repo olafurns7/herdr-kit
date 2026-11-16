@@ -368,12 +368,22 @@ fn pane_tokens_skip_roots_whose_lead_pane_is_gone() {
     let db = db::Connection::open_in_memory().unwrap();
     db.execute_batch(taskr_core::schema::SCHEMA).unwrap();
     let at = store::now();
-    for (id, parent, pane) in [(1, None, "w:p0"), (2, None, "w:p1"), (3, Some(1), "w:p2")] {
+    for (id, parent, pane) in [
+        (1, None, "w:p0"),
+        (2, None, "w:p1"),
+        (3, Some(1), "w:p2"),
+        (4, Some(1), "w:p3"),
+    ] {
         db.execute("insert into tasks(id,parent_id,name,role,status,pane_id,created_at,updated_at) values(?,?,'t','orchestrator','open',?,?,?)",params![id,parent,pane,at,at]).unwrap();
     }
-    db.execute("insert into launches(id,task_id,provider,model,effort,pane_id,present,recorded_at) values(3,3,'fixture','fixture','medium','w:p2',1,?)",params![at]).unwrap();
-    db.execute("update tasks set current_launch_id=3 where id=3", [])
+    for (id, pane, present) in [(3, "w:p2", 1), (4, "w:p3", 0)] {
+        db.execute("insert into launches(id,task_id,provider,model,effort,pane_id,present,recorded_at) values(?,?,'fixture','fixture','medium',?,?,?)",params![id,id,pane,present,at]).unwrap();
+        db.execute(
+            "update tasks set current_launch_id=? where id=?",
+            params![id, id],
+        )
         .unwrap();
+    }
     let path = std::env::temp_dir().join(format!("taskr-pane-tokens-{}", std::process::id()));
     // An unreachable socket runs no herdr; each attempted write logs a failure.
     let attempted = |lead: [Option<i64>; 2]| {
@@ -390,9 +400,9 @@ fn pane_tokens_skip_roots_whose_lead_pane_is_gone() {
         tokens.reattach();
         assert_eq!(tokens.panes(&db, "", &log).unwrap(), 0);
         let lines = fs::read_to_string(&path).unwrap_or_default();
-        [1, 2, 3].map(|id| lines.contains(&format!("token write for task {id} failed")))
+        [1, 2, 3, 4].map(|id| lines.contains(&format!("token write for task {id} failed")))
     };
-    assert_eq!(attempted([Some(0), Some(1)]), [false, true, true]);
-    assert_eq!(attempted([None, Some(0)]), [true, false, true]);
+    assert_eq!(attempted([Some(0), Some(1)]), [false, true, true, false]);
+    assert_eq!(attempted([None, Some(0)]), [true, false, true, false]);
     let _ = fs::remove_file(path);
 }
