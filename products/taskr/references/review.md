@@ -56,26 +56,28 @@ herdr-launch --gather callers 'List callers and tests of foo() outside the diff,
 taskr wait --for ready,done,fail,ask
 ```
 
-It prints the task and tab IDs, the report path and the two close commands.
-At most 3 children may be open, including children that are ready or done but
-not closed. Your brief may set a lower cap (a busy shared host allows one);
-keep to it, since the launcher checks only the cap of 3. A lead that wants a
-seat to use more helpers starts that seat on a host with room. A helper cannot start a helper. Workers cannot use
-`--reserved` or `--machine`. Other worker roles cannot start helpers;
-orchestrator and sub-orchestrator rules stay the same. For a brief of your own,
-copy a generated `SLUG.brief.md` to BRIEF and edit it; the launcher needs
-`HERDR-BRIEF role=researcher`, the `orchestrator=... report=REPORT` line, and
-the `Task topology:`, `Objective:`, `Acceptance:` and `Validation:` lines. Then
-run `herdr-launch LANE gather-SLUG BRIEF REPORT "$TASKR_TASK"`, where LANE is a
-gather lane and BRIEF and REPORT are absolute paths.
+It prints the task and tab IDs, the report path and the two close commands. At
+most 3 children may be open, including children that are ready or done but not
+closed. Your brief may set a lower cap (a busy shared host allows one); keep to
+it, since the launcher checks only the cap of 3. A lead that wants a seat to use
+more helpers starts that seat on a host with room. A helper cannot start a
+helper. Workers cannot use `--reserved` or `--machine`. Other worker roles
+cannot start helpers; orchestrator and sub-orchestrator rules stay the same. For
+a brief of your own, copy a generated `SLUG.brief.md` to BRIEF and edit it; the
+launcher needs `HERDR-BRIEF role=researcher`, the `orchestrator=...
+report=REPORT` line, and the `Task topology:`, `Objective:`, `Acceptance:` and
+`Validation:` lines. Then run `herdr-launch LANE gather-SLUG BRIEF REPORT
+"$TASKR_TASK"`, where LANE is a gather lane and BRIEF and REPORT are absolute
+paths.
 
 Read the helper's report. Open the source for every fact a finding rests on;
-mark any other fact you cite without re-reading as G. Answer a helper's ask with `taskr answer ASK_ID TEXT`. After handling each
-event, run `taskr ack EVENT_ID --as "$TASKR_TASK"`, then wait again as needed.
-In a push lane, end the turn and handle the pushed events with their fence as
-[Push lane](../SKILL.md#push-lane) says; do not use a plain wait or ack.
-After the helper finishes and you check its report, close its ledger task and
-its owned tab (use `rejected` if you reject the report):
+mark any other fact you cite without re-reading as G. Answer a helper's ask with
+`taskr answer ASK_ID TEXT`. After handling each event, run `taskr ack EVENT_ID
+--as "$TASKR_TASK"`, then wait again as needed. In a push lane, end the turn and
+handle the pushed events with their fence as [Push lane](../SKILL.md#push-lane)
+says; do not use a plain wait or ack. After the helper finishes and you check
+its report, close its ledger task and its owned tab (use `rejected` if you
+reject the report):
 
 ```sh
 taskr close CHILD --outcome accepted
