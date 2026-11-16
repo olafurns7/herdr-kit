@@ -3,6 +3,7 @@ for asset in \
     skills/herdr-orchestration/SKILL.md \
     skills/herdr-orchestration/lanes.md skills/herdr-orchestration/launch.md \
     skills/herdr-orchestration/workflow.md skills/herdr-orchestration/owner.md \
+    skills/herdr-orchestration/decisions.md \
     skills/herdr-orchestration/teardown.md skills/herdr-orchestration/recovery.md \
     skills/herdr-fleet/SKILL.md; do
     place "$setup_dir/$asset" "$home_dir/.agents/$asset"
