@@ -234,6 +234,7 @@ FIVE_HOUR_MARGIN = 15  # percent left the 5-hour window needs, so running lanes 
 # Week points one Fable point can take: the lowest week/Fable used ratio seen
 # in snapshots (an upper bound, not an API fact); spare = week - SPARE_K x Fable.
 SPARE_K = 0.55
+WEEK = 7 * 24 * 3600
 fable_lane = model.startswith("claude-fable-")
 
 def utilization(limit):
@@ -258,7 +259,7 @@ try:
             and not isinstance(amount, bool) and isinstance(amount, (int, float))
             and math.isfinite(amount) and amount >= 0):
         protect, reserve = tuple(names), amount
-except (OSError, ValueError, KeyError, TypeError):
+except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError):
     pass
 
 for path in sorted((pathlib.Path.home() / ".local/share/codator/claude").glob("*/.claude-usage.json")):
@@ -273,8 +274,12 @@ for path in sorted((pathlib.Path.home() / ".local/share/codator/claude").glob("*
         record["week"] = utilization(limits["seven_day"])
         reset = reset_time(limits["seven_day"])
         record["reset"] = reset.isoformat().replace("+00:00", "Z")
-        # Rounded down to the minute: probes add sub-second noise to resets.
-        record["stamp"] = reset.timestamp() // 60 * 60
+        # A passed reset started a new week; its numbers predate the reset.
+        stamp = reset.timestamp()
+        if stamp <= now:
+            stamp += WEEK
+        # Rounded to the nearest minute: probes add sub-second noise either way.
+        record["stamp"] = round(stamp / 60) * 60
         try:
             row = next(row for row in limits.get("model_scoped", []) if row["display_name"] == "Fable")
             record["fable"] = utilization(row)
@@ -317,9 +322,10 @@ if mode == "quota":
     def display(value):
         return "-" if value is None else str(value)
     for record in records:
-        print("account={} week_used={} fable_used={} reset={} role={}{}".format(
+        print("account={} week_used={} fable_used={} reset={} role={}{}{}".format(
             record["name"], display(record["week"]), display(record["fable"]), record["reset"], record["role"],
-            " fable_spend=1" if record is pick and fable_spend else ""))
+            " fable_spend=1" if record is pick and fable_spend else "",
+            " protected=1" if record["name"] in protect else ""))
 else:
     result = {"account": pick["name"], "drain": drain} if pick else {}
     if pick and fable_spend:

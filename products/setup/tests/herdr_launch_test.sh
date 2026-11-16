@@ -560,7 +560,7 @@ acct acct-a 20 50 48
 acct acct-b 20 50 96
 pick fable-high acct-a drain=later
 
-new_case 'spare is week minus 0.55 x Fable: 74 and 54 is tier A, 3.25 is A, 0.5 is B' reviewer
+new_case 'spare is week minus 0.55 x Fable: 74 and 54 is tier A, 3.25 is A, 2.7 and 0.5 are B' reviewer
 account_codator "$home"
 acct acct-a 26 46 30
 acct acct-b 0 100 40
@@ -568,8 +568,23 @@ pick opus-medium acct-a drain=later
 acct acct-a 50 15 2
 acct acct-b 0 100 3
 pick opus-medium acct-a drain=soon
+acct acct-a 50 14 2
+pick opus-medium acct-b drain=soon
 acct acct-a 50 10 2
 pick opus-medium acct-b drain=soon
+
+new_case 'a Fable lane ignores spare: the soonest Fable room beats a later spare' reviewer
+account_codator "$home"
+acct acct-a 50 0 2
+acct acct-b 20 50 3
+pick fable-high acct-a drain=soon
+pick opus-medium acct-b drain=soon
+
+new_case 'Fable under 3 percent left is not counted: week 4 left and Fable 2 left is tier A' reviewer
+account_codator "$home"
+acct acct-a 96 98 2
+acct acct-b 50 0 3
+pick opus-medium acct-a drain=soon
 
 new_case 'resets under a second apart in one minute tie by name' reviewer
 account_codator "$home"
@@ -578,6 +593,23 @@ acct acct-b 20 50 "@$minute.2"
 acct acct-a 20 50 "@$minute.84"
 pick opus-medium acct-a drain=soon
 pick fable-high acct-a drain=soon
+
+new_case 'resets on both sides of a minute boundary tie by name' reviewer
+account_codator "$home"
+minute=$(python3 -c 'import time; print(int(time.time() // 60 * 60 + 3 * 3600))')
+acct acct-a 20 50 "@$minute.84"
+acct acct-b 20 50 "@$((minute - 1)).74"
+pick opus-medium acct-a drain=soon
+pick fable-high acct-a drain=soon
+
+new_case 'a passed weekly reset ranks one week later and is not soon' reviewer
+account_codator "$home"
+acct acct-a 20 50 -0.5
+acct acct-b 20 50 2
+pick opus-medium acct-b drain=soon
+pick fable-high acct-b drain=soon
+acct acct-b 20 50 200
+pick opus-medium acct-a drain=later
 
 new_case 'five-hour window 86 percent used is not eligible' reviewer
 account_codator "$home"
@@ -602,15 +634,40 @@ acct acct-a 50 18 2
 acct acct-b 20 100 3
 pick opus-medium acct-b drain=soon
 
-for bad_list in '{broken' '[]' '{"protect":"acct-a","reserve":15}' '{"protect":["acct-a"]}' \
-    '{"reserve":15}' '{"protect":["acct-a"],"reserve":"15"}' '{"protect":["acct-a"],"reserve":true}' \
-    '{"protect":[1],"reserve":15}' '{"protect":["acct-a"],"reserve":-1}'; do
+new_case 'the reserve applies only to listed accounts and unknown names change nothing' reviewer
+account_codator "$home"
+protect '{"protect":["acct-b","nobody"],"reserve":15}'
+acct acct-a 86 100 2
+acct acct-b 20 100 3
+pick opus-medium acct-a drain=soon
+
+# Any accepted reserve changes this pick: 15 or 1 puts acct-a out (acct-b),
+# -1 lets acct-c in (acct-c).
+for bad_list in '{broken' '[]' '{"protect":"acct-a","reserve":15}' '{"protect":["acct-a","acct-c"]}' \
+    '{"reserve":15}' '{"protect":["acct-a","acct-c"],"reserve":"15"}' '{"protect":["acct-a","acct-c"],"reserve":true}' \
+    '{"protect":[1],"reserve":15}' '{"protect":["acct-a","acct-c"],"reserve":-1}'; do
     new_case "malformed protect list means no list: $bad_list" reviewer
     account_codator "$home"
     protect "$bad_list"
+    acct acct-c 97.5 100 1
+    acct acct-a 96.5 100 2
+    acct acct-b 20 100 3
+    pick opus-medium acct-a drain=soon
+done
+
+for bad_list in huge-reserve deep-nesting; do
+    new_case "protect file shape $bad_list means no list" reviewer
+    account_codator "$home"
+    case $bad_list in
+        huge-reserve) protect "{\"protect\":[\"acct-a\"],\"reserve\":1$(printf '%0400d' 0)}" ;;
+        deep-nesting) protect "$(python3 -c 'print("[" * 100000 + "]" * 100000)')" ;;
+    esac
     acct acct-a 86 100 2
     acct acct-b 20 100 3
     pick opus-medium acct-a drain=soon
+    run_launch sh "$launch_sh" --quota
+    expect_rc 0
+    printf '%s\n' "$out" | grep -q '^account=acct-a .* role=soon$' || fail 'quota did not read no list'
 done
 
 new_case 'remote pick reports fable_spend=1 and drops other values'
@@ -758,6 +815,18 @@ printf '%s\n' "$out" | grep -q '^account=acct-b .* role=out$' || fail 'out role 
 case $out in *'alert '*) fail 'quota printed an alert' ;; esac
 expect_no_calls
 
+new_case 'quota marks protected accounts with protected=1'
+protect '{"protect":["acct-a","acct-b"],"reserve":15}'
+acct acct-a 86 100 2
+acct acct-b 20 100 3
+acct acct-c 50 100 4
+run_launch sh "$launch_sh" --quota
+expect_rc 0
+printf '%s\n' "$out" | grep -q '^account=acct-a week_used=86 fable_used=100 reset=.* role=out protected=1$' || fail 'reserve reason missing'
+printf '%s\n' "$out" | grep -q '^account=acct-b .* role=soon protected=1$' || fail 'protected pick not marked'
+printf '%s\n' "$out" | grep -q '^account=acct-c .* role=next$' || fail 'unprotected account marked'
+expect_no_calls
+
 new_case 'quota without Python fails clearly without calls'
 mkdir -p "$case_dir/no-python"
 printf '%s\n' '#!/bin/sh' 'exit 127' >"$case_dir/no-python/python3"
@@ -855,9 +924,9 @@ case $out in *' drain=later') ;; *) fail 'remote later reason missing' ;; esac
 done
 
 for bad_pick in 'bad name' '_bad' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do
-    new_case "remote invalid picked account falls back to Codator: $bad_pick"
+    new_case "remote invalid picked account falls back to Codator and drops fable_spend: $bad_pick"
     STUB_CODATOR=1
-    STUB_ACCOUNT=$(jq -cn --arg account "$bad_pick" '{account:$account,drain:"later"}')
+    STUB_ACCOUNT=$(jq -cn --arg account "$bad_pick" '{account:$account,drain:"later",fable_spend:1}')
     run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
     expect_rc 0
     expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=default'

@@ -33,8 +33,9 @@ snapshots modified within 30 minutes with a valid weekly reset qualify when
 the overall week, Fable for Fable lanes, and the Opus or Sonnet weekly limit
 when present for that model have at least 3% left, and the five-hour limit
 has at least 15% left when present. A missing Fable row is unknown: Fable
-lanes skip the account. Order is the weekly reset rounded down to the minute,
-soonest first at every horizon, then lowest name. A Fable lane takes the first
+lanes skip the account. Order is the weekly reset rounded to the nearest
+minute (a reset already passed counts one week later), soonest first at every
+horizon, then lowest name. A Fable lane takes the first
 qualifying account. Other lanes count spare = week left − 0.55 × Fable left
 (Fable counted only when its row has at least 3% left) and take the first
 account with spare of 3 or more; when none has, they take the largest spare
@@ -56,7 +57,9 @@ It prints `account=NAME week_used=N fable_used=N|- reset=ISO role=ROLE` per
 validly named snapshot account, ranked as an Opus lane pick. Roles are `soon`
 or `later` for the chosen account (with `fable_spend=1` when it has no
 spare), `next` for other eligible accounts, `out` for accounts below a margin,
-and `stale` for skipped snapshots. Unavailable values print `-`. No account is
+and `stale` for skipped snapshots. Roles apply the protect reserve; numbers are
+raw, and a protected account's line ends with `protected=1`. Unavailable values
+print `-`. No account is
 driven to zero for a free reset any more, so `--quota` prints no alert line.
 
 ## Workspaces and tabs
