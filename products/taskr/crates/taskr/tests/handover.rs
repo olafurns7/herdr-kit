@@ -389,7 +389,7 @@ fn adopt_commits_before_it_renders_so_writers_go_on_meanwhile() {
     // A slow render (test-only delay): the adopt is already committed and holds no lock.
     let adopt = h
         .command(&[])
-        .env("TASKR_CONTRACT_ADOPT_RENDER_DELAY_MS", "4000")
+        .env("TASKR_CONTRACT_RENDER_DELAY_MS", "4000")
         .args(["adopt", &root, "--pane", "w1:p1"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -424,4 +424,40 @@ fn adopt_commits_before_it_renders_so_writers_go_on_meanwhile() {
         format!("taskr adopt: task {root} now at pane w1:p1 (was none); event {adopt_id}\n")
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("## Identity"));
+}
+
+#[cfg(feature = "contract")]
+#[test]
+fn handover_renders_before_its_write_so_writers_go_on_meanwhile() {
+    let h = Harness::new();
+    let root = id(&h, &["new", "root", "--role", "orchestrator"]);
+    // A slow render (test-only delay): it holds no lock, and its event comes after it.
+    let mut handover = h
+        .command(&[])
+        .env("TASKR_CONTRACT_RENDER_DELAY_MS", "4000")
+        .args(["handover", "--as", &root, "--note", "slow render"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    let c = h.conn();
+    c.busy_timeout(Duration::from_millis(200)).unwrap();
+    c.execute_batch("begin immediate; update tasks set updated_at=updated_at where id=1; commit")
+        .unwrap();
+    let marks = "select count(*) from events where kind='handover' and task_id=?";
+    assert_eq!(h.count(marks, root.parse().unwrap()), 0);
+    assert!(
+        handover.try_wait().unwrap().is_none(),
+        "the handover was no longer rendering when the write went through"
+    );
+    let out = handover.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    let eid = h.count(
+        "select max(id) from events where kind='handover' and task_id=?",
+        root.parse().unwrap(),
+    );
+    assert_eq!(err, format!("taskr handover: recorded event {eid}\n"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("slow render"));
 }

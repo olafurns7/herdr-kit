@@ -611,7 +611,10 @@ fn a_stopped_root_channel_leaves_an_alarm_note_for_the_hub() {
         ),
     );
     assert!(note.contains("fence 1 is stale"), "{note}");
-    assert!(note.contains("restart its push adapter"), "{note}");
+    assert!(
+        note.contains("if this session should still receive pushes"),
+        "{note}"
+    );
     let (code, _) = c.close();
     assert_eq!(code, Some(0));
 }
@@ -1354,6 +1357,8 @@ enum Act {
     After(Box<dyn FnOnce() + Send>),
     /// The hub runs it; after this long the connection closes with no reply.
     LateLoss(Duration),
+    /// Held this long before the hub runs it, then passed.
+    Before(Duration),
 }
 type Rule = Arc<dyn Fn(&[String]) -> Act + Send + Sync>;
 /// An RPC proxy to the hub, one thread per connection. Each request's argv goes through
@@ -1412,6 +1417,9 @@ fn proxy(hub_port: u16, rule: Rule) -> (u16, mpsc::Receiver<Value>) {
                 if matches!(act, Act::LoseRequest) {
                     return;
                 }
+                if let Act::Before(d) = act {
+                    std::thread::sleep(d);
+                }
                 let mut hub =
                     std::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, hub_port))
                         .unwrap();
@@ -1422,7 +1430,7 @@ fn proxy(hub_port: u16, rule: Rule) -> (u16, mpsc::Receiver<Value>) {
                 match act {
                     Act::LoseReply | Act::LoseRequest | Act::Reply(_) => {}
                     Act::LateLoss(d) => std::thread::sleep(d),
-                    Act::Pass => {
+                    Act::Pass | Act::Before(_) => {
                         let _ = client.write_all(&reply);
                     }
                     Act::After(f) => {
@@ -1956,7 +1964,7 @@ fn a_stalled_child_keeps_the_tools_serving_and_stale_authority_never_pushes() {
     let direct = client(&h, &tailnet);
     let (w, worker) = client_lane(&h, &direct);
     // The attempt commits, then its reply is held past the 3 s lease.
-    let (p, _) = proxy(
+    let (p, seen) = proxy(
         port(&tailnet),
         nth(&["delivery", "new"], 0, || {
             Act::After(Box::new(|| std::thread::sleep(Duration::from_secs(5))))
@@ -1978,6 +1986,10 @@ fn a_stalled_child_keeps_the_tools_serving_and_stale_authority_never_pushes() {
     // lease, so the next renew revives fence 1 and the same attempt is pushed after it.
     let (_, push) = c.expect_push(Duration::from_secs(20));
     let err = c.stderr();
+    until("the receipt", Duration::from_secs(20), || {
+        attempts(&h, &e).iter().all(|x| x.ends_with("|received"))
+    });
+    renew_between(&requests(&seen));
     let rows = attempts(&h, &e);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(
@@ -1987,6 +1999,71 @@ fn a_stalled_child_keeps_the_tools_serving_and_stale_authority_never_pushes() {
     assert!(!err.contains("stopped:"), "{err}");
     let (code, _) = c.close();
     assert_eq!(code, Some(0));
+}
+
+#[test]
+fn a_fenced_offer_refused_for_a_lapse_renews_at_once_and_keeps_the_fence() {
+    // The first fenced offer reaches the hub 4 s late, past the 3 s lease: it is refused
+    // for the lapse, the adapter renews at once (a revival), and the event goes out with
+    // fence 1.
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let direct = client(&h, &tailnet);
+    let (w, worker) = client_lane(&h, &direct);
+    let (p, _) = proxy(
+        port(&tailnet),
+        nth(&["wait", "--push"], 0, || {
+            Act::Before(Duration::from_secs(4))
+        }),
+    );
+    client(&h, &format!("http://[::1]:{p}"));
+    let e = insert_event(&h, "1", &w, "note", "behind a late offer", "{}");
+    let mut c = Chan::start(&h, &worker, &[], SCALE);
+    let (_, push) = c.expect_push(Duration::from_secs(30));
+    let err = c.stderr();
+    assert!(
+        err.contains("fenced wait refused: fence 1 is not live")
+            && err.contains("renewing at once"),
+        "{err}"
+    );
+    assert!(!err.contains("stopped:"), "{err}");
+    assert_eq!(
+        (meta(&push, "event"), meta(&push, "fence")),
+        (e, "1".to_string())
+    );
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
+fn a_renew_that_committed_nothing_retries_with_a_new_key() {
+    // The hub stores a busy child's exit 4 as that request key's final result: a retry
+    // with the same key would only replay it until the lease is gone.
+    let h = Harness::new();
+    let (_hub, tailnet, _) = start_hub(&h);
+    let direct = client(&h, &tailnet);
+    let (w, worker) = client_lane(&h, &direct);
+    let (p, seen) = proxy(
+        port(&tailnet),
+        nth(&["consumer", "renew"], 0, || {
+            Act::Reply(
+                json!({"exit":4,"stdout":"{\"error\":\"database is locked (5)\"}\n","stderr":""}),
+            )
+        }),
+    );
+    client(&h, &format!("http://[::1]:{p}"));
+    let c = Chan::start(&h, &worker, &[], SCALE);
+    assert_eq!(held(&h, &w), "1");
+    let mut all: Vec<Value> = Vec::new();
+    until("a second renew", Duration::from_secs(20), || {
+        all.extend(seen.try_iter());
+        keys(&all, &["consumer", "renew"]).len() >= 2
+    });
+    let renews = keys(&all, &["consumer", "renew"]);
+    assert_ne!(renews[0], renews[1], "the failed renew's key was reused");
+    let err = c.stderr();
+    assert!(err.contains("renew error, retrying"), "{err}");
+    assert!(!err.contains("stopped:"), "{err}");
+    assert_eq!(c.close().0, Some(0));
 }
 
 #[test]
@@ -3391,17 +3468,12 @@ fn a_lease_that_lapses_during_the_last_tail_attempt_renews_before_it_writes() {
         assert_eq!(attempts(&h, e).len(), 1, "{e}");
     }
     assert!(!c.stderr().contains("stopped:"), "{}", c.stderr());
-    let reqs = requests(&seen);
-    let last_new = reqs
-        .iter()
-        .rposition(|(a, _)| has(a, &["delivery", "new"]))
-        .expect("the tail attempt");
-    assert!(
-        reqs[last_new + 1..]
-            .iter()
-            .any(|(a, _)| has(a, &["consumer", "renew"])),
-        "{reqs:?}"
-    );
+    for e in [&a, &b] {
+        until("every receipt", Duration::from_secs(20), || {
+            attempts(&h, e).iter().all(|x| x.ends_with("|received"))
+        });
+    }
+    renew_between(&requests(&seen));
     assert_eq!(c.close().0, Some(0));
 }
 
@@ -3483,6 +3555,24 @@ fn requests(seen: &mpsc::Receiver<Value>) -> Vec<(Vec<String>, String)> {
             )
         })
         .collect()
+}
+/// Nothing written on the lapsed lease: a `consumer renew` sits between the last
+/// `delivery new` and the first `delivery submitted`.
+fn renew_between(reqs: &[(Vec<String>, String)]) {
+    let first_submitted = reqs
+        .iter()
+        .position(|(a, _)| has(a, &["delivery", "submitted"]))
+        .expect("a submission");
+    let last_new = reqs[..first_submitted]
+        .iter()
+        .rposition(|(a, _)| has(a, &["delivery", "new"]))
+        .expect("an attempt before the submission");
+    assert!(
+        reqs[last_new + 1..first_submitted]
+            .iter()
+            .any(|(a, _)| has(a, &["consumer", "renew"])),
+        "no renew between the late attempt and the first submission: {reqs:?}"
+    );
 }
 fn has(argv: &[String], words: &[&str]) -> bool {
     words.iter().all(|w| argv.iter().any(|a| a == w))

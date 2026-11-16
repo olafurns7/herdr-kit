@@ -412,7 +412,7 @@ enum Lease {
         renew_at: Instant,
         op: Option<Op>,
     },
-    /// Refused for good (takeover, expiry, relaunch, adopt, close, a stale binding) or
+    /// Refused for good (takeover, release, relaunch, adopt, close, a stale binding) or
     /// ended by a failed stdout write: nothing more is pushed; the tools keep serving.
     Stopped,
 }
@@ -659,7 +659,7 @@ impl Loop {
             Who::Root { task, .. } => ("root", task),
         };
         let summary = format!(
-            "ALARM push_stopped {kind} {task} ({}): {why}; no more pushes to this session, its tools keep serving; restart its push adapter (Claude /restart, or a new taskr push codex) to resume",
+            "ALARM push_stopped {kind} {task} ({}): {why}; no more pushes to this session, its tools keep serving; if this session should still receive pushes, restart its push adapter (Claude /restart, or a new taskr push codex)",
             self.holder
         );
         let ran = self.exec(self.argv(&["note", &summary], false), self.key().as_deref());
@@ -825,7 +825,7 @@ impl Loop {
                 log(format!("take {outcome}, reconciling: {}", ran.error()));
                 self.lease = Lease::Free {
                     at: now + self.t.poll,
-                    op: Some(op),
+                    op: uncertain(outcome).then_some(op),
                 };
             }
         }
@@ -886,7 +886,7 @@ impl Loop {
             outcome => {
                 log(format!("renew {outcome}, retrying: {}", ran.error()));
                 *renew_at = Instant::now() + self.t.backoff;
-                *pending = Some(op);
+                *pending = uncertain(outcome).then_some(op);
             }
         }
     }
@@ -969,6 +969,7 @@ impl Loop {
                     "attempt {attempt}: {column} {outcome}, retrying: {}",
                     ran.error()
                 ));
+                let key = if uncertain(outcome) { key } else { self.key() };
                 self.stamps.push((attempt, key, column));
             }
         }
@@ -1455,6 +1456,13 @@ impl Loop {
 /// The push table (taskr-core `inbox::pushed`) from inbox rows: Some(false) for an event
 /// that is never pushed, None for a `done` whose launch's `ready` is not among `before`
 /// (it may sit behind the cursor), Some(true) otherwise.
+/// An outcome that may have committed: its retry reuses the request key. Any other
+/// failure (a busy ledger's `error` included, which the hub stores as the key's final
+/// result) committed nothing, and a retry with the same key would only replay it.
+fn uncertain(outcome: &str) -> bool {
+    matches!(outcome, "unknown" | "transport")
+}
+
 fn pushable(ev: &Value, before: &[Value]) -> Option<bool> {
     let d = &ev["data"];
     Some(match ev["kind"].as_str().unwrap_or("") {

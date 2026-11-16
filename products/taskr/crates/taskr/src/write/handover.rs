@@ -22,30 +22,37 @@ pub fn run(f: &FlagSet) -> Result<Value> {
     };
     let note = f.get_string("note").trim();
     let mut db = open()?;
-    let (rendered, eid) = store::transaction(&mut db, |tx| {
+    // Rendered in a deferred read, as for adopt; only the event and the document take
+    // the write lock, in one short transaction.
+    let rendered = {
+        let read = db.transaction()?;
+        worker::resolve(&read, id)?;
+        render_delay();
+        store::handover::render(&read, id, note, false)?
+    };
+    if !out.is_empty() {
+        std::fs::write(&out, &rendered.text).map_err(|e| {
+            store::usage(format!(
+                "--out: open {out}: {}",
+                e.to_string()
+                    .split(" (os error")
+                    .next()
+                    .unwrap_or("error")
+                    .to_lowercase()
+            ))
+        })?;
+    }
+    let mut input = documents::body(rendered.text.as_bytes(), &out);
+    if input.reason.is_empty() {
+        input.format = "md".into();
+    }
+    let mut data =
+        json!({"sha256":input.hash,"bytes":rendered.text.len(),"counts":rendered.counts});
+    if !out.is_empty() {
+        data["out"] = json!(out);
+    }
+    let eid = store::transaction(&mut db, |tx| {
         worker::resolve(tx, id)?;
-        let rendered = store::handover::render(tx, id, note, false)?;
-        if !out.is_empty() {
-            std::fs::write(&out, &rendered.text).map_err(|e| {
-                store::usage(format!(
-                    "--out: open {out}: {}",
-                    e.to_string()
-                        .split(" (os error")
-                        .next()
-                        .unwrap_or("error")
-                        .to_lowercase()
-                ))
-            })?;
-        }
-        let mut input = documents::body(rendered.text.as_bytes(), &out);
-        if input.reason.is_empty() {
-            input.format = "md".into();
-        }
-        let mut data =
-            json!({"sha256":input.hash,"bytes":rendered.text.len(),"counts":rendered.counts});
-        if !out.is_empty() {
-            data["out"] = json!(out);
-        }
         let eid = store::event(
             tx,
             store::Event {
@@ -60,9 +67,9 @@ pub fn run(f: &FlagSet) -> Result<Value> {
             documents::store(tx, id, "handover", "", &input, Some(eid), 0)?;
             Ok(())
         })?;
-        Ok((rendered.text, eid))
+        Ok(eid)
     })?;
-    print!("{rendered}");
+    print!("{}", rendered.text);
     if out.is_empty() {
         eprintln!("taskr handover: recorded event {eid}");
     } else {
@@ -138,14 +145,7 @@ pub fn adopt(f: &FlagSet) -> Result<Value> {
     // Rendered after the commit, in a deferred read (one snapshot, no write lock under
     // WAL): a big root's render must not hold the lock every lease renewal waits on.
     let read = db.transaction()?;
-    // Test-only: a slow render.
-    #[cfg(feature = "contract")]
-    if let Some(ms) = std::env::var("TASKR_CONTRACT_ADOPT_RENDER_DELAY_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        std::thread::sleep(std::time::Duration::from_millis(ms));
-    }
+    render_delay();
     let text = store::handover::render(&read, id, "", true)?.text;
     print!("{text}");
     eprintln!(
@@ -153,4 +153,15 @@ pub fn adopt(f: &FlagSet) -> Result<Value> {
         if old.is_empty() { "none" } else { &old }
     );
     Ok(json!({}))
+}
+
+/// Test-only: a slow handover render (contract builds).
+fn render_delay() {
+    #[cfg(feature = "contract")]
+    if let Some(ms) = std::env::var("TASKR_CONTRACT_RENDER_DELAY_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
 }

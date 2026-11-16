@@ -1338,11 +1338,23 @@ fn start_hub(h: &Harness) -> (Hub, u16) {
 struct Gate {
     /// armed, held, released
     state: Mutex<(bool, bool, bool)>,
+    /// The same for the next `consumer renew` reply, once armed.
+    renew: Mutex<(bool, bool, bool)>,
     turn: std::sync::Condvar,
 }
 impl Gate {
     fn pass(&self, argv: &[String]) {
         let has = |w: &str| argv.iter().any(|a| a == w);
+        if has("consumer") && has("renew") {
+            let mut r = self.renew.lock().unwrap();
+            if r.0 && !r.1 {
+                r.1 = true;
+                self.turn.notify_all();
+                while !r.2 {
+                    r = self.turn.wait(r).unwrap();
+                }
+            }
+        }
         let mut s = self.state.lock().unwrap();
         if has("delivery") && has("new") {
             s.0 = true;
@@ -1372,6 +1384,22 @@ impl Gate {
     }
     fn rearm(&self) {
         *self.state.lock().unwrap() = (false, false, false);
+        *self.renew.lock().unwrap() = (false, false, false);
+    }
+    fn arm_renew(&self) {
+        self.renew.lock().unwrap().0 = true;
+    }
+    fn renew_held(&self) {
+        let r = self.renew.lock().unwrap();
+        let (r, timeout) = self
+            .turn
+            .wait_timeout_while(r, Duration::from_secs(30), |r| !r.1)
+            .unwrap();
+        assert!(!timeout.timed_out() && r.1, "no renew was held");
+    }
+    fn release_renew(&self) {
+        self.renew.lock().unwrap().2 = true;
+        self.turn.notify_all();
     }
 }
 /// A proxy to the hub that records every RPC argv; the event stream is held unanswered.
@@ -1539,7 +1567,7 @@ fn a_delayed_final_binding_read_never_spawns_after_eof_or_expiry() {
     let h = Harness::new();
     let (_hub, hub_port) = start_hub(&h);
     let gate = Arc::new(Gate::default());
-    let (port, _seen) = recorder(hub_port, Some(gate.clone()));
+    let (port, seen) = recorder(hub_port, Some(gate.clone()));
     let (r, w, env) = client_lane(&h, port);
     // EOF while the read right before the spawn is held: it returns the same valid
     // binding, and still nothing is spawned; the attempt stays and the lease is released.
@@ -1558,17 +1586,92 @@ fn a_delayed_final_binding_read_never_spawns_after_eof_or_expiry() {
         panic!("{err}")
     };
     assert!(a.ends_with("|codex-queue|attempted"), "{a}");
-    // The read held past the 3 s lease: no spawn on the expired fence, and the next
-    // renew stops it.
+    // The read held past the 3 s lease: no spawn on the expired fence. Nobody took the
+    // lease, so a renew revives fence 2, and only after it is the event submitted, once.
+    // The first renew after the read is held at the proxy (the loop waits in it): a
+    // spawn on the expired lease would already have happened by then.
     gate.rearm();
     let mut p = Push::start(&h, &env, &[], SCALE);
     assert_eq!(held(&h, &w), "2");
     gate.held();
+    gate.arm_renew();
     std::thread::sleep(Duration::from_secs(4));
+    assert_eq!(lease_live(&h, &w), "2|0", "the lease did not lapse");
+    seen.try_iter().for_each(drop);
+    gate.release();
+    gate.renew_held();
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(
+        calls(&h).is_empty(),
+        "spawned on an expired lease: {}",
+        p.stderr()
+    );
+    gate.release_renew();
+    until("the receipt", Duration::from_secs(30), || {
+        attempts(&h, &e).iter().any(|a| a.ends_with("|received"))
+    });
+    let log: Vec<Vec<String>> = seen.try_iter().collect();
+    let has = |a: &Vec<String>, w: &[&str]| w.iter().all(|w| a.iter().any(|x| x == w));
+    let renew = log.iter().position(|a| has(a, &["consumer", "renew"]));
+    let submitted = log.iter().position(|a| has(a, &["delivery", "submitted"]));
+    assert!(
+        matches!((renew, submitted), (Some(r), Some(s)) if r < s),
+        "no renew before the first submission: {log:?}"
+    );
+    assert_eq!(calls(&h).len(), 1, "{}", p.stderr());
+    assert!(
+        lease(&h, &w).starts_with("2|codex-queue-"),
+        "{}",
+        p.stderr()
+    );
+    drop(p.stdin.take());
+    let (code, err) = p.exited(Duration::from_secs(30));
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!err.contains("stopped:"), "{err}");
+    assert!(err.contains("released the inbox lease, fence 2"), "{err}");
+    assert_eq!(calls(&h).len(), 1, "{err}");
+}
+
+/// fence|live, read from the ledger with its own clock.
+fn lease_live(h: &Harness, w: &str) -> String {
+    text(
+        h,
+        &format!(
+            "select fence||'|'||(expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')) from consumer_leases where task_id={w}"
+        ),
+    )
+}
+
+#[test]
+fn a_takeover_during_a_held_final_read_never_spawns_and_exits_6() {
+    let h = Harness::new();
+    let (_hub, hub_port) = start_hub(&h);
+    let gate = Arc::new(Gate::default());
+    let (port, _seen) = recorder(hub_port, Some(gate.clone()));
+    let (r, w, env) = client_lane(&h, port);
+    let mut p = Push::start(&h, &env, &[], SCALE);
+    assert_eq!(held(&h, &w), "1");
+    insert_event(&h, &r, &w, "note", "behind a slow read", "{}");
+    gate.held();
+    std::thread::sleep(Duration::from_secs(4));
+    assert_eq!(lease_live(&h, &w), "1|0", "the lease did not lapse");
+    h.ok(
+        &env,
+        &[
+            "consumer", "take", "--holder", "operator", "--ttl", "60000", "--force",
+        ],
+    );
     gate.release();
     let (code, err) = p.exited(Duration::from_secs(30));
     assert_eq!(code, Some(6), "{err}");
-    assert!(calls(&h).is_empty(), "spawned on an expired lease: {err}");
+    assert!(calls(&h).is_empty(), "spawned after a takeover: {err}");
+    assert!(err.contains("is stale"), "{err}");
+    assert_eq!(lease(&h, &w), "2|operator");
+    let notes = text(
+        &h,
+        "select count(*)||'' from events where kind='note' and summary like 'ALARM push_stopped%'",
+    );
+    assert_eq!(notes, "1", "{err}");
 }
 
 // ---- the canary ----
