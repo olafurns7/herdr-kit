@@ -413,7 +413,10 @@ while :; do
 done
 
 step_line 3 'clear and verify pane environment'
-setup=' unset TASKR_TASK TASKR_LAUNCH && export FLEET_ROLE=worker CLAUDE_CODE_SANDBOXED=1'
+# An explicit 0 also overrides a 1 in user settings: leads stay off unless HERDR_LEAD_CODE_MODE=1 (README.md "Code Mode").
+code_mode=0
+[ "${HERDR_LEAD_CODE_MODE:-}" != 1 ] || code_mode=1
+setup=" unset TASKR_TASK TASKR_LAUNCH && export FLEET_ROLE=worker CLAUDE_CODE_SANDBOXED=1 CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=$code_mode"
 if [ -x "$HOME/.local/bin/codator" ]; then
     setup="$setup && codex() { \"\$HOME/.local/bin/codator\" codex \"\$@\"; } && claude() { \"\$HOME/.local/bin/codator\" claude \"\$@\"; }"
 fi
