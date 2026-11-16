@@ -45,7 +45,7 @@ A root records no pane unless it is given one, and taskr publishes `taskr_parent
 
 Every campaign-lead and sub-orchestrator brief names its permitted lanes, escalation rules, and independent review requirements from the operator policy.
 
-Independent review requirements apply to every review loop: PR, spec or plan. When the review ticket is filed, its acceptance holds this stop line: "done at no P0 or P1 finding; P2 and P3 findings become tickets". It also holds a cap of 5 rounds. After round 5 the lead asks the owner (`owner.md` "Review loop at its cap"). The first full review uses the full seat set. After a fix, one fresh seat reviews the fix diff; the full set runs again only when the fix adds files or behaviour. Operator policy can add a seat for named high-risk areas.
+Independent review requirements apply to every review loop: PR, spec or plan. When the review ticket is filed, its acceptance holds this stop line: "done at no P0 or P1 finding; P2 and P3 findings become tickets". It also holds a cap of 5 rounds. After round 5 the lead asks the owner (`owner.md` "Review loop at its cap"). Each P2 or P3 ticket has an owner, and its id goes in the MERGE-READY line of the owner merge ask and in the PR body; the PR goes on without a fix round. The first full review uses the full seat set. After a fix, one fresh seat reviews the fix diff; the full set runs again only when the fix adds files or behaviour. Operator policy can add a seat for named high-risk areas.
 
 A ticket that moves to another lead is a checkpoint, not a continuation. Its review loop stops and reopens with a state line on the new lead's root (`taskr note`): rounds, open findings, artifact size.
 

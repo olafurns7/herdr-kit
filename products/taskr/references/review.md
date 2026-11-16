@@ -16,8 +16,10 @@ taskr ready "rev-SLUG" --report PATH \
 
 Use the brief's own PR and the reviewed head. Set `verdict` to `PASS` or `FAIL`
 and each severity count to the number of open findings at that head; `PASS`
-requires p0=p1=0. For a review without a PR, keep `repo`, `head` and the verdict
-fields, and replace `--kv pr=NUMBER` with `--kv pr=none --kv reason=TEXT`.
+requires p0=p1=0. Only P0 and P1 findings make the verdict not ready; P2 and P3
+findings do not block it, and you report them with their counts for the lead to
+ticket. For a review without a PR, keep `repo`, `head` and the verdict fields,
+and replace `--kv pr=NUMBER` with `--kv pr=none --kv reason=TEXT`.
 
 The report states: the verdict; each finding with file:line, a failure case and a fix; the checks that hold; every command run with its exit code; the source identity reviewed (commit or hashes); and each probe path with the exact command to rerun it. Keep probes outside the repository at the evidence paths named by the brief; list every artifact left there. Ask for an external evidence path if one is missing.
 
