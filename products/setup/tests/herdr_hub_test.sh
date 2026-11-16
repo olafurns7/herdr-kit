@@ -242,7 +242,8 @@ import json, os, signal, sys, time
 from pathlib import Path
 case = Path(os.environ['CASE'])
 (case / 'cdl').write_text(json.dumps({'args':sys.argv[1:], 'task':os.getenv('TASKR_TASK'),
-    'launch':os.getenv('TASKR_LAUNCH'), 'role':os.getenv('FLEET_ROLE'), 'pid':os.getpid(), 'cwd':os.getcwd(), 'umask':os.umask(0)}))
+    'launch':os.getenv('TASKR_LAUNCH'), 'role':os.getenv('FLEET_ROLE'),
+    'code_mode':os.getenv('CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'), 'pid':os.getpid(), 'cwd':os.getcwd(), 'umask':os.umask(0)}))
 mode = os.environ.get('MODE', '')
 # Claude's channel flag is variadic: an untagged value after it is rejected at startup.
 flag = sys.argv.index('--dangerously-load-development-channels')
@@ -315,7 +316,7 @@ else: sys.exit(98)
     def expect(case, rc):
         assert case[2].returncode == rc, (case[2].returncode, case[3], case[4])
 
-    def success(case, extra=(), new=False, jobs=False, account=(), model='example-opus'):
+    def success(case, extra=(), new=False, jobs=False, account=(), model='example-opus', code_mode='1'):
         expect(case, 0)
         work, home, process, out, err, calls = case
         state = home / '.local/state/herdr-orch/lead-push/42'
@@ -328,7 +329,7 @@ else: sys.exit(98)
         actual = json.loads((work / 'cdl').read_text())
         expected = dict(args=[*account,'--model',model,'--effort','high','--mcp-config',str(config),
                               '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
-                        task=None, launch=None, role='hub', pid=process.pid, cwd=str(work), umask=0o002)
+                        task=None, launch=None, role='hub', code_mode=code_mode, pid=process.pid, cwd=str(work), umask=0o002)
         assert actual == expected, {'actual':actual, 'expected':expected}
         # The hub takes digest pushes with a 2-minute hold.
         servers = {'taskr':{'command':'taskr','args':['mcp','--channel','--as','42','--session','7'],
@@ -368,6 +369,8 @@ else: sys.exit(98)
     success(c, ('--resume','saved-session'), account=('--account',"account ' quoted"))
     c = run('hub overrides inherited worker role', location={'FLEET_ROLE':'worker'})
     success(c)
+    c = run('hub keeps Code Mode off when the caller set 0', location={'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE':'0'})
+    success(c, code_mode='0')
     c = run('new root created then adopted', args=('--new','example-hub','--lane','opus-high'))
     success(c, new=True)
     c = run('jobs opt-in preserves channel, quoted Claude args and captured config',

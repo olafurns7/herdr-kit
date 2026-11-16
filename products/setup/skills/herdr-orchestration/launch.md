@@ -91,6 +91,7 @@ The hub registers one long-lived root per repository once, with its location fla
 ### Owner hub in its current pane
 
 `herdr-hub` start and move may use a `hub` lane, such as `fable-high`; leads use `orch` lanes.
+The hub starts with Claude Code Mode on; leads only with `HERDR_LEAD_CODE_MODE=1`. A Code Mode session resumes only with Code Mode on: [setup README "Code Mode"](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/README.md#code-mode).
 
 To restart a running hub onto a new session, the hub records its handover and then runs, in its own pane:
 

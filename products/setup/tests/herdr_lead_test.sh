@@ -39,7 +39,7 @@ case "$1 $2" in
         # cwd quoting works, and the Codator functions forward their argv.
         case $4 in
             *'unset TASKR_TASK TASKR_LAUNCH'*)
-                TASKR_TASK=99 TASKR_LAUNCH=100 sh -c "$4 && test -z \"\${TASKR_TASK-}\" && test -z \"\${TASKR_LAUNCH-}\" && test \"\$FLEET_ROLE/\$CLAUDE_CODE_SANDBOXED\" = worker/1 && test \"\$PWD\" = \"\$WORK\" && claude --version && codex --version" || exit 1
+                TASKR_TASK=99 TASKR_LAUNCH=100 CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 sh -c "$4 && test -z \"\${TASKR_TASK-}\" && test -z \"\${TASKR_LAUNCH-}\" && test \"\${CLAUDE_CODE_EXPERIMENTAL_CODE_MODE-off}\" = \"\${EXPECT_CODE_MODE:-off}\" && test \"\$FLEET_ROLE/\$CLAUDE_CODE_SANDBOXED\" = worker/1 && test \"\$PWD\" = \"\$WORK\" && claude --version && codex --version" || exit 1
                 ;;
         esac
         ;;
@@ -228,6 +228,7 @@ EOF
     FAIL= LEASE= LATEST= LEASE_GEN= AGENTS= BUSY= ENV_BAD= DIALOG= ACK= RECEIVED= DELIVERY_GEN= CONFIG_EXISTS= HOLDER= CAMPAIGN=
     DIALOG_SCREEN= STOP_IGNORED= NO_HANDOVER= ACKS= AGENTS_AFTER_WAIT= CALLER_HOST=
     PROMPT_RESULT= PROMPT_VISIBLE= WAIT_RESULTS= GET_STATUSES= ENTER_DELAYS= PROCESS= EXIT_MODAL= DIALOG_TALL=
+    LEAD_CODE_MODE= EXPECT_CODE_MODE=
     printf 'case: %s\n' "$name"
 }
 run() {
@@ -239,6 +240,7 @@ run() {
         PROMPT_RESULT="$PROMPT_RESULT" PROMPT_VISIBLE="$PROMPT_VISIBLE" WAIT_RESULTS="$WAIT_RESULTS" \
         GET_STATUSES="$GET_STATUSES" HERDR_LEAD_ENTER_DELAYS="$ENTER_DELAYS" STOP_IGNORED="$STOP_IGNORED" NO_HANDOVER="$NO_HANDOVER" ACKS="$ACKS" \
         AGENTS_AFTER_WAIT="$AGENTS_AFTER_WAIT" CALLER_HOST="$CALLER_HOST" PROCESS="$PROCESS" EXIT_MODAL="$EXIT_MODAL" DIALOG_TALL="$DIALOG_TALL" \
+        HERDR_LEAD_CODE_MODE="$LEAD_CODE_MODE" EXPECT_CODE_MODE="$EXPECT_CODE_MODE" \
         sh "$repo_dir/bin/herdr-lead" "$@" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
 }
 expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/err")"; }
@@ -592,6 +594,13 @@ printf '%s\n' '{"mcpServers":{"taskr":{"command":"taskr","args":["mcp","--channe
 [ -z "$(find "$case_dir" -name .mcp.json -print)" ] || fail 'wrote .mcp.json'
 [ "$(grep -c 'taskr|adopt' "$case_dir/calls")" = 1 ] || fail 'adopted twice'
 [ "$(grep -c 'herdr|agent|start' "$case_dir/calls")" = 1 ] || fail 'started twice'
+
+# Every start above ran its pane setup with an inherited Code Mode export and proved it cleared.
+new_case 'HERDR_LEAD_CODE_MODE=1 exports Code Mode in the lead pane'
+LEAD_CODE_MODE=1 EXPECT_CODE_MODE=1
+start --resume 'sid with spaces' --account example
+expect_rc 0
+has calls 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 && '
 
 new_case 'jobs start adds a generation-bound server without changing channel or resume argv'
 start --jobs --resume 'sid with spaces' --account example

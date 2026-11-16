@@ -413,7 +413,9 @@ while :; do
 done
 
 step_line 3 'clear and verify pane environment'
-setup=' unset TASKR_TASK TASKR_LAUNCH && export FLEET_ROLE=worker CLAUDE_CODE_SANDBOXED=1'
+# A reused pane may keep an earlier export: Code Mode stays off unless HERDR_LEAD_CODE_MODE=1 (README.md "Code Mode").
+setup=' unset TASKR_TASK TASKR_LAUNCH CLAUDE_CODE_EXPERIMENTAL_CODE_MODE && export FLEET_ROLE=worker CLAUDE_CODE_SANDBOXED=1'
+[ "${HERDR_LEAD_CODE_MODE:-}" != 1 ] || setup="$setup CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1"
 if [ -x "$HOME/.local/bin/codator" ]; then
     setup="$setup && codex() { \"\$HOME/.local/bin/codator\" codex \"\$@\"; } && claude() { \"\$HOME/.local/bin/codator\" claude \"\$@\"; }"
 fi
