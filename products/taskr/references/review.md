@@ -46,9 +46,9 @@ report.
 
 Use only `herdr-launch`; no native subagents or advisor calls. One command
 writes the helper brief (role=researcher, `Gather helpers: none`, QUESTION as
-its Objective) to `gather/TASK/SLUG.brief.md` beside your report (TASK is
-your task ID; the report is `SLUG.md` there), and starts
-`gather-SLUG` under your task in a new tab of your workspace. The lane is
+its Objective) to `gather/<task>/<slug>.brief.md` beside your report (`<task>`
+is your task ID and `<slug>` is SLUG; the report is `<slug>.md` there), and
+starts `gather-SLUG` under your task in a new tab of your workspace. The lane is
 `--lane`, else `HERDR_GATHER_LANE`, else `haiku-gather`:
 
 ```sh
@@ -63,8 +63,8 @@ it, since the launcher checks only the cap of 3. A lead that wants a seat to use
 more helpers starts that seat on a host with room. A helper cannot start a
 helper. Workers cannot use `--reserved` or `--machine`. Other worker roles
 cannot start helpers; orchestrator and sub-orchestrator rules stay the same. For
-a brief of your own, copy a generated `SLUG.brief.md` to BRIEF and edit it; the
-launcher needs `HERDR-BRIEF role=researcher`, the `orchestrator=...
+a brief of your own, copy a generated `<slug>.brief.md` to BRIEF and edit it;
+the launcher needs `HERDR-BRIEF role=researcher`, the `orchestrator=...
 report=REPORT` line, and the `Task topology:`, `Objective:`, `Acceptance:` and
 `Validation:` lines. Then run `herdr-launch LANE gather-SLUG BRIEF REPORT
 "$TASKR_TASK"`, where LANE is a gather lane and BRIEF and REPORT are absolute
