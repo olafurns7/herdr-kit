@@ -103,7 +103,7 @@ pub fn adopt(f: &FlagSet) -> Result<Value> {
         ));
     }
     let mut db = open()?;
-    let (text, eid, old) = store::transaction(&mut db, |tx| {
+    let (eid, old) = store::transaction(&mut db, |tx| {
         let t = store::open_task(tx, id)?;
         if let Some(parent) = t.parent {
             return Err(store::reject(format!(
@@ -133,8 +133,20 @@ pub fn adopt(f: &FlagSet) -> Result<Value> {
                 ..store::Event::default()
             },
         )?;
-        Ok((store::handover::render(tx, id, "", true)?.text, eid, t.pane))
+        Ok((eid, t.pane))
     })?;
+    // Rendered after the commit, in a deferred read (one snapshot, no write lock under
+    // WAL): a big root's render must not hold the lock every lease renewal waits on.
+    let read = db.transaction()?;
+    // Test-only: a slow render.
+    #[cfg(feature = "contract")]
+    if let Some(ms) = std::env::var("TASKR_CONTRACT_ADOPT_RENDER_DELAY_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+    let text = store::handover::render(&read, id, "", true)?.text;
     print!("{text}");
     eprintln!(
         "taskr adopt: task {id} now at pane {pane} (was {}); event {eid}",

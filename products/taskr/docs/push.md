@@ -174,9 +174,13 @@ See [first-time setup](../AGENTS_SETUP.md#start-a-worker) for the taskr-only pat
   an ack, the adapter raises `push_exhausted` (and `message_unreceived` for a message).
   Ack before any long work an event starts. `taskr delivery ls --open` lists attempts
   whose submission failed; check `taskr inbox` to see whether an event is still pending.
-- A stall longer than the lease stops it. If the loop cannot renew within 60 s (a taskr
-  hub outage, a stuck command), it pushes nothing on the stale lease, the refused renew
-  stops it for good, and the adapter must be restarted to resume pushes.
+- A stall longer than the lease pauses it. If the loop cannot renew within 60 s (a taskr
+  hub outage, a stuck command, a long ledger write), it pushes nothing on the stale lease.
+  Its next renew revives the lease with the same fence if nobody took or released it
+  meanwhile, and pushes resume. A refused renew (a takeover, a release, a relaunch, an
+  adopt or a close) stops it for good, and the adapter must be restarted to resume
+  pushes. Every stop leaves an `ALARM push_stopped` note with the reason on the
+  consumer's task; the hub board lists it for a root.
 - One event at a time. The push offer takes the oldest pending event that is pushed, so a
   later event is not pushed while an earlier pushed one is unacked. A
   [digest](#digest-pushes-opt-in) carries several events in one push, but they are still
