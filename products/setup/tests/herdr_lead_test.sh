@@ -249,15 +249,40 @@ lacks() { if grep -F -- "$2" "$case_dir/$1" >/dev/null; then fail "$1 unexpected
 start() { run start 42 wA:p1 --worktree "$work" "$@"; }
 
 for command in start move; do
-    new_case "$command refuses a hub-only lane before any calls or state"
+    new_case "$command refuses a lane with neither orch nor hub prefix before any calls or state"
     mkdir -p "$home/.config/herdr-fleet"
-    printf '%s\n' '{"hub-only":{"kind":"claude","model":"example-hub","effort":"high","prefixes":["hub"]}}' >"$home/.config/herdr-fleet/lanes.json"
-    run "$command" 42 wA:p1 --worktree "$work" --lane hub-only
+    printf '%s\n' '{"rev-only":{"kind":"claude","model":"example-rev","effort":"high","prefixes":["rev"]}}' >"$home/.config/herdr-fleet/lanes.json"
+    run "$command" 42 wA:p1 --worktree "$work" --lane rev-only
     expect_rc 2
-    has err 'lead lane must allow orch prefix'
+    has err 'lead lane must allow orch or hub prefix'
+    [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+    [ ! -e "$home/.local/state" ] || fail 'created state'
+
+    new_case "$command refuses a Codex hub lane before any calls or state"
+    mkdir -p "$home/.config/herdr-fleet"
+    printf '%s\n' '{"codex-hub":{"kind":"codex","model":"example-codex","effort":"high","prefixes":["hub"]}}' >"$home/.config/herdr-fleet/lanes.json"
+    run "$command" 42 wA:p1 --worktree "$work" --lane codex-hub
+    expect_rc 2
+    has err 'Claude leads only'
     [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
     [ ! -e "$home/.local/state" ] || fail 'created state'
 done
+
+# A hub-only Claude lane starts a lead through the same path as an orch lane.
+for prefix in orch hub; do
+    new_case "$prefix lane starts a lead"
+    mkdir -p "$home/.config/herdr-fleet"
+    printf '{"custom":{"kind":"claude","model":"example-%s","effort":"medium","prefixes":["%s"]}}\n' "$prefix" "$prefix" >"$home/.config/herdr-fleet/lanes.json"
+    start --lane custom
+    expect_rc 0
+    has calls "--model|example-$prefix|--effort|medium"
+    # The host marker carries the launcher's PID.
+    sed -e "s|$case_dir|CASE|g" -e "s|example-$prefix|MODEL|g" -e 's|herdr-lead-host-[0-9]*-|herdr-lead-host-PID-|g' \
+        "$case_dir/calls" >"$scratch/calls-$prefix"
+    cp "$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json" "$scratch/$prefix.json"
+done
+cmp -s "$scratch/calls-orch" "$scratch/calls-hub" || fail 'hub lane calls differ from orch lane calls'
+cmp -s "$scratch/orch.json" "$scratch/hub.json" || fail 'hub lane MCP config differs from orch lane config'
 
 new_case 'unsupported lane has no calls or state'
 start --jobs --lane sol-high

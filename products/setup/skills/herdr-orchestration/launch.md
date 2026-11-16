@@ -90,7 +90,7 @@ The hub registers one long-lived root per repository once, with its location fla
 
 ### Owner hub in its current pane
 
-`herdr-hub` start and move may use a `hub` lane, such as `fable-high`; leads use `orch` lanes.
+`herdr-hub` and `herdr-lead` start and move accept a `hub` lane, such as `fable-high`; a lead uses an `orch` lane unless the operator names a `hub` lane with `--lane`.
 The hub starts with Claude Code Mode on; leads only with `HERDR_LEAD_CODE_MODE=1`. A Code Mode session resumes only with Code Mode on: [setup README "Code Mode"](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/README.md#code-mode).
 
 To restart a running hub onto a new session, the hub records its handover and then runs, in its own pane:
@@ -305,7 +305,7 @@ A manual launch or resume copies these flags with the others.
 ## Launch matrix
 
 Read the resolved lane table described in `lanes.md`. Use `herdr-launch` for
-workers and `herdr-lead` for a Claude lane that allows the `orch` prefix.
+workers and `herdr-lead` for a Claude lane that allows the `orch` or `hub` prefix.
 Both use the same validated kind, model, effort, and prefixes.
 Run `herdr-launch --lanes` before choosing a worker lane to see the active table and its path.
 
