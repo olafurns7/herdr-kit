@@ -6,6 +6,7 @@
 # stops the run.
 # Usage: herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--mcp] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]
 #        herdr-launch --reserved TASK LAUNCH LANE NAME BRIEF REPORT PARENT PANE
+#        herdr-launch --gather SLUG QUESTION [--lane LANE] [--account NAME]
 #        herdr-launch --lanes
 #        herdr-launch [--push] --check [LANE...]
 #        herdr-launch --quota (local snapshots only)
@@ -30,9 +31,15 @@
 # Work/Intent/Acceptance/Scope block after its three header lines, which steps
 # 2 and 7 register and send. Step 2 adds `taskr set TASK work=12`; the final
 # line adds work_brief=<path>. Not with --reserved.
+# --gather SLUG QUESTION (a reviewer or researcher with TASKR_TASK) writes a
+# gather helper brief with QUESTION as its Objective to
+# <caller report dir>/gather/SLUG.brief.md (report SLUG.md beside it) and
+# launches gather-SLUG under $TASKR_TASK on LANE, else $HERDR_GATHER_LANE,
+# else haiku-gather. Every caller check below applies; the output adds the
+# report path and the two close commands.
 set -u
 
-usage='usage: herdr-launch --lanes | herdr-launch --quota | herdr-launch [--push] --check [LANE...] | herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--mcp] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
+usage='usage: herdr-launch --lanes | herdr-launch --quota | herdr-launch [--push] --check [LANE...] | herdr-launch --gather SLUG QUESTION [--lane LANE] [--account NAME] | herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--mcp] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
 
 herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 2
 . "$herdr_bin_dir/herdr-lanes.sh"
@@ -274,7 +281,7 @@ else:
 PY
 }
 
-workspace= cwd= push= mcp= reserved_task= reserved_launch= work_id= machine= machine_host= check= account= quota= drain=
+workspace= cwd= push= mcp= reserved_task= reserved_launch= work_id= machine= machine_host= check= account= quota= drain= gather= gather_lane=
 while :; do
     case ${1-} in
         --lanes)
@@ -304,6 +311,21 @@ while :; do
         --quota)
             quota=1
             shift
+            ;;
+        --gather)
+            [ -z "$gather" ] && [ $# -ge 3 ] && [ -n "$3" ] || die '--gather needs SLUG QUESTION once'
+            case $2 in
+                '' | [!a-z0-9]* | *[!a-z0-9_-]*) die "--gather slug '$2' must match [a-z0-9][a-z0-9_-]{0,24}" ;;
+            esac
+            [ "${#2}" -le 25 ] || die "--gather slug '$2' is longer than 25 characters"
+            # One header line each: newlines in QUESTION become spaces.
+            gather=$2 gather_question=$(printf '%s' "$3" | tr '\r\n' '  ')
+            shift 3
+            ;;
+        --lane)
+            [ -z "$gather_lane" ] && [ -n "${2-}" ] || die '--lane needs LANE once'
+            gather_lane=$2
+            shift 2
             ;;
         --workspace)
             [ -n "${2-}" ] || die "--workspace needs a workspace id; $usage"
@@ -344,7 +366,7 @@ while :; do
 done
 if [ -n "$quota" ]; then
     [ -z "$machine" ] || die '--quota supports local snapshots only; --machine would require a pane'
-    [ $# -eq 0 ] && [ -z "$account$workspace$cwd$push$mcp$reserved_task$work_id$check" ] || die '--quota does not combine with launch or check options'
+    [ $# -eq 0 ] && [ -z "$account$workspace$cwd$push$mcp$reserved_task$work_id$check$gather$gather_lane" ] || die '--quota does not combine with launch or check options'
     account_python=$(account_script)
     python3 -c "$account_python" claude-opus-5-5 quota || die '--quota could not read snapshots with python3'
     exit 0
@@ -371,6 +393,33 @@ if [ -n "$check" ]; then
     exit $?
 fi
 [ -z "$work_id" ] || [ -z "$reserved_task" ] || die '--work does not combine with --reserved'
+[ -n "$gather" ] || [ -z "$gather_lane" ] || die '--lane applies only with --gather'
+caller_rows=
+if [ -n "$gather" ]; then
+    [ $# -eq 0 ] || die "--gather takes no LANE NAME BRIEF REPORT PARENT; $usage"
+    [ -n "${TASKR_TASK:-}" ] || die '--gather needs TASKR_TASK: only a reviewer or researcher lane starts gather helpers'
+    caller_rows=$(taskr --json status --tree "$TASKR_TASK" --all) || die 'could not read caller task and children'
+    caller_report=$(printf '%s\n' "$caller_rows" | jq -ers --arg id "$TASKR_TASK" '
+        [.[] | select((.id | tostring) == $id)] | select(length == 1) | .[0].report_path |
+        strings | select(startswith("/"))') || die 'could not read caller report path'
+    gather_dir=${caller_report%/*}/gather
+    brief=$gather_dir/$gather.brief.md report=$gather_dir/$gather.md
+    # A report there belongs to an earlier helper; never reuse its slug.
+    [ ! -e "$report" ] && [ ! -L "$report" ] || die "gather report '$report' exists; choose another SLUG"
+    mkdir -p -- "$gather_dir" && printf '%s\n' 'HERDR-BRIEF role=researcher' \
+        "orchestrator=$TASKR_TASK   report=$report" \
+        'Task topology: a new tab in the caller workspace; herdr-launch creates it' \
+        "Objective: Gather read-only: $gather_question" \
+        'Non-goals: No analysis, review, verdict, implementation, or orchestration.' \
+        'Gather helpers: none' 'Skills to load: taskr' \
+        'Acceptance: Return quotes and rows with path:line or an exact command; no findings, ranking or judgement.' \
+        'Validation: Check each quote or row against its source.' \
+        'Progress: taskr SKILL.md worker rules' \
+        'Do not edit source, commit, push, open PRs, update issues, or start agents.' \
+        'Write only the report path, then taskr ready with --report and taskr done.' >"$brief" \
+        || die "could not write gather brief '$brief'"
+    set -- "${gather_lane:-${HERDR_GATHER_LANE:-haiku-gather}}" "gather-$gather" "$brief" "$report" "$TASKR_TASK"
+fi
 [ $# -eq 5 ] || [ $# -eq 6 ] || die "$usage"
 lane=$1 name=$2 brief=$3 report=$4 parent=$5 given_pane=${6-}
 [ -z "$reserved_task" ] || [ -n "$given_pane" ] || die '--reserved requires PANE'
@@ -468,7 +517,8 @@ fi
 
 # A worker may gather facts under its own task; it may not launch other lanes.
 if [ -n "${TASKR_TASK:-}" ]; then
-    caller_rows=$(taskr --json status --tree "$TASKR_TASK" --all) || die 'could not read caller task and children'
+    [ -n "$caller_rows" ] || caller_rows=$(taskr --json status --tree "$TASKR_TASK" --all) \
+        || die 'could not read caller task and children'
     caller=$(printf '%s\n' "$caller_rows" | jq -ces --arg id "$TASKR_TASK" '
         [.[] | select((.id | tostring) == $id)] | select(length == 1) | .[0] |
         select((.role | type) == "string" and (.name | type) == "string" and (.name | length) > 0)') \
@@ -940,3 +990,4 @@ fi
 
 printf 'task=%s launch=%s tab=%s pane=%s%s%s%s%s account=%s%s\n' "$task" "$launch" "$tab" "$pane" "$extra" \
     "${work_brief:+ work_brief=$work_brief}" "$submit_retry" "${machine:+ machine=$machine}" "${account:-default}" "${drain:+ drain=$drain}"
+[ -z "$gather" ] || printf 'report=%s\ntaskr close %s --outcome accepted   # or rejected\nherdr tab close %s\n' "$report" "$task" "$tab"
