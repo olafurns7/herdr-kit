@@ -60,8 +60,8 @@ sidecar ack by CLI, so do not opt them in.
 
 Turn it on for one consumer: set `TASKR_CHANNEL_DIGEST=1` in the environment of that
 consumer's `taskr mcp --channel` (for example, the `env` block of its MCP config). The
-server reads it once at start. Restart the server to change it. `herdr-lead` and
-`herdr-hub` set it in their generated MCP config with `TASKR_CHANNEL_DIGEST_HOLD_S=120`.
+server reads it once at start. Restart the server to change it. Only `herdr-hub` sets
+it in its generated MCP config, with `TASKR_CHANNEL_DIGEST_HOLD_S=120`; leads get one push per event.
 
 `TASKR_CHANNEL_DIGEST_HOLD_S` sets the hold below in whole seconds, 1 to 600, read
 once at start. Any other value, or none, keeps 60 s.
