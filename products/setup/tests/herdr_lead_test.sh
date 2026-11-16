@@ -738,6 +738,34 @@ start --resume saved-session --account example
 expect_rc 0
 has calls '--|--account|example|--resume|saved-session|--model|claude-opus-5-5'
 
+new_case 'fresh start pins an account without a resume'
+start --account example
+expect_rc 0
+has calls '--|--account|example|--model|claude-opus-5-5'
+lacks calls '--resume'
+
+for bad in -lead 'two words' 'a.b' x123456789012345678901234567890123456789012345678; do
+    new_case "account name '$bad' refused before any calls"
+    start --account "$bad"
+    expect_rc 2
+    has err '--account needs one valid name'
+    [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+    [ ! -e "$home/.local/state" ] || fail 'created state'
+done
+
+new_case 'account without Codator refused before any calls'
+rm -f "$home/.local/bin/codator"
+start --account example
+expect_rc 2
+has err '--account requires Codator'
+[ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+
+new_case 'resume without an account refused before any calls'
+start --resume saved-session
+expect_rc 2
+has err '--resume needs a nonempty SID (not null) and --account NAME'
+[ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+
 new_case 'live check waits while the successor drains an inbox backlog'
 ACKS='1 2 3 4 5 6 7 8 8 9'
 start
@@ -778,6 +806,13 @@ move --lane custom --no-handover
 expect_rc 0
 has calls '--model|example-hub|--effort|medium'
 lacks calls '--model|claude-opus-5-5'
+
+new_case 'move pins an account without a resume'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead
+move --account example --no-handover
+expect_rc 0
+has calls '--|--account|example|--model|claude-opus-5-5'
+lacks calls '--resume'
 
 new_case 'jobs move carries opt-in through the stop and new generation render'
 CAMPAIGN=$moved_campaign AGENTS=$old_lead
