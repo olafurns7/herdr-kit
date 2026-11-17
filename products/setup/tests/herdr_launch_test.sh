@@ -2333,6 +2333,29 @@ expect_rc 2
 expect_err "matches pin 'impl-weekly', which requires lane 'pinned'; given lane 'other'"
 expect_no_calls
 
+new_case 'lane pin: nested pins start a name on the longest pin lane'
+pinned_table '{"impl-":"other","impl-weekly":"pinned"}'
+run_launch sh "$launch_sh" pinned impl-weekly-x "$brief" "$report" 42
+expect_rc 0
+grep -q -F '|--model|synthetic-pinned|--effort|high' "$case_dir/calls" || fail 'nested pin lane metadata missing'
+
+new_case 'lane pin: nested pins refuse a third lane and name the longest pin'
+mkdir -p "$home/.config/herdr-fleet"
+printf '%s\n' '{"pinned":{"kind":"codex","model":"synthetic-pinned","effort":"high","prefixes":["impl"]},"other":{"kind":"codex","model":"synthetic-other","effort":"high","prefixes":["impl"]},"third":{"kind":"codex","model":"synthetic-third","effort":"high","prefixes":["impl"]},"pins":{"impl-":"other","impl-weekly":"pinned"}}' \
+    >"$home/.config/herdr-fleet/lanes.json"
+run_launch sh "$launch_sh" third impl-weekly-x "$brief" "$report" 42
+expect_rc 2
+[ "$err" = "herdr-launch: task 'impl-weekly-x' matches pin 'impl-weekly', which requires lane 'pinned'; given lane 'third'" ] ||
+    fail "nested pin refusal line: $err"
+expect_no_calls
+
+new_case 'lane pin: nested pins keep the shorter pin lane for other names'
+pinned_table '{"impl-":"other","impl-weekly":"pinned"}'
+run_launch sh "$launch_sh" pinned impl-cart "$brief" "$report" 42
+expect_rc 2
+expect_err "matches pin 'impl-', which requires lane 'other'; given lane 'pinned'"
+expect_no_calls
+
 new_case 'empty pins behave like a table without pins'
 pinned_table '{}'
 run_launch sh "$launch_sh" other impl-weekly-x "$brief" "$report" 42
