@@ -28,7 +28,10 @@ lane_table_load() {
                 (del(.except) | fields) and
                 (if has("except") then .except | type == "object" and all(to_entries[];
                     (.key | prefix) and (.value | fields)) else true end)) and
-            (del(.deny) | length > 0 and all(to_entries[];
+            (if has("pins") then .pins | type == "object" and all(to_entries[];
+                (.key | test("^[a-z][a-z0-9_-]{0,31}$")) and (.value | type == "string")) else true end) and
+            (del(.deny, .pins) as $lanes | all(.pins // {} | .[]; . as $lane | $lanes | has($lane))) and
+            (del(.deny, .pins) | length > 0 and all(to_entries[];
             (.key | test("^[a-z][a-z0-9-]*$")) and
             (.value | type == "object" and
                 (.kind | IN("claude", "codex", "pi", "opencode")) and
@@ -41,15 +44,18 @@ lane_table_load() {
                 (.prefixes | type == "array" and length > 0 and
                     all(.[]; prefix))))
         )) then . else error("invalid lane table") end
-        | (.deny // {}) as $rules | del(.deny)
-        | map_values((if .kind == "opencode" then
+        | (.deny // {}) as $rules | (.pins // {}) as $pins | del(.deny, .pins)
+        | {pins: $pins, lanes: map_values((if .kind == "opencode" then
                 (.model | split("/")[0]) as $provider
                 | if has("provider") and .provider != $provider then
                     error("opencode provider must match model prefix: " + $provider)
                   else .provider = $provider end
             else .provider //= (if .kind == "pi" then "opencode" else .kind end) end)
-            | .denied = denied($rules))
+            | .denied = denied($rules))}
     ' "$lane_table") || { printf '%s\n' 'invalid lane table' >&2; return 1; }
+    # lane_pins maps a task-name prefix to the one lane that may start it (lanes.md "Lane pins").
+    lane_pins=$(printf '%s\n' "$lane_data" | jq -c '.pins') &&
+        lane_data=$(printf '%s\n' "$lane_data" | jq -c '.lanes') || { printf '%s\n' 'invalid lane table' >&2; return 1; }
 }
 
 lane_list() {
@@ -59,6 +65,15 @@ lane_list() {
         to_entries | sort_by(.key)[]
         | [.key, .value.kind, .value.model, .value.effort, (.value.prefixes | join(" "))] +
             (if (.value.denied | length) > 0 then ["denied: " + (.value.denied | join(", "))] else [] end) | @tsv
+    '
+    printf '%s\n' "$lane_pins" | jq -r 'to_entries | sort_by(.key)[] | ["pin", .key, .value] | @tsv'
+}
+
+# lane_pin_mismatch NAME LANE: print "PREFIX LANE" for the longest pinned prefix of NAME whose lane is not LANE.
+lane_pin_mismatch() {
+    printf '%s\n' "$lane_pins" | jq -r --arg name "$1" --arg lane "$2" '
+        [to_entries[] | select(.key as $prefix | $name | startswith($prefix)) | select(.value != $lane)]
+        | sort_by(.key | length) | last // empty | .key + " " + .value
     '
 }
 

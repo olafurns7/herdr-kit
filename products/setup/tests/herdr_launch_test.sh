@@ -1822,7 +1822,7 @@ new_case '--lanes lists the source table in lane order without calls'
 run_launch sh "$launch_sh" --lanes
 expect_rc 0
 expect_out "Lane table: $repo_dir/bin/../lanes.json
-$(jq -r 'del(.deny) | to_entries | sort_by(.key)[] | [.key, .value.kind, .value.model, .value.effort, (.value.prefixes | join(" "))] | @tsv' "$repo_dir/lanes.json")"
+$(jq -r 'del(.deny, .pins) | to_entries | sort_by(.key)[] | [.key, .value.kind, .value.model, .value.effort, (.value.prefixes | join(" "))] | @tsv' "$repo_dir/lanes.json")"
 expect_no_calls
 
 new_case '--lanes shows fable-high with the hub prefix'
@@ -2298,6 +2298,84 @@ run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 2
 expect_err "unknown lane 'opus-medium'"
 
+# pinned_table [PINS]: two impl lanes and optional pins.
+pinned_table() {
+    mkdir -p "$home/.config/herdr-fleet"
+    printf '{"pinned":{"kind":"codex","model":"synthetic-pinned","effort":"high","prefixes":["impl"]},"other":{"kind":"codex","model":"synthetic-other","effort":"high","prefixes":["impl"]}%s}\n' \
+        "${1:+,\"pins\":$1}" >"$home/.config/herdr-fleet/lanes.json"
+}
+
+new_case 'lane pin refuses a pinned name on another lane before control-plane calls'
+pinned_table '{"impl-weekly":"pinned"}'
+run_launch sh "$launch_sh" other impl-weekly-x "$brief" "$report" 42
+expect_rc 2
+expect_out ''
+[ "$err" = "herdr-launch: task 'impl-weekly-x' matches pin 'impl-weekly', which requires lane 'pinned'; given lane 'other'" ] ||
+    fail "pin refusal line: $err"
+expect_no_calls
+
+new_case 'lane pin accepts a pinned name on its lane'
+pinned_table '{"impl-weekly":"pinned"}'
+run_launch sh "$launch_sh" pinned impl-weekly-x "$brief" "$report" 42
+expect_rc 0
+grep -q -F '|--model|synthetic-pinned|--effort|high' "$case_dir/calls" || fail 'pinned lane metadata missing'
+
+new_case 'lane pin leaves names without a pinned prefix unchanged'
+pinned_table '{"impl-weekly":"pinned"}'
+run_launch sh "$launch_sh" other impl-cart "$brief" "$report" 42
+expect_rc 0
+grep -q -F '|--model|synthetic-other|--effort|high' "$case_dir/calls" || fail 'unpinned lane metadata missing'
+
+new_case 'lane pin: the longest matching pinned prefix names the refused lane'
+pinned_table '{"impl-":"other","impl-weekly":"pinned"}'
+run_launch sh "$launch_sh" other impl-weekly-x "$brief" "$report" 42
+expect_rc 2
+expect_err "matches pin 'impl-weekly', which requires lane 'pinned'; given lane 'other'"
+expect_no_calls
+
+new_case 'empty pins behave like a table without pins'
+pinned_table '{}'
+run_launch sh "$launch_sh" other impl-weekly-x "$brief" "$report" 42
+expect_rc 0
+
+new_case '--lanes lists pins after the lanes'
+pinned_table '{"impl-weekly":"pinned","impl-daily":"other"}'
+run_launch sh "$launch_sh" --lanes
+expect_rc 0
+expect_out "Lane table: $home/.config/herdr-fleet/lanes.json
+$(printf 'other\tcodex\tsynthetic-other\thigh\timpl\npinned\tcodex\tsynthetic-pinned\thigh\timpl\npin\timpl-daily\tother\npin\timpl-weekly\tpinned')"
+expect_no_calls
+
+new_case 'lane pin refuses a gather helper before its brief is written' researcher
+gather_fixture reviewer
+mkdir -p "$home/.config/herdr-fleet"
+printf '%s\n' '{"haiku-gather":{"kind":"claude","model":"synthetic-small","effort":"medium","prefixes":["gather"]},"luna-gather":{"kind":"codex","model":"synthetic-luna","effort":"medium","prefixes":["gather"]},"pins":{"gather-callers":"luna-gather"}}' \
+    >"$home/.config/herdr-fleet/lanes.json"
+run_launch TASKR_TASK=42 sh "$launch_sh" --gather callers 'Q'
+expect_rc 2
+expect_err "task 'gather-callers' matches pin 'gather-callers', which requires lane 'luna-gather'; given lane 'haiku-gather'"
+[ ! -e "$gather_brief" ] || fail 'gather brief written before the pin refusal'
+! grep -q -F 'taskr|new|' "$case_dir/calls" || fail 'refused gather helper was ledgered'
+! grep -q '^herdr|' "$case_dir/calls" || fail 'refused gather helper made herdr calls'
+
+for bad_pins in 'null' 'false' '[]' '"pinned"' '{"impl-weekly":"missing"}' '{"impl-weekly":"pins"}' \
+    '{"impl-weekly":"deny"}' '{"impl-weekly":7}' '{"impl-weekly":null}' '{"Impl-weekly":"pinned"}' \
+    '{"":"pinned"}' '{"impl-weekly-0123456789-0123456789":"pinned"}'; do
+    new_case 'invalid lane pins fail the table load before control-plane calls'
+    pinned_table "$bad_pins"
+    for mode in launch list check; do
+        case $mode in
+            launch) run_launch sh "$launch_sh" pinned impl-weekly-x "$brief" "$report" 42 ;;
+            list) run_launch sh "$launch_sh" --lanes ;;
+            check) run_launch sh "$launch_sh" --check pinned ;;
+        esac
+        expect_rc 2
+        expect_err 'invalid lane table'
+        expect_out ''
+        expect_no_calls
+    done
+done
+
 new_case '--lanes and prefix alternatives use only the private replacement'
 mkdir -p "$home/.config/herdr-fleet"
 cat >"$home/.config/herdr-fleet/lanes.json" <<'EOF'
@@ -2388,7 +2466,7 @@ glm-flash: ok'
 expect_no_calls
 run_launch PATH="$check_path" sh "$launch_sh" --check
 expect_rc 0
-[ "$(printf '%s\n' "$out" | wc -l)" -eq "$(jq 'del(.deny) | length' "$repo_dir/lanes.json")" ] || fail 'not every lane checked'
+[ "$(printf '%s\n' "$out" | wc -l)" -eq "$(jq 'del(.deny, .pins) | length' "$repo_dir/lanes.json")" ] || fail 'not every lane checked'
 printf '%s\n' "$out" | grep -v ': ok$' >/dev/null && fail 'unexpected check output'
 expect_no_calls
 run_launch PATH="$check_path" sh "$launch_sh" --check unknown opus-medium
@@ -2517,7 +2595,7 @@ deepseek-gather: denied: model'
 expect_no_calls
 run_launch sh "$launch_sh" --lanes
 expect_rc 0
-listing=$(jq -r 'del(.deny) | to_entries | sort_by(.key)[] |
+listing=$(jq -r 'del(.deny, .pins) | to_entries | sort_by(.key)[] |
     [.key, .value.kind, .value.model, .value.effort, (.value.prefixes | join(" "))] +
     (if (.key | IN("haiku-rs", "haiku-mixed", "deepseek-gather")) then ["denied: model"] else [] end) | @tsv' \
     "$home/.config/herdr-fleet/lanes.json")

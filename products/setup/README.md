@@ -232,7 +232,10 @@ exempt only when every prefix of the lane has a matching exception for that fiel
 Exceptions have no effect without a matching deny rule. Anchor patterns with `^` and `$`
 for exact matches. An OpenCode lane uses a qualified `provider/model` model;
 its `provider` is the model prefix, and an explicit value must match. Keep operator policy in
-the private table; the public deny list is empty.
+the private table; the public deny list is empty. An optional `pins` object maps a
+task-name prefix to the only lane that may start it; `herdr-launch` refuses any other
+lane for that name ([lanes.md](skills/herdr-orchestration/lanes.md) "Lane pins"). The
+public `pins` is empty.
 
 The lane table is the only list of models; `herdr-launch --lanes` prints the
 resolved lanes, and the private instructions overlay holds per-model policy.
