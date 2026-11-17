@@ -139,7 +139,7 @@ if [ "$1" = check ]; then
     '; then
         printf 'push-dropped\n'
         printf 'Repair: herdr-hub move %s --lane <lane> --account <account> -- --resume <session-id>\n' "$root"
-        printf '%s\n' 'If that session started with Code Mode: export HERDR_HUB_CODE_MODE=1 in the hub pane shell first, or omit -- --resume (README "Code Mode")'
+        printf 'If that session started with Code Mode: omit -- --resume; or, to keep the session, stop the hub, export HERDR_HUB_CODE_MODE=1 at the pane prompt and run herdr-hub %s --lane <lane> --account <account> -- --resume <session-id> there (README "Code Mode")\n' "$root"
         exit 1
     fi
     if [ "$lease" = live ] && printf '%s\n' "$lease_json" | jq -e --argjson gen "$gen" '.session_gen == $gen' >/dev/null; then
