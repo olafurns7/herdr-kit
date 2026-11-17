@@ -217,7 +217,10 @@ check_lanes() {
 }
 
 # One reader serves local picks, the existing target-pane probe, and --quota.
-# It reads usage snapshots only and never invokes Codator or reads credentials.
+# It reads usage snapshots and the protect list only, and never invokes
+# Codator or reads credentials. Rule (W2765, launch.md on --account):
+# soonest weekly reset first at every horizon; a Fable lane needs Fable room;
+# other lanes prefer spare week and say fable_spend=1 when none has it.
 account_script() {
     cat <<'PY'
 import datetime, json, math, pathlib, re, sys, time
@@ -226,6 +229,13 @@ model, mode = sys.argv[1:3]
 excluded = set(sys.argv[3:])
 now = time.time()
 records = []
+MARGIN = 3  # percent left every weekly window needs
+FIVE_HOUR_MARGIN = 15  # percent left the 5-hour window needs, so running lanes can finish
+# Week points one Fable point can take: the lowest week/Fable used ratio seen
+# in snapshots (an upper bound, not an API fact); spare = week - SPARE_K x Fable.
+SPARE_K = 0.55
+WEEK = 7 * 24 * 3600
+fable_lane = model.startswith("claude-fable-")
 
 def utilization(limit):
     used = limit["utilization"]
@@ -239,6 +249,19 @@ def reset_time(limit):
         raise ValueError("reset needs a timezone")
     return reset
 
+# Protect list: accounts that run a live hub or lead keep a reserve from lane
+# picks. A missing or malformed file means no list.
+protect, reserve = (), 0
+try:
+    config = json.loads((pathlib.Path.home() / ".config/herdr-fleet/accounts.json").read_text(encoding="utf-8"))
+    names, amount = config["protect"], config["reserve"]
+    if (isinstance(names, list) and all(isinstance(name, str) for name in names)
+            and not isinstance(amount, bool) and isinstance(amount, (int, float))
+            and math.isfinite(amount) and amount >= 0):
+        protect, reserve = tuple(names), amount
+except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError):
+    pass
+
 for path in sorted((pathlib.Path.home() / ".local/share/codator/claude").glob("*/.claude-usage.json")):
     name = path.parent.name
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,47}", name) is None:
@@ -251,7 +274,12 @@ for path in sorted((pathlib.Path.home() / ".local/share/codator/claude").glob("*
         record["week"] = utilization(limits["seven_day"])
         reset = reset_time(limits["seven_day"])
         record["reset"] = reset.isoformat().replace("+00:00", "Z")
-        record["stamp"] = reset.timestamp()
+        # A passed reset started a new week; its numbers predate the reset.
+        stamp = reset.timestamp()
+        if stamp <= now:
+            stamp += WEEK
+        # Rounded to the nearest minute: probes add sub-second noise either way.
+        record["stamp"] = round(stamp / 60) * 60
         try:
             row = next(row for row in limits.get("model_scoped", []) if row["display_name"] == "Fable")
             record["fable"] = utilization(row)
@@ -259,46 +287,54 @@ for path in sorted((pathlib.Path.home() / ".local/share/codator/claude").glob("*
             pass
         if now - path.stat().st_mtime > 1800 or data["outcome"] != "usable":
             continue
-        applicable = [record["week"]]
-        for key in ("five_hour", "seven_day_opus" if model.startswith("claude-opus-") else
-                    "seven_day_sonnet" if model.startswith("claude-sonnet-") else ""):
-            if key and limits.get(key) is not None:
-                applicable.append(utilization(limits[key]))
-        if model.startswith("claude-fable-"):
-            if record["fable"] is None:
-                continue
-            applicable.append(record["fable"])
-        record["role"] = "next" if all(100 - used >= 3 for used in applicable) else "out"
+        cut = reserve if name in protect else 0
+        week_left = 100 - record["week"] - cut
+        fable_left = None if record["fable"] is None else 100 - record["fable"] - cut
+        ok = week_left >= MARGIN
+        if limits.get("five_hour") is not None:
+            ok = ok and 100 - utilization(limits["five_hour"]) >= FIVE_HOUR_MARGIN
+        key = ("seven_day_opus" if model.startswith("claude-opus-") else
+               "seven_day_sonnet" if model.startswith("claude-sonnet-") else "")
+        if key and limits.get(key) is not None:
+            ok = ok and 100 - utilization(limits[key]) >= MARGIN
+        if fable_lane:
+            ok = ok and fable_left is not None and fable_left >= MARGIN
+        # A missing Fable row is unknown: Fable lanes skip it, others count 0.
+        record["spare"] = week_left - SPARE_K * (fable_left if fable_left is not None and fable_left >= MARGIN else 0)
+        record["role"] = "next" if ok else "out"
     except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError):
         continue
 
 eligible = [record for record in records if record["role"] == "next" and record["name"] not in excluded]
-soon = [record for record in eligible if 0 <= record["stamp"] - now <= 24 * 3600]
-pick = None
-if soon:
-    pick = min(soon, key=lambda record: (record["stamp"], record["name"]))
-    pick["role"] = "soon"
+spare = [record for record in eligible if record["spare"] >= MARGIN]
+pick, fable_spend = None, False
+if fable_lane or spare:
+    pick = min(eligible if fable_lane else spare, key=lambda record: (record["stamp"], record["name"]), default=None)
 elif eligible:
-    pick = min(eligible, key=lambda record: (-record["stamp"], record["name"]))
-    pick["role"] = "drain"
+    pick = min(eligible, key=lambda record: (-record["spare"], record["stamp"], record["name"]))
+    fable_spend = True
+drain = None
+if pick:
+    drain = "soon" if pick["stamp"] - now <= 24 * 3600 else "later"
+    pick["role"] = drain
 
 if mode == "quota":
     def display(value):
         return "-" if value is None else str(value)
     for record in records:
-        print("account={} week_used={} fable_used={} reset={} role={}".format(
-            record["name"], display(record["week"]), display(record["fable"]), record["reset"], record["role"]))
-    targets = [record for record in records if record["role"] in ("next", "drain", "out")
-               and not 0 <= record["stamp"] - now <= 24 * 3600]
-    target = min(targets, key=lambda record: (-record["stamp"], record["name"]), default=None)
-    if target and target["week"] >= 97:
-        print("alert account={} used={}".format(target["name"], display(target["week"])))
+        print("account={} week_used={} fable_used={} reset={} role={}{}{}".format(
+            record["name"], display(record["week"]), display(record["fable"]), record["reset"], record["role"],
+            " fable_spend=1" if record is pick and fable_spend else "",
+            " protected=1" if record["name"] in protect else ""))
 else:
-    print(json.dumps({"account": pick["name"], "drain": "soon" if soon else "latest"} if pick else {}))
+    result = {"account": pick["name"], "drain": drain} if pick else {}
+    if pick and fable_spend:
+        result["fable_spend"] = 1
+    print(json.dumps(result))
 PY
 }
 
-workspace= cwd= push= mcp= reserved_task= reserved_launch= work_id= machine= machine_host= check= account= quota= drain= gather= gather_lane=
+workspace= cwd= push= mcp= reserved_task= reserved_launch= work_id= machine= machine_host= check= account= quota= drain= gather= gather_lane= fable_spend=
 while :; do
     case ${1-} in
         --lanes)
@@ -776,6 +812,7 @@ if [ -n "$machine" ]; then
     if [ -n "$account_pick" ]; then
         account=$(printf '%s\n' "$facts" | jq -r '.[4].account // ""')
         drain=$(printf '%s\n' "$facts" | jq -r '.[4].drain // ""')
+        fable_spend=$(printf '%s\n' "$facts" | jq -r 'if .[4].fable_spend == 1 then 1 else "" end')
     fi
 else
     codator=0
@@ -784,13 +821,14 @@ else
         picked=$(sh -c "$account_pick" 2>/dev/null) || picked='{}'
         account=$(printf '%s\n' "$picked" | jq -r '.account // ""') || account=
         drain=$(printf '%s\n' "$picked" | jq -r '.drain // ""') || drain=
+        fable_spend=$(printf '%s\n' "$picked" | jq -r 'if .fable_spend == 1 then 1 else "" end') || fable_spend=
     fi
 fi
 if [ -n "$account_pick" ]; then
     case $account in
-        '' | [!A-Za-z0-9]* | *[!A-Za-z0-9_-]*) account= drain= ;;
+        '' | [!A-Za-z0-9]* | *[!A-Za-z0-9_-]*) account= drain= fable_spend= ;;
     esac
-    [ "${#account}" -le 48 ] || { account= drain=; }
+    [ "${#account}" -le 48 ] || { account= drain= fable_spend=; }
 fi
 [ -z "$account" ] || [ "$codator" = 1 ] || die '--account requires Codator on the target'
 
@@ -1043,6 +1081,7 @@ if [ -n "$push" ] && [ "$kind" = codex ]; then
 fi
 [ -z "$mcp_config" ] || extra=" mcp_config=$mcp_config"
 
-printf 'task=%s launch=%s tab=%s pane=%s%s%s%s%s account=%s%s\n' "$task" "$launch" "$tab" "$pane" "$extra" \
-    "${work_brief:+ work_brief=$work_brief}" "$submit_retry" "${machine:+ machine=$machine}" "${account:-default}" "${drain:+ drain=$drain}"
+printf 'task=%s launch=%s tab=%s pane=%s%s%s%s%s account=%s%s%s\n' "$task" "$launch" "$tab" "$pane" "$extra" \
+    "${work_brief:+ work_brief=$work_brief}" "$submit_retry" "${machine:+ machine=$machine}" "${account:-default}" "${drain:+ drain=$drain}" \
+    "${fable_spend:+ fable_spend=1}"
 [ -z "$gather" ] || printf 'report=%s\ntaskr close %s --outcome accepted   # or rejected\nherdr tab close %s\n' "$report" "$task" "$tab"
