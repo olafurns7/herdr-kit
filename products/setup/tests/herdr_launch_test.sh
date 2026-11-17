@@ -94,7 +94,14 @@ case "$1 $2" in
                 *) cat "$STUB_CALLS.probe" ;;
             esac
         else printf '%s\n' "${STUB_SCREEN:-}"; fi ;;
-    "agent start") [ "${STUB_START_OK:-1}" = 1 ] || exit 1; printf '%s\n' "$3" >"$STUB_CALLS.started" ;;
+    # STUB_START_OK=once fails the first agent start of a case, then succeeds.
+    "agent start")
+        if [ "${STUB_START_OK:-1}" = once ] && [ ! -f "$STUB_CALLS.start-failed" ]; then
+            : >"$STUB_CALLS.start-failed"
+            exit 1
+        fi
+        [ "${STUB_START_OK:-1}" = 1 ] || [ "${STUB_START_OK:-1}" = once ] || exit 1
+        printf '%s\n' "$3" >"$STUB_CALLS.started" ;;
     "agent list")
         if [ -f "$STUB_CALLS.started" ]; then
             [ -z "${STUB_NATIVE:-}" ] || { printf '%s\n' "$STUB_NATIVE"; exit 0; }
@@ -493,6 +500,73 @@ done
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
 expect_account_start valid --model
+
+# W2725: Codator refuses an account the snapshot still called eligible with
+# "codator: selected account is ineligible: <reason>" (stderr, exit 1). Only
+# an auto-picked account is retried, once, on the next pick.
+refusal='codator: selected account is ineligible: all applicable usage headroom is exhausted'
+refused_flags() { printf '%s' "|--account|$1|$(claude_flags medium)"; }
+refused_read='herdr|pane|read|wA:p7|--source|visible|--lines|40'
+expect_rerun_hint() {
+    expect_err "herdr-launch: to choose the account, rerun: herdr-launch --account NAME 'opus-medium' 'impl-cart' '$brief' '$report' '42'"
+    [ "$(printf '%s\n' "$err" | tail -n 1)" = "herdr-launch: to choose the account, rerun: herdr-launch --account NAME 'opus-medium' 'impl-cart' '$brief' '$report' '42' (NAME from herdr-launch --quota)" ] \
+        || fail "rerun hint is not the last stderr line: $err"
+}
+
+new_case 'refused auto-picked account: retry once on the next account'
+account_codator "$home"
+usage_fixture "$home" first-seat 0 usable 0 96
+usage_fixture "$home" second-seat 0 usable 0 72
+STUB_START_OK=once STUB_SCREEN=$refusal
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+[ "$(printf '%s\n' "$out" | tail -n 1)" = 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=second-seat' ] \
+    || fail "final line does not name the second account: $out"
+expect_err 'herdr-launch: Codator refused account first-seat; closed tab wA:t7, abandoned task 2468; retrying once on account second-seat'
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup$forward" "$(refused_flags first-seat)" | sed '$d')" \
+    "$refused_read" 'herdr|tab|close|wA:t7' 'taskr|close|2468|--outcome|abandoned' \
+    "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup$forward" "$(refused_flags second-seat)")"
+
+new_case 'refused explicit account: no retry, fails as before'
+account_codator "$home"
+usage_fixture "$home" first-seat 0 usable 0 96
+usage_fixture "$home" second-seat 0 usable 0 72
+STUB_START_OK=0 STUB_SCREEN=$refusal
+run_launch sh "$launch_sh" --account first-seat opus-medium impl-cart "$brief" "$report" 42
+expect_rc 1
+expect_err 'step 6 (herdr agent start) failed'
+case $err in *rerun*) fail "explicit account printed a rerun hint: $err" ;; esac
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup$forward" "$(refused_flags first-seat)" | sed '$d')"
+
+new_case 'auto-picked start failure without the refusal line: no retry'
+account_codator "$home"
+usage_fixture "$home" first-seat 0 usable 0 96
+usage_fixture "$home" second-seat 0 usable 0 72
+STUB_START_OK=0 STUB_SCREEN='claude: some other startup error'
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 1
+expect_err 'step 6 (herdr agent start) failed'
+expect_rerun_hint
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup$forward" "$(refused_flags first-seat)" | sed '$d')" \
+    "$refused_read"
+
+new_case 'refused auto-picked account with no other eligible account: rerun hint'
+account_codator "$home"
+usage_fixture "$home" first-seat 0 usable 0 96
+usage_fixture "$home" out-seat 100 usable 0 72
+usage_limits out-seat '{"seven_day":{"utilization":98,"resets_at":"2099-01-01T00:00:00Z"}}'
+STUB_START_OK=0 STUB_SCREEN=$refusal
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 1
+expect_err 'step 6 (herdr agent start) failed'
+expect_rerun_hint
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup$forward" "$(refused_flags first-seat)" | sed '$d')" \
+    "$refused_read"
 
 new_case 'Codex retains default despite Claude usage'
 account_codator "$home"
@@ -1790,6 +1864,23 @@ expect_calls "$(tab_calls impl-cart)" \
     "herdr|agent|wait|impl-cart|--until|idle|--timeout|90000" \
     "taskr|prompt|2468|--file|$brief|--confirm|--confirm-timeout|60000"
 
+new_case 'claude --push with a picked account reads the dialog screen once'
+account_codator "$home"
+usage_fixture "$home" seat 0
+STUB_START_OK=0 STUB_SCREEN='WARNING: Loading development channels
+> 1. I am using this for local development'
+run_launch sh "$launch_sh" --push opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 mcp_config=$mcp_config account=seat drain=latest"
+[ -z "$err" ] || fail "unexpected stderr: $err"
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup$forward" "|--account|seat$(claude_push_flags)" \
+        | sed '$d')" \
+    "herdr|pane|read|wA:p7|--source|visible|--lines|40" \
+    "herdr|pane|send-keys|wA:p7|Enter" \
+    "herdr|agent|wait|impl-cart|--until|idle|--timeout|90000" \
+    "taskr|prompt|2468|--file|$brief|--confirm|--confirm-timeout|60000"
+
 new_case 'claude --push: a failed start without the dialog stops at step 6'
 STUB_START_OK=0 STUB_SCREEN='Error: something else'
 run_launch sh "$launch_sh" --push opus-medium impl-cart "$brief" "$report" 42
@@ -2379,6 +2470,25 @@ expect_calls "$work_list_call" "$(tab_calls impl-cart)" \
     "$(brief=$work/brief.W12.md; tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium \
         "$claude_setup" "|$(claude_flags medium)" | sed '1a\
 taskr|set|2468|work=12')"
+
+new_case '--work: a refused picked account retries with a fresh W12 brief'
+ticket_list
+account_codator "$home"
+usage_fixture "$home" first-seat 0 usable 0 96
+usage_fixture "$home" second-seat 0 usable 0 72
+STUB_START_OK=once STUB_SCREEN='codator: selected account is ineligible: all applicable usage headroom is exhausted'
+run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 work_brief=$work/brief.W12.md account=second-seat"
+{
+    sed -n '1,3p' "$brief"
+    printf '%s\n' 'Work: W12 Cart totals' 'Intent: Fix the cart total.' 'Acceptance:' \
+        '- cart test passes' '- review READY' 'Scope: src/cart, tests/cart'
+    sed '1,3d' "$brief"
+} >"$case_dir/want-brief"
+cmp -s "$case_dir/want-brief" "$work/brief.W12.md" || fail 'the retry did not rewrite the W12 brief'
+[ "$(grep -c '^taskr|close|2468|--outcome|abandoned$' "$case_dir/calls")" -eq 1 ] || fail 'the first task was not abandoned once'
+[ "$(grep -c '^taskr|set|2468|work=12$' "$case_dir/calls")" -eq 2 ] || fail 'each task did not get work=12'
 
 new_case '--work refuses an existing W12 brief before any tab'
 ticket_list

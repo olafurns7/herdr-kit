@@ -37,7 +37,22 @@
 # launches gather-SLUG under $TASKR_TASK on LANE, else $HERDR_GATHER_LANE,
 # else haiku-gather. Every caller check below applies; the output adds the
 # report path and the two close commands.
+# Step 6 retry (W2725): when this run picked the Claude account itself in a
+# tab it created (no --account, PANE or --machine) and the pane shows
+# Codator's refusal, it closes that tab, abandons that task and runs again
+# once with --account set to the next eligible pick. Any other step 6
+# failure of a picked account ends with a rerun hint naming --account.
 set -u
+
+# sh_quote ARG...: each ARG single-quoted for eval, separated by spaces.
+sh_quote() {
+    sh_quote_sep=
+    for sh_quote_arg do
+        printf "%s'%s'" "$sh_quote_sep" "$(printf '%s\n' "$sh_quote_arg" | sed "s/'/'\\\\''/g")"
+        sh_quote_sep=' '
+    done
+}
+launch_self=$0 launch_args=$(sh_quote "$@") launch_umask=$(umask)
 
 usage='usage: herdr-launch --lanes | herdr-launch --quota | herdr-launch [--push] --check [LANE...] | herdr-launch --gather SLUG QUESTION [--lane LANE] [--account NAME] | herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--mcp] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
 
@@ -123,13 +138,14 @@ die() {
     exit 2
 }
 
-workspace= tab= pane= task= launch= push_tab= mcp_config= reserved_setup_file= work_brief=
+workspace= tab= pane= task= launch= push_tab= mcp_config= reserved_setup_file= work_brief= rerun_hint=
 step_fail() {
     printf 'herdr-launch: step %s failed; so far: workspace=%s task=%s launch=%s tab=%s pane=%s%s%s%s\n' \
         "$1" "${workspace:--}" "${task:--}" "${launch:--}" "${tab:--}" "${pane:--}" \
         "${push_tab:+ push_tab=$push_tab}" "${mcp_config:+ mcp_config=$mcp_config}" \
         "${work_brief:+ work_brief=$work_brief}" >&2
     [ -z "$reserved_setup_file" ] || printf 'herdr-launch: setup artifact=%s; inspect before retry\n' "$reserved_setup_file" >&2
+    [ -z "$rerun_hint" ] || printf 'herdr-launch: to choose the account, rerun: herdr-launch --account NAME %s (NAME from herdr-launch --quota)\n' "$launch_args" >&2
     exit 1
 }
 
@@ -207,6 +223,7 @@ account_script() {
 import datetime, json, math, pathlib, re, sys, time
 
 model, mode = sys.argv[1:3]
+excluded = set(sys.argv[3:])
 now = time.time()
 records = []
 
@@ -255,7 +272,7 @@ for path in sorted((pathlib.Path.home() / ".local/share/codator/claude").glob("*
     except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError):
         continue
 
-eligible = [record for record in records if record["role"] == "next"]
+eligible = [record for record in records if record["role"] == "next" and record["name"] not in excluded]
 soon = [record for record in eligible if 0 <= record["stamp"] - now <= 24 * 3600]
 pick = None
 if soon:
@@ -884,7 +901,39 @@ if [ -n "$push" ] && [ "$kind" = claude ]; then
     mcp_tmp=
 fi
 [ -z "$reserved_task" ] || reserved_check || step_fail '6 (reserved decision expired)'
+
+# account_retry: Codator refused the picked account (it checks the live limit
+# on --account; a snapshot up to 30 min old can miss that). Only in a tab this
+# run created and a local pick: the next pick excluding the refused account
+# gets this tab closed, this task abandoned, and one rerun with --account,
+# which never retries. Returns when no other account is eligible.
+account_retry() {
+    [ -z "$given_pane" ] && [ -z "$machine" ] || return 0
+    next=$(sh -c "$account_pick '$account'" 2>/dev/null) || return 0
+    next=$(printf '%s\n' "$next" | jq -r '.account // ""' 2>/dev/null) || return 0
+    case $next in '' | [!A-Za-z0-9]* | *[!A-Za-z0-9_-]*) return 0 ;; esac
+    [ "${#next}" -le 48 ] && [ "$next" != "$account" ] || return 0
+    herdr tab close "$tab" >/dev/null || step_fail "6 (account $account refused, then herdr tab close)"
+    taskr close "$task" --outcome abandoned >/dev/null \
+        || step_fail "6 (account $account refused and tab $tab closed, then taskr close $task)"
+    [ -z "$mcp_config" ] || rm -f -- "$mcp_config"
+    [ -z "$work_brief" ] || rm -f -- "$work_brief"
+    printf 'herdr-launch: Codator refused account %s; closed tab %s, abandoned task %s; retrying once on account %s\n' \
+        "$account" "$tab" "$task" "$next" >&2
+    umask "$launch_umask"
+    eval "exec sh \"\$launch_self\" --account \"\$next\" $launch_args"
+}
+
 if ! start_agent; then
+    if [ -n "$account_pick" ] && [ -n "$account" ] && [ -z "$reserved_task" ]; then
+        # The account was picked here: any step 6 failure names --account.
+        rerun_hint=1
+        screen=$(herdr pane read "$pane" --source visible --lines 40) \
+            || step_fail '6 (herdr agent start, then herdr pane read)'
+        case $screen in
+            *'codator: selected account is ineligible:'*) account_retry ;;
+        esac
+    fi
     if [ "$kind" = codex ]; then
         screen=$(herdr pane read "$pane" --source visible --lines 40) \
             || step_fail '6 (herdr agent start, then herdr pane read)'
@@ -897,7 +946,7 @@ if ! start_agent; then
             || step_fail '6 (the agent was not idle within 30 s after the Codex update dialog)'
     else
         [ -n "$push" ] && [ "$kind" = claude ] || step_fail '6 (herdr agent start)'
-        screen=$(herdr pane read "$pane" --source visible --lines 40) \
+        [ -n "$rerun_hint" ] || screen=$(herdr pane read "$pane" --source visible --lines 40) \
             || step_fail '6 (herdr agent start, then herdr pane read)'
         case $screen in
             *'Loading development channels'*) ;;
@@ -908,6 +957,7 @@ if ! start_agent; then
             || step_fail '6 (the agent was not idle within 90 s after the development-channel dialog)'
     fi
 fi
+rerun_hint=
 
 # Pin the actual native identity before a reserved worker can finish its brief.
 if [ -n "$reserved_task" ]; then
