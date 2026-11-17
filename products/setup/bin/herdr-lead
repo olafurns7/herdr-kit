@@ -361,6 +361,13 @@ case " $prefixes " in *' orch '* | *' hub '*) ;; *) die 'lead lane must allow or
 [ -n "$worktree" ] || die '--worktree is required'
 worktree=$(CDPATH= cd -- "$worktree" 2>/dev/null && pwd -P) || die '--worktree must be an existing directory'
 [ -z "$predecessor" ] || identifier "$predecessor" || die 'invalid predecessor pane'
+# The lead's auto-compact window (launch.md "Unattended flags and trust"); Claude accepts 100000 to 1000000.
+compact_window=${HERDR_LEAD_COMPACT_WINDOW:-250000}
+case $compact_window in
+    0* | *[!0-9]*) compact_window= ;;
+    *) [ "${#compact_window}" -le 7 ] && [ "$compact_window" -ge 100000 ] && [ "$compact_window" -le 1000000 ] || compact_window= ;;
+esac
+[ -n "$compact_window" ] || die "HERDR_LEAD_COMPACT_WINDOW must be an integer from 100000 to 1000000 (got '${HERDR_LEAD_COMPACT_WINDOW-}')"
 # --resume needs the account that holds its session; --account alone pins a fresh start to an account with quota.
 if [ -n "$resume" ]; then
     [ "$resume" != null ] && [ -n "$account" ] || die '--resume needs a nonempty SID (not null) and --account NAME'
@@ -469,7 +476,7 @@ tmp=
 
 step_line 6 'start Claude and answer development-channel dialog'
 set -- --model "$model" --effort "$effort" --dangerously-skip-permissions \
-    --settings '{"agentPushNotifEnabled":false,"autoCompactWindow":250000,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}' \
+    --settings '{"agentPushNotifEnabled":false,"autoCompactWindow":'"$compact_window"',"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}' \
     --add-dir "$worktree" --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr
 [ -z "$resume" ] || set -- --resume "$resume" "$@"
 [ -z "$account" ] || set -- --account "$account" "$@"
