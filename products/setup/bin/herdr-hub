@@ -139,6 +139,7 @@ if [ "$1" = check ]; then
     '; then
         printf 'push-dropped\n'
         printf 'Repair: herdr-hub move %s --lane <lane> --account <account> -- --resume <session-id>\n' "$root"
+        printf '%s\n' 'If that session started with Code Mode: export HERDR_HUB_CODE_MODE=1 in the hub pane shell first, or omit -- --resume (README "Code Mode")'
         exit 1
     fi
     if [ "$lease" = live ] && printf '%s\n' "$lease_json" | jq -e --argjson gen "$gen" '.session_gen == $gen' >/dev/null; then
@@ -409,12 +410,14 @@ prover_log=$state_dir/hub-check-$gen.log
 prove </dev/null >"$prover_log" 2>&1 &
 printf 'ROOT=%s GEN=%s mcp_config=%s prover_log=%s\n' "$root" "$gen" "$mcp_config" "$prover_log"
 [ "$hub_ref" = on ] || printf 'To make this the hub: taskr set %s hub=on\n' "$root"
-prompt="You are the hub root $root. herdr-hub adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence. Read the handover at $handover. A \"hub push check $gen\" event will arrive: record it and ack it. Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note. Waiting: run a command whose result you need in the foreground, in the same response, with a Bash timeout that fits it. Use run_in_background only for a job over 10 minutes or when pushed events need you meanwhile; then end the turn and let its completion notification start the next one. Never sleep, poll or read a task's output file to check on a command, and never send a response whose only tool call is a wait or an ack."
-unset TASKR_TASK TASKR_LAUNCH
-export FLEET_ROLE=hub
 # An explicit 0 also overrides a 1 in user settings: the hub stays off unless HERDR_HUB_CODE_MODE=1 (README.md "Code Mode").
 code_mode=0
 [ "${HERDR_HUB_CODE_MODE:-}" != 1 ] || code_mode=1
+prompt="You are the hub root $root. herdr-hub adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence. Read the handover at $handover. A \"hub push check $gen\" event will arrive: record it and ack it. Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note."
+# The waiting text is for direct tools; a Code Mode hub gets its own Poll tool from the harness.
+[ "$code_mode" = 1 ] || prompt="$prompt Waiting: run a command whose result you need in the foreground, in the same response, with a Bash timeout that fits it. Use run_in_background only for a job over 10 minutes or when pushed events need you meanwhile; then end the turn and let its completion notification start the next one. Never sleep, poll or read a task's output file to check on a command, and never send a response whose only tool call is a wait or an ack."
+unset TASKR_TASK TASKR_LAUNCH
+export FLEET_ROLE=hub
 export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=$code_mode
 step=6
 umask "$old_umask"

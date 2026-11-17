@@ -325,8 +325,11 @@ else: sys.exit(98)
                   f'This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source="taskr" ...>; '
                   f'handle each with the taskr MCP tools, and ack with its fence. Read the handover at {state}/handover-7.md. '
                   f'A "hub push check 7" event will arrive: record it and ack it.'
-                  f' Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note.'
-                  f' Waiting: run a command whose result you need in the foreground, in the same response, with a Bash timeout that fits it. Use run_in_background only for a job over 10 minutes or when pushed events need you meanwhile; then end the turn and let its completion notification start the next one. Never sleep, poll or read a task\'s output file to check on a command, and never send a response whose only tool call is a wait or an ack.')
+                  f' Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note.')
+        # The waiting text is for direct tools only; a Code Mode hub does not get it.
+        waiting = (f' Waiting: run a command whose result you need in the foreground, in the same response, with a Bash timeout that fits it. Use run_in_background only for a job over 10 minutes or when pushed events need you meanwhile; then end the turn and let its completion notification start the next one. Never sleep, poll or read a task\'s output file to check on a command, and never send a response whose only tool call is a wait or an ack.')
+        if code_mode == '0':
+            prompt += waiting
         actual = json.loads((work / 'cdl').read_text())
         expected = dict(args=[*account,'--model',model,'--effort','high','--mcp-config',str(config),
                               '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
@@ -374,6 +377,10 @@ else: sys.exit(98)
     success(c, code_mode='0')
     c = run('hub turns on Code Mode only with HERDR_HUB_CODE_MODE=1', location={'HERDR_HUB_CODE_MODE':'1'})
     success(c, code_mode='1')
+    assert ' Waiting: ' not in json.loads((c[0] / 'cdl').read_text())['args'][-1], 'Code Mode hub got the waiting text'
+    c = run('hub without Code Mode gets the waiting text')
+    success(c, code_mode='0')
+    assert ' Waiting: ' in json.loads((c[0] / 'cdl').read_text())['args'][-1], 'direct-tools hub lost the waiting text'
     c = run('hub Code Mode opt-in resumes a Code Mode session', args=('42','--','--resume','saved-session'),
             location={'HERDR_HUB_CODE_MODE':'1','CLAUDE_CODE_EXPERIMENTAL_CODE_MODE':'0'})
     success(c, ('--resume','saved-session'), code_mode='1')
@@ -660,8 +667,9 @@ else: sys.exit(98)
         assert lines[0] == ('push-dropped' if mode == 'check-dropped' else 'live'), c[3]
         assert (c[0] / 'awk-env-checked').exists(), 'check did not keep the config out of helper argv'
         if mode == 'check-dropped':
-            assert len(lines) == 2, c[3]
+            assert len(lines) == 3, c[3]
             assert lines[1] == 'Repair: herdr-hub move 42 --lane <lane> --account <account> -- --resume <session-id>', c[3]
+            assert lines[2] == 'If that session started with Code Mode: export HERDR_HUB_CODE_MODE=1 in the hub pane shell first, or omit -- --resume (README "Code Mode")', c[3]
         assert not (c[1] / '.local/state').exists()
 
     # Review 7952 F1: an old prover finishes after its hub exited and a rerun reclaimed the lock. It must not
