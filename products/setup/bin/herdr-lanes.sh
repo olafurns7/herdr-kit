@@ -69,11 +69,11 @@ lane_list() {
     printf '%s\n' "$lane_pins" | jq -r 'to_entries | sort_by(.key)[] | ["pin", .key, .value] | @tsv'
 }
 
-# lane_pin_mismatch NAME LANE: print "PREFIX LANE" for the longest pinned prefix of NAME whose lane is not LANE.
+# lane_pin_mismatch NAME LANE: the longest pinned prefix of NAME decides; print "PREFIX LANE" when its lane is not LANE.
 lane_pin_mismatch() {
     printf '%s\n' "$lane_pins" | jq -r --arg name "$1" --arg lane "$2" '
-        [to_entries[] | select(.key as $prefix | $name | startswith($prefix)) | select(.value != $lane)]
-        | sort_by(.key | length) | last // empty | .key + " " + .value
+        [to_entries[] | select(.key as $prefix | $name | startswith($prefix))]
+        | sort_by(.key | length) | last // empty | select(.value != $lane) | .key + " " + .value
     '
 }
 

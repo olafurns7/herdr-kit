@@ -69,8 +69,8 @@ in `herdr-launch`, `herdr-lead` and `herdr-hub`, like a malformed `deny`.
 `herdr-launch` refuses a start, `--gather` included, before any brief, ledger or
 Herdr write when the task name starts with a pinned prefix and the given lane
 differs. It prints one line with the task, the prefix, the required lane and the
-given lane. When several pinned prefixes match, the longest one that names
-another lane is reported. No flag overrides a pin: a refused start is the
+given lane. When several pinned prefixes match, the longest one decides: the
+task starts only on its lane, and a refusal names it. No flag overrides a pin: a refused start is the
 intended outcome, and the caller asks its owner. `herdr-launch --lanes` lists
 each pin after the lanes as `pin PREFIX LANE`. Use pins for a named recurring
 seat that must stay on one lane whatever the orchestrator's own model is. Keep
