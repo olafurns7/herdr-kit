@@ -228,7 +228,7 @@ EOF
     FAIL= LEASE= LATEST= LEASE_GEN= AGENTS= BUSY= ENV_BAD= DIALOG= ACK= RECEIVED= DELIVERY_GEN= CONFIG_EXISTS= HOLDER= CAMPAIGN=
     DIALOG_SCREEN= STOP_IGNORED= NO_HANDOVER= ACKS= AGENTS_AFTER_WAIT= CALLER_HOST=
     PROMPT_RESULT= PROMPT_VISIBLE= WAIT_RESULTS= GET_STATUSES= ENTER_DELAYS= PROCESS= EXIT_MODAL= DIALOG_TALL=
-    LEAD_CODE_MODE= EXPECT_CODE_MODE=
+    LEAD_CODE_MODE= EXPECT_CODE_MODE= COMPACT_WINDOW=
     printf 'case: %s\n' "$name"
 }
 run() {
@@ -240,7 +240,7 @@ run() {
         PROMPT_RESULT="$PROMPT_RESULT" PROMPT_VISIBLE="$PROMPT_VISIBLE" WAIT_RESULTS="$WAIT_RESULTS" \
         GET_STATUSES="$GET_STATUSES" HERDR_LEAD_ENTER_DELAYS="$ENTER_DELAYS" STOP_IGNORED="$STOP_IGNORED" NO_HANDOVER="$NO_HANDOVER" ACKS="$ACKS" \
         AGENTS_AFTER_WAIT="$AGENTS_AFTER_WAIT" CALLER_HOST="$CALLER_HOST" PROCESS="$PROCESS" EXIT_MODAL="$EXIT_MODAL" DIALOG_TALL="$DIALOG_TALL" \
-        HERDR_LEAD_CODE_MODE="$LEAD_CODE_MODE" EXPECT_CODE_MODE="$EXPECT_CODE_MODE" \
+        HERDR_LEAD_CODE_MODE="$LEAD_CODE_MODE" EXPECT_CODE_MODE="$EXPECT_CODE_MODE" HERDR_LEAD_COMPACT_WINDOW="$COMPACT_WINDOW" \
         sh "$repo_dir/bin/herdr-lead" "$@" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
 }
 expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/err")"; }
@@ -626,6 +626,28 @@ LEAD_CODE_MODE=1 EXPECT_CODE_MODE=1
 start --resume 'sid with spaces' --account example
 expect_rc 0
 has calls 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 && '
+
+for window in 100000 180000 1000000; do
+    new_case "HERDR_LEAD_COMPACT_WINDOW=$window sets the lead's autoCompactWindow"
+    COMPACT_WINDOW=$window
+    start
+    expect_rc 0
+    has calls "--settings|{\"agentPushNotifEnabled\":false,\"autoCompactWindow\":$window,\"enabledPlugins\":"
+    lacks calls '"autoCompactWindow":250000'
+done
+
+for command in start move; do
+    for window in 99999 1000001 10000000 abc 0250000 250000.5 -250000 ' 250000' 2.5e5; do
+        new_case "$command refuses HERDR_LEAD_COMPACT_WINDOW '$window' before any calls or state"
+        COMPACT_WINDOW=$window
+        run "$command" 42 wA:p1 --worktree "$work"
+        expect_rc 2
+        [ "$(cat "$case_dir/err")" = "herdr-lead: HERDR_LEAD_COMPACT_WINDOW must be an integer from 100000 to 1000000 (got '$window')" ] ||
+            fail "refusal line: $(cat "$case_dir/err")"
+        [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+        [ ! -e "$home/.local/state" ] || fail 'created state'
+    done
+done
 
 new_case 'jobs start adds a generation-bound server without changing channel or resume argv'
 start --jobs --resume 'sid with spaces' --account example

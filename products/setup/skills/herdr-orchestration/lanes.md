@@ -59,6 +59,23 @@ A quota stop parks a rule-bound review loop. When a model that the loop's review
 rule needs is out of quota, park the loop until that model returns. Do not run
 rounds with fewer seats, and do not switch the writer model.
 
+## Lane pins
+
+An optional `pins` object maps a task-name prefix to the one lane that may start
+it: `"pins":{"rev-weekly":"opus-high"}`. The prefix is a literal string prefix of
+the task name and matches `[a-z][a-z0-9_-]{0,31}`; the lane must be a lane in the
+same table. Another shape, an unknown lane or a bad prefix fails the table load
+in `herdr-launch`, `herdr-lead` and `herdr-hub`, like a malformed `deny`.
+`herdr-launch` refuses a start, `--gather` included, before any brief, ledger or
+Herdr write when the task name starts with a pinned prefix and the given lane
+differs. It prints one line with the task, the prefix, the required lane and the
+given lane. When several pinned prefixes match, the longest one that names
+another lane is reported. No flag overrides a pin: a refused start is the
+intended outcome, and the caller asks its owner. `herdr-launch --lanes` lists
+each pin after the lanes as `pin PREFIX LANE`. Use pins for a named recurring
+seat that must stay on one lane whatever the orchestrator's own model is. Keep
+them in the private table; the public `pins` is empty.
+
 ## Loop verification
 
 For velocity, a lead or sub-orchestrator splits work into small gated tasks, runs fast implementers in parallel, and has one verifier review the work of several.

@@ -61,7 +61,7 @@ installation resolves setup source from the same selected taskr tag.
 restarts its Claude lead with the taskr push channel through the sibling `cdl`
 wrapper (needs `--codator` and Codator). Usage, checks and recovery:
 [launch.md](skills/herdr-orchestration/launch.md). The hub starts with
-[Code Mode](#code-mode) on.
+[Code Mode](#code-mode) off unless `HERDR_HUB_CODE_MODE=1`.
 
 ## Code Mode
 
@@ -69,10 +69,12 @@ wrapper (needs `--codator` and Codator). Usage, checks and recovery:
 Claude Code feature. Claude writes JavaScript that makes several tool calls in
 one step, and Claude Code runs that code in the session.
 
-`herdr-hub` starts the Claude hub with `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`.
-If the shell that runs `herdr-hub` already sets the variable to a nonempty
-value, `herdr-hub` keeps that value. `herdr-lead` starts leads with the
-variable at `0`, and `herdr-launch` starts workers without it.
+`herdr-hub` starts the Claude hub with `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0`,
+so the hub uses direct tools. This `0` also overrides a `1` in the shell or in
+user settings. With `HERDR_HUB_CODE_MODE=1` in the environment of the shell
+that runs `herdr-hub`, `herdr-hub` exports `1` instead; a `0` in user or
+managed settings still wins. `herdr-lead` starts leads the same way with
+`HERDR_LEAD_CODE_MODE`, and `herdr-launch` starts workers without the variable.
 
 Requirements. The kit does not check the version, the account, the
 organization or settings outside the kit. If Code Mode does not start, use the
@@ -118,20 +120,24 @@ If that dialog shows again after the restart, press Enter. Do the first start
 on each account by hand. If the dialog stops an unattended `herdr-hub move`
 before the channel lease, the prover fails after 600 s.
 
-Resume: a Code Mode session resumes only with the variable at `1`.
-`herdr-hub ROOT -- --resume SID` and `herdr-hub move` set it again. With the
-variable at `0`, Claude refuses to resume a Code Mode session: start a new
-session. A session that started without Code Mode resumes without it. After a
-Herdr server restart, Herdr may resume panes with a plain `claude --resume`.
-That command can be without the variable, and then a Code Mode session refuses
-to resume. Quit it and resume with `herdr-hub` as `recovery.md` says.
+Resume: a Code Mode session resumes only with the variable at `1`. With the
+variable at `0`, Claude refuses to resume a Code Mode session. A session that
+started without Code Mode resumes without it. `herdr-hub` does not detect the
+mode of the session it resumes. To resume a hub session that started with Code
+Mode, for example one started before the default changed, export
+`HERDR_HUB_CODE_MODE=1` in the hub pane shell first, or start a new session
+from the handover with `herdr-hub move ROOT` without `--resume`. After a Herdr
+server restart, Herdr may resume panes with a plain `claude --resume`. That
+command can be without the variable, and then a Code Mode session refuses to
+resume. Quit it and resume with `herdr-hub` as `recovery.md` says.
 
-To turn off Code Mode for the hub, export `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0`
-in the hub pane shell before you run `herdr-hub`. Export it; a value in front
-of one command does not reach the `herdr-hub` command that `herdr-hub move`
-types in that shell. You can also set the variable to `"0"` in the `env` block
-of `~/.claude/settings.json`, or in managed settings for an organization. A `0`
-in one place wins. A running session keeps its mode until it stops.
+To turn on Code Mode for the hub, export `HERDR_HUB_CODE_MODE=1` in the hub
+pane shell before you run `herdr-hub`. Export it; a value in front of one
+command does not reach the `herdr-hub` command that `herdr-hub move` types in
+that shell. Any other value, or no value, keeps the hub at `0`. A `"0"` in the
+`env` block of `~/.claude/settings.json`, or in managed settings for an
+organization, keeps Code Mode off even with the switch. A running session keeps
+its mode until it stops.
 
 Leads: to turn on Code Mode for leads, set `HERDR_LEAD_CODE_MODE=1` in the
 environment of the process that runs `herdr-lead`. For example, export it in
@@ -226,7 +232,10 @@ exempt only when every prefix of the lane has a matching exception for that fiel
 Exceptions have no effect without a matching deny rule. Anchor patterns with `^` and `$`
 for exact matches. An OpenCode lane uses a qualified `provider/model` model;
 its `provider` is the model prefix, and an explicit value must match. Keep operator policy in
-the private table; the public deny list is empty.
+the private table; the public deny list is empty. An optional `pins` object maps a
+task-name prefix to the only lane that may start it; `herdr-launch` refuses any other
+lane for that name ([lanes.md](skills/herdr-orchestration/lanes.md) "Lane pins"). The
+public `pins` is empty.
 
 The lane table is the only list of models; `herdr-launch --lanes` prints the
 resolved lanes, and the private instructions overlay holds per-model policy.

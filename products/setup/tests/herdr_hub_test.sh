@@ -316,7 +316,7 @@ else: sys.exit(98)
     def expect(case, rc):
         assert case[2].returncode == rc, (case[2].returncode, case[3], case[4])
 
-    def success(case, extra=(), new=False, jobs=False, account=(), model='example-opus', code_mode='1'):
+    def success(case, extra=(), new=False, jobs=False, account=(), model='example-opus', code_mode='0'):
         expect(case, 0)
         work, home, process, out, err, calls = case
         state = home / '.local/state/herdr-orch/lead-push/42'
@@ -325,7 +325,8 @@ else: sys.exit(98)
                   f'This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source="taskr" ...>; '
                   f'handle each with the taskr MCP tools, and ack with its fence. Read the handover at {state}/handover-7.md. '
                   f'A "hub push check 7" event will arrive: record it and ack it.'
-                  f' Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note.')
+                  f' Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note.'
+                  f' Waiting: run a command whose result you need in the foreground, in the same response, with a Bash timeout that fits it. Use run_in_background only for a job over 10 minutes or when pushed events need you meanwhile; then end the turn and let its completion notification start the next one. Never sleep, poll or read a task\'s output file to check on a command, and never send a response whose only tool call is a wait or an ack.')
         actual = json.loads((work / 'cdl').read_text())
         expected = dict(args=[*account,'--model',model,'--effort','high','--mcp-config',str(config),
                               '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
@@ -369,7 +370,14 @@ else: sys.exit(98)
     success(c, ('--resume','saved-session'), account=('--account',"account ' quoted"))
     c = run('hub overrides inherited worker role', location={'FLEET_ROLE':'worker'})
     success(c)
-    c = run('hub keeps Code Mode off when the caller set 0', location={'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE':'0'})
+    c = run('hub overrides an inherited Code Mode 1 without the opt-in', location={'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE':'1'})
+    success(c, code_mode='0')
+    c = run('hub turns on Code Mode only with HERDR_HUB_CODE_MODE=1', location={'HERDR_HUB_CODE_MODE':'1'})
+    success(c, code_mode='1')
+    c = run('hub Code Mode opt-in resumes a Code Mode session', args=('42','--','--resume','saved-session'),
+            location={'HERDR_HUB_CODE_MODE':'1','CLAUDE_CODE_EXPERIMENTAL_CODE_MODE':'0'})
+    success(c, ('--resume','saved-session'), code_mode='1')
+    c = run('hub ignores an opt-in value other than 1', location={'HERDR_HUB_CODE_MODE':'yes'})
     success(c, code_mode='0')
     c = run('new root created then adopted', args=('--new','example-hub','--lane','opus-high'))
     success(c, new=True)

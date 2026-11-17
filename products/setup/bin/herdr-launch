@@ -138,6 +138,13 @@ die() {
     exit 2
 }
 
+# A pinned task-name prefix starts only on its lane; no flag overrides a pin (lanes.md "Lane pins").
+pin_check() {
+    lane_table_load || die 'invalid lane table'
+    pin=$(lane_pin_mismatch "$2" "$1") || die 'invalid lane table'
+    [ -z "$pin" ] || die "task '$2' matches pin '${pin% *}', which requires lane '${pin#* }'; given lane '$1'"
+}
+
 workspace= tab= pane= task= launch= push_tab= mcp_config= reserved_setup_file= work_brief= rerun_hint=
 step_fail() {
     printf 'herdr-launch: step %s failed; so far: workspace=%s task=%s launch=%s tab=%s pane=%s%s%s%s\n' \
@@ -464,6 +471,7 @@ if [ -n "$gather" ]; then
     brief=$gather_dir/$gather.brief.md report=$gather_dir/$gather.md
     # A report there belongs to an earlier helper; never reuse its slug.
     [ ! -e "$report" ] && [ ! -L "$report" ] || die "gather report '$report' exists; choose another SLUG"
+    pin_check "${gather_lane:-${HERDR_GATHER_LANE:-haiku-gather}}" "gather-$gather"
     mkdir -p -- "$gather_dir" && printf '%s\n' 'HERDR-BRIEF role=researcher' \
         "orchestrator=$TASKR_TASK   report=$report" \
         'Task topology: a new tab in the caller workspace; herdr-launch creates it' \
@@ -500,6 +508,7 @@ case $name in
     *[!a-z0-9_-]*) die "name '$name' must match [a-z][a-z0-9_-]{0,31}" ;;
 esac
 [ "${#name}" -le 32 ] || die "name '$name' is longer than 32 characters"
+pin_check "$lane" "$name"
 prefix=${name%%-*}
 case $prefix in
     impl | mech | glm) role=implementer ;;
