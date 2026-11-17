@@ -669,7 +669,7 @@ else: sys.exit(98)
         if mode == 'check-dropped':
             assert len(lines) == 3, c[3]
             assert lines[1] == 'Repair: herdr-hub move 42 --lane <lane> --account <account> -- --resume <session-id>', c[3]
-            assert lines[2] == 'If that session started with Code Mode: export HERDR_HUB_CODE_MODE=1 in the hub pane shell first, or omit -- --resume (README "Code Mode")', c[3]
+            assert lines[2] == 'If that session started with Code Mode: omit -- --resume; or, to keep the session, stop the hub, export HERDR_HUB_CODE_MODE=1 at the pane prompt and run herdr-hub 42 --lane <lane> --account <account> -- --resume <session-id> there (README "Code Mode")', c[3]
         assert not (c[1] / '.local/state').exists()
 
     # Review 7952 F1: an old prover finishes after its hub exited and a rerun reclaimed the lock. It must not

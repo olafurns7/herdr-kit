@@ -181,8 +181,10 @@ herdr-lead move <root> <pane> --worktree <campaign worktree> --lane <lane> \
 Both commands restore the flag and keep the session. `herdr-lead`
 refuses `--resume` without `--account`. `check` reports
 `push-dropped` and prints a repair command if the current process lost the flag.
-If that hub session started with Code Mode, export `HERDR_HUB_CODE_MODE=1` in
-the hub pane shell first, or omit `-- --resume` (README "Code Mode").
+If that hub session started with Code Mode, omit `-- --resume`; or, to keep
+the session, stop the hub, export `HERDR_HUB_CODE_MODE=1` at the pane prompt
+and run `herdr-hub <root> --lane <lane> --account <account> -- --resume
+<session id>` there (README "Code Mode").
 See `recovery.md` "Your own session" before a move.
 
 A session with Monitor or CronCreate tasks can show an exit dialog after the
