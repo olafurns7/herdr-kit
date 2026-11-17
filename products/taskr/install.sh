@@ -205,6 +205,8 @@ products/setup/skills/herdr-verification/references/feature-map.md
 products/setup/skills/herdr-verification/references/task-proof.md
 third_party/pstack/LICENSE
 third_party/pstack/PROVENANCE.md
+third_party/everystate/LICENSE
+third_party/everystate/PROVENANCE.md
 '
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
@@ -616,9 +618,11 @@ if [ "$radar" -eq 1 ] || [ "$codator" -eq 1 ] || [ "$notifications" -eq 1 ] || [
         done
     done
     if [ "$practices" -eq 1 ] || [ "$verification" -eq 1 ]; then
-        for notice in LICENSE PROVENANCE.md; do
-            resolves_inside_home .local/share/herdr-setup/third_party/pstack || fail 'notice parent leaves HOME'
-            place "$setup_dir/../../third_party/pstack/$notice" "$home_dir/.local/share/herdr-setup/third_party/pstack/$notice"
+        for notice_dir in pstack everystate; do
+            for notice in LICENSE PROVENANCE.md; do
+                resolves_inside_home ".local/share/herdr-setup/third_party/$notice_dir" || fail 'notice parent leaves HOME'
+                place "$setup_dir/../../third_party/$notice_dir/$notice" "$home_dir/.local/share/herdr-setup/third_party/$notice_dir/$notice"
+            done
         done
     fi
     if [ "$fleet" -eq 1 ] || [ "${TASKR_LINK_SKILLS:-}" = 1 ]; then

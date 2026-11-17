@@ -119,6 +119,13 @@ license_sha = "bc957ca6bee02792566a1a028d105e02e247c6e77cf057061674273da77b200e"
 license_path = root / "third_party/pstack/LICENSE"
 if not license_path.is_file() or hashlib.sha256(license_path.read_bytes()).hexdigest() != license_sha:
     errors.append("third_party/pstack/LICENSE: missing or differs from pinned upstream bytes")
+# SHA-256 of LICENSE at mattzcarey/everystate
+# 0828d1da9ad16f5ebdab3f5c94dcca37727cb90e (npm everystate@0.3.1).
+everystate_license_sha = "eee04a9c71bce82a3790671883adead3fe68714d31d4a3ea0acfcd02996f0c73"
+everystate_license = root / "third_party/everystate/LICENSE"
+if (not everystate_license.is_file()
+        or hashlib.sha256(everystate_license.read_bytes()).hexdigest() != everystate_license_sha):
+    errors.append("third_party/everystate/LICENSE: missing or differs from pinned upstream bytes")
 
 for name in ("herdr-practices", "herdr-verification"):
     skill = root / "products/setup/skills" / name

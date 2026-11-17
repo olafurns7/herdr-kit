@@ -323,6 +323,7 @@ esac
     verification_guide = Path('skills/herdr-verification/references/task-proof.md')
     assert (h / '.agents' / verification_guide).read_bytes() == (setup / verification_guide).read_bytes()
     assert (h / '.local/share/herdr-setup/third_party/pstack/LICENSE').read_bytes() == (repo / 'third_party/pstack/LICENSE').read_bytes()
+    assert (h / '.local/share/herdr-setup/third_party/everystate/LICENSE').read_bytes() == (repo / 'third_party/everystate/LICENSE').read_bytes()
     for reference in ('incident-intake.md', 'writing.md', 'runbooks.md', 'design.md'):
         relative = Path('skills/herdr-practices/references') / reference
         assert (h / '.agents' / relative).read_bytes() == (setup / relative).read_bytes()
