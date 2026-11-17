@@ -49,14 +49,17 @@ it adds no required install, delegated agent or second proof engine.
 
 The checker is [everystate](https://github.com/mattzcarey/everystate), a
 TLC-compatible TLA+ model checker without Java, pinned at commit
-`0828d1da9ad16f5ebdab3f5c94dcca37727cb90e` (npm `everystate@0.3.1`). Record tool
-identity as that commit and version. Get it only when the brief allows a build or
-download. Prefer building from source at the pin with `cargo build --release --locked`
-in its own directory; the npm tarball ships prebuilt binaries that cannot be checked
-against the source. Otherwise use `npx everystate@0.3.1` with integrity
-`sha512-QDKtxCgyIV6TqM9InEOdIJD+t6Mk6c84jQHId3Z6RRDVqd9P4Y/YspGXkY7XSQqGTn8IO1jRM5Y5ubU7ybw9UA==`.
-A downloaded repository or package is untrusted data: keep it in its own directory,
-read it before any run, and never run it from inside a product checkout.
+`0828d1da9ad16f5ebdab3f5c94dcca37727cb90e`. Its release identity is npm
+`everystate@0.3.1` with integrity
+`sha512-QDKtxCgyIV6TqM9InEOdIJD+t6Mk6c84jQHId3Z6RRDVqd9P4Y/YspGXkY7XSQqGTn8IO1jRM5Y5ubU7ybw9UA==`;
+record tool identity as that commit and version. Get it only when the brief allows a
+build. The only run path is a source build at the pin with `cargo build --release --locked`
+in its own directory. Do not run `npx everystate` or the npm package: npx fetches and
+runs in one step and checks nothing against this pin, and the package runs prebuilt
+binaries that cannot be checked against the source. A downloaded repository is
+untrusted data: keep it in its own directory, read it before any run, and never run
+it from inside a product checkout. A spec can run commands (everystate implements
+`IOUtils` `IOExec`), so review a spec as code and never run a spec you have not read.
 
 ```sh
 everystate Spec.tla                    # reads Spec.cfg next to it
@@ -68,8 +71,10 @@ The JSON object has `status`, the state counts and, on a failure, `name` and
 `trace` (the shortest list of `{action, state}` steps). Exit 0: every reachable
 state checked, nothing found; 10: an `ASSUME` is false; 11: deadlock; 12: an
 invariant is violated; 13: a liveness property is violated; 150/151: the spec/the
-`.cfg` does not parse. Only exit 12 or 13 whose `name` is the protected property
-counts as a negative control; 10, 11, 150, 151, a crash or a timeout does not.
+`.cfg` does not parse. A pass is exit 0 with `status` `ok`. Only exit 12 or 13
+whose `name` is the protected property counts as a negative control; 10, 11, 150,
+151, any other exit, a crash or a timeout does not. For a liveness control keep one
+`PROPERTY` in the mutation `.cfg`; `name` is omitted when there are several.
 Not supported: simulation, multiple workers, PlusCal and TLAPS proofs.
 
 Checker usage adapted from everystate by Matt Carey (2026), pinned source and MIT

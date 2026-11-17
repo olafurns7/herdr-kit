@@ -321,9 +321,21 @@ esac
         for target in links:
             if '://' not in target: assert (entry.parent / target).exists(), target
     verification_guide = Path('skills/herdr-verification/references/task-proof.md')
-    assert (h / '.agents' / verification_guide).read_bytes() == (setup / verification_guide).read_bytes()
-    assert (h / '.local/share/herdr-setup/third_party/pstack/LICENSE').read_bytes() == (repo / 'third_party/pstack/LICENSE').read_bytes()
-    assert (h / '.local/share/herdr-setup/third_party/everystate/LICENSE').read_bytes() == (repo / 'third_party/everystate/LICENSE').read_bytes()
+
+    def assert_notice_links(home, relative):
+        # Attribution links are rewritten for the installed layout and must land on notices.
+        installed = home / '.agents' / relative
+        targets = [t for t in re.findall(r'\]\(([^)\s]+)\)', installed.read_text()) if 'third_party/' in t]
+        assert sorted(t.split('third_party/')[1] for t in targets) == ['everystate/', 'pstack/'], targets
+        for target in targets:
+            dest = (installed.parent / target).resolve()
+            assert dest.is_relative_to(home.resolve()) and (dest / 'LICENSE').is_file(), target
+
+    assert_notice_links(h, verification_guide)
+    for notice_dir in ('pstack', 'everystate'):
+        for notice in ('LICENSE', 'PROVENANCE.md'):
+            installed = h / '.local/share/herdr-setup/third_party' / notice_dir / notice
+            assert installed.read_bytes() == (repo / 'third_party' / notice_dir / notice).read_bytes(), installed
     for reference in ('incident-intake.md', 'writing.md', 'runbooks.md', 'design.md'):
         relative = Path('skills/herdr-practices/references') / reference
         assert (h / '.agents' / relative).read_bytes() == (setup / relative).read_bytes()
@@ -333,7 +345,7 @@ esac
     h = case('one explicit optional skill does not select the other or fleet')
     run(h, '--verification')
     assert (h / '.agents/skills/herdr-verification/SKILL.md').exists()
-    assert (h / '.agents' / verification_guide).read_bytes() == (setup / verification_guide).read_bytes()
+    assert_notice_links(h, verification_guide)
     assert not (h / '.agents/skills/herdr-practices').exists()
     assert not (h / '.agents/skills/herdr-fleet').exists()
 

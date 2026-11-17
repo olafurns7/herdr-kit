@@ -31,8 +31,9 @@ private `lanes.json` and fleet `local.md` files; use those local files to check
 which policy a host runs.
 
 `--practices` and `--verification` independently select the optional skills.
-Their pinned pstack LICENSE and PROVENANCE.md install under
-`~/.local/share/herdr-setup/third_party/pstack`. Attribution links are rendered
+Their pinned pstack and everystate LICENSE and PROVENANCE.md files install under
+`~/.local/share/herdr-setup/third_party/pstack` and
+`~/.local/share/herdr-setup/third_party/everystate`. Attribution links are rendered
 for the installed layout; source links continue to resolve in this repository.
 slotr is a separate `--slotr` opt-in, supported by its product installer when
 available in the checkout. `--codator` installs only the kit's `cdx`/`cdl` wrappers,

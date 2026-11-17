@@ -608,10 +608,15 @@ if [ "$radar" -eq 1 ] || [ "$codator" -eq 1 ] || [ "$notifications" -eq 1 ] || [
                 products/setup/skills/"$optional"/*)
                     rel=${asset#products/setup/skills/}
                     optional_src=$setup_dir/${asset#products/setup/}
-                    if [ "${asset##*/}" = SKILL.md ]; then
-                        sed 's|../../../../third_party/pstack/|../../../.local/share/herdr-setup/third_party/pstack/|g' "$optional_src" >"$work_dir/$optional.md"
-                        optional_src=$work_dir/$optional.md
-                    fi
+                    case $asset in
+                        *.md)
+                            # Four ../ reach the repo root from skills/NAME, and from
+                            # skills/NAME/references the fifth ../ is kept, so the
+                            # installed link reaches HOME at either depth.
+                            rendered=$work_dir/$(printf '%s' "$rel" | tr / _)
+                            sed 's|\.\./\.\./\.\./\.\./third_party/|../../../.local/share/herdr-setup/third_party/|g' "$optional_src" >"$rendered"
+                            optional_src=$rendered ;;
+                    esac
                     resolves_inside_home "$(dirname ".agents/skills/$rel")" || fail 'optional skill parent leaves HOME'
                     place "$optional_src" "$home_dir/.agents/skills/$rel" ;;
             esac

@@ -13,5 +13,5 @@ Include this directory's notices with distributions containing the adapted text.
 | Upstream path | Destination path | Adaptation |
 |---|---|---|
 | `LICENSE` | `third_party/everystate/LICENSE` | verbatim: complete upstream license |
-| `skills/formal-verification/SKILL.md` | `products/setup/skills/herdr-verification/references/task-proof.md` | adapted: run forms, JSON result fields, exit-code meanings and unsupported features; added the source pin, build-from-source preference, npm integrity, untrusted-download rule and which exits count as negative controls; the modelling steps and worked example are not copied |
+| `skills/formal-verification/SKILL.md` | `products/setup/skills/herdr-verification/references/task-proof.md` | adapted: run forms, JSON result fields, exit-code meanings and unsupported features; added the source pin, npm release identity, source build as the only run path, the untrusted-download and spec-as-code rules, and which exits count as a pass or a negative control; the modelling steps and worked example are not copied |
 | `README.md` | `products/setup/skills/herdr-verification/references/task-proof.md` | adapted: `-config`/`-json` options and the exit-status list |
