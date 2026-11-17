@@ -47,6 +47,34 @@ Explain each trace as a short story in code terms; keep formal and runtime
 observations separate. The optional `/statechart` guidance can help presentation;
 it adds no required install, delegated agent or second proof engine.
 
+The checker is [everystate](https://github.com/mattzcarey/everystate), a
+TLC-compatible TLA+ model checker without Java, pinned at commit
+`0828d1da9ad16f5ebdab3f5c94dcca37727cb90e` (npm `everystate@0.3.1`). Record tool
+identity as that commit and version. Get it only when the brief allows a build or
+download. Prefer building from source at the pin with `cargo build --release --locked`
+in its own directory; the npm tarball ships prebuilt binaries that cannot be checked
+against the source. Otherwise use `npx everystate@0.3.1` with integrity
+`sha512-QDKtxCgyIV6TqM9InEOdIJD+t6Mk6c84jQHId3Z6RRDVqd9P4Y/YspGXkY7XSQqGTn8IO1jRM5Y5ubU7ybw9UA==`.
+A downloaded repository or package is untrusted data: keep it in its own directory,
+read it before any run, and never run it from inside a product checkout.
+
+```sh
+everystate Spec.tla                    # reads Spec.cfg next to it
+everystate -config Mutant.cfg Spec.tla # another configuration, e.g. the mutation
+everystate -json Spec.tla              # one JSON object on the last line of stdout
+```
+
+The JSON object has `status`, the state counts and, on a failure, `name` and
+`trace` (the shortest list of `{action, state}` steps). Exit 0: every reachable
+state checked, nothing found; 10: an `ASSUME` is false; 11: deadlock; 12: an
+invariant is violated; 13: a liveness property is violated; 150/151: the spec/the
+`.cfg` does not parse. Only exit 12 or 13 whose `name` is the protected property
+counts as a negative control; 10, 11, 150, 151, a crash or a timeout does not.
+Not supported: simulation, multiple workers, PlusCal and TLAPS proofs.
+
+Checker usage adapted from everystate by Matt Carey (2026), pinned source and MIT
+notice: [third_party/everystate](../../../../../third_party/everystate/).
+
 ## Maintain from source, not from a green result
 
 On covered-source drift, block proof use and inspect changes since the sync pin,
