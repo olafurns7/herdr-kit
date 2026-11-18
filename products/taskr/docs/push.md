@@ -180,8 +180,17 @@ See [first-time setup](../AGENTS_SETUP.md#start-a-worker) for the taskr-only pat
   meanwhile, and pushes resume. A refused renew (a takeover, a release, a relaunch, an
   adopt or a close) stops it for good, and the adapter must be restarted to resume
   pushes. A stop for a refused lease or offer leaves an `ALARM push_stopped` note with
-  the reason on the consumer's task; the hub board lists it for a root. A failed stdout
-  write, a Codex binding change and an incomplete Codex cleanup end pushes without one.
+  the reason on the consumer's task; the hub board lists it for a root. A stop often
+  comes from a busy ledger, so a channel server retries a note that failed (1 s doubling
+  to 60 s, a new request key unless the failure may have committed) until it is
+  recorded; only a refused note is given up, on stderr. The Codex sidecar tries once and
+  exits 6 in its own tab. A failed stdout write, a Codex binding change and an
+  incomplete Codex cleanup end pushes without one.
+- A running adapter keeps the binary it started with. On Linux each ledger step runs
+  through `/proc/self/exe`, so installing a new taskr does not reach adapters that are
+  already running: they keep the old lease rules until restarted. After an upgrade,
+  restart each push adapter (Claude `/mcp` reconnect or `/restart`, a new `taskr push
+  codex`) and check `taskr consumer show` for the new holder.
 - One event at a time. The push offer takes the oldest pending event that is pushed, so a
   later event is not pushed while an earlier pushed one is unacked. A
   [digest](#digest-pushes-opt-in) carries several events in one push, but they are still
@@ -362,7 +371,7 @@ A duplicate turn is possible after an unconfirmed submission or a restart. The e
    - pi: shutdown closes the child's stdin, which releases the lease at once.
    - Codex: close the sidecar's stdin (Ctrl-D in its tab). That cancels a submission in flight, releases the lease and exits 0. A killed sidecar's lease expires, and so does the lease of one that exited 6 with incomplete cleanup.
 2. Check that the lease is free: `taskr consumer show` (a worker) or `taskr consumer show --as ROOT` (a root) shows `live` false. Do not count on an exact 60 s from a kill.
-3. If the lease is still live, release it with its fence from the same identity: `taskr consumer release --fence N` for a worker, or `taskr consumer release --fence N --as ROOT --session GEN` for a root. To take the inbox over instead, use `taskr consumer take --holder NAME --ttl MS --force`; the old adapter stops at its next renew.
+3. If the lease is still live, release it with its fence from the same identity: `taskr consumer release --fence N` for a worker, or `taskr consumer release --fence N --as ROOT --session GEN` for a root. To take the inbox over instead, use `taskr consumer take --holder NAME --ttl MS --force`; the old adapter stops at its next renew. Choose a NAME of your own: a root whose live lease holder starts with `mcp-channel-` or `codex-queue-` counts as push-live, so root messages to it are recorded as pushes and typed into no pane, though no adapter pushes them.
 4. Run `taskr wait` (a worker) or `taskr wait --as ROOT` (a root). A pending event is offered again from the same cursor.
 
 Nothing already pushed can be recalled: a notification in flight, or a message `codex queue` already accepted, can still start a turn after the handoff. Rolling back an adapter means stopping it. There is no configuration to undo.
@@ -414,7 +423,7 @@ The deterministic gates map to these fixtures:
 | ignored or dropped notification (a blocking ask), re-push after the ack wait, exhaustion alarm | `an_unacked_push_is_pushed_again_after_the_ack_wait_then_alarms_across_restarts` |
 | reset and reconnect, a state-only hint after 5 s, a restarted hint child's state-only first hint at once | `hints_wake_a_check_and_a_reset_reconnects_without_a_duplicate` (the hub's ten-minute stream expiry ends the stream the same way), `a_state_only_hint_wakes_a_check_after_the_state_gap_not_the_poll`, `a_restarted_hint_child_wakes_at_once_on_a_state_only_first_hint` |
 | duplicate and late receipts, RPC uncertainty | `lost_replies_reconcile_with_their_own_keys_and_a_receipt_may_precede_submitted`, `concurrent_same_binding_servers_never_share_the_lease`, `a_takeover_between_attempt_and_write_allows_one_late_push_then_stops`, `a_failed_show_after_a_replayed_take_keeps_its_key_and_never_retakes`, `an_uncertain_local_new_never_claims_an_older_attempt`, `a_receipt_may_precede_submitted_and_recovery_claims_only_queue_attempts`, `push_itself_never_goes_over_rpc_and_its_steps_route`, `a_renew_that_committed_nothing_retries_with_a_new_key`, `a_delivery_new_that_committed_nothing_retries_with_a_new_key` |
-| lease lifecycle, takeover, relaunch, adopt, explicit wait handoff | `the_lease_is_taken_renewed_and_released_with_its_fence_kept`, `a_refused_take_is_retried_and_never_forced`, `a_stale_binding_take_is_final`, `a_takeover_stops_pushes_and_the_tools_keep_serving`, `an_adopt_stops_a_root_channel_whose_envelope_uses_the_pinned_session`, `a_relaunch_stops_the_old_channel_and_an_old_receipt_does_not_suppress_the_new_one`, `a_killed_server_expires_and_a_plain_wait_consumes_the_same_event`, `a_refused_take_is_retried_never_forced_and_a_killed_sidecar_expires`, `a_write_lock_longer_than_the_lease_keeps_the_fence_and_pushes_resume`, `a_fenced_offer_refused_for_a_lapse_renews_at_once_and_keeps_the_fence`, `a_stopped_root_channel_leaves_an_alarm_note_for_the_hub`, `a_takeover_during_a_held_final_read_never_spawns_and_exits_6` |
+| lease lifecycle, takeover, relaunch, adopt, explicit wait handoff | `the_lease_is_taken_renewed_and_released_with_its_fence_kept`, `a_refused_take_is_retried_and_never_forced`, `a_stale_binding_take_is_final`, `a_takeover_stops_pushes_and_the_tools_keep_serving`, `an_adopt_stops_a_root_channel_whose_envelope_uses_the_pinned_session`, `a_relaunch_stops_the_old_channel_and_an_old_receipt_does_not_suppress_the_new_one`, `a_killed_server_expires_and_a_plain_wait_consumes_the_same_event`, `a_refused_take_is_retried_never_forced_and_a_killed_sidecar_expires`, `a_write_lock_longer_than_the_lease_keeps_the_fence_and_pushes_resume`, `a_fenced_offer_refused_for_a_lapse_renews_at_once_and_keeps_the_fence`, `a_stopped_root_channel_leaves_an_alarm_note_for_the_hub`, `a_stop_note_that_meets_a_busy_ledger_is_retried_until_recorded`, `a_takeover_during_a_held_final_read_never_spawns_and_exits_6` |
 | channel timeout and cancel, stalls | `a_stalled_child_keeps_the_tools_serving_and_stale_authority_never_pushes`, `eof_during_a_channel_child_pushes_nothing_then_releases`, `eof_during_a_tool_stops_new_pushes_and_the_tool_still_finishes`, `stdin_read_ahead_is_bounded_while_a_tool_is_held`, `eof_behind_a_full_queue_never_pushes_and_releases`, `a_backlog_pause_keeps_an_unresolved_new_and_its_key`; the client-host cases run with a stalled hint stream |
 | envelope and hostile summaries | `hostile_summaries_stay_one_escaped_untrusted_line`, `hostile_summaries_stay_one_escaped_string_in_the_cli_message` |
 | canary scratch safety | `the_canary_selftest_passes_and_refuses_unowned_state` |

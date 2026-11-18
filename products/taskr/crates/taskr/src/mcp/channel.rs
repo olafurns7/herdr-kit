@@ -162,6 +162,15 @@ impl Sink {
     }
 }
 
+/// A channel stop's `ALARM push_stopped` note that is not in the ledger yet: its text,
+/// the request key of its next try, and when that try runs.
+struct Alarm {
+    summary: String,
+    key: Option<String>,
+    at: Instant,
+    backoff: Duration,
+}
+
 /// The queue sink's submission in flight: its event, attempt and cancel flag.
 struct Flight {
     e: i64,
@@ -274,6 +283,7 @@ fn setup(
         digest: false,
         hold: None,
         spare: HashMap::new(),
+        alarm: None,
     };
     (send, receive, hints, state)
 }
@@ -468,6 +478,8 @@ struct Loop {
     /// Digest mode: committed attempts of tail lines whose digest was not written,
     /// by event, used again by the next digest instead of a new attempt.
     spare: HashMap<i64, i64>,
+    /// A channel stop whose ledger note failed: retried until it is recorded.
+    alarm: Option<Alarm>,
 }
 
 /// A child's outcome as the tools report it, and its JSON.
@@ -566,7 +578,7 @@ impl Loop {
         match &self.lease {
             Lease::Free { at, .. } => *at,
             Lease::Held { renew_at, .. } => (*renew_at).min(self.next_check),
-            Lease::Stopped => far,
+            Lease::Stopped => self.alarm.as_ref().map_or(far, |a| a.at),
         }
     }
 
@@ -584,6 +596,9 @@ impl Loop {
 
     fn step(&mut self) {
         let now = Instant::now();
+        if self.alarm.as_ref().is_some_and(|a| now >= a.at) {
+            return self.note_stop();
+        }
         if matches!(self.lease, Lease::Free { at, .. } if now >= at) {
             self.take();
         }
@@ -647,8 +662,11 @@ impl Loop {
     }
     /// The stop in the ledger, not only on stderr (Claude Code does not keep an MCP
     /// server's stderr): an `ALARM` note on the consumer's task, which the hub board lists
-    /// for a root, as `push_exhausted` does. Best effort: a refusal is logged.
-    fn trace(&self, why: &str) {
+    /// for a root, as `push_exhausted` does. A stop often comes from a busy or unreachable
+    /// ledger, so a channel server, which keeps serving its tools, retries a note that
+    /// failed (1 s doubling to 60 s) until it is recorded; a refusal is final and logged.
+    /// The queue sink tries once: it exits 6 in its own terminal.
+    fn trace(&mut self, why: &str) {
         let why: String = why
             .chars()
             .map(|c| if c.is_control() { ' ' } else { c })
@@ -662,9 +680,52 @@ impl Loop {
             "ALARM push_stopped {kind} {task} ({}): {why}; no more pushes to this session, its tools keep serving; if this session should still receive pushes, restart its push adapter (Claude /restart, or a new taskr push codex)",
             self.holder
         );
-        let ran = self.exec(self.argv(&["note", &summary], false), self.key().as_deref());
+        self.alarm = Some(Alarm {
+            summary,
+            key: self.key(),
+            at: Instant::now(),
+            backoff: self.t.backoff,
+        });
+        self.note_stop();
+    }
+    /// One try of the pending stop note. A failure that may have committed retries with
+    /// its own request key (a ledger host has none: a retry after an uncertain local try
+    /// can leave a second note, never none); any other failure gets a new key.
+    fn note_stop(&mut self) {
+        let Some(alarm) = self.alarm.take() else {
+            return;
+        };
+        let ran = match busy_note() {
+            Some(ran) => ran,
+            None => self.exec(
+                self.argv(&["note", &alarm.summary], false),
+                alarm.key.as_deref(),
+            ),
+        };
         match ran.outcome {
             "committed" | "queued" => log("recorded the stop in the ledger"),
+            "rejected" | "usage" => log(format!(
+                "could not record the stop in the ledger ({}): {}",
+                ran.outcome,
+                ran.error()
+            )),
+            outcome if matches!(self.sink, Sink::Notify) => {
+                log(format!(
+                    "could not record the stop in the ledger yet ({outcome}), retrying in {} ms: {}",
+                    alarm.backoff.as_millis(),
+                    ran.error()
+                ));
+                self.alarm = Some(Alarm {
+                    key: if uncertain(outcome) {
+                        alarm.key
+                    } else {
+                        self.key()
+                    },
+                    at: Instant::now() + alarm.backoff,
+                    backoff: (alarm.backoff * 2).min(self.t.backoff_max),
+                    summary: alarm.summary,
+                });
+            }
             outcome => log(format!(
                 "could not record the stop in the ledger ({outcome}): {}",
                 ran.error()
@@ -1455,6 +1516,35 @@ impl Loop {
         }
         self.digest_stamps();
     }
+}
+
+/// Test-only: the first N stop notes (`TASKR_CONTRACT_CHANNEL_BUSY_NOTES`) meet a busy
+/// ledger. Each is answered as a ledger host's note child is after its 30 s busy wait
+/// (exit 4, outcome `error`), without running one. Release builds have no knob.
+fn busy_note() -> Option<Ran> {
+    #[cfg(feature = "contract")]
+    {
+        static LEFT: std::sync::OnceLock<Mutex<u32>> = std::sync::OnceLock::new();
+        let mut left = LEFT
+            .get_or_init(|| {
+                Mutex::new(
+                    std::env::var("TASKR_CONTRACT_CHANNEL_BUSY_NOTES")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0),
+                )
+            })
+            .lock()
+            .expect("busy notes");
+        if *left > 0 {
+            *left -= 1;
+            return Some(Ran {
+                outcome: "error",
+                value: json!({"error":"database is locked (5) (SQLITE_BUSY)","kind":"database"}),
+            });
+        }
+    }
+    None
 }
 
 /// An outcome that may have committed: its retry reuses the request key. Any other
