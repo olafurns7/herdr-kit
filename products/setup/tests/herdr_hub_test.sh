@@ -331,7 +331,8 @@ else: sys.exit(98)
         if code_mode == '0':
             prompt += waiting
         actual = json.loads((work / 'cdl').read_text())
-        expected = dict(args=[*account,'--model',model,'--effort','high','--mcp-config',str(config),
+        expected = dict(args=[*account,'--model',model,'--effort','high',
+                              '--settings','{"autoCompactEnabled":true}','--mcp-config',str(config),
                               '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
                         task=None, launch=None, role='hub', code_mode=code_mode, pid=process.pid, cwd=str(work), umask=0o002)
         assert actual == expected, {'actual':actual, 'expected':expected}

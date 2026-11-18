@@ -476,7 +476,7 @@ tmp=
 
 step_line 6 'start Claude and answer development-channel dialog'
 set -- --model "$model" --effort "$effort" --dangerously-skip-permissions \
-    --settings '{"agentPushNotifEnabled":false,"autoCompactWindow":'"$compact_window"',"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}' \
+    --settings '{"agentPushNotifEnabled":false,"autoCompactEnabled":true,"autoCompactWindow":'"$compact_window"',"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}' \
     --add-dir "$worktree" --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr
 [ -z "$resume" ] || set -- --resume "$resume" "$@"
 [ -z "$account" ] || set -- --account "$account" "$@"
