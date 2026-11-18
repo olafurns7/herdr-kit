@@ -7,6 +7,7 @@ use taskr_core::{
     goflag::{self, FlagSet},
 };
 mod board;
+mod brief;
 mod campaign;
 mod glance;
 mod queries;
@@ -58,6 +59,19 @@ fn id(s: &str, what: &str) -> Result<i64> {
         ))
     })
 }
+const BRIEF_HELP: &str = "one text line per event: ID KIND TASK SUMMARY; only got, note, start, launch, plain herdr hints and ready/done summaries are cut, at 160 chars";
+/// `--brief` prints text; JSON output is refused, as for `glance --brief`.
+fn brief(f: &FlagSet) -> Result<bool> {
+    if !f.get_bool("brief") {
+        return Ok(false);
+    }
+    if f.json() {
+        return Err(usage(
+            "--brief prints text: drop --json or unset TASKR_FORMAT=json",
+        ));
+    }
+    Ok(true)
+}
 fn flags(cmd: &str, json: bool) -> FlagSet {
     let mut f = FlagSet::new(cmd, json);
     match cmd {
@@ -83,7 +97,8 @@ fn flags(cmd: &str, json: bool) -> FlagSet {
             f.bool("tree", false, "include descendants")
                 .int("since", 0, "only events after this id")
                 .int("before", 0, "only events before this id")
-                .int("limit", 0, "newest N events, 0 for all (default 100)");
+                .int("limit", 0, "newest N events, 0 for all (default 100)")
+                .bool("brief", false, BRIEF_HELP);
         }
         "notes" => {
             f.bool("owner", false, "only notes for the owner")
@@ -129,7 +144,8 @@ fn flags(cmd: &str, json: bool) -> FlagSet {
                 "limit",
                 20,
                 "oldest N events after the ack cursor, 1 to 200",
-            );
+            )
+            .bool("brief", false, BRIEF_HELP);
         }
         "glance" => {
             f.bool("watch", false, "live terminal view")
@@ -222,7 +238,7 @@ pub fn dispatch(json: bool, args: &[String]) -> Option<ExitCode> {
     }
     // As the hub's check_args: a repeated inbox flag, help included, is refused.
     if name == "inbox"
-        && let Some(k) = crate::write::repeated(rest, &["as", "limit", "help"])
+        && let Some(k) = crate::write::repeated(rest, &["as", "limit", "brief", "help"])
     {
         return Some(cli::error(
             f.json(),
@@ -276,11 +292,16 @@ fn inbox(f: &FlagSet) -> Result<()> {
     if !(1..=200).contains(&limit) {
         return Err(usage(format!("--limit must be 1 to 200, got {limit}")));
     }
+    let brief = brief(f)?;
     let v = taskr_core::store::inbox::peek(&mut open()?, as_id, limit).map_err(|e| Error {
         code: e.code,
         text: e.message,
     })?;
-    cli::emit(f.json(), &v, false);
+    if brief {
+        print!("{}", brief::inbox(&v));
+    } else {
+        cli::emit(f.json(), &v, false);
+    }
     Ok(())
 }
 fn help(f: &FlagSet) -> Result<()> {
