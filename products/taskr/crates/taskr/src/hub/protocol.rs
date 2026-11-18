@@ -165,7 +165,7 @@ pub(super) fn check_args(argv: &[String]) -> Result<(), String> {
     });
     let once: &[&str] = match name {
         "prompt" | "_prompt" | "message" => &["as", "push", "pane", "help"],
-        "inbox" => &["as", "limit", "help"],
+        "inbox" => &["as", "limit", "brief", "help"],
         "delivery" => &["as", "session", "adapter", "fence", "after", "help"],
         "consumer" => &["as", "session", "holder", "ttl", "fence", "force", "help"],
         "work" => &[
@@ -226,7 +226,10 @@ pub(super) fn check_args(argv: &[String]) -> Result<(), String> {
         if !seen.insert(key) {
             return Err(format!("repeated RPC flag --{key}"));
         }
+        // log and inbox take --brief as a switch; new takes --brief PATH.
+        let switch = key == "brief" && matches!(name, "log" | "inbox");
         if value.is_none()
+            && !switch
             && !matches!(
                 key,
                 "planned" | "confirm" | "prompt" | "help" | "force" | "push" | "pane" | "no-slotr"
@@ -507,7 +510,17 @@ mod tests {
         }
         assert!(check_args(&argv(&["--json", "inbox", "--as", "1", "--limit", "5"])).is_ok());
         assert!(check_args(&argv(&["inbox", "--help"])).is_ok());
+        for args in [
+            vec!["inbox", "--brief", "--limit", "5"],
+            vec!["log", "7", "--brief", "--limit", "5", "--tree"],
+        ] {
+            assert!(!stored(&argv(&args)), "{args:?}");
+            assert!(check_args(&argv(&args)).is_ok(), "{args:?}");
+        }
         for repeat in [
+            vec!["inbox", "--brief", "--limit", "1", "--limit=2"],
+            vec!["inbox", "--brief", "--brief"],
+            vec!["log", "7", "--brief", "--brief=true"],
             vec!["inbox", "--limit", "1", "--limit=2"],
             vec!["inbox", "--as", "1", "-as", "1"],
             vec!["inbox", "-h", "--help=false"],

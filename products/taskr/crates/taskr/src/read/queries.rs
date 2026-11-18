@@ -297,6 +297,14 @@ pub fn log(f: &FlagSet) -> Result<()> {
         return Err(usage(format!("--limit must be >= 0, got {limit}")));
     }
     let id = id(&f.positional[0], "task id")?;
+    let brief = brief(f)?;
+    let line = |v: &Value| {
+        if brief {
+            super::brief::render(v)
+        } else {
+            cli::read_line(v)
+        }
+    };
     let db = open()?;
     let ids = if f.get_bool("tree") {
         subtree(&db, id)?
@@ -364,10 +372,10 @@ pub fn log(f: &FlagSet) -> Result<()> {
         });
         let mut dropped = 0;
         if !f.json() && !(f.was_set("limit") && limit == 0) {
-            let mut size = total(&launches) + total(&events);
+            let mut size: usize = launches.iter().chain(&events).map(|v| line(v).len()).sum();
             while events.len() > 1 && size > CAP {
                 let at = if forward { events.len() - 1 } else { 0 };
-                size -= cli::read_line(&events.remove(at)).len();
+                size -= line(&events.remove(at)).len();
             }
             let mut i = 0;
             while i < launches.len() && size > CAP {
@@ -375,7 +383,7 @@ pub fn log(f: &FlagSet) -> Result<()> {
                     .iter()
                     .any(|t| t["id"] == launches[i]["task_id"] && t["status"] == "closed")
                 {
-                    size -= cli::read_line(&launches.remove(i)).len();
+                    size -= line(&launches.remove(i)).len();
                     dropped += 1;
                 } else {
                     i += 1;
@@ -397,7 +405,11 @@ pub fn log(f: &FlagSet) -> Result<()> {
         }
     }
     for m in launches.iter().chain(&events) {
-        cli::emit(f.json(), m, true);
+        if brief {
+            print!("{}", line(m));
+        } else {
+            cli::emit(f.json(), m, true);
+        }
     }
     if let Some(t) = trailer {
         cli::ordered_trailer(
