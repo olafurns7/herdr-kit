@@ -20,6 +20,7 @@ Launch helpers require jq.
 Fleet selection installs the public orchestration/fleet skills, `herdr-launch`,
 `herdr-loop`, `herdr-worktrees`, `herdr-lead`, `herdr-hub` and `herdr-lanes.sh`,
 the shared lane table, and minimal taskr hooks.
+`kit-prompt ARGS` runs `taskr prompt ARGS`; a clean push prints `event N`, anything else taskr's output whole with its exit code.
 If Herdr is available, its generated upstream skill is staged too. OpenCode/pi hooks
 are selected only when the corresponding config directory already exists.
 Existing agent config directories get skill loader links. No unrelated settings

@@ -170,6 +170,7 @@ products/setup/bin/herdr-loop
 products/setup/bin/herdr-worktrees
 products/setup/bin/herdr-lead
 products/setup/bin/herdr-hub
+products/setup/bin/kit-prompt
 products/setup/bin/herdr-lanes.sh
 products/setup/lanes.json
 products/setup/intake.example.yaml

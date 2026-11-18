@@ -1,0 +1,30 @@
+#!/bin/sh
+# taskr prompt with a short clean push: all arguments go to `taskr prompt`
+# unchanged. Only exit 0, empty stderr and exactly one stdout line
+# `m1 {...}` whose JSON has "path":"push" and an integer "event" prints
+# `event N`. Anything else (pane p1, qd1, refusal, unknown or extra lines,
+# any stderr, --json output, missing jq) prints taskr's stdout and stderr
+# whole with taskr's exit code.
+set -eu
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/kit-prompt.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+rc=0
+taskr prompt "$@" >"$tmp/out" 2>"$tmp/err" || rc=$?
+whole() {
+    cat "$tmp/out"
+    cat "$tmp/err" >&2
+    exit "$rc"
+}
+[ "$rc" -eq 0 ] || whole
+[ ! -s "$tmp/err" ] || whole
+[ "$(wc -l <"$tmp/out")" -eq 1 ] || whole
+line=$(cat "$tmp/out")
+case $line in 'm1 {'*'}') ;; *) whole ;; esac
+command -v jq >/dev/null 2>&1 || whole
+event=$(printf '%s\n' "${line#m1 }" | jq -er \
+    'select(type == "object" and .path == "push" and (.event | type == "number")
+        and .event == (.event | floor) and .event > 0) | .event' 2>/dev/null) || whole
+case $event in '' | *[!0-9]*) whole ;; esac
+printf 'event %s\n' "$event"
