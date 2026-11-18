@@ -2755,34 +2755,64 @@ class AdmissionTest(unittest.TestCase):
         self.assertEqual(self.status()['queue'][0]['backfill_admissions'], 1)
         self.assertEqual(self.events('admit')[-1]['backfill_for'], queue[0]['enqueue_seq'])
 
-    def test_fair_turn_backfill_stream_stops_after_eight_admissions(self):
-        self.configure_clock()
-        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='1',
-                        SLOTR_ADMISSION__RESERVE_MIB='6144')
-        self.set_stats(20992)
-        head, large = self.start('head', cost=20480)
-        self.wait(lambda: len(self.status()['queue']) == 1)
-        self.advance(2)
+    def spend_backfills(self, holders):
         for i in range(8):
             label = 'small' + str(i)
             small, output = self.start(label, cost=512)
             self.admitted(label, output)
             small.terminate(); small.wait(timeout=3)
-            self.wait(lambda: not self.status()['pools']['runtime']['holders'])
+            self.wait(lambda: len(self.status()['pools']['runtime']['holders']) == holders)
             self.assertEqual(self.status()['queue'][0]['backfill_admissions'], i + 1)
+
+    def test_fair_turn_backfill_stream_stops_after_eight_admissions(self):
+        self.configure_clock()
+        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='1',
+                        SLOTR_ADMISSION__RESERVE_MIB='6144')
+        self.set_stats(20992)
+        # This run's 8 GiB reservation is what the head needs: draining it helps.
+        holder, held = self.start('holder', cost=8192)
+        self.admitted('holder', held)
+        head, large = self.start('head', cost=20480)
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        self.advance(2)
+        self.spend_backfills(holders=1)
         _, ninth = self.start('ninth', cost=512)
         queue = self.wait(lambda: len(q := self.status()['queue']) == 2 and q)
         self.assertEqual(queue[1]['wait_reason'], 'fair_turn_backfill_limit')
         self.assertEqual(queue[0]['backfill_admissions'], queue[0]['backfill_limit'])
         self.assertFalse(ninth.exists()); self.assertFalse(large.exists())
-        # No backfill holders remain. Once enough memory is available, head wins.
-        self.set_stats(30 * 1024)
+        # The run ends and returns its memory: the head wins.
+        self.set_stats(20992 + 8192)
+        holder.terminate(); holder.wait(timeout=3)
         self.wait(large.exists); self.wait(ninth.exists)
         admitted = [e['campaign'] for e in self.events('admit')]
-        self.assertEqual(admitted[:8], ['small' + str(i) for i in range(8)])
-        self.assertEqual(set(admitted[8:]), {'head', 'ninth'})
+        self.assertEqual(admitted[:9], ['holder'] + ['small' + str(i) for i in range(8)])
+        self.assertEqual(set(admitted[9:]), {'head', 'ninth'})
         holders = sorted(self.status()['pools']['runtime']['holders'], key=lambda h: h['admit_seq'])
         self.assertEqual([h['campaign'] for h in holders], ['head', 'ninth'])
+        self.assertIsNone(head.poll())
+
+    def test_spent_backfill_bound_yields_when_draining_cannot_fit_head(self):
+        # Incident shape: a 12 GiB head with about 7.9 GiB available, eight
+        # backfills spent and no runs active must not stall the pool.
+        self.configure_clock()
+        self.env.update(SLOTR_PRIORITY__FAIR_WAIT_SECONDS='1',
+                        SLOTR_ADMISSION__RESERVE_MIB='2048')
+        self.set_stats(8090)
+        head, large = self.start('head', cost=12288)
+        self.wait(lambda: len(self.status()['queue']) == 1)
+        self.advance(2)
+        self.spend_backfills(holders=0)
+        ninth, output = self.start('ninth', cost=512)
+        self.admitted('ninth', output)
+        self.assertEqual(self.events('admit')[-1]['backfill_for'],
+                         self.status()['queue'][0]['enqueue_seq'])
+        self.assertFalse(large.exists())
+        # Memory frees outside slotr: the head keeps its turn and starts first.
+        ninth.terminate(); ninth.wait(timeout=3)
+        self.set_stats(16384)
+        self.wait(large.exists)
+        self.assertEqual(self.events('admit')[-1]['campaign'], 'head')
         self.assertIsNone(head.poll())
 
     def test_fitting_fair_turn_head_is_admitted_before_small_ticket(self):
