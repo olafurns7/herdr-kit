@@ -1359,6 +1359,8 @@ enum Act {
     LateLoss(Duration),
     /// Held this long before the hub runs it, then passed.
     Before(Duration),
+    /// This runs, then the hub runs it and the reply goes back.
+    First(Box<dyn FnOnce() + Send>),
 }
 type Rule = Arc<dyn Fn(&[String]) -> Act + Send + Sync>;
 /// An RPC proxy to the hub, one thread per connection. Each request's argv goes through
@@ -1417,9 +1419,17 @@ fn proxy(hub_port: u16, rule: Rule) -> (u16, mpsc::Receiver<Value>) {
                 if matches!(act, Act::LoseRequest) {
                     return;
                 }
-                if let Act::Before(d) = act {
-                    std::thread::sleep(d);
-                }
+                let act = match act {
+                    Act::Before(d) => {
+                        std::thread::sleep(d);
+                        Act::Pass
+                    }
+                    Act::First(f) => {
+                        f();
+                        Act::Pass
+                    }
+                    act => act,
+                };
                 let mut hub =
                     std::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, hub_port))
                         .unwrap();
@@ -1430,7 +1440,7 @@ fn proxy(hub_port: u16, rule: Rule) -> (u16, mpsc::Receiver<Value>) {
                 match act {
                     Act::LoseReply | Act::LoseRequest | Act::Reply(_) => {}
                     Act::LateLoss(d) => std::thread::sleep(d),
-                    Act::Pass | Act::Before(_) => {
+                    Act::Pass | Act::Before(_) | Act::First(_) => {
                         let _ = client.write_all(&reply);
                     }
                     Act::After(f) => {
@@ -3428,7 +3438,11 @@ fn a_refused_tail_attempt_writes_nothing_and_stops() {
         operator.clone(),
     );
     let takeover = Mutex::new(Some(move || {
-        // After the head's attempt commits, before the tail's: another holder takes over.
+        // After the head's attempt commits, as the tail's reaches the hub: another holder
+        // takes over. A takeover right after the head's attempt raced the 1 s renew (scale
+        // 20): a renew due before the tail's attempt was refused and stopped the loop with
+        // no tail attempt at all. Now any renew due before the tail's attempt runs first,
+        // on fence 1, so the tail's attempt itself is the refused step.
         let out = std::process::Command::new(bin)
             .env_clear()
             .current_dir(&home)
@@ -3450,8 +3464,8 @@ fn a_refused_tail_attempt_writes_nothing_and_stops() {
             String::from_utf8_lossy(&out.stderr)
         );
     }));
-    let (w, worker, _) = digest_client(&h, &tailnet, 0, move || {
-        Act::After(Box::new(takeover.lock().unwrap().take().unwrap()))
+    let (w, worker, _) = digest_client(&h, &tailnet, 1, move || {
+        Act::First(Box::new(takeover.lock().unwrap().take().unwrap()))
     });
     *operator.lock().unwrap() = worker.clone();
     let mut c = Chan::start(&h, &digest(&worker), &[], SCALE);
