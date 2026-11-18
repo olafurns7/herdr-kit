@@ -256,7 +256,7 @@ expect_no_calls() {
 claude_settings() {
     lean_skills=',"skillOverrides":{"herdr":"off","herdr-orchestration":"off","herdr-fleet":"off"}'
     [ "${1-}" != orch ] || lean_skills=
-    printf '%s' "{\"agentPushNotifEnabled\":false,\"autoMemoryEnabled\":false,\"promptSuggestionEnabled\":false,\"awaySummaryEnabled\":false,\"idleCompaction\":false,\"disableBundledSkills\":true,\"syncClaudeAiSkills\":false,\"disableClaudeAiConnectors\":true,\"enabledPlugins\":{\"posthog@claude-plugins-official\":false,\"cc-plugin-you-should-know@builtin\":false,\"slack@claude-plugins-official\":false,\"stripe@claude-plugins-official\":false,\"cc-plugin-easel@builtin\":false,\"cc-plugin-plugin-authoring@builtin\":false}$lean_skills}"
+    printf '%s' "{\"agentPushNotifEnabled\":false,\"autoMemoryEnabled\":false,\"promptSuggestionEnabled\":false,\"awaySummaryEnabled\":false,\"autoCompactEnabled\":true,\"idleCompaction\":false,\"disableBundledSkills\":true,\"syncClaudeAiSkills\":false,\"disableClaudeAiConnectors\":true,\"enabledPlugins\":{\"posthog@claude-plugins-official\":false,\"cc-plugin-you-should-know@builtin\":false,\"slack@claude-plugins-official\":false,\"stripe@claude-plugins-official\":false,\"cc-plugin-easel@builtin\":false,\"cc-plugin-plugin-authoring@builtin\":false}$lean_skills}"
 }
 # claude_flags EFFORT [MODEL] [orch] [mcp]; mcp (rs- and arch- lanes, W2316)
 # drops --strict-mcp-config.

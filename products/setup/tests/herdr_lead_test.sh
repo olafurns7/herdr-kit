@@ -600,7 +600,7 @@ has calls 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0 && '
 has calls 'taskr|adopt|42|--workspace|wA|--tab|wA:t1|--pane|wA:p1|env=/'
 has calls 'herdr|pane|send-keys|wA:p1|Enter'
 has calls 'herdr|agent|wait|orch-example|--until|idle|--timeout|90000'
-has calls '--model|claude-opus-5-5|--effort|high|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"autoCompactWindow":250000,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}'
+has calls '--model|claude-opus-5-5|--effort|high|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"autoCompactEnabled":true,"autoCompactWindow":250000,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}'
 has calls "--mcp-config|$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json|--dangerously-load-development-channels|server:taskr"
 has calls 'do not run taskr adopt'
 lacks calls 'Additional brief.'
@@ -632,7 +632,7 @@ for window in 100000 180000 1000000; do
     COMPACT_WINDOW=$window
     start
     expect_rc 0
-    has calls "--settings|{\"agentPushNotifEnabled\":false,\"autoCompactWindow\":$window,\"enabledPlugins\":"
+    has calls "--settings|{\"agentPushNotifEnabled\":false,\"autoCompactEnabled\":true,\"autoCompactWindow\":$window,\"enabledPlugins\":"
     lacks calls '"autoCompactWindow":250000'
 done
 
