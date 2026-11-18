@@ -43,7 +43,12 @@ and the final line adds `fable_spend=1`.
 `~/.config/herdr-fleet/accounts.json`, `{"protect":["NAME",...],"reserve":15}`,
 names accounts that run a live hub or lead; lane picks subtract the reserve
 from their week and Fable left. Nothing writes the file yet; a later ticket
-makes herdr-hub and herdr-lead write it. A missing or malformed file is no list.
+makes herdr-hub and herdr-lead write it. A missing or malformed file is no list,
+and herdr-launch says so: an automatic pick prints
+`herdr-launch: no protect list (missing|malformed): ~/.config/herdr-fleet/accounts.json`
+on stderr (`missing` when the file is absent, `malformed` for any other read
+or value failure) and picks as it would without a list; an explicit
+`--account` prints nothing.
 Invalid snapshots and account names are skipped. No eligible account leaves
 selection to Codator. The final line reports `account=NAME drain=soon` (reset
 within 24 hours) or `account=NAME drain=later` for an automatic pick,
@@ -59,7 +64,9 @@ or `later` for the chosen account (with `fable_spend=1` when it has no
 spare), `next` for other eligible accounts, `out` for accounts below a margin,
 and `stale` for skipped snapshots. Roles apply the protect reserve; numbers are
 raw, and a protected account's line ends with `protected=1`. Unavailable values
-print `-`. No account is
+print `-`. A missing or malformed protect list adds a last line
+`protect=none reason=missing` or `protect=none reason=malformed`, so no
+reserve applied; a valid list adds nothing. No account is
 driven to zero for a free reset any more, so `--quota` prints no alert line.
 
 ## Workspaces and tabs

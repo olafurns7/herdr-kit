@@ -257,15 +257,18 @@ def reset_time(limit):
     return reset
 
 # Protect list: accounts that run a live hub or lead keep a reserve from lane
-# picks. A missing or malformed file means no list.
-protect, reserve = (), 0
+# picks. A missing or malformed file means no list; protect_state names which
+# (None for a valid list) so the shell can say so.
+protect, reserve, protect_state = (), 0, "malformed"
 try:
     config = json.loads((pathlib.Path.home() / ".config/herdr-fleet/accounts.json").read_text(encoding="utf-8"))
     names, amount = config["protect"], config["reserve"]
     if (isinstance(names, list) and all(isinstance(name, str) for name in names)
             and not isinstance(amount, bool) and isinstance(amount, (int, float))
             and math.isfinite(amount) and amount >= 0):
-        protect, reserve = tuple(names), amount
+        protect, reserve, protect_state = tuple(names), amount, None
+except FileNotFoundError:
+    protect_state = "missing"
 except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError):
     pass
 
@@ -333,10 +336,14 @@ if mode == "quota":
             record["name"], display(record["week"]), display(record["fable"]), record["reset"], record["role"],
             " fable_spend=1" if record is pick and fable_spend else "",
             " protected=1" if record["name"] in protect else ""))
+    if protect_state:
+        print("protect=none reason=" + protect_state)
 else:
     result = {"account": pick["name"], "drain": drain} if pick else {}
     if pick and fable_spend:
         result["fable_spend"] = 1
+    if protect_state:
+        result["protect"] = protect_state
     print(json.dumps(result))
 PY
 }
@@ -783,7 +790,7 @@ else
 fi
 
 # Missing Python or unusable snapshots leave account choice to Codator.
-account_pick=
+account_pick= protect_state=
 if [ "$kind" = claude ] && [ -z "$account" ]; then
     account_python=$(account_script)
     # Keep the pane command on one line; exec decodes the Python string
@@ -822,6 +829,7 @@ if [ -n "$machine" ]; then
         account=$(printf '%s\n' "$facts" | jq -r '.[4].account // ""')
         drain=$(printf '%s\n' "$facts" | jq -r '.[4].drain // ""')
         fable_spend=$(printf '%s\n' "$facts" | jq -r 'if .[4].fable_spend == 1 then 1 else "" end')
+        protect_state=$(printf '%s\n' "$facts" | jq -r '.[4].protect // ""')
     fi
 else
     codator=0
@@ -831,9 +839,14 @@ else
         account=$(printf '%s\n' "$picked" | jq -r '.account // ""') || account=
         drain=$(printf '%s\n' "$picked" | jq -r '.drain // ""') || drain=
         fable_spend=$(printf '%s\n' "$picked" | jq -r 'if .fable_spend == 1 then 1 else "" end') || fable_spend=
+        protect_state=$(printf '%s\n' "$picked" | jq -r '.protect // ""') || protect_state=
     fi
 fi
 if [ -n "$account_pick" ]; then
+    # The picker names a missing or malformed protect list; say so once.
+    case $protect_state in
+        missing | malformed) printf 'herdr-launch: no protect list (%s): ~/.config/herdr-fleet/accounts.json\n' "$protect_state" >&2 ;;
+    esac
     case $account in
         '' | [!A-Za-z0-9]* | *[!A-Za-z0-9_-]*) account= drain= fable_spend= ;;
     esac
