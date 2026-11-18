@@ -675,6 +675,9 @@ exec /bin/cp "$@"
     hub = h / '.local/bin/herdr-hub'
     assert hub.read_bytes() == (setup / 'bin/herdr-hub').read_bytes()
     assert hub.stat().st_mode & 0o777 == 0o755
+    kit_pr = h / '.local/bin/kit-pr'
+    assert kit_pr.read_bytes() == (setup / 'bin/kit-pr').read_bytes()
+    assert kit_pr.stat().st_mode & 0o777 == 0o755
     kit_prompt = h / '.local/bin/kit-prompt'
     assert kit_prompt.read_bytes() == (setup / 'bin/kit-prompt').read_bytes()
     assert kit_prompt.stat().st_mode & 0o777 == 0o755
@@ -699,6 +702,7 @@ exec /bin/cp "$@"
         '.local/bin/herdr-worktrees': setup / 'bin/herdr-worktrees',
         '.local/bin/herdr-lead': setup / 'bin/herdr-lead',
         '.local/bin/herdr-hub': setup / 'bin/herdr-hub',
+        '.local/bin/kit-pr': setup / 'bin/kit-pr',
         '.local/bin/kit-prompt': setup / 'bin/kit-prompt',
         '.config/systemd/user/taskr.service': setup / 'systemd/taskr.service',
     }

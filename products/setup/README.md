@@ -18,8 +18,9 @@ supported; anonymous downloads use curl. Unpinned curl installs also need jq.
 Launch helpers require jq.
 
 Fleet selection installs the public orchestration/fleet skills, `herdr-launch`,
-`herdr-loop`, `herdr-worktrees`, `herdr-lead`, `herdr-hub` and `herdr-lanes.sh`,
-the shared lane table, and minimal taskr hooks.
+`herdr-loop`, `herdr-worktrees`, `herdr-lead`, `herdr-hub`, `herdr-lanes.sh`,
+`kit-pr` and `kit-prompt`, the shared lane table, and minimal taskr hooks.
+`kit-pr N [--repo OWNER/REPO] [--checks] [--body]` prints one PR status line from `gh` and `jq`.
 `kit-prompt ARGS` runs `taskr prompt ARGS`; a clean push prints `event N`, anything else taskr's output whole with its exit code.
 If Herdr is available, its generated upstream skill is staged too. OpenCode/pi hooks
 are selected only when the corresponding config directory already exists.
