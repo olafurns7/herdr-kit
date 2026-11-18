@@ -326,7 +326,15 @@ expect_account_start() {
     grep -F '|agent|start|' "$case_dir/calls" | grep -F -- "|--|--account|$1|$2" >/dev/null \
         || fail 'account is not the leading native argument pair'
     printf '%s\n' "$out" | grep -F " account=$1" >/dev/null || fail 'chosen account not reported'
-    [ -z "$err" ] || fail "unexpected stderr: $err"
+    # An automatic pick may warn once about the protect list (W3190); the
+    # protect cases check that line itself.
+    rest=$(printf '%s\n' "$err" | grep -Exv 'herdr-launch: no protect list \((missing|malformed)\): ~/\.config/herdr-fleet/accounts\.json' || :)
+    [ -z "$rest" ] || fail "unexpected stderr: $err"
+}
+# expect_protect_warning missing|malformed: stderr is exactly that one warning.
+expect_protect_warning() {
+    [ "$err" = "herdr-launch: no protect list ($1): ~/.config/herdr-fleet/accounts.json" ] \
+        || fail "stderr '$err', expected the $1 protect warning"
 }
 # acct NAME WEEK_USED FABLE_USED|- RESET [FIVE_HOUR_USED]: a fresh usable
 # snapshot. RESET is hours from now or @EPOCH; - leaves out the Fable row.
@@ -368,6 +376,8 @@ for account_lane in opus-medium sol-high; do
     [ "$account_lane" != sol-high ] || native_flag=-m
     expect_account_start 'review-seat' "$native_flag"
     case $out in *' drain='*) fail 'explicit account reported a drain pick' ;; esac
+    [ ! -e "$home/.config/herdr-fleet/accounts.json" ] || fail 'fixture has a protect list'
+    [ -z "$err" ] || fail "explicit account with a missing protect list warned: $err"
 done
 for invalid_account in 'review seat' '-seat' '_seat' 'a.b' 'éclair' 'seat/name' \
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$(printf 'seat\nline')"; do
@@ -653,6 +663,7 @@ for bad_list in '{broken' '[]' '{"protect":"acct-a","reserve":15}' '{"protect":[
     acct acct-a 96.5 100 2
     acct acct-b 20 100 3
     pick opus-medium acct-a drain=soon
+    expect_protect_warning malformed
 done
 
 for bad_list in huge-reserve deep-nesting; do
@@ -665,10 +676,34 @@ for bad_list in huge-reserve deep-nesting; do
     acct acct-a 86 100 2
     acct acct-b 20 100 3
     pick opus-medium acct-a drain=soon
+    expect_protect_warning malformed
     run_launch sh "$launch_sh" --quota
     expect_rc 0
     printf '%s\n' "$out" | grep -q '^account=acct-a .* role=soon$' || fail 'quota did not read no list'
+    [ "$(printf '%s\n' "$out" | tail -n 1)" = 'protect=none reason=malformed' ] || fail 'quota did not name a malformed list'
 done
+
+new_case 'automatic pick with a missing protect list warns once and picks as before' reviewer
+account_codator "$home"
+acct acct-a 86 100 2
+acct acct-b 20 100 3
+pick opus-medium acct-a drain=soon
+expect_protect_warning missing
+
+new_case 'automatic pick with a valid protect list does not warn' reviewer
+account_codator "$home"
+protect '{"protect":[],"reserve":15}'
+acct acct-a 86 100 2
+pick opus-medium acct-a drain=soon
+[ -z "$err" ] || fail "valid protect list warned: $err"
+
+new_case 'remote automatic pick names a missing protect list'
+STUB_CODATOR=1
+STUB_ACCOUNT='{"account":"seat","drain":"later","protect":"missing"}'
+run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=seat drain=later'
+expect_protect_warning missing
 
 new_case 'remote pick reports fable_spend=1 and drops other values'
 STUB_CODATOR=1
@@ -792,7 +827,8 @@ account=drain-seat week_used=97 fable_used=10 reset=2099-01-01T00:00:00Z role=ne
 account=next-seat week_used=20 fable_used=100 reset=2099-02-01T00:00:00Z role=next
 account=out-seat week_used=98 fable_used=0 reset=2097-01-01T00:00:00Z role=out
 account=pick-seat week_used=20 fable_used=100 reset=2098-01-01T00:00:00Z role=later
-account=stale-seat week_used=30 fable_used=0 reset=2096-01-01T00:00:00Z role=stale'
+account=stale-seat week_used=30 fable_used=0 reset=2096-01-01T00:00:00Z role=stale
+protect=none reason=missing'
 expect_no_calls
 
 new_case 'quota labels the soon pick and makes no alert'
@@ -837,11 +873,29 @@ expect_rc 2
 expect_err '--quota could not read snapshots with python3'
 expect_no_calls
 
-new_case 'quota with no snapshots succeeds without output'
+new_case 'quota with no snapshots prints only a missing protect list'
 run_launch sh "$launch_sh" --quota
 expect_rc 0
-expect_out ''
+expect_out 'protect=none reason=missing'
 expect_no_calls
+
+for quota_list in '{broken' '{"protect":["acct-a","acct-c"]}' valid; do
+    new_case "quota names the protect list state: $quota_list"
+    acct acct-a 20 100 3
+    want='protect=none reason=malformed'
+    if [ "$quota_list" = valid ]; then
+        protect '{"protect":["acct-z"],"reserve":15}'
+        want=
+    else protect "$quota_list"; fi
+    run_launch sh "$launch_sh" --quota
+    expect_rc 0
+    printf '%s\n' "$out" | sed -n 1p | grep -q '^account=acct-a week_used=20 fable_used=100 reset=.* role=soon$' \
+        || fail "quota account line changed: $out"
+    [ "$(printf '%s\n' "$out" | sed -n 2p)" = "$want" ] || fail "quota protect line '$out', expected '$want'"
+    [ "$(printf '%s\n' "$out" | wc -l)" -eq $((${#want} ? 2 : 1)) ] || fail "quota printed extra lines: $out"
+    [ -z "$err" ] || fail "quota wrote stderr: $err"
+    expect_no_calls
+done
 for quota_flags in '--quota --machine devbox' '--machine devbox --quota' \
     '--quota --account seat' '--quota --push' '--quota --check' '--check --quota' \
     '--quota opus-medium' '--quota --workspace wA' '--quota --work 1' '--quota --reserved 2 3'; do
@@ -2060,7 +2114,7 @@ STUB_START_OK=0 STUB_SCREEN='WARNING: Loading development channels
 run_launch sh "$launch_sh" --push opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
 expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 mcp_config=$mcp_config account=seat drain=later"
-[ -z "$err" ] || fail "unexpected stderr: $err"
+expect_protect_warning missing
 expect_calls "$(tab_calls impl-cart)" \
     "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup$forward" "|--account|seat$(claude_push_flags)" \
         | sed '$d')" \
