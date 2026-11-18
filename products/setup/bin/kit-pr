@@ -1,0 +1,66 @@
+#!/bin/sh
+# One status line for a GitHub PR from one `gh pr view --json` call.
+# On any gh failure, gh's stderr is printed whole with gh's exit code.
+set -eu
+usage='usage: kit-pr NUMBER [--repo OWNER/REPO] [--body] [--checks]'
+die() { printf 'kit-pr: %s\n' "$*" >&2; exit 2; }
+num= repo= body=0 checks=0
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --repo) [ "$#" -ge 2 ] || die "$usage"; repo=$2; shift 2 ;;
+        --repo=*) repo=${1#--repo=}; shift ;;
+        --body) body=1; shift ;;
+        --checks) checks=1; shift ;;
+        -h | --help) printf '%s\n' "$usage"; exit 0 ;;
+        -*) die "$usage" ;;
+        *) [ -z "$num" ] || die "$usage"; num=$1; shift ;;
+    esac
+done
+case $num in '' | *[!0-9]*) die "$usage" ;; esac
+command -v gh >/dev/null 2>&1 || die 'gh is required'
+command -v jq >/dev/null 2>&1 || die 'jq is required'
+fields=number,state,headRefOid,isDraft,mergeable,reviewDecision,statusCheckRollup
+[ "$body" -eq 0 ] || fields=$fields,body
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/kit-pr.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+rc=0
+if [ -n "$repo" ]; then
+    gh pr view "$num" --repo "$repo" --json "$fields" >"$tmp/out" 2>"$tmp/err" || rc=$?
+else
+    gh pr view "$num" --json "$fields" >"$tmp/out" 2>"$tmp/err" || rc=$?
+fi
+if [ "$rc" -ne 0 ]; then
+    cat "$tmp/err" >&2
+    exit "$rc"
+fi
+# CheckRun: status/conclusion; StatusContext: state. Neutral/skipped pass.
+jq -er --argjson body "$body" --argjson checks "$checks" '
+def verdict:
+  if .__typename == "StatusContext" or (has("state") and (has("conclusion") | not)) then
+    (.state // "" | ascii_upcase) as $s
+    | if $s == "FAILURE" or $s == "ERROR" then "fail"
+      elif $s == "PENDING" or $s == "EXPECTED" or $s == "" then "pending"
+      else "pass" end
+  else
+    (.status // "" | ascii_upcase) as $st
+    | (.conclusion // "" | ascii_upcase) as $c
+    | if $st != "" and $st != "COMPLETED" then "pending"
+      elif $c == "" then "pending"
+      elif ($c | IN("SUCCESS", "NEUTRAL", "SKIPPED")) then "pass"
+      else "fail" end
+  end;
+def check_name: .name // .context // "?";
+(.statusCheckRollup // []) as $r
+| ($r | map(verdict)) as $v
+| (if ($v | length) == 0 then "none"
+   elif ($v | index("fail")) then "fail"
+   elif ($v | index("pending")) then "pending"
+   else "pass" end) as $sum
+| "#\(.number) \(.state) head=\(.headRefOid[0:12]) checks=\($sum)"
+  + " mergeable=\(.mergeable // "UNKNOWN") review=\(if (.reviewDecision // "") == "" then "none" else .reviewDecision end)"
+  + " draft=\(if .isDraft then "yes" else "no" end)",
+  (if $checks == 1 then $r[] | select(verdict != "pass") | "\(verdict) \(check_name)" else empty end),
+  (if $body == 1 then "", (.body // "") else empty end)
+' "$tmp/out"
