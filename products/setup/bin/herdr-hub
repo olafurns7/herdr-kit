@@ -139,7 +139,7 @@ if [ "$1" = check ]; then
     '; then
         printf 'push-dropped\n'
         printf 'Repair: herdr-hub move %s --lane <lane> --account <account> -- --resume <session-id>\n' "$root"
-        printf 'If that session started with Code Mode: omit -- --resume; or, to keep the session, stop the hub, export HERDR_HUB_CODE_MODE=1 at the pane prompt and run herdr-hub %s --lane <lane> --account <account> -- --resume <session-id> there (README "Code Mode")\n' "$root"
+        printf 'If that session started with Code Mode: omit -- --resume; or, to keep the session, run HERDR_HUB_CODE_MODE=1 herdr-hub move %s --lane <lane> --account <account> -- --resume <session-id> (README "Code Mode")\n' "$root"
         exit 1
     fi
     if [ "$lease" = live ] && printf '%s\n' "$lease_json" | jq -e --argjson gen "$gen" '.session_gen == $gen' >/dev/null; then
@@ -239,6 +239,8 @@ if [ "$mode" = __move-helper ]; then
     printf 'herdr-hub: move: stop the hub in %s (generation %s)\n' "$pane" "$old_gen"
     "$herdr_bin_dir/herdr-lead" stop "$root" "$pane" --session "$session" || fail 'stop the hub'
     typed="$(quote "$herdr_bin_dir/herdr-hub") $root --lane $(quote "$lane")"
+    # The pane shell lacks the caller's opt-in; env carries it in any shell.
+    [ "${HERDR_HUB_CODE_MODE:-}" != 1 ] || typed="env HERDR_HUB_CODE_MODE=1 $typed"
     [ "$jobs" = false ] || typed="$typed --jobs"
     [ -z "$account" ] || typed="$typed --account $(quote "$account")"
     if [ $# -gt 0 ]; then

@@ -618,6 +618,16 @@ else: sys.exit(98)
                                                         '--','--resume','id with spaces',"quote'arg"]
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
 
+    # The pane shell lacks the caller's HERDR_HUB_CODE_MODE; only an exact 1 is typed, through env.
+    for value, prefix in [('1', ['env','HERDR_HUB_CODE_MODE=1']), (None, []), ('yes', [])]:
+        c = run(f'move types the Code Mode opt-in only for HERDR_HUB_CODE_MODE={value}', args=('move','42'), mode='move',
+                location={'HERDR_HUB_CODE_MODE':value} if value else None)
+        expect(c, 0)
+        log = Path(c[3].splitlines()[0].split('; log ')[1])
+        wait_for(log, 'herdr-hub: moved 42: generation 9 live')
+        bindir = c[1] / '.local/bin'
+        assert shlex.split((c[0] / 'typed').read_text()) == [*prefix, str(bindir / 'herdr-hub'),'42','--lane','opus-high'], (c[0] / 'typed').read_text()
+
     c = run('move helper failure is noted on the root', args=('move','42','--no-handover'), mode='move-stuck')
     expect(c, 0)
     wait_for(c[0] / 'note', 'herdr-hub move failed: stop the hub')
@@ -674,7 +684,7 @@ else: sys.exit(98)
         if mode == 'check-dropped':
             assert len(lines) == 3, c[3]
             assert lines[1] == 'Repair: herdr-hub move 42 --lane <lane> --account <account> -- --resume <session-id>', c[3]
-            assert lines[2] == 'If that session started with Code Mode: omit -- --resume; or, to keep the session, stop the hub, export HERDR_HUB_CODE_MODE=1 at the pane prompt and run herdr-hub 42 --lane <lane> --account <account> -- --resume <session-id> there (README "Code Mode")', c[3]
+            assert lines[2] == 'If that session started with Code Mode: omit -- --resume; or, to keep the session, run HERDR_HUB_CODE_MODE=1 herdr-hub move 42 --lane <lane> --account <account> -- --resume <session-id> (README "Code Mode")', c[3]
         assert not (c[1] / '.local/state').exists()
 
     # Review 7952 F1: an old prover finishes after its hub exited and a rerun reclaimed the lock. It must not
