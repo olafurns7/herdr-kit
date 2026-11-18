@@ -87,21 +87,33 @@ tickets, existing age/weight/enqueue ordering and campaign caps still apply.
 The counter belongs to the head ticket and persists across polls, stale/resumed
 heartbeats and changes of fair turn; completed backfill runs do not reset it.
 After eight admissions, backfill stops and competing starts wait while capacity
-accumulates. A head that fits always goes first. Other pools cannot backfill its
+accumulates, but only while that wait can help: the bound applies when the head
+would fit once every running slotr run ends. Each run counts its measured
+anonymous memory, or its reservation when not yet measured. When memory held
+outside slotr keeps the head over budget even with no runs (for example, a
+12 GiB head with 7.9 GiB available and nothing running), stopping starts frees
+nothing, so smaller fitting tickets keep backfilling past the bound. The head
+keeps its turn: larger and later tickets still wait behind it. As soon as
+outside memory frees enough that draining slotr's runs would fit it, the spent
+bound applies again, new starts stop, and the head starts once the runs release
+their memory. A head that fits always goes first. Other pools cannot backfill its
 reservation. Recovery, PSI/load, slots, ports, locks and priority caps still apply.
 A pool with `fair_turn = "pool"` neither waits for nor reserves another pool's
 fair turn or priority hold; see [configuration](configuration.md#pools).
 
 Among pools that share fair turns, this bounds bypass to eight admissions per
-queued head. It does not promise a wall-clock start deadline: existing runs must
-release enough memory and a slot before the head can start. A pool with
+queued head while draining slotr's runs could fit it. While only memory outside
+slotr blocks it, smaller same-pool tickets may pass it without limit. It
+does not promise a wall-clock start deadline: existing runs, and memory users
+outside slotr, must release enough memory and a slot before the head can start. A pool with
 `fair_turn = "pool"` can delay another pool's memory-blocked head without limit
 while it has steady demand; its starts do not count toward that head's bound.
 Status names a fitting backfill candidate `fair_turn_backfill`, includes
 its head's sequence in `backfill_for`, and shows each ticket's
 `backfill_admissions` and `backfill_limit`. After the limit, otherwise fitting
-contenders report `fair_turn_backfill_limit`; the head keeps `memory_budget`
-until it fits. No configuration knob is needed.
+contenders report `fair_turn_backfill_limit` while draining could fit the
+head; otherwise they keep reporting `fair_turn_backfill`. The head keeps
+`memory_budget` until it fits. No configuration knob is needed.
 
 Ports or legacy locks defer a fair ticket without changing its age or reserving other
 pools; status shows `fair_deferred`. Unknown port ownership cannot justify a

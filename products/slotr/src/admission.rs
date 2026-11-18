@@ -312,7 +312,7 @@ fn backfill_turn<'a>(
     sample: &Stats,
     now: f64,
 ) -> Option<&'a Request> {
-    if backfill_count(s, first.enqueue_seq) >= BACKFILL_LIMIT
+    if backfill_limited(s, first, cfg, obs, sample)
         || decide(s, first, cfg, obs, sample, now, |_| true).1 != Some("memory_budget")
     {
         return None;
@@ -330,6 +330,41 @@ fn backfill_turn<'a>(
             .1
             .is_none()
     })
+}
+/// Whether `first` would fit the memory budget once every running holder ends.
+/// Each holder returns its measured anonymous memory, or its reservation when
+/// unmeasured. Missing host data counts as fitting, keeping the drain.
+fn fits_after_drain(
+    s: &State,
+    first: &Request,
+    cfg: &Config,
+    obs: &BTreeMap<String, Observation>,
+    sample: &Stats,
+) -> bool {
+    sample.available_mib.is_none_or(|available| {
+        let released: f64 = s
+            .holders
+            .iter()
+            .map(|h| {
+                obs.get(&h.run)
+                    .and_then(|o| o.anon_mib)
+                    .unwrap_or_else(|| reservation(&h.request, cfg, &s.scheduling.peaks).0)
+            })
+            .sum();
+        available + released - first.cost_mib as f64 >= cfg.admission.reserve_mib as f64
+    })
+}
+/// The backfill bound stops starts only while stopping them can let the head
+/// fit. Memory held outside slotr cannot be drained, so the bound then yields.
+fn backfill_limited(
+    s: &State,
+    first: &Request,
+    cfg: &Config,
+    obs: &BTreeMap<String, Observation>,
+    sample: &Stats,
+) -> bool {
+    backfill_count(s, first.enqueue_seq) >= BACKFILL_LIMIT
+        && fits_after_drain(s, first, cfg, obs, sample)
 }
 pub fn backfill_count(s: &State, seq: u64) -> u32 {
     s.scheduling
@@ -393,7 +428,7 @@ pub fn preference(
             if first.pool == q.pool
                 && decide(s, first, cfg, obs, sample, now, |_| true).1 == Some("memory_budget")
             {
-                if backfill_count(s, first.enqueue_seq) >= BACKFILL_LIMIT {
+                if backfill_limited(s, first, cfg, obs, sample) {
                     return Some("fair_turn_backfill_limit");
                 }
                 if backfill_turn(s, first, cfg, obs, sample, now)
@@ -883,6 +918,8 @@ mod tests {
     #[test]
     fn backfill_limit_survives_serialization_staleness_and_turn_changes() {
         let (cfg, mut s, sample) = backfill_fixture();
+        // Draining this run's 8 GiB reservation would fit the head, so the bound holds.
+        s.holders.push(serde_json::from_value(json!({"enqueue_seq":99,"pool":"default","campaign":"holder","purpose":"synthetic","cwd":"/tmp","cost_mib":8192,"lease_seconds":0,"since":0,"seen_at":1000,"run":"slotr-default-1","admit_seq":1,"slot":0,"admitted_at":0})).unwrap());
         s.scheduling.backfill_admissions.insert(1, BACKFILL_LIMIT);
         s.scheduling = serde_json::from_slice(&serde_json::to_vec(&s.scheduling).unwrap()).unwrap();
         update_activity(&mut s, &cfg, 1010.0);
@@ -909,6 +946,105 @@ mod tests {
         s.queue.remove(0);
         update_activity(&mut s, &cfg, 1010.0);
         assert_eq!(backfill_count(&s, 1), 0);
+    }
+    fn spent_twelve_gib_head() -> (Config, State, Stats) {
+        let (mut cfg, mut s, mut sample) = backfill_fixture();
+        cfg.admission.reserve_mib = 2048;
+        s.queue[0].cost_mib = 12 * 1024;
+        sample.available_mib = Some(8090.0);
+        s.scheduling.backfill_admissions.insert(1, BACKFILL_LIMIT);
+        (cfg, s, sample)
+    }
+    #[test]
+    fn spent_backfill_limit_yields_when_no_run_can_free_the_head() {
+        // Incident shape: a 12 GiB head, about 7.9 GiB available, eight
+        // backfills spent and no runs active. Draining frees nothing.
+        let (cfg, s, sample) = spent_twelve_gib_head();
+        let obs = BTreeMap::new();
+        assert!(s.holders.is_empty());
+        assert_eq!(
+            evaluate(&s, &s.queue[0], &cfg, &obs, &sample, 1000.0),
+            (None, Some("memory_budget"))
+        );
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0),
+            (Some(0), None)
+        );
+        assert_eq!(
+            backfill_for(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0),
+            Some(1)
+        );
+        // The head keeps its turn: a ticket not smaller than it still waits.
+        let mut s = s;
+        s.queue[1].cost_mib = 12 * 1024;
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0).1,
+            Some("memory_budget")
+        );
+        s.queue[1].cost_mib = 4096;
+        s.queue[0].cost_mib = 4096;
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0).1,
+            Some("fair_turn")
+        );
+    }
+    #[test]
+    fn spent_backfill_limit_drains_runs_whose_release_fits_the_head() {
+        let (cfg, mut s, mut sample) = spent_twelve_gib_head();
+        let holder: Holder = serde_json::from_value(json!({"enqueue_seq":99,"pool":"default","campaign":"holder","purpose":"synthetic","cwd":"/tmp","cost_mib":4096,"lease_seconds":0,"since":0,"seen_at":1000,"run":"slotr-default-1","admit_seq":1,"slot":0,"admitted_at":0})).unwrap();
+        s.holders.push(holder);
+        sample.available_mib = Some(10500.0);
+        // Measured use: 10500 + 4000 freed - 12288 leaves the 2048 reserve.
+        let mut obs = BTreeMap::new();
+        obs.insert(
+            "slotr-default-1".to_string(),
+            Observation {
+                live: true,
+                started: true,
+                anon_mib: Some(4000.0),
+                cpu_usec: None,
+            },
+        );
+        assert_eq!(
+            evaluate(&s, &s.queue[0], &cfg, &obs, &sample, 1000.0).1,
+            Some("memory_budget")
+        );
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0).1,
+            Some("fair_turn_backfill_limit")
+        );
+        // Unmeasured runs count their reservation as releasable.
+        obs.clear();
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0).1,
+            Some("fair_turn_backfill_limit")
+        );
+        // Measured use too small to matter: the bound yields again.
+        obs.insert(
+            "slotr-default-1".to_string(),
+            Observation {
+                live: true,
+                started: true,
+                anon_mib: Some(100.0),
+                cpu_usec: None,
+            },
+        );
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0),
+            (Some(1), None)
+        );
+        // When the run ends and its memory returns, the head goes first.
+        s.holders.clear();
+        obs.clear();
+        sample.available_mib = Some(14500.0);
+        assert_eq!(
+            evaluate(&s, &s.queue[0], &cfg, &obs, &sample, 1000.0),
+            (Some(0), None)
+        );
+        assert_eq!(
+            evaluate(&s, &s.queue[1], &cfg, &obs, &sample, 1000.0).1,
+            Some("fair_turn")
+        );
     }
     #[test]
     fn manual_and_lifecycle_stops_do_not_restart_pressure_recovery() {

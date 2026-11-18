@@ -101,6 +101,13 @@ or memory shortage and its queue-empty quiet tail. At cap, or with only an
 independent port/legacy-lock blocker, it reserves no unrelated capacity.
 `fair_turn` reserves the next safe turn for an aged eligible ticket; slot
 shortage reserves its pool and memory shortage the shared memory domain.
+`fair_turn_backfill` admits a smaller ticket past a memory-blocked fair turn;
+`fair_turn_backfill_limit` means that head's eight backfills are spent and
+starts wait for running slotr runs to release memory for it. If the head would
+not fit even with no slotr runs (memory held by other processes), the bound
+does not apply and smaller tickets keep starting, so an idle pool never waits on
+a head it cannot help. Free memory outside slotr, or use a smaller `--cost`, to
+let such a head start; other pools sharing global fair turns still wait for it.
 `fair_deferred` shows an external blocker without reserving other pools.
 `stale_ticket` needs a resumed heartbeat; its original age and sequence remain.
 Never stop another campaign's work to resolve these waits: ask the host operator to
