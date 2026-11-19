@@ -1242,7 +1242,7 @@ new_case 'prompt cache: an impl- lane in a reused seat pane has no TTL' code-rev
 run_launch sh "$launch_sh" opus-high rev-cart "$brief" "$report" 42 wA:p3
 expect_rc 0
 reuse_seat=$(sed -n 's/^herdr|pane|run|wA:p3|\( .*\)$/\1/p' "$case_dir/calls" | head -n 1)
-sed -i '1s/.*/HERDR-BRIEF role=implementer/' "$brief"
+{ printf '%s\n' 'HERDR-BRIEF role=implementer'; sed 1d "$brief"; } >"$case_dir/brief.next" && cat "$case_dir/brief.next" >"$brief"
 : >"$case_dir/calls"
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42 wA:p3
 expect_rc 0
@@ -1539,7 +1539,7 @@ printf '%s\n' '#!/bin/sh' >"$home/.local/bin/codator"
 chmod 0755 "$home/.local/bin/codator"
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-pane_setup=$(sed -n 's/^herdr|pane|run|wA:p7|\( unset .*\)$/\1/p' "$case_dir/calls")
+pane_setup=$(sed -n 's/^herdr|pane|run|wA:p7|\( .*\)$/\1/p' "$case_dir/calls" | head -n 1)
 want='herdr-launch-env=2468/3579/worker/3579'
 got=$(bash --noprofile --norc -c "$pane_setup; $env_check")
 [ "$got" = "$want" ] || fail "a clean shell echoed '$got', expected '$want'"
