@@ -468,7 +468,7 @@ mcp_config=$state_dir/taskr-mcp-$gen.json
 tmp=$(mktemp "$state_dir/.mcp.XXXXXX") || fail 'create config temporary file'
 jq -nc --arg root "$root" --arg gen "$gen" --argjson jobs "$jobs" \
     --arg binding "herdr-lead-root-$root-gen-$gen" \
-    '{mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as",$root,"--session",$gen]}}}
+    '{mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as",$root,"--session",$gen],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}}}}
      | if $jobs then .mcpServers["taskr-jobs"] = {command:"taskr",args:["mcp","--jobs","--as",$root,"--session",$gen,"--binding",$binding]} else . end' >"$tmp" || fail 'render config'
 chmod 0600 "$tmp" || fail 'protect config'
 mv -n -- "$tmp" "$mcp_config" && [ ! -e "$tmp" ] || fail 'generation config exists or could not be saved'
@@ -497,7 +497,7 @@ if ! start_err=$(herdr agent start "$agent" --kind claude --pane "$pane" --timeo
 fi
 
 step_line 7 'tell the lead its generation and handover'
-prompt="You are the lead of root $root. herdr-lead adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence. Read the handover at $handover. A \"lead push check\" event will arrive: record it and ack it. Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note."
+prompt="You are the lead of root $root. herdr-lead adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence; ack each pushed line right after you handle it, in the listed order. Read the handover at $handover. A \"lead push check\" event will arrive: record it and ack it. Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note."
 if [ -n "$prompt_file" ]; then
     prompt="$prompt Then read $prompt_file and follow it."
 fi
@@ -536,11 +536,12 @@ if ! prompt_out=$(herdr agent prompt "$agent" "$prompt" --wait --until working -
 fi
 
 step_line 8 'prove a current-generation push was received and acked'
-deadline=$(($(date +%s) + 240))
+# 360 s: the check is a ready event, so the 120 s digest hold applies on top of the 240 s window.
+deadline=$(($(date +%s) + 360))
 while :; do
     read_lease || fail 'read live-check lease'
     if current_lease; then break; fi
-    [ "$(date +%s)" -lt "$deadline" ] || fail 'no current-generation MCP channel lease within 240 s'
+    [ "$(date +%s)" -lt "$deadline" ] || fail 'no current-generation MCP channel lease within 360 s'
     sleep 3
 done
 out=$(ledger --json new "lead-push-check-$gen" --parent "$root" --role gate) || fail 'create check task (inspect before retry)'
@@ -572,11 +573,11 @@ while :; do
     now_acked=$(printf '%s\n' "$inbox" | jq -er '.acked_event_id // 0') || fail 'read check ack'
     if [ "$now_acked" -gt "$acked" ]; then
         acked=$now_acked
-        later=$(($(date +%s) + 240))
+        later=$(($(date +%s) + 360))
         [ "$later" -le "$cap" ] || later=$cap
         [ "$later" -le "$deadline" ] || deadline=$later
     fi
-    [ "$(date +%s)" -lt "$deadline" ] || fail "check event was not received and acked within 240 s (acked through $acked; backlog $backlog)"
+    [ "$(date +%s)" -lt "$deadline" ] || fail "check event was not received and acked within 360 s (acked through $acked; backlog $backlog)"
     sleep 3
 done
 out=$(ledger --json close "$check_task" --outcome accepted) || fail 'close check task (inspect before retry)'
