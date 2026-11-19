@@ -235,7 +235,7 @@ check_lanes() {
         elif ! "$cli" --version >/dev/null 2>&1; then
             reason="$kind --version failed"
         elif [ "$kind" = opencode ] && ! "$cli" models --standalone 2>/dev/null | grep -qxF -- "$model"; then
-            reason="opencode models does not list $model"
+            reason="opencode models did not list $model (missing from its catalog, or the listing failed)"
         elif { [ "$kind" = claude ] || [ "$kind" = codex ]; } && [ -x "$HOME/.local/bin/codator" ] &&
             ! "$HOME/.local/bin/codator" "$kind" --version >/dev/null 2>&1; then
             reason="Codator $kind --version failed"

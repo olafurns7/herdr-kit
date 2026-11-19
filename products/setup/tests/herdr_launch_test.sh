@@ -1269,7 +1269,7 @@ grep -qx 'opencode|models|--standalone' "$case_dir/calls.opencode" 2>/dev/null |
 printf '%s\n' opencode/glm-5.3-flash opencode/glm-5.3-flash-free-beta >"$home/.opencode/bin/models.txt"
 run_launch sh "$launch_sh" --check glm-free glm-flash
 expect_rc 1
-expect_out 'glm-free: opencode models does not list opencode/glm-5.3-flash-free
+expect_out 'glm-free: opencode models did not list opencode/glm-5.3-flash-free (missing from its catalog, or the listing failed)
 glm-flash: ok'
 expect_no_calls
 
