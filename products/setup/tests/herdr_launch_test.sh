@@ -272,6 +272,8 @@ codex_flags() {
 }
 setup=' export FLEET_ROLE=worker TASKR_TASK=2468 TASKR_LAUNCH=3579'
 claude_setup="$setup CLAUDE_CODE_SANDBOXED=1 CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1"
+# Claude review seats and gather lanes also get a 5-minute prompt cache (W3438).
+seat_setup="$claude_setup CLAUDE_CODE_PROMPT_CACHE_TTL=5m"
 forward=' && codex() { "$HOME/.local/bin/codator" codex "$@"; } && claude() { "$HOME/.local/bin/codator" claude "$@"; }'
 env_check='echo "herdr-launch-env=$TASKR_TASK/$TASKR_LAUNCH/$FLEET_ROLE/$herdr_launch_ok"'
 
@@ -1218,8 +1220,34 @@ new_case 'Haiku gather launches as a researcher' researcher
 run_launch sh "$launch_sh" haiku-gather gather-x "$brief" "$report" 42
 expect_rc 0
 expect_calls "$(tab_calls gather-x)" \
-    "$(tail_calls gather-x researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$claude_setup" \
+    "$(tail_calls gather-x researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$seat_setup" \
         "|$(claude_flags medium claude-haiku-5-5)")"
+
+# W3438: only Claude review seats and gather- lanes export the 5-minute cache;
+# the exact setup line the fake herdr receives decides. cache_case NAME ROLE
+# LANE KIND WANT: WANT is seat (with the env) or plain (without it).
+cache_case() {
+    new_case "prompt cache: $1 as $2 on $3 is $5" "$2"
+    run_launch sh "$launch_sh" "$3" "$1" "$brief" "$report" 42
+    expect_rc 0
+    case $5 in seat) cache_want=$seat_setup ;; *) cache_want=$claude_setup ;; esac
+    [ "$4" = claude ] || cache_want=$setup
+    cache_got=$(sed -n 's/^herdr|pane|run|wA:p7|\( export .*\) && herdr_launch_ok=3579$/\1/p' "$case_dir/calls")
+    case $cache_got in "$cache_want" | "$cache_want && "*) ;; *) fail "setup '$cache_got' is not '$cache_want'" ;; esac
+    [ "$5" = seat ] || ! grep -qF CLAUDE_CODE_PROMPT_CACHE_TTL "$case_dir/calls" || fail 'lane exports the prompt cache TTL'
+}
+for cache_role in code-reviewer reviewer code-validator; do
+    cache_case rev-cart "$cache_role" opus-high claude seat
+done
+cache_case gather-x researcher haiku-gather claude seat
+cache_case impl-cart implementer opus-medium claude plain
+cache_case impl-cart mechanical-worker opus-medium claude plain
+cache_case rs-facts researcher opus-medium claude plain
+cache_case arch-x architect opus-xhigh claude plain
+cache_case orch-x sub-orchestrator opus-xhigh claude plain
+cache_case rev-cart reviewer sol-medium codex plain
+cache_case gather-x researcher luna-gather codex plain
+cache_case gather-inventory researcher glm-free opencode plain
 
 new_case 'Luna gather launches as a researcher' researcher
 run_launch sh "$launch_sh" luna-gather gather-x "$brief" "$report" 42
@@ -1370,6 +1398,7 @@ outside the diff'
     grep -qF "taskr|new|gather-callers|--parent|42|--role|researcher|--workspace|wA|--tab|wA:t7|--pane|wA:p7|--cwd|$work|--brief|$gather_brief|--report|$gather_report" \
         "$case_dir/calls" || fail 'helper is not ledgered under caller with the written brief'
     grep -qF '|--model|claude-haiku-5-5|' "$case_dir/calls" || fail 'default lane is not haiku-gather'
+    grep -qF "herdr|pane|run|wA:p7|$seat_setup && herdr_launch_ok=3579" "$case_dir/calls" || fail 'helper lacks the 5-minute cache'
     expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default
 report=$gather_report
 taskr close 2468 --outcome accepted   # or rejected
@@ -2057,7 +2086,7 @@ new_case 'haiku-gather --mcp --deny-tool lane (the W3332 first use)' researcher
 run_launch sh "$launch_sh" --mcp --deny-tool "$pscale_write" haiku-gather gather-probe "$brief" "$report" 42
 expect_rc 0
 expect_calls "$(tab_calls gather-probe)" \
-    "$(tail_calls gather-probe researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$claude_setup" \
+    "$(tail_calls gather-probe researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$seat_setup" \
         "|$(claude_flags medium claude-haiku-5-5 '' mcp "|--disallowedTools|$pscale_write")")"
 
 new_case 'claude --push --deny-tool keeps the taskr config after --settings'
@@ -2177,7 +2206,7 @@ new_case 'haiku-gather --plugin --deny-tool lane (the read-only Slack use)' rese
 run_launch sh "$launch_sh" --plugin "$slack" --deny-tool mcp__plugin_slack_slack__slack_send_message haiku-gather gather-slack "$brief" "$report" 42
 expect_rc 0
 expect_calls "$(tab_calls gather-slack)" \
-    "$(tail_calls gather-slack researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$claude_setup" \
+    "$(tail_calls gather-slack researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$seat_setup" \
         "|$(printf '%s' "$lean_tools" | sed 's/opus/haiku/')|--disallowedTools|mcp__plugin_slack_slack__slack_send_message|--settings|$(plugin_settings)")"
 
 new_case 'claude --push --plugin keeps the taskr config and drops --strict-mcp-config'
