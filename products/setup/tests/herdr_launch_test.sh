@@ -258,12 +258,13 @@ claude_settings() {
     [ "${1-}" != orch ] || lean_skills=
     printf '%s' "{\"agentPushNotifEnabled\":false,\"autoMemoryEnabled\":false,\"promptSuggestionEnabled\":false,\"awaySummaryEnabled\":false,\"autoCompactEnabled\":true,\"idleCompaction\":false,\"disableBundledSkills\":true,\"syncClaudeAiSkills\":false,\"disableClaudeAiConnectors\":true,\"enabledPlugins\":{\"posthog@claude-plugins-official\":false,\"cc-plugin-you-should-know@builtin\":false,\"slack@claude-plugins-official\":false,\"stripe@claude-plugins-official\":false,\"cc-plugin-easel@builtin\":false,\"cc-plugin-plugin-authoring@builtin\":false}$lean_skills}"
 }
-# claude_flags EFFORT [MODEL] [orch] [mcp]; mcp (rs- and arch- lanes, W2316)
-# drops --strict-mcp-config.
+# claude_flags EFFORT [MODEL] [orch] [mcp] [DENY]; mcp (rs- and arch- lanes, W2316)
+# drops --strict-mcp-config; DENY (W3332) is the "|--disallowedTools|NAME"
+# text that follows --tools.
 claude_flags() {
     strict_mcp='|--strict-mcp-config'
     [ "${4-}" != mcp ] || strict_mcp=
-    printf '%s' "--model|${2:-claude-opus-5-5}|--effort|$1|--dangerously-skip-permissions|--tools|Bash,Read,Edit,Write,Grep,Glob,ToolSearch,Skill,WebFetch,WebSearch$strict_mcp|--settings|$(claude_settings "${3-}")"
+    printf '%s' "--model|${2:-claude-opus-5-5}|--effort|$1|--dangerously-skip-permissions|--tools|Bash,Read,Edit,Write,Grep,Glob,ToolSearch,Skill,WebFetch,WebSearch${5-}$strict_mcp|--settings|$(claude_settings "${3-}")"
 }
 # codex_flags MODEL EFFORT TRUST
 codex_flags() {
@@ -2030,6 +2031,94 @@ run_launch sh "$launch_sh" --mcp --check opus-medium
 expect_rc 2
 expect_err '--mcp does not combine with --check'
 expect_no_calls
+
+# W3332: --deny-tool NAME (repeatable, claude lanes only) adds one
+# --disallowedTools NAME pair per name, in order, right after --tools; every
+# other element is unchanged.
+pscale_write=mcp__planetscale__planetscale_execute_write_query
+new_case 'claude impl- --deny-tool adds one --disallowedTools pair'
+run_launch sh "$launch_sh" --deny-tool "$pscale_write" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|$(claude_flags medium '' '' '' "|--disallowedTools|$pscale_write")")"
+
+# A glob name with a matching file in the cwd and a name with parentheses:
+# each stays one literal element, in the order given.
+new_case 'claude --deny-tool twice keeps both names literal and in order'
+: >"$work/mcp__srv__file"
+run_launch sh "$launch_sh" --deny-tool 'mcp__srv__*' --mcp --deny-tool 'Bash(rm:*)' opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|$(claude_flags medium '' '' mcp '|--disallowedTools|mcp__srv__*|--disallowedTools|Bash(rm:*)')")"
+
+new_case 'haiku-gather --mcp --deny-tool lane (the W3332 first use)' researcher
+run_launch sh "$launch_sh" --mcp --deny-tool "$pscale_write" haiku-gather gather-probe "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls gather-probe)" \
+    "$(tail_calls gather-probe researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$claude_setup" \
+        "|$(claude_flags medium claude-haiku-5-5 '' mcp "|--disallowedTools|$pscale_write")")"
+
+new_case 'claude --push --deny-tool keeps the taskr config after --settings'
+long_name=$(printf '%0200d' 0)
+run_launch sh "$launch_sh" --push --deny-tool "$long_name" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|$(claude_flags medium '' '' '' "|--disallowedTools|$long_name")|--mcp-config|$mcp_config|--dangerously-load-development-channels|server:taskr")"
+
+# Without --deny-tool the argv is the one main passed, for a plain, rs-,
+# push and --mcp lane.
+for deny_case in plain rs push mcp; do
+    deny_role=implementer deny_name=impl-cart deny_flags=$(claude_flags medium) deny_opt=
+    case $deny_case in
+        rs) deny_role=researcher deny_name=rs-cart deny_flags=$(claude_flags medium '' '' mcp) ;;
+        push) deny_opt=--push ;;
+        mcp) deny_opt=--mcp deny_flags=$(claude_flags medium '' '' mcp) ;;
+    esac
+    new_case "claude $deny_case lane without --deny-tool is unchanged" "$deny_role"
+    deny_tail=
+    [ "$deny_case" != push ] || deny_tail="|--mcp-config|$mcp_config|--dangerously-load-development-channels|server:taskr"
+    run_launch sh "$launch_sh" $deny_opt opus-medium "$deny_name" "$brief" "$report" 42
+    expect_rc 0
+    expect_calls "$(tab_calls "$deny_name")" \
+        "$(tail_calls "$deny_name" "$deny_role" wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+            "|$deny_flags$deny_tail")"
+    ! grep -q -F -- '--disallowedTools' "$case_dir/calls" || fail 'argv names --disallowedTools'
+done
+
+# Each refusal exits 2 before any herdr or taskr call.
+deny_refusal() {
+    new_case "$1" "${2:-implementer}"
+    shift 2
+    run_launch sh "$launch_sh" "$@"
+    expect_rc 2
+    expect_no_calls
+}
+deny_charset="must be 1-200 characters of A-Za-z0-9_.:*()- and not start with -"
+deny_refusal 'codex --deny-tool lane refuses' reviewer --deny-tool Edit sol-medium rev-cart "$brief" "$report" 42
+expect_err '--deny-tool supports claude lanes only; lane sol-medium is codex'
+deny_refusal 'OpenCode --deny-tool lane refuses' '' --deny-tool Edit glm-free glm-inventory "$brief" "$report" 42
+expect_err '--deny-tool supports claude lanes only; lane glm-free is opencode'
+deny_refusal '--deny-tool before --check refuses' '' --deny-tool Edit --check opus-medium
+expect_err '--deny-tool does not combine with --check'
+deny_refusal '--deny-tool after --check refuses' '' --check opus-medium --deny-tool Edit
+expect_err '--deny-tool does not combine with --check'
+deny_refusal '--deny-tool before --quota refuses' '' --deny-tool Edit --quota
+expect_err '--deny-tool does not combine with --quota'
+deny_refusal '--deny-tool after --quota refuses' '' --quota --deny-tool Edit
+expect_err '--deny-tool does not combine with --quota'
+deny_refusal '--deny-tool with --gather refuses' researcher --deny-tool Edit --gather facts 'what is x'
+expect_err '--deny-tool does not combine with --gather'
+deny_refusal '--deny-tool without NAME refuses' '' --deny-tool
+expect_err '--deny-tool needs NAME'
+for bad_name in '' 'Bash(git *)' 'Edit,Write' '--print' '-x' "$(printf 'Edit\nWrite')" 'a|b' "$(printf 'caf\303\251')" "a'b"; do
+    deny_refusal "--deny-tool refuses NAME [$bad_name]" '' --deny-tool "$bad_name" opus-medium impl-cart "$brief" "$report" 42
+    expect_err "$deny_charset"
+done
+deny_refusal '--deny-tool refuses a 201-character NAME' '' --deny-tool "${long_name}0" opus-medium impl-cart "$brief" "$report" 42
+expect_err '--deny-tool NAME is longer than 200 characters'
 
 new_case 'claude impl- lane stays strict'
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
