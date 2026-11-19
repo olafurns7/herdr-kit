@@ -612,8 +612,9 @@ has calls 'taskr|close|43|--outcome|accepted|env=/'
 case $(cat "$case_dir/prompt-sent") in *' lead-push-gen-7') ;; *) fail 'missing end token' ;; esac
 grep -F 'if the handover Note lists session timers to re-arm, create each again' "$case_dir/prompt-sent" >/dev/null || fail 'prompt does not ask to re-arm session timers'
 config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
-jq -e '.mcpServers.taskr == {command:"taskr",args:["mcp","--channel","--as","42","--session","7"]}' "$config" >/dev/null || fail 'bad config'
-printf '%s\n' '{"mcpServers":{"taskr":{"command":"taskr","args":["mcp","--channel","--as","42","--session","7"]}}}' |
+# A lead takes digest pushes with a 2-minute hold, as the hub does.
+jq -e '.mcpServers.taskr == {command:"taskr",args:["mcp","--channel","--as","42","--session","7"],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}}' "$config" >/dev/null || fail 'bad config'
+printf '%s\n' '{"mcpServers":{"taskr":{"command":"taskr","args":["mcp","--channel","--as","42","--session","7"],"env":{"TASKR_CHANNEL_DIGEST":"1","TASKR_CHANNEL_DIGEST_HOLD_S":"120"}}}}' |
     cmp - "$config" || fail 'default config bytes changed'
 [ "$(ls -l "$config" | cut -c 1-10)" = -rw------- ] || fail 'config mode is not 0600'
 [ -z "$(find "$case_dir" -name .mcp.json -print)" ] || fail 'wrote .mcp.json'
@@ -653,7 +654,7 @@ new_case 'jobs start adds a generation-bound server without changing channel or 
 start --jobs --resume 'sid with spaces' --account example
 expect_rc 0
 config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
-jq -e '. == {mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as","42","--session","7"]},"taskr-jobs":{command:"taskr",args:["mcp","--jobs","--as","42","--session","7","--binding","herdr-lead-root-42-gen-7"]}}}' "$config" >/dev/null || fail 'bad jobs config'
+jq -e '. == {mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as","42","--session","7"],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}},"taskr-jobs":{command:"taskr",args:["mcp","--jobs","--as","42","--session","7","--binding","herdr-lead-root-42-gen-7"]}}}' "$config" >/dev/null || fail 'bad jobs config'
 [ "$(ls -l "$config" | cut -c 1-10)" = -rw------- ] || fail 'config mode is not 0600'
 has calls '--account|example|--resume|sid with spaces|--model|'
 has calls "--mcp-config|$config|--dangerously-load-development-channels|server:taskr"
@@ -843,6 +844,7 @@ expect_rc 0
 has calls 'herdr|pane|send-keys|wA:p1|esc|ctrl+c|ctrl+c'
 config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
 jq -e '.mcpServers | keys == ["taskr","taskr-jobs"] and .["taskr-jobs"].args == ["mcp","--jobs","--as","42","--session","7","--binding","herdr-lead-root-42-gen-7"]' "$config" >/dev/null || fail 'move lost jobs identity'
+jq -e '.mcpServers.taskr.env == {TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"} and (.mcpServers["taskr-jobs"] | has("env") | not)' "$config" >/dev/null || fail 'jobs move lost digest env or added env to taskr-jobs'
 
 new_case 'move asks for a handover, stops the predecessor, then starts'
 CAMPAIGN=$moved_campaign AGENTS=$old_lead
@@ -859,6 +861,7 @@ has out 'herdr-lead: 42 live at 7 (event 9 received and acked)'
 [ -n "$(grep -n 'taskr handover' "$case_dir/calls" | head -1)" ] || fail 'no handover prompt'
 [ "$(grep -n 'send-keys|wA:p1|esc' "$case_dir/calls" | cut -d: -f1)" -lt "$(grep -n 'taskr|adopt' "$case_dir/calls" | cut -d: -f1)" ] || fail 'adopted before stopping'
 grep -F 'move: handover event 6 recorded' "$home/.local/state/herdr-orch/lead-push/42/"lead-start-*.log >/dev/null || fail 'start log misses move lines'
+jq -e '.mcpServers == {taskr:{command:"taskr",args:["mcp","--channel","--as","42","--session","7"],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}}}' "$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json" >/dev/null || fail 'move config lacks digest env'
 
 new_case 'move without a recorded handover stops nothing'
 CAMPAIGN=$moved_campaign AGENTS=$old_lead NO_HANDOVER=1

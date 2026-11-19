@@ -468,7 +468,7 @@ mcp_config=$state_dir/taskr-mcp-$gen.json
 tmp=$(mktemp "$state_dir/.mcp.XXXXXX") || fail 'create config temporary file'
 jq -nc --arg root "$root" --arg gen "$gen" --argjson jobs "$jobs" \
     --arg binding "herdr-lead-root-$root-gen-$gen" \
-    '{mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as",$root,"--session",$gen]}}}
+    '{mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as",$root,"--session",$gen],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}}}}
      | if $jobs then .mcpServers["taskr-jobs"] = {command:"taskr",args:["mcp","--jobs","--as",$root,"--session",$gen,"--binding",$binding]} else . end' >"$tmp" || fail 'render config'
 chmod 0600 "$tmp" || fail 'protect config'
 mv -n -- "$tmp" "$mcp_config" && [ ! -e "$tmp" ] || fail 'generation config exists or could not be saved'
