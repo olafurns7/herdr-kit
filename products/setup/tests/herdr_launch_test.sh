@@ -1254,10 +1254,24 @@ for target in tab pane; do
     expect_rc 1
     so_far='workspace=wA task=2468 launch=3579 tab=wA:t7 pane=wA:p7'
     [ "$target" = tab ] || so_far='workspace=wA task=2468 launch=3579 tab=wA:t5 pane=wA:p3'
-    want="herdr-launch: step 5 (opencode models on $pane_host does not list opencode/glm-5.3-flash-free; the agent was not started) failed; so far: $so_far"
+    want="herdr-launch: step 5 (opencode models on $pane_host did not list opencode/glm-5.3-flash-free (missing from its catalog, or the listing failed); the agent was not started) failed; so far: $so_far"
     [ "$err" = "$want" ] || fail "stderr '$err', expected '$want'"
     if grep -E '^(herdr\|agent\|start|taskr\|prompt)\|' "$case_dir/calls" >/dev/null; then fail 'started with an unlisted model'; fi
 done
+
+# --check runs the same listing locally; an unlisted model fails the lane.
+new_case 'OpenCode --check passes a listed model and fails an unlisted one'
+run_launch sh "$launch_sh" --check glm-free glm-flash
+expect_rc 0
+expect_out 'glm-free: ok
+glm-flash: ok'
+grep -qx 'opencode|models|--standalone' "$case_dir/calls.opencode" 2>/dev/null || fail '--check never listed models'
+printf '%s\n' opencode/glm-5.3-flash opencode/glm-5.3-flash-free-beta >"$home/.opencode/bin/models.txt"
+run_launch sh "$launch_sh" --check glm-free glm-flash
+expect_rc 1
+expect_out 'glm-free: opencode models does not list opencode/glm-5.3-flash-free
+glm-flash: ok'
+expect_no_calls
 
 new_case 'OpenCode marker from an earlier launch is not this launch'
 STUB_EXEC=1
@@ -1265,7 +1279,7 @@ printf '%s\n' 'echo "herdr-launch-model-missing=3578:opencode/glm-5.3-flash-free
 printf '%s\n' opencode/glm-5.3-flash >"$home/.opencode/bin/models.txt"
 run_launch sh "$launch_sh" glm-free glm-inventory "$brief" "$report" 42 wA:p3
 expect_rc 1
-expect_err "step 5 (opencode models on $pane_host does not list opencode/glm-5.3-flash-free; the agent was not started) failed"
+expect_err "step 5 (opencode models on $pane_host did not list opencode/glm-5.3-flash-free (missing from its catalog, or the listing failed); the agent was not started) failed"
 case $err in *otherhost*) fail 'read the marker of another launch' ;; esac
 
 # Private pi tables retain compatibility; no public lane selects pi.
@@ -2854,6 +2868,10 @@ for cli in claude codex opencode; do
     printf '%s\n' '#!/bin/sh' '[ "$1" = --version ] || exit 99' 'echo synthetic-version-text' >"$work/bin/$cli"
     chmod 0755 "$work/bin/$cli"
 done
+# OpenCode --check also lists models; the fake lists every public OpenCode lane's id.
+printf '%s\n' '#!/bin/sh' '[ "$*" != "models --standalone" ] || { jq -r '"'"'.[] | objects | select(.kind == "opencode") | .model'"'"' "$0.lanes"; exit; }' \
+    '[ "$1" = --version ] || exit 99' 'echo synthetic-version-text' >"$work/bin/opencode"
+cp "$repo_dir/lanes.json" "$work/bin/opencode.lanes"
 check_path=$work/bin:$stub_dir:/usr/bin:/bin
 run_launch PATH="$check_path" sh "$launch_sh" --check opus-medium sol-high glm-flash
 expect_rc 0
@@ -3399,7 +3417,7 @@ STUB_EXEC=1
 printf '%s\n' opencode/glm-5.3-flash >"$home/.opencode/bin/models.txt"
 run_launch sh "$launch_sh" --reserved 2468 3579 glm-free glm-cart "$brief" "$report" 42 wA:p5
 expect_rc 1
-expect_err "herdr-launch: step 5 (opencode models on $(uname -n) does not list opencode/glm-5.3-flash-free; the agent was not started) failed; so far: workspace=wA task=2468 launch=3579 tab=wA:t5 pane=wA:p5"
+expect_err "herdr-launch: step 5 (opencode models on $(uname -n) did not list opencode/glm-5.3-flash-free (missing from its catalog, or the listing failed); the agent was not started) failed; so far: workspace=wA task=2468 launch=3579 tab=wA:t5 pane=wA:p5"
 expect_err 'setup artifact='
 if grep -E '^(herdr\|agent\|start|taskr\|prompt)\|' "$case_dir/calls" >/dev/null; then fail 'reserved start with an unlisted model'; fi
 printf '%s\n' opencode/glm-5.3-flash-free >"$home/.opencode/bin/models.txt"

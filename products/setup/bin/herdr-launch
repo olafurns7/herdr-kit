@@ -234,6 +234,8 @@ check_lanes() {
             reason="missing CLI: $kind"
         elif ! "$cli" --version >/dev/null 2>&1; then
             reason="$kind --version failed"
+        elif [ "$kind" = opencode ] && ! "$cli" models --standalone 2>/dev/null | grep -qxF -- "$model"; then
+            reason="opencode models does not list $model"
         elif { [ "$kind" = claude ] || [ "$kind" = codex ]; } && [ -x "$HOME/.local/bin/codator" ] &&
             ! "$HOME/.local/bin/codator" "$kind" --version >/dev/null 2>&1; then
             reason="Codator $kind --version failed"
@@ -1033,7 +1035,7 @@ if ! herdr pane wait-output "$pane" --match "herdr-launch-env=$task/$launch/work
         missing_host=$(printf '%s\n' "$screen" | awk -v m="herdr-launch-model-missing=$launch:$model@" '
             i = index($0, m) { h = substr($0, i + length(m)); sub(/[^A-Za-z0-9._-].*$/, "", h); print h; exit }')
         [ -z "$missing_host" ] \
-            || step_fail "5 (opencode models on $missing_host does not list $model; the agent was not started)"
+            || step_fail "5 (opencode models on $missing_host did not list $model (missing from its catalog, or the listing failed); the agent was not started)"
     fi
     step_fail "5 (the pane shell did not echo herdr-launch-env=$task/$launch/worker/$launch)"
 fi
