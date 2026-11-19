@@ -234,6 +234,8 @@ check_lanes() {
             reason="missing CLI: $kind"
         elif ! "$cli" --version >/dev/null 2>&1; then
             reason="$kind --version failed"
+        elif [ "$kind" = opencode ] && ! "$cli" models --standalone 2>/dev/null | grep -qxF -- "$model"; then
+            reason="opencode models did not list $model (missing from its catalog, or the listing failed)"
         elif { [ "$kind" = claude ] || [ "$kind" = codex ]; } && [ -x "$HOME/.local/bin/codator" ] &&
             ! "$HOME/.local/bin/codator" "$kind" --version >/dev/null 2>&1; then
             reason="Codator $kind --version failed"
@@ -708,6 +710,7 @@ if [ "$kind" = opencode ]; then
     opencode_cli=$(jq -nr --arg path "$cli" '$path | @sh') || exit 2
     opencode_config=$(jq -cn --arg model "$model" \
         '{model:$model,default_agent:"build",agents:{build:{model:$model}}}' | jq -Rr @sh) || exit 2
+    opencode_model=$(jq -nr --arg model "$model" '$model | @sh') || exit 2
 fi
 
 # Discovery is local; all pane and agent operations use the saved machine.
@@ -988,8 +991,16 @@ fi
 if [ "$codator" = 1 ]; then
     setup="$setup && codex() { \"\$HOME/.local/bin/codator\" codex \"\$@\"; } && claude() { \"\$HOME/.local/bin/codator\" claude \"\$@\"; }"
 fi
+# OpenCode serves another model, without saying so, when the configured one
+# is not in its catalog (W3467). The pane's own CLI must list the exact id,
+# else the chain prints a marker with this launch's id and the host and
+# stops before herdr_launch_ok; the marker's expanded text is not in the
+# command, so step 5 cannot match a typed command. The footer shows a display
+# name that does not map to the id (opencode/deepseek-v4.1-flash showed
+# "DeepSeek V4.1 Flash 1017"), so nothing is checked after the start.
 if [ "$kind" = opencode ]; then
     setup="$setup && opencode() { $opencode_cli \"\$@\"; } && export OPENCODE_CONFIG_CONTENT=$opencode_config"
+    setup="$setup && { opencode models --standalone 2>/dev/null | grep -qxF $opencode_model || { echo \"herdr-launch-model-missing=\$TASKR_LAUNCH:\"$opencode_model\"@\$(uname -n)\"; false; }; }"
 fi
 setup="$setup && herdr_launch_ok=$launch"
 setup_command=$setup
@@ -1017,8 +1028,17 @@ herdr pane run "$pane" "$setup_command" >/dev/null || step_fail '4 (herdr pane r
 # values, so only the shell's output can match.
 herdr pane run "$pane" 'echo "herdr-launch-env=$TASKR_TASK/$TASKR_LAUNCH/$FLEET_ROLE/$herdr_launch_ok"' >/dev/null \
     || step_fail '5 (herdr pane run env check)'
-herdr pane wait-output "$pane" --match "herdr-launch-env=$task/$launch/worker/$launch" --timeout 15000 >/dev/null \
-    || step_fail "5 (the pane shell did not echo herdr-launch-env=$task/$launch/worker/$launch)"
+if ! herdr pane wait-output "$pane" --match "herdr-launch-env=$task/$launch/worker/$launch" --timeout 15000 >/dev/null; then
+    if [ "$kind" = opencode ]; then
+        screen=$(herdr pane read "$pane" --source recent-unwrapped --lines 40) \
+            || step_fail '5 (the pane shell did not echo herdr-launch-env, then herdr pane read)'
+        missing_host=$(printf '%s\n' "$screen" | awk -v m="herdr-launch-model-missing=$launch:$model@" '
+            i = index($0, m) { h = substr($0, i + length(m)); sub(/[^A-Za-z0-9._-].*$/, "", h); print h; exit }')
+        [ -z "$missing_host" ] \
+            || step_fail "5 (opencode models on $missing_host did not list $model (missing from its catalog, or the listing failed); the agent was not started)"
+    fi
+    step_fail "5 (the pane shell did not echo herdr-launch-env=$task/$launch/worker/$launch)"
+fi
 if [ -n "$reserved_setup_file" ]; then
     rm -- "$reserved_setup_file" && rmdir -- "$setup_dir" || step_fail '5 (confirmed setup cleanup)'
     reserved_setup_file=

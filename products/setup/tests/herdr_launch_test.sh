@@ -45,6 +45,7 @@ case "$1 $2" in
         ;;
     "pane process-info") printf '{"result":{"process_info":{"foreground_process_group_id":%s,"foreground_processes":[{"name":"zsh","pid":400}],"pane_id":"%s","shell_pid":400}}}\n' "${STUB_FG:-400}" "$4" ;;
     "pane wait-output")
+        [ "${STUB_EXEC:-0}" != 1 ] || { grep -qF -- "$5" "$STUB_CALLS.screen"; exit; }
         case $5 in herdr-launch-probe-*) [ "${STUB_PROBE:-ok}" != wait-fail ] || exit 1; exit 0 ;; esac
         [ "${STUB_ENV_OK:-1}" = 1 ] || exit 1
         if [ -f "$STUB_CALLS.setup" ]; then
@@ -52,6 +53,13 @@ case "$1 $2" in
             [ -f "$(cat "$STUB_CALLS.setup-path")" ] || exit 1
         fi ;;
     "pane run")
+        # STUB_EXEC=1: one shell runs every pane command in order, and the
+        # screen shows each typed command before the output, as a pane does.
+        if [ "${STUB_EXEC:-0}" = 1 ]; then
+            printf '%s\n' "$4" >>"$STUB_CALLS.shell"
+            { cat "$STUB_CALLS.shell"; sh "$STUB_CALLS.shell" 2>&1; } >"$STUB_CALLS.screen"
+            exit 0
+        fi
         case $4 in ' probe_marker='*)
             [ "${STUB_PROBE:-ok}" != run-fail ] || exit 1
             printf '%s\n' "$4" >"$STUB_CALLS.probe-command"
@@ -85,6 +93,7 @@ case "$1 $2" in
             ) || exit 1
             ;; esac ;;
     "pane read")
+        [ "${STUB_EXEC:-0}" != 1 ] || { cat "$STUB_CALLS.screen"; exit 0; }
         if [ -f "$STUB_CALLS.probe" ]; then
             case ${STUB_PROBE:-ok} in
                 read-fail) exit 1 ;;
@@ -172,8 +181,18 @@ new_case() {
     mcp_config=$home/.local/state/herdr-orch/lane-push/taskr-mcp-2468.json
     work=$case_dir/work
     mkdir -p "$home/.opencode/bin" "$work"
-    printf '%s\n' '#!/bin/sh' '[ "$1" = --version ] || exit 99' 'echo synthetic-opencode' >"$home/.opencode/bin/opencode"
+    # The fake lists models.txt beside it for "models --standalone" only.
+    cat >"$home/.opencode/bin/opencode" <<'EOF'
+#!/bin/sh
+case $* in
+    --version) echo synthetic-opencode ;;
+    'models --standalone') [ -z "${STUB_CALLS-}" ] || echo 'opencode|models|--standalone' >>"$STUB_CALLS.opencode"
+        cat "${0%/*}/models.txt" ;;
+    *) exit 99 ;;
+esac
+EOF
     chmod 0755 "$home/.opencode/bin/opencode"
+    printf '%s\n' opencode/glm-5.3-flash opencode/glm-5.3-flash-free opencode/minimax-m3.1-flash-free >"$home/.opencode/bin/models.txt"
     work=$(CDPATH= cd "$work" && pwd -P)
     run_path=$stub_dir:/usr/bin:/bin
     run_tmpdir=$case_dir/artifacts
@@ -189,7 +208,7 @@ new_case() {
     STUB_FAIL= STUB_CURRENT= STUB_TAB= STUB_PANE_WS= STUB_PANE_CWD= STUB_PANE_GET= STUB_FG= STUB_ENV_OK= STUB_NEW= STUB_LAUNCH=
     STUB_SCREEN= STUB_START_OK= STUB_PUSH_FAIL= STUB_SERVER_RC=0 STUB_NATIVE= STUB_OBSERVE=
     STUB_INIT_RC=0 STUB_INIT_NATIVE=synthetic-native
-    STUB_SOURCE_PROBE=0 STUB_PROMPT= STUB_LOG_GOT=
+    STUB_SOURCE_PROBE=0 STUB_PROMPT= STUB_LOG_GOT= STUB_EXEC=0
     STUB_MACHINES='[{"id":"m1","label":"devbox","target":"u@Box.example.com","enabled":true}]'
     STUB_MACHINE_LABEL=devbox STUB_PROBE=ok STUB_CWD_OK=1 STUB_COMMON=/target/main/.git STUB_CLI=/target/bin/codex STUB_CODATOR=0
     STUB_TARGET_HOME= STUB_TARGET_BIN= STUB_ACCOUNT='{}'
@@ -214,6 +233,7 @@ run_launch() {
         STUB_NATIVE="$STUB_NATIVE" STUB_OBSERVE="$STUB_OBSERVE" \
         STUB_INIT_RC="$STUB_INIT_RC" STUB_INIT_NATIVE="$STUB_INIT_NATIVE" \
         STUB_SOURCE_PROBE="$STUB_SOURCE_PROBE" STUB_PROMPT="$STUB_PROMPT" STUB_LOG_GOT="$STUB_LOG_GOT" \
+        STUB_EXEC="$STUB_EXEC" \
         STUB_MACHINES="$STUB_MACHINES" STUB_MACHINE_LABEL="$STUB_MACHINE_LABEL" \
         STUB_PROBE="$STUB_PROBE" STUB_CWD_OK="$STUB_CWD_OK" STUB_COMMON="$STUB_COMMON" \
         STUB_CLI="$STUB_CLI" STUB_CODATOR="$STUB_CODATOR" STUB_ACCOUNT="$STUB_ACCOUNT" \
@@ -1156,6 +1176,7 @@ expect_calls "$(tab_calls rev-cart)" \
 opencode_setup() {
     config=$(jq -cn --arg model "$1" '{model:$model,default_agent:"build",agents:{build:{model:$model}}}')
     printf '%s' "$setup${2-} && opencode() { '$home/.opencode/bin/opencode' \"\$@\"; } && export OPENCODE_CONFIG_CONTENT='$config'"
+    printf '%s' " && { opencode models --standalone 2>/dev/null | grep -qxF '$1' || { echo \"herdr-launch-model-missing=\$TASKR_LAUNCH:\"'$1'\"@\$(uname -n)\"; false; }; }"
 }
 for lane_model in minimax-free:minimax-m3.1-flash-free glm-free:glm-5.3-flash-free glm-flash:glm-5.3-flash; do
     for lane_prefix in glm gather; do
@@ -1199,7 +1220,7 @@ expect_no_calls
 
 new_case 'OpenCode uses PATH ahead of the install fallback and quotes its executable'
 mkdir -p "$work/bin with 'quote"
-cp "$home/.opencode/bin/opencode" "$work/bin with 'quote/opencode"
+cp "$home/.opencode/bin/opencode" "$home/.opencode/bin/models.txt" "$work/bin with 'quote/"
 run_launch PATH="$work/bin with 'quote:$stub_dir:/usr/bin:/bin" sh "$launch_sh" glm-free glm-inventory "$brief" "$report" 42
 expect_rc 0
 pane_setup=$(sed -n 's/^herdr|pane|run|wA:p7|\( .*\)$/\1/p' "$case_dir/calls" | head -n 1)
@@ -1210,6 +1231,56 @@ for sh_cmd in 'bash --noprofile --norc -c' 'zsh -f -c'; do
 herdr-launch-env=2468/3579/worker/3579'
     [ "$got" = "$want" ] || fail "${sh_cmd%% *}: executable/config setup failed: $got"
 done
+
+# W3467: the pane's own OpenCode must list the lane's exact model id before
+# herdr_launch_ok is set; a missing id stops step 5 with one line naming the
+# model and the host, and the agent never starts. STUB_EXEC runs the real
+# setup chain against the fake opencode.
+pane_host=$(uname -n)
+for target in tab pane; do
+    new_case "OpenCode lane with a listed model starts (new $target)"
+    STUB_EXEC=1
+    set -- glm-free glm-inventory "$brief" "$report" 42
+    [ "$target" = tab ] || set -- "$@" wA:p3
+    run_launch sh "$launch_sh" "$@"
+    expect_rc 0
+    grep -q '^herdr|agent|start|glm-inventory|' "$case_dir/calls" || fail 'listed model did not start'
+    grep -qx 'opencode|models|--standalone' "$case_dir/calls.opencode" 2>/dev/null || fail 'the pane never listed models'
+
+    new_case "OpenCode lane with an unlisted model stops at step 5 (new $target)"
+    STUB_EXEC=1
+    printf '%s\n' opencode/glm-5.3-flash opencode/glm-5.3-flash-free-beta >"$home/.opencode/bin/models.txt"
+    run_launch sh "$launch_sh" "$@"
+    expect_rc 1
+    so_far='workspace=wA task=2468 launch=3579 tab=wA:t7 pane=wA:p7'
+    [ "$target" = tab ] || so_far='workspace=wA task=2468 launch=3579 tab=wA:t5 pane=wA:p3'
+    want="herdr-launch: step 5 (opencode models on $pane_host did not list opencode/glm-5.3-flash-free (missing from its catalog, or the listing failed); the agent was not started) failed; so far: $so_far"
+    [ "$err" = "$want" ] || fail "stderr '$err', expected '$want'"
+    if grep -E '^(herdr\|agent\|start|taskr\|prompt)\|' "$case_dir/calls" >/dev/null; then fail 'started with an unlisted model'; fi
+done
+
+# --check runs the same listing locally; an unlisted model fails the lane.
+new_case 'OpenCode --check passes a listed model and fails an unlisted one'
+run_launch sh "$launch_sh" --check glm-free glm-flash
+expect_rc 0
+expect_out 'glm-free: ok
+glm-flash: ok'
+grep -qx 'opencode|models|--standalone' "$case_dir/calls.opencode" 2>/dev/null || fail '--check never listed models'
+printf '%s\n' opencode/glm-5.3-flash opencode/glm-5.3-flash-free-beta >"$home/.opencode/bin/models.txt"
+run_launch sh "$launch_sh" --check glm-free glm-flash
+expect_rc 1
+expect_out 'glm-free: opencode models did not list opencode/glm-5.3-flash-free (missing from its catalog, or the listing failed)
+glm-flash: ok'
+expect_no_calls
+
+new_case 'OpenCode marker from an earlier launch is not this launch'
+STUB_EXEC=1
+printf '%s\n' 'echo "herdr-launch-model-missing=3578:opencode/glm-5.3-flash-free@otherhost"' >"$case_dir/calls.shell"
+printf '%s\n' opencode/glm-5.3-flash >"$home/.opencode/bin/models.txt"
+run_launch sh "$launch_sh" glm-free glm-inventory "$brief" "$report" 42 wA:p3
+expect_rc 1
+expect_err "step 5 (opencode models on $pane_host did not list opencode/glm-5.3-flash-free (missing from its catalog, or the listing failed); the agent was not started) failed"
+case $err in *otherhost*) fail 'read the marker of another launch' ;; esac
 
 # Private pi tables retain compatibility; no public lane selects pi.
 private_pi_lane() {
@@ -2797,6 +2868,10 @@ for cli in claude codex opencode; do
     printf '%s\n' '#!/bin/sh' '[ "$1" = --version ] || exit 99' 'echo synthetic-version-text' >"$work/bin/$cli"
     chmod 0755 "$work/bin/$cli"
 done
+# OpenCode --check also lists models; the fake lists every public OpenCode lane's id.
+printf '%s\n' '#!/bin/sh' '[ "$*" != "models --standalone" ] || { jq -r '"'"'.[] | objects | select(.kind == "opencode") | .model'"'"' "$0.lanes"; exit; }' \
+    '[ "$1" = --version ] || exit 99' 'echo synthetic-version-text' >"$work/bin/opencode"
+cp "$repo_dir/lanes.json" "$work/bin/opencode.lanes"
 check_path=$work/bin:$stub_dir:/usr/bin:/bin
 run_launch PATH="$check_path" sh "$launch_sh" --check opus-medium sol-high glm-flash
 expect_rc 0
@@ -3334,6 +3409,24 @@ for field in task_id launch_id round pane cwd model effort; do
     expect_rc 1
     if grep -E '^herdr\|(agent\|start|pane\|run)\|' "$case_dir/calls" >/dev/null; then fail 'mismatched reserved identity reached effects'; fi
 done
+new_case 'reserved OpenCode lane with an unlisted model stops at step 5'
+reserved_snapshot
+jq '.work[0].runs[0].assignments[0].lane = {name:"glm-free",provider:"opencode",model:"opencode/glm-5.3-flash-free",effort:"high"}' \
+    "$STUB_RESERVED" >"$case_dir/reserved.next" && mv "$case_dir/reserved.next" "$STUB_RESERVED"
+STUB_EXEC=1
+printf '%s\n' opencode/glm-5.3-flash >"$home/.opencode/bin/models.txt"
+run_launch sh "$launch_sh" --reserved 2468 3579 glm-free glm-cart "$brief" "$report" 42 wA:p5
+expect_rc 1
+expect_err "herdr-launch: step 5 (opencode models on $(uname -n) did not list opencode/glm-5.3-flash-free (missing from its catalog, or the listing failed); the agent was not started) failed; so far: workspace=wA task=2468 launch=3579 tab=wA:t5 pane=wA:p5"
+expect_err 'setup artifact='
+if grep -E '^(herdr\|agent\|start|taskr\|prompt)\|' "$case_dir/calls" >/dev/null; then fail 'reserved start with an unlisted model'; fi
+printf '%s\n' opencode/glm-5.3-flash-free >"$home/.opencode/bin/models.txt"
+: >"$case_dir/calls"; rm -f "$case_dir/calls.shell" "$case_dir/calls.opencode"
+run_launch sh "$launch_sh" --reserved 2468 3579 glm-free glm-cart "$brief" "$report" 42 wA:p5
+expect_rc 0
+grep -q '^herdr|agent|start|glm-cart|' "$case_dir/calls" || fail 'reserved listed model did not start'
+grep -qx 'opencode|models|--standalone' "$case_dir/calls.opencode" 2>/dev/null || fail 'the reserved pane never listed models'
+
 new_case 'reserved unavailable server never calls Herdr or taskr'
 reserved_snapshot
 STUB_SERVER_RC=1
