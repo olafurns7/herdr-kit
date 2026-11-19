@@ -970,6 +970,8 @@ fi
 # Claude gets folder trust (see start_agent) and disables the advisor tool.
 # Claude review seats and gather lanes are short: a 5-minute prompt cache
 # write costs 1.25x input against 2x for the 1-hour default (owner, W3438).
+# Other Claude lanes unset it, so a reused pane shell does not keep a seat's
+# export; ";" as for pi, so the chain never depends on unset's status.
 # A pi lane first drops a pi() bwrap wrapper that a reused shell kept from
 # the earlier sandbox rule; ";" because zsh's unset -f fails when it is absent.
 setup=" export FLEET_ROLE=worker TASKR_TASK=$task TASKR_LAUNCH=$launch"
@@ -980,6 +982,7 @@ setup=" export FLEET_ROLE=worker TASKR_TASK=$task TASKR_LAUNCH=$launch"
 if [ "$kind" = claude ]; then
     case $prefix:$brief_role in
         gather:* | *:code-reviewer | *:reviewer | *:code-validator) setup="$setup CLAUDE_CODE_PROMPT_CACHE_TTL=5m" ;;
+        *) setup=" unset CLAUDE_CODE_PROMPT_CACHE_TTL;$setup" ;;
     esac
 fi
 if [ "$codator" = 1 ]; then

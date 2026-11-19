@@ -271,9 +271,10 @@ codex_flags() {
     printf '%s' "|-m|$1|-c|model_reasoning_effort=\"$2\"|--dangerously-bypass-approvals-and-sandbox|-c|projects={$3}|--dangerously-bypass-hook-trust"
 }
 setup=' export FLEET_ROLE=worker TASKR_TASK=2468 TASKR_LAUNCH=3579'
-claude_setup="$setup CLAUDE_CODE_SANDBOXED=1 CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1"
-# Claude review seats and gather lanes also get a 5-minute prompt cache (W3438).
-seat_setup="$claude_setup CLAUDE_CODE_PROMPT_CACHE_TTL=5m"
+# Claude review seats and gather lanes get a 5-minute prompt cache; every other
+# Claude lane unsets it, so a reused pane does not keep it (W3438).
+seat_setup="$setup CLAUDE_CODE_SANDBOXED=1 CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1 CLAUDE_CODE_PROMPT_CACHE_TTL=5m"
+claude_setup=" unset CLAUDE_CODE_PROMPT_CACHE_TTL;$setup CLAUDE_CODE_SANDBOXED=1 CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1"
 forward=' && codex() { "$HOME/.local/bin/codator" codex "$@"; } && claude() { "$HOME/.local/bin/codator" claude "$@"; }'
 env_check='echo "herdr-launch-env=$TASKR_TASK/$TASKR_LAUNCH/$FLEET_ROLE/$herdr_launch_ok"'
 
@@ -1232,10 +1233,23 @@ cache_case() {
     expect_rc 0
     case $5 in seat) cache_want=$seat_setup ;; *) cache_want=$claude_setup ;; esac
     [ "$4" = claude ] || cache_want=$setup
-    cache_got=$(sed -n 's/^herdr|pane|run|wA:p7|\( export .*\) && herdr_launch_ok=3579$/\1/p' "$case_dir/calls")
+    cache_got=$(sed -n 's/^herdr|pane|run|wA:p7|\( .*\) && herdr_launch_ok=3579$/\1/p' "$case_dir/calls")
     case $cache_got in "$cache_want" | "$cache_want && "*) ;; *) fail "setup '$cache_got' is not '$cache_want'" ;; esac
-    [ "$5" = seat ] || ! grep -qF CLAUDE_CODE_PROMPT_CACHE_TTL "$case_dir/calls" || fail 'lane exports the prompt cache TTL'
+    [ "$5" = seat ] || ! grep -qF CLAUDE_CODE_PROMPT_CACHE_TTL=5m "$case_dir/calls" || fail 'lane exports the prompt cache TTL'
 }
+# A writer started in a seat's reused pane runs both step-4 lines in one shell.
+new_case 'prompt cache: an impl- lane in a reused seat pane has no TTL' code-reviewer
+run_launch sh "$launch_sh" opus-high rev-cart "$brief" "$report" 42 wA:p3
+expect_rc 0
+reuse_seat=$(sed -n 's/^herdr|pane|run|wA:p3|\( .*\)$/\1/p' "$case_dir/calls" | head -n 1)
+sed -i '1s/.*/HERDR-BRIEF role=implementer/' "$brief"
+: >"$case_dir/calls"
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42 wA:p3
+expect_rc 0
+reuse_impl=$(sed -n 's/^herdr|pane|run|wA:p3|\( .*\)$/\1/p' "$case_dir/calls" | head -n 1)
+case $reuse_seat in *CLAUDE_CODE_PROMPT_CACHE_TTL=5m*) ;; *) fail "seat setup lacks the TTL: $reuse_seat" ;; esac
+got=$(sh -c "$reuse_seat; printf 'seat=%s ' \"\${CLAUDE_CODE_PROMPT_CACHE_TTL-unset}\"; $reuse_impl; printf 'impl=%s' \"\${CLAUDE_CODE_PROMPT_CACHE_TTL-unset}\"")
+[ "$got" = 'seat=5m impl=unset' ] || fail "reused pane shell kept the seat TTL: $got"
 for cache_role in code-reviewer reviewer code-validator; do
     cache_case rev-cart "$cache_role" opus-high claude seat
 done
@@ -1525,7 +1539,7 @@ printf '%s\n' '#!/bin/sh' >"$home/.local/bin/codator"
 chmod 0755 "$home/.local/bin/codator"
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-pane_setup=$(sed -n 's/^herdr|pane|run|wA:p7|\( export .*\)$/\1/p' "$case_dir/calls")
+pane_setup=$(sed -n 's/^herdr|pane|run|wA:p7|\( unset .*\)$/\1/p' "$case_dir/calls")
 want='herdr-launch-env=2468/3579/worker/3579'
 got=$(bash --noprofile --norc -c "$pane_setup; $env_check")
 [ "$got" = "$want" ] || fail "a clean shell echoed '$got', expected '$want'"
