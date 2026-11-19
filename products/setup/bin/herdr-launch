@@ -4,7 +4,7 @@
 # herdr agent start, taskr prompt --confirm (one Enter when no receipt
 # comes; the final line then includes submit_retry=enter). The first failed step
 # stops the run.
-# Usage: herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--mcp] [--deny-tool NAME]... [--work W] LANE NAME BRIEF REPORT PARENT [PANE]
+# Usage: herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--mcp] [--deny-tool NAME]... [--plugin NAME]... [--compact-window N] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]
 #        herdr-launch --reserved TASK LAUNCH LANE NAME BRIEF REPORT PARENT PANE
 #        herdr-launch --gather SLUG QUESTION [--lane LANE] [--account NAME]
 #        herdr-launch --lanes
@@ -25,6 +25,13 @@
 # --mcp (claude lanes only, W2317) keeps the user and project MCP servers for
 # this lane: no --strict-mcp-config, every other flag unchanged.
 # --deny-tool NAME (repeatable, claude lanes only, W3332) adds --disallowedTools NAME after --tools for each NAME in order.
+# --plugin NAME (repeatable, claude lanes only) sets enabledPlugins NAME true in
+# --settings and, like --mcp, drops --strict-mcp-config (a plugin's MCP server
+# does not load under it), so the lane keeps every user, project and enabled
+# plugin MCP server, not only NAME's: its --deny-tool list must cover their
+# write tools too, or start it from a cwd and account without other servers.
+# --compact-window N (once, claude lanes only, 100000-1000000) adds
+# "autoCompactWindow":N to --settings.
 # --work W12 (or 12) starts the lane from PARENT's ticket W12. Before step 1
 # it refuses (exit 2) a ticket that is missing, done or cancelled, lacks
 # intent/acceptance/scope/dependencies, or has a dependency not done. It
@@ -55,7 +62,7 @@ sh_quote() {
 }
 launch_self=$0 launch_args=$(sh_quote "$@") launch_umask=$(umask)
 
-usage='usage: herdr-launch --lanes | herdr-launch --quota | herdr-launch [--push] --check [LANE...] | herdr-launch --gather SLUG QUESTION [--lane LANE] [--account NAME] | herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--mcp] [--deny-tool NAME]... [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
+usage='usage: herdr-launch --lanes | herdr-launch --quota | herdr-launch [--push] --check [LANE...] | herdr-launch --gather SLUG QUESTION [--lane LANE] [--account NAME] | herdr-launch [--account NAME] [--machine LABEL] [--workspace W] [--cwd DIR] [--push] [--mcp] [--deny-tool NAME]... [--plugin NAME]... [--compact-window N] [--work W] LANE NAME BRIEF REPORT PARENT [PANE]'
 
 herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 2
 . "$herdr_bin_dir/herdr-lanes.sh"
@@ -94,7 +101,21 @@ claude_settings() {
     claude_skills=
     [ "$role" = sub-orchestrator ] ||
         claude_skills=',"skillOverrides":{"herdr":"off","herdr-orchestration":"off","herdr-fleet":"off"}'
-    printf '%s' '{"agentPushNotifEnabled":false,"autoMemoryEnabled":false,"promptSuggestionEnabled":false,"awaySummaryEnabled":false,"autoCompactEnabled":true,"idleCompaction":false,"disableBundledSkills":true,"syncClaudeAiSkills":false,"disableClaudeAiConnectors":true,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false,"slack@claude-plugins-official":false,"stripe@claude-plugins-official":false,"cc-plugin-easel@builtin":false,"cc-plugin-plugin-authoring@builtin":false}'"$claude_skills}"
+    claude_plugins='"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false,"slack@claude-plugins-official":false,"stripe@claude-plugins-official":false,"cc-plugin-easel@builtin":false,"cc-plugin-plugin-authoring@builtin":false'
+    # Each --plugin NAME turns a listed key true in place, else adds it once.
+    plugin_rest=$plugins
+    while [ -n "$plugin_rest" ]; do
+        plugin=${plugin_rest%%"$nl"*}
+        plugin_rest=${plugin_rest#*"$nl"}
+        case $claude_plugins in
+            *"\"$plugin\":true"*) ;;
+            *"\"$plugin\":false"*) claude_plugins=${claude_plugins%%"\"$plugin\":false"*}"\"$plugin\":true"${claude_plugins#*"\"$plugin\":false"} ;;
+            *) claude_plugins=$claude_plugins",\"$plugin\":true" ;;
+        esac
+    done
+    claude_compact=
+    [ -z "$compact_window" ] || claude_compact=',"autoCompactWindow":'$compact_window
+    printf '%s' '{"agentPushNotifEnabled":false,"autoMemoryEnabled":false,"promptSuggestionEnabled":false,"awaySummaryEnabled":false,"autoCompactEnabled":true'"$claude_compact"',"idleCompaction":false,"disableBundledSkills":true,"syncClaudeAiSkills":false,"disableClaudeAiConnectors":true,"enabledPlugins":{'"$claude_plugins}$claude_skills}"
 }
 
 start_agent() {
@@ -108,8 +129,9 @@ start_agent() {
                 set -- "$@" --disallowedTools "${deny_rest%%"$nl"*}"
                 deny_rest=${deny_rest#*"$nl"}
             done
-            case $mcp:$name in
-                1:* | *:rs-* | *:arch-*) ;;
+            # A --plugin lane drops it too: the plugin's MCP server does not load under it.
+            case $mcp${plugins:+1}:$name in
+                1*:* | *:rs-* | *:arch-*) ;;
                 *) set -- "$@" --strict-mcp-config ;;
             esac
             set -- "$@" --settings "$(claude_settings)"
@@ -358,7 +380,7 @@ else:
 PY
 }
 
-workspace= cwd= push= mcp= deny_tools= reserved_task= reserved_launch= work_id= machine= machine_host= check= account= quota= drain= gather= gather_lane= fable_spend=
+workspace= cwd= push= mcp= deny_tools= plugins= compact_window= reserved_task= reserved_launch= work_id= machine= machine_host= check= account= quota= drain= gather= gather_lane= fable_spend=
 while :; do
     case ${1-} in
         --lanes)
@@ -437,6 +459,24 @@ while :; do
             deny_tools=$deny_tools$2$nl
             shift 2
             ;;
+        --plugin)
+            [ $# -ge 2 ] || die '--plugin needs NAME'
+            case $2 in
+                '' | -* | *[!A-Za-z0-9_.@:-]*) die "--plugin NAME '$2' must be 1-200 characters of A-Za-z0-9_.@:- and not start with -" ;;
+            esac
+            [ "${#2}" -le 200 ] || die "--plugin NAME is longer than 200 characters"
+            plugins=$plugins$2$nl
+            shift 2
+            ;;
+        --compact-window)
+            [ -z "$compact_window" ] && [ $# -ge 2 ] || die '--compact-window needs N once'
+            case $2 in
+                '' | 0* | *[!0-9]*) die "--compact-window N '$2' must be an integer 100000-1000000" ;;
+            esac
+            [ "${#2}" -le 7 ] && [ "$2" -ge 100000 ] && [ "$2" -le 1000000 ] || die "--compact-window N '$2' must be an integer 100000-1000000"
+            compact_window=$2
+            shift 2
+            ;;
         --reserved)
             [ -z "$reserved_task" ] && [ $# -ge 3 ] || die '--reserved needs TASK LAUNCH once'
             reserved_task=$2 reserved_launch=$3
@@ -458,6 +498,8 @@ while :; do
 done
 if [ -n "$quota" ]; then
     [ -z "$deny_tools" ] || die '--deny-tool does not combine with --quota'
+    [ -z "$plugins" ] || die '--plugin does not combine with --quota'
+    [ -z "$compact_window" ] || die '--compact-window does not combine with --quota'
     [ -z "$machine" ] || die '--quota supports local snapshots only; --machine would require a pane'
     [ $# -eq 0 ] && [ -z "$account$workspace$cwd$push$mcp$reserved_task$work_id$check$gather$gather_lane" ] || die '--quota does not combine with launch or check options'
     account_python=$(account_script)
@@ -469,9 +511,13 @@ if [ -n "$check" ]; then
     [ -z "$machine" ] || die '--machine does not combine with --check'
     [ -z "$mcp" ] || die '--mcp does not combine with --check'
     [ -z "$deny_tools" ] || die '--deny-tool does not combine with --check'
+    [ -z "$plugins" ] || die '--plugin does not combine with --check'
+    [ -z "$compact_window" ] || die '--compact-window does not combine with --check'
     for checked_arg do
         [ "$checked_arg" != --machine ] || die '--machine does not combine with --check'
         [ "$checked_arg" != --deny-tool ] || die '--deny-tool does not combine with --check'
+        [ "$checked_arg" != --plugin ] || die '--plugin does not combine with --check'
+        [ "$checked_arg" != --compact-window ] || die '--compact-window does not combine with --check'
         [ "$checked_arg" != --quota ] || die '--quota does not combine with --check'
     done
 fi
@@ -492,6 +538,8 @@ fi
 caller_rows=
 if [ -n "$gather" ]; then
     [ -z "$deny_tools" ] || die '--deny-tool does not combine with --gather'
+    [ -z "$plugins" ] || die '--plugin does not combine with --gather'
+    [ -z "$compact_window" ] || die '--compact-window does not combine with --gather'
     [ $# -eq 0 ] || die "--gather takes no LANE NAME BRIEF REPORT PARENT; $usage"
     [ -n "${TASKR_TASK:-}" ] || die '--gather needs TASKR_TASK: only a reviewer or researcher lane starts gather helpers'
     caller_rows=$(taskr --json status --tree "$TASKR_TASK" --all) || die 'could not read caller task and children'
@@ -528,6 +576,8 @@ if [ -n "$account" ]; then
 fi
 [ -z "$mcp" ] || [ "$kind" = claude ] || die "--mcp supports claude lanes only; lane $lane is $kind"
 [ -z "$deny_tools" ] || [ "$kind" = claude ] || die "--deny-tool supports claude lanes only; lane $lane is $kind"
+[ -z "$plugins" ] || [ "$kind" = claude ] || die "--plugin supports claude lanes only; lane $lane is $kind"
+[ -z "$compact_window" ] || [ "$kind" = claude ] || die "--compact-window supports claude lanes only; lane $lane is $kind"
 if [ -n "$machine" ]; then
     case $kind in claude | codex) ;; *) die '--machine supports claude and codex only' ;; esac
     [ -n "$given_pane" ] || { [ -n "$workspace" ] && [ -n "$cwd" ]; } \

@@ -2120,6 +2120,137 @@ done
 deny_refusal '--deny-tool refuses a 201-character NAME' '' --deny-tool "${long_name}0" opus-medium impl-cart "$brief" "$report" 42
 expect_err '--deny-tool NAME is longer than 200 characters'
 
+# --plugin NAME (repeatable, claude lanes only) turns enabledPlugins NAME true
+# in --settings and drops --strict-mcp-config; --compact-window N adds
+# "autoCompactWindow":N. recorded_settings prints the --settings value the
+# stub recorded, which must parse as JSON.
+recorded_settings() {
+    grep '^herdr|agent|start|' "$case_dir/calls" | tr '|' '\n' | sed -n '/^--settings$/{n;p;}'
+}
+expect_settings_jq() {
+    settings_got=$(recorded_settings)
+    printf '%s\n' "$settings_got" | jq -e . >/dev/null 2>&1 || fail "recorded --settings does not parse: $settings_got"
+    printf '%s\n' "$settings_got" | jq -e "$@" >/dev/null 2>&1 || fail "recorded --settings fails $*: $settings_got"
+}
+slack=slack@claude-plugins-official
+plugin_settings() {
+    claude_settings | sed "s/\"$slack\":false/\"$slack\":true/"
+}
+lean_tools='--model|claude-opus-5-5|--effort|medium|--dangerously-skip-permissions|--tools|Bash,Read,Edit,Write,Grep,Glob,ToolSearch,Skill,WebFetch,WebSearch'
+new_case 'claude --plugin slack turns only the slack key true and drops --strict-mcp-config'
+run_launch sh "$launch_sh" --plugin "$slack" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|$lean_tools|--settings|$(plugin_settings)")"
+expect_settings_jq --arg s "$slack" '.enabledPlugins[$s] == true and ([.enabledPlugins[] | select(.)] | length) == 1 and (.enabledPlugins | length) == 6'
+! grep -q -F -- '--strict-mcp-config' "$case_dir/calls" || fail 'argv names --strict-mcp-config'
+
+new_case 'claude --mcp --plugin drops --strict-mcp-config'
+run_launch sh "$launch_sh" --mcp --plugin "$slack" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|$lean_tools|--settings|$(plugin_settings)")"
+! grep -q -F -- '--strict-mcp-config' "$case_dir/calls" || fail 'argv names --strict-mcp-config'
+
+new_case 'claude --plugin accepts a 200-character NAME'
+run_launch sh "$launch_sh" --plugin "$long_name" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_settings_jq --arg n "$long_name" '.enabledPlugins[$n] == true and (.enabledPlugins | length) == 7'
+! grep -q -F -- '--strict-mcp-config' "$case_dir/calls" || fail 'argv names --strict-mcp-config'
+
+new_case 'claude --plugin with an unlisted name adds it once'
+run_launch sh "$launch_sh" --plugin new-plugin@market opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_settings_jq '.enabledPlugins["new-plugin@market"] == true and (.enabledPlugins | length) == 7 and ([.enabledPlugins[] | select(.)] | length) == 1'
+[ "$(recorded_settings | grep -o '"new-plugin@market"' | wc -l)" -eq 1 ] || fail 'added key is not there exactly once'
+! grep -q -F -- '--strict-mcp-config' "$case_dir/calls" || fail 'argv names --strict-mcp-config'
+
+new_case 'claude --plugin twice (and a repeat) turns both true, no duplicate key'
+run_launch sh "$launch_sh" --plugin "$slack" --plugin stripe@claude-plugins-official --plugin "$slack" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_settings_jq '([.enabledPlugins | to_entries[] | select(.value) | .key] | sort) == ["slack@claude-plugins-official", "stripe@claude-plugins-official"] and (.enabledPlugins | length) == 6'
+[ "$(recorded_settings | grep -o "\"$slack\"" | wc -l)" -eq 1 ] || fail 'slack key is duplicated'
+
+new_case 'haiku-gather --plugin --deny-tool lane (the read-only Slack use)' researcher
+run_launch sh "$launch_sh" --plugin "$slack" --deny-tool mcp__plugin_slack_slack__slack_send_message haiku-gather gather-slack "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls gather-slack)" \
+    "$(tail_calls gather-slack researcher wA:p7 wA:t7 claude claude-haiku-5-5 medium "$claude_setup" \
+        "|$(printf '%s' "$lean_tools" | sed 's/opus/haiku/')|--disallowedTools|mcp__plugin_slack_slack__slack_send_message|--settings|$(plugin_settings)")"
+
+new_case 'claude --push --plugin keeps the taskr config and drops --strict-mcp-config'
+run_launch sh "$launch_sh" --push --plugin "$slack" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|$lean_tools|--settings|$(plugin_settings)|--mcp-config|$mcp_config|--dangerously-load-development-channels|server:taskr")"
+
+new_case 'claude lane without --plugin or --compact-window keeps --strict-mcp-config and the settings'
+run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+grep -q -F -- '|--strict-mcp-config|' "$case_dir/calls" || fail 'argv lacks --strict-mcp-config'
+[ "$(recorded_settings)" = "$(claude_settings)" ] || fail 'settings changed without flags'
+expect_settings_jq '([.enabledPlugins[] | select(.)] | length) == 0 and (has("autoCompactWindow") | not)'
+
+new_case 'claude --compact-window 100000 lands in --settings'
+run_launch sh "$launch_sh" --compact-window 100000 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|$(claude_flags medium | sed 's/"autoCompactEnabled":true,/"autoCompactEnabled":true,"autoCompactWindow":100000,/')")"
+expect_settings_jq '.autoCompactWindow == 100000 and ([.enabledPlugins[] | select(.)] | length) == 0'
+
+new_case 'claude --compact-window 100000 with --plugin'
+run_launch sh "$launch_sh" --compact-window 100000 --plugin "$slack" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_settings_jq --arg s "$slack" '.autoCompactWindow == 100000 and .enabledPlugins[$s] == true'
+new_case 'claude --compact-window 1000000 passes'
+run_launch sh "$launch_sh" --compact-window 1000000 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_settings_jq '.autoCompactWindow == 1000000'
+
+plugin_charset="must be 1-200 characters of A-Za-z0-9_.@:- and not start with -"
+deny_refusal 'codex --plugin lane refuses' reviewer --plugin "$slack" sol-medium rev-cart "$brief" "$report" 42
+expect_err '--plugin supports claude lanes only; lane sol-medium is codex'
+deny_refusal 'OpenCode --plugin lane refuses' '' --plugin "$slack" glm-free glm-inventory "$brief" "$report" 42
+expect_err '--plugin supports claude lanes only; lane glm-free is opencode'
+deny_refusal 'codex --compact-window lane refuses' reviewer --compact-window 100000 sol-medium rev-cart "$brief" "$report" 42
+expect_err '--compact-window supports claude lanes only; lane sol-medium is codex'
+deny_refusal '--plugin before --check refuses' '' --plugin "$slack" --check opus-medium
+expect_err '--plugin does not combine with --check'
+deny_refusal '--plugin after --check refuses' '' --check opus-medium --plugin "$slack"
+expect_err '--plugin does not combine with --check'
+deny_refusal '--compact-window before --check refuses' '' --compact-window 100000 --check opus-medium
+expect_err '--compact-window does not combine with --check'
+deny_refusal '--compact-window after --check refuses' '' --check opus-medium --compact-window 100000
+expect_err '--compact-window does not combine with --check'
+deny_refusal '--plugin with --quota refuses' '' --plugin "$slack" --quota
+expect_err '--plugin does not combine with --quota'
+deny_refusal '--compact-window with --quota refuses' '' --compact-window 100000 --quota
+expect_err '--compact-window does not combine with --quota'
+deny_refusal '--plugin with --gather refuses' researcher --plugin "$slack" --gather facts 'what is x'
+expect_err '--plugin does not combine with --gather'
+deny_refusal '--compact-window with --gather refuses' researcher --compact-window 100000 --gather facts 'what is x'
+expect_err '--compact-window does not combine with --gather'
+deny_refusal '--plugin without NAME refuses' '' --plugin
+expect_err '--plugin needs NAME'
+for bad_name in '' 'slack plugin' 'a"b' 'a,b' '--print' '-x' "$(printf 'a\nb')" 'a}b' 'a*' "$(printf 'caf\303\251')"; do
+    deny_refusal "--plugin refuses NAME [$bad_name]" '' --plugin "$bad_name" opus-medium impl-cart "$brief" "$report" 42
+    expect_err "$plugin_charset"
+done
+deny_refusal '--plugin refuses a 201-character NAME' '' --plugin "${long_name}0" opus-medium impl-cart "$brief" "$report" 42
+expect_err '--plugin NAME is longer than 200 characters'
+deny_refusal '--compact-window without N refuses' '' --compact-window
+expect_err '--compact-window needs N once'
+deny_refusal '--compact-window twice refuses' '' --compact-window 100000 --compact-window 200000 opus-medium impl-cart "$brief" "$report" 42
+expect_err '--compact-window needs N once'
+for bad_n in abc 5 9999 10000 99999 1000001 010000 0100000 '' -100000 1e5 '100000 ' 99999999999999999999; do
+    deny_refusal "--compact-window refuses N [$bad_n]" '' --compact-window "$bad_n" opus-medium impl-cart "$brief" "$report" 42
+    expect_err "--compact-window N '$bad_n' must be an integer 100000-1000000"
+done
+
 new_case 'claude impl- lane stays strict'
 run_launch sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
