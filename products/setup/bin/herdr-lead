@@ -497,7 +497,7 @@ if ! start_err=$(herdr agent start "$agent" --kind claude --pane "$pane" --timeo
 fi
 
 step_line 7 'tell the lead its generation and handover'
-prompt="You are the lead of root $root. herdr-lead adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence. Read the handover at $handover. A \"lead push check\" event will arrive: record it and ack it. Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note."
+prompt="You are the lead of root $root. herdr-lead adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence; ack each pushed line right after you handle it, in the listed order. Read the handover at $handover. A \"lead push check\" event will arrive: record it and ack it. Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note."
 if [ -n "$prompt_file" ]; then
     prompt="$prompt Then read $prompt_file and follow it."
 fi

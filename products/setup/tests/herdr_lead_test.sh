@@ -611,6 +611,7 @@ has calls 'taskr|close|43|--outcome|accepted|env=/'
 [ "$(wc -l <"$case_dir/prompt-sent")" -eq 0 ] || fail 'prompt contains a newline'
 case $(cat "$case_dir/prompt-sent") in *' lead-push-gen-7') ;; *) fail 'missing end token' ;; esac
 grep -F 'if the handover Note lists session timers to re-arm, create each again' "$case_dir/prompt-sent" >/dev/null || fail 'prompt does not ask to re-arm session timers'
+grep -F 'ack each pushed line right after you handle it, in the listed order' "$case_dir/prompt-sent" >/dev/null || fail 'prompt does not ask to ack each digest line after handling it'
 config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
 # A lead takes digest pushes with a 2-minute hold, as the hub does.
 jq -e '.mcpServers.taskr == {command:"taskr",args:["mcp","--channel","--as","42","--session","7"],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}}' "$config" >/dev/null || fail 'bad config'
@@ -801,6 +802,8 @@ ACKS='1 2 3'
 start
 expect_rc 1
 has err 'check event was not received and acked within 360 s (acked through 3; backlog 2)'
+# The fake clock adds 30 s per date call; 14 inbox reads mean a 360 s ack extension (240 s gives 10).
+[ "$(cat "$case_dir/inbox-reads")" = 14 ] || fail 'ack extension is not 360 s'
 lacks calls 'taskr|close'
 
 for mode in unreceived unacked wrong-generation wrong-holder; do
@@ -815,6 +818,9 @@ for mode in unreceived unacked wrong-generation wrong-holder; do
     expect_rc 1
     lacks calls 'taskr|close'
     has err 'ROOT=42 GEN=7 pane=wA:p1 mcp_config='
+    # The fake clock adds 30 s per date call; 10 delivery reads mean a 360 s deadline (240 s gives 6).
+    # wrong-holder fails before it reads deliveries.
+    [ "$mode" = wrong-holder ] || [ "$(grep -c 'delivery|ls' "$case_dir/calls")" = 10 ] || fail 'check deadline is not 360 s'
 done
 
 moved_campaign='{"root":{"id":42,"name":"example","role":"orchestrator","status":"open","pane_id":"wA:p1"}}'
