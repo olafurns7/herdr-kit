@@ -27,8 +27,10 @@
 # --deny-tool NAME (repeatable, claude lanes only, W3332) adds --disallowedTools NAME after --tools for each NAME in order.
 # --plugin NAME (repeatable, claude lanes only) sets enabledPlugins NAME true in
 # --settings and, like --mcp, drops --strict-mcp-config (a plugin's MCP server
-# does not load under it).
-# --compact-window N (once, claude lanes only, 10000-1000000) adds
+# does not load under it), so the lane keeps every user, project and enabled
+# plugin MCP server, not only NAME's: its --deny-tool list must cover their
+# write tools too, or start it from a cwd and account without other servers.
+# --compact-window N (once, claude lanes only, 100000-1000000) adds
 # "autoCompactWindow":N to --settings.
 # --work W12 (or 12) starts the lane from PARENT's ticket W12. Before step 1
 # it refuses (exit 2) a ticket that is missing, done or cancelled, lacks
@@ -469,9 +471,9 @@ while :; do
         --compact-window)
             [ -z "$compact_window" ] && [ $# -ge 2 ] || die '--compact-window needs N once'
             case $2 in
-                '' | 0* | *[!0-9]*) die "--compact-window N '$2' must be an integer 10000-1000000" ;;
+                '' | 0* | *[!0-9]*) die "--compact-window N '$2' must be an integer 100000-1000000" ;;
             esac
-            [ "${#2}" -le 7 ] && [ "$2" -ge 10000 ] && [ "$2" -le 1000000 ] || die "--compact-window N '$2' must be an integer 10000-1000000"
+            [ "${#2}" -le 7 ] && [ "$2" -ge 100000 ] && [ "$2" -le 1000000 ] || die "--compact-window N '$2' must be an integer 100000-1000000"
             compact_window=$2
             shift 2
             ;;

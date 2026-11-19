@@ -2146,6 +2146,20 @@ expect_calls "$(tab_calls impl-cart)" \
 expect_settings_jq --arg s "$slack" '.enabledPlugins[$s] == true and ([.enabledPlugins[] | select(.)] | length) == 1 and (.enabledPlugins | length) == 6'
 ! grep -q -F -- '--strict-mcp-config' "$case_dir/calls" || fail 'argv names --strict-mcp-config'
 
+new_case 'claude --mcp --plugin drops --strict-mcp-config'
+run_launch sh "$launch_sh" --mcp --plugin "$slack" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" \
+        "|$lean_tools|--settings|$(plugin_settings)")"
+! grep -q -F -- '--strict-mcp-config' "$case_dir/calls" || fail 'argv names --strict-mcp-config'
+
+new_case 'claude --plugin accepts a 200-character NAME'
+run_launch sh "$launch_sh" --plugin "$long_name" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_settings_jq --arg n "$long_name" '.enabledPlugins[$n] == true and (.enabledPlugins | length) == 7'
+! grep -q -F -- '--strict-mcp-config' "$case_dir/calls" || fail 'argv names --strict-mcp-config'
+
 new_case 'claude --plugin with an unlisted name adds it once'
 run_launch sh "$launch_sh" --plugin new-plugin@market opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
@@ -2188,10 +2202,10 @@ expect_calls "$(tab_calls impl-cart)" \
         "|$(claude_flags medium | sed 's/"autoCompactEnabled":true,/"autoCompactEnabled":true,"autoCompactWindow":100000,/')")"
 expect_settings_jq '.autoCompactWindow == 100000 and ([.enabledPlugins[] | select(.)] | length) == 0'
 
-new_case 'claude --compact-window 10000 with --plugin'
-run_launch sh "$launch_sh" --compact-window 10000 --plugin "$slack" opus-medium impl-cart "$brief" "$report" 42
+new_case 'claude --compact-window 100000 with --plugin'
+run_launch sh "$launch_sh" --compact-window 100000 --plugin "$slack" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
-expect_settings_jq --arg s "$slack" '.autoCompactWindow == 10000 and .enabledPlugins[$s] == true'
+expect_settings_jq --arg s "$slack" '.autoCompactWindow == 100000 and .enabledPlugins[$s] == true'
 new_case 'claude --compact-window 1000000 passes'
 run_launch sh "$launch_sh" --compact-window 1000000 opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
@@ -2232,9 +2246,9 @@ deny_refusal '--compact-window without N refuses' '' --compact-window
 expect_err '--compact-window needs N once'
 deny_refusal '--compact-window twice refuses' '' --compact-window 100000 --compact-window 200000 opus-medium impl-cart "$brief" "$report" 42
 expect_err '--compact-window needs N once'
-for bad_n in abc 5 9999 1000001 010000 '' -100000 1e5 '100000 ' 99999999999999999999; do
+for bad_n in abc 5 9999 10000 99999 1000001 010000 0100000 '' -100000 1e5 '100000 ' 99999999999999999999; do
     deny_refusal "--compact-window refuses N [$bad_n]" '' --compact-window "$bad_n" opus-medium impl-cart "$brief" "$report" 42
-    expect_err "--compact-window N '$bad_n' must be an integer 10000-1000000"
+    expect_err "--compact-window N '$bad_n' must be an integer 100000-1000000"
 done
 
 new_case 'claude impl- lane stays strict'
