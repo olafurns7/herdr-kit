@@ -800,7 +800,7 @@ new_case 'live check still fails when acks stop advancing'
 ACKS='1 2 3'
 start
 expect_rc 1
-has err 'check event was not received and acked within 240 s (acked through 3; backlog 2)'
+has err 'check event was not received and acked within 360 s (acked through 3; backlog 2)'
 lacks calls 'taskr|close'
 
 for mode in unreceived unacked wrong-generation wrong-holder; do

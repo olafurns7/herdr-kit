@@ -536,11 +536,12 @@ if ! prompt_out=$(herdr agent prompt "$agent" "$prompt" --wait --until working -
 fi
 
 step_line 8 'prove a current-generation push was received and acked'
-deadline=$(($(date +%s) + 240))
+# 360 s: the check is a ready event, so the 120 s digest hold applies on top of the 240 s window.
+deadline=$(($(date +%s) + 360))
 while :; do
     read_lease || fail 'read live-check lease'
     if current_lease; then break; fi
-    [ "$(date +%s)" -lt "$deadline" ] || fail 'no current-generation MCP channel lease within 240 s'
+    [ "$(date +%s)" -lt "$deadline" ] || fail 'no current-generation MCP channel lease within 360 s'
     sleep 3
 done
 out=$(ledger --json new "lead-push-check-$gen" --parent "$root" --role gate) || fail 'create check task (inspect before retry)'
@@ -572,11 +573,11 @@ while :; do
     now_acked=$(printf '%s\n' "$inbox" | jq -er '.acked_event_id // 0') || fail 'read check ack'
     if [ "$now_acked" -gt "$acked" ]; then
         acked=$now_acked
-        later=$(($(date +%s) + 240))
+        later=$(($(date +%s) + 360))
         [ "$later" -le "$cap" ] || later=$cap
         [ "$later" -le "$deadline" ] || deadline=$later
     fi
-    [ "$(date +%s)" -lt "$deadline" ] || fail "check event was not received and acked within 240 s (acked through $acked; backlog $backlog)"
+    [ "$(date +%s)" -lt "$deadline" ] || fail "check event was not received and acked within 360 s (acked through $acked; backlog $backlog)"
     sleep 3
 done
 out=$(ledger --json close "$check_task" --outcome accepted) || fail 'close check task (inspect before retry)'
