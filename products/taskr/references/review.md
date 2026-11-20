@@ -20,6 +20,9 @@ requires p0=p1=0. Only P0 and P1 findings make the verdict not ready; P2 and P3
 findings do not block it, and you report them with their counts for the lead to
 ticket. For a review without a PR, keep `repo`, `head` and the verdict fields,
 and replace `--kv pr=NUMBER` with `--kv pr=none --kv reason=TEXT`.
+CI state at the head is not a finding: state it in the report and leave it to
+the parent's proof rule. Add any extra field the brief names (for example
+`--kv fallback=codex-out`) to the ready line.
 
 The report states: the verdict; each finding with file:line, a failure case and a fix; the checks that hold; every command run with its exit code; the source identity reviewed (commit or hashes); and each probe path with the exact command to rerun it. Keep probes outside the repository at the evidence paths named by the brief; list every artifact left there. Ask for an external evidence path if one is missing.
 
