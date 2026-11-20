@@ -64,6 +64,14 @@ object with string values.
 
 Plain lane blocking ask: `taskr wait --for answer` (it uses TASKR_TASK/TASKR_LAUNCH; `--as` other than TASKR_TASK exits 6). Handle the answer to your ask, then `taskr ack EVENT --as $TASKR_TASK`. Timeout: wait again. Answers never reopen finished work. --key: idempotent; got: reserved.
 
+## Report head
+
+Start every worker report with `## Report head`.
+Keep that section to about 1,000 characters at most. Give the decision or
+verdict, the full head SHA (or say when no commit applies), the checks and their
+exit codes, and what you did not check. Point to evidence by section name or
+path. Put the full evidence and reasoning under later level-two headings.
+
 ## Root and orchestrator actions
 
 For a persistent service lane that handles prompts without a terminal report,

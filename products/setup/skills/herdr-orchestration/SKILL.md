@@ -124,7 +124,7 @@ Skills to load: <repository skills mapped to this work; code-reviewers also name
 Acceptance: <observable conditions> (a --work brief gets the ticket's lines from herdr-launch)
 Validation: <exact commands, one per acceptance item>: leaf checks only (the Leaf checks slot); no build, suite, or gate
   Gate: parent at head (implementer or fixer)
-Progress: taskr SKILL.md worker rules
+Progress: follow the worker rules and Report head in taskr SKILL.md
 
 Other agents share this repository. Preserve their edits. Do not commit, push,
 open a PR, update the issue tracker, or start agents. If a product, ownership,
