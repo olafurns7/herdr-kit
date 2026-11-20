@@ -48,8 +48,7 @@ pub const CONSUMER_LEASES: &str = "create table if not exists consumer_leases (
   check (holder is null or (launch_id is null) != (session_gen is null))
 );
 ";
-/// v6: one FTS5 integrity-check of the search index per ledger (W3521), rebuilt when damaged.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 5;
 #[cfg(test)]
 const SCHEMA_HASH: &str = "ebc65fd213a8958a6547464754880e30301d462946192c8bcaf6bc39b15c1c14";
 
@@ -83,8 +82,8 @@ fn search_intact(db: &Connection) -> rusqlite::Result<bool> {
 
 /// FTS5 'integrity-check' of `search_fts`: `Some(error)` when the index disagrees with its
 /// content (an orphan entry fails some `taskr search` queries with SQLITE_CORRUPT 267).
-/// It reads the whole index, about 1.5 s per 200k rows, so only migration and
-/// `taskr search --check|--repair` run it, never every open.
+/// It reads the whole index under the write lock, about 1.5 s per 200k rows, so only the
+/// operator's `taskr search --check|--repair` runs it; open and migration never do.
 pub fn search_damage(db: &Connection) -> rusqlite::Result<Option<String>> {
     match db.execute_batch("insert into search_fts(search_fts, rank) values('integrity-check', 0)")
     {
@@ -148,7 +147,7 @@ pub fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
             tx.execute_batch(&format!("alter table {table} add column {column} {kind}"))?;
         }
     }
-    if search_intact(&tx)? && search_damage(&tx)?.is_none() {
+    if search_intact(&tx)? {
         tx.execute_batch("insert into search_fts(search_fts, rank) values('secure-delete', 1)")?;
     } else {
         tx.execute_batch(SEARCH_REBUILD)?;
@@ -465,7 +464,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn v5_migration_rebuilds_a_search_index_with_an_orphan_row() {
+    fn a_damaged_search_index_survives_open_and_migration_until_repair() {
         use crate::store::documents;
         let root = std::env::temp_dir().join(format!("taskr-schema-orphan-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
@@ -482,21 +481,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(search_damage(&db).unwrap(), None);
-        // As on the plex ledger: an index entry whose content and docsize rows are gone.
+        // As on a damaged production ledger: an index entry whose content and docsize rows are gone.
         db.execute_batch(
             "delete from search_fts_content where id=(select min(id) from search_fts_content);
             delete from search_fts_docsize where id not in (select id from search_fts_content);",
         )
         .unwrap();
         assert!(search_damage(&db).unwrap().is_some());
-        // A current ledger skips the check on open: it reads the whole index.
+        // Repair is the operator's step: neither open nor a migration checks or rebuilds the index.
         drop(db);
         let db = open(&path).unwrap();
         assert!(search_damage(&db).unwrap().is_some());
-        // A v5 ledger checks once on migration and rebuilds from documents and events.
-        db.pragma_update(None, "user_version", 5).unwrap();
+        db.pragma_update(None, "user_version", SCHEMA_VERSION - 1)
+            .unwrap();
         drop(db);
-        let db = open(&path).unwrap();
+        let mut db = open(&path).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        assert!(search_damage(&db).unwrap().is_some());
+        migrate(&mut db).unwrap();
+        assert!(search_damage(&db).unwrap().is_some());
+        // search_repair rebuilds from documents and events.
+        search_repair(&mut db).unwrap();
         assert_eq!(search_damage(&db).unwrap(), None);
         let hits: i64 = db
             .query_row(

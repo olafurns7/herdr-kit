@@ -427,8 +427,7 @@ fn document_kind(kind: &str) -> bool {
     )
 }
 /// The repair step named by a damaged-index error.
-const SEARCH_REPAIR: &str =
-    "run `taskr search --repair` on the ledger host (other ledger reads are unaffected)";
+const SEARCH_REPAIR: &str = "other ledger reads are unaffected; repair is an operator step: on the ledger host, in a maintenance window, run `taskr search --repair`";
 pub fn search(f: &FlagSet) -> Result<()> {
     if f.get_bool("check") || f.get_bool("repair") {
         return search_maintenance(f);
@@ -539,6 +538,11 @@ fn search_maintenance(f: &FlagSet) -> Result<()> {
     {
         return Err(usage(
             "search: --check and --repair take no QUERY, --root, --kind, --limit or --raw",
+        ));
+    }
+    if store::rpc_context().is_some() {
+        return Err(usage(
+            "search --check and --repair take the ledger's write lock: run it on the ledger host, in a maintenance window",
         ));
     }
     let mut db = open()?;

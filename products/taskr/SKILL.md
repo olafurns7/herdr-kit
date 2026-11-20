@@ -124,7 +124,7 @@ Close a lane with `taskr close ID --outcome accepted|reworked|rejected|abandoned
 
 `taskr campaign ROOT [--page N] [--all]` reads goal, plan, lanes, asks, decisions, document metadata, stored PR refs and a 100-event log page. `--all` includes closed lanes; bodies load through `doc get`. Client reads are fresh RPC. Glance includes host/pane targets and sparklines; focus only when row host equals caller_host (both empty on the hub). A new root orchestrator without a pane is told to adopt its root with `--pane` as its first act.
 
-`taskr search QUERY [--root ID] [--kind K] [--limit N] [--raw]` searches latest captured documents and decision/ask/answer/note summaries (default 20, max 100; `--raw` uses FTS5 syntax):
+`taskr search QUERY [--root ID] [--kind K] [--limit N] [--raw]` searches latest captured documents and decision/ask/answer/note summaries (default 20, max 100; `--raw` uses FTS5 syntax). `taskr search --check|--repair` checks or rebuilds the index: an operator step on the ledger host in a maintenance window, refused over RPC ([recovery](references/recovery.md#daemon)):
 
 ```sh
 taskr search "retry policy" --root 42

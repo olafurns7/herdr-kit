@@ -38,7 +38,7 @@ fn search_names_a_damaged_index_and_repair_rebuilds_it() {
     assert_eq!(search.status.code(), Some(4), "{}", text(&search));
     assert!(
         text(&search).contains("search index is damaged")
-            && text(&search).contains("taskr search --repair"),
+            && text(&search).contains("in a maintenance window, run `taskr search --repair`"),
         "{}",
         text(&search)
     );
@@ -54,6 +54,24 @@ fn search_names_a_damaged_index_and_repair_rebuilds_it() {
     );
     let usage = h.output(&[], &["--json", "search", "--repair", "orphantoken"], b"");
     assert_eq!(usage.status.code(), Some(2), "{}", text(&usage));
+    // A goflag true value is the flag; over RPC both are refused (they take the write lock).
+    let check = h.output(&[], &["--json", "search", "--check=1"], b"");
+    assert_eq!(check.status.code(), Some(4), "{}", text(&check));
+    for flag in ["--check", "--repair"] {
+        let rpc = h.output(
+            &[("TASKR_RPC_CALLER".into(), "host-b".into())],
+            &["--hub-child", "--json", "search", flag],
+            b"{}",
+        );
+        assert_eq!(rpc.status.code(), Some(2), "{flag}: {}", text(&rpc));
+        assert!(
+            text(&rpc).contains("run it on the ledger host, in a maintenance window"),
+            "{flag}: {}",
+            text(&rpc)
+        );
+    }
+    let check = h.output(&[], &["--json", "search", "--check"], b"");
+    assert_eq!(check.status.code(), Some(4), "{}", text(&check));
     let repair = h.ok(&[], &["search", "--repair"]);
     assert_eq!(repair["search_index"], "rebuilt");
     assert_eq!(repair["rows"], 2);

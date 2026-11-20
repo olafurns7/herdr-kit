@@ -149,19 +149,21 @@ or make the host a client ([install.md, step 7](install.md#7-multiple-machines))
 malformed ...)` when the full-text index has an entry whose row is gone. Only
 search is affected; other reads and writes still work.
 
-On the ledger host (the hub, or a host without `server.url`), check and repair:
+Repair is an operator step. Run it on the ledger host (the hub, or a host
+without `server.url`), in a maintenance window, apart from any schema upgrade
+([release.md, Rollback](release.md#rollback)):
 
 ```sh
 taskr search --check    # FTS5 integrity-check: {"ok":true,"search_index":"ok",...} or exit 4
 taskr search --repair   # rebuild the index from documents and events, then check it again
 ```
 
-`--repair` holds the ledger's write lock while it rebuilds, about 7 s per 200k
-indexed rows; other writers wait for it. The check alone takes about 1.5 s per
-200k rows. From a client both run over RPC on the hub within the usual 30 s
-window; on a very large ledger run them on the hub itself. A ledger upgraded to
-schema 6 runs the same check once when it is first opened and rebuilds a
-damaged index then.
+Both hold the ledger's write lock while they run. At 200k indexed rows the
+check took about 1.5 s and the rebuild about 7 s. Writers wait only so long:
+CLI writers on the ledger host 30 s, hub RPC children 5 s plus one retry, hooks
+150 ms, daemon jobs 5 s; past that they fail or are spooled. Over RPC (from a
+client host) both commands are refused with exit 2. Neither opening the ledger
+nor a schema migration checks or rebuilds the index.
 
 taskr 0.32 and older could damage the index when a document was captured again
 while it was still the newest indexed row: the replace reused the row's id in

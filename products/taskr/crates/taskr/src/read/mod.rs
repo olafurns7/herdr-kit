@@ -40,10 +40,16 @@ fn reject(text: impl Into<String>) -> Error {
         text: text.into(),
     }
 }
-/// `--check` or `--repair` (also `=true`) makes `search` a maintenance command without QUERY.
+/// `--check` or `--repair` (or `=` a true goflag boolean) makes `search` a maintenance command without QUERY.
 fn search_maintenance(arg: &str) -> bool {
-    let a = arg.trim_start_matches('-');
-    arg.starts_with('-') && matches!(a, "check" | "repair" | "check=true" | "repair=true")
+    if !arg.starts_with('-') {
+        return false;
+    }
+    let (name, value) = match arg.trim_start_matches('-').split_once('=') {
+        Some((name, value)) => (name, goflag::parse_bool(value) == Some(true)),
+        None => (arg.trim_start_matches('-'), true),
+    };
+    value && matches!(name, "check" | "repair")
 }
 fn open() -> Result<Connection> {
     let p = db::path().map_err(usage)?;

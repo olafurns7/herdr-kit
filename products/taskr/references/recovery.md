@@ -67,7 +67,7 @@ Read the full log and recorded native home/session; verify the owned pane and to
 
 The owner restarts daemons; a worker never does. `taskr daemon --status` reports freshness, version, pid, socket, the hub server's state and URL (`dashboard`, `dashboard_url`), role and `dashboard_usage`; `stale: true` means an older daemon still runs.
 
-- If `taskr search` reports a damaged index, stop the server, drop the table `search_fts` in the ledger file, and start the server; it builds the index again.
+- If `taskr search` reports a damaged index (other reads are unaffected), the operator runs `taskr search --check`, then `taskr search --repair`, on the ledger host in a maintenance window, apart from any schema upgrade. Both hold the write lock (about 1.5 s and 7 s per 200k indexed rows) and are refused over RPC (exit 2). A worker reports the error to its lead and does not repair.
 - `taskr daemon --restart` (local and client mode) stops only the daemon whose recorded pid, executable, argv, start time and uid match, waits ≤10 s, and starts this binary detached with only HOME/PATH/HERDR_SOCKET_PATH, preserving the recorded daemon arguments (including `--stay`). An unknown identity exits 6 and signals nothing.
 - A local daemon is recorded as supervised only when `INVOCATION_ID` is set and `SYSTEMD_EXEC_PID` equals its own pid. `--restart` stops it, then waits up to 10 s for a verified replacement with a new process start time. If none appears and the lock is free, it starts a detached replacement and reports `started_detached: true`. `daemon --status` shows `stay` and `supervised`; the detached fallback is not supervised.
 - With no lock holder, `--restart` starts plain `daemon`; a stopped stay daemon does not return with `--stay`.
