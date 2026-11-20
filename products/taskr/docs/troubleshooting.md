@@ -145,11 +145,36 @@ or make the host a client ([install.md, step 7](install.md#7-multiple-machines))
 
 ## Searching says the index is damaged
 
-Stop the taskr hub's daemon first. For the default ledger path, run:
+`taskr search` exits 4 with `search index is damaged (database disk image is
+malformed ...)` when the full-text index has an entry whose row is gone. Only
+search is affected; other reads and writes still work.
+
+Repair is an operator step. Run it on the ledger host (the hub, or a host
+without `server.url`), in a maintenance window, apart from any schema upgrade
+([release.md, Rollback](release.md#rollback)):
 
 ```sh
-sqlite3 ~/.local/state/taskr/taskr.db 'DROP TABLE search_fts;'
+taskr search --check    # FTS5 integrity-check: {"ok":true,"search_index":"ok",...} or exit 4
+taskr search --repair   # rebuild the index from documents and events, then check it again
 ```
 
-Use the actual ledger path if `TASKR_DB` changes it. taskr rebuilds the index
-on next open; then start the daemon again.
+Both hold the ledger's write lock while they run. At 200k indexed rows the
+check took about 1.5 s and the rebuild about 7 s. Keep free disk of about the
+index's size for the rebuild: it writes the whole index to the WAL. Writers
+wait only so long: CLI writers and local daemon jobs (such as the disk-usage
+update) 30 s, hub RPC children 5 s plus one retry, the hub's request claim 5 s,
+hooks 150 ms; past that they fail or are spooled. Over RPC (from a client host)
+both commands are refused with exit 2, and so are they in an agent lane
+(`TASKR_TASK` set). Opening the ledger and schema migrations do not scan for or
+repair orphan entries; they rebuild the index only when its schema is missing
+or outdated (for example a missing search trigger), as on every upgrade.
+
+taskr 0.32.0 and older could damage the index when a document was captured
+again while it was still the newest indexed row: the replace reused the row's
+id in one transaction, and SQLite's FTS5 secure-delete kept stale entries that
+later pointed at a deleted row. Newer taskr inserts the new row before it
+deletes the old one, so it adds no new damage, but it does not remove stale
+entries the old binary left. Such an entry can pass `taskr search --check`
+until that document is replaced or purged again. So a passing check does not
+clear a ledger that taskr 0.32.0 or older wrote: run `taskr search --repair`
+once on each such ledger, in a maintenance window, whatever `--check` prints.

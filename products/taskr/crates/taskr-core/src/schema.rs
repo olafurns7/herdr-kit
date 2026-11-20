@@ -80,6 +80,40 @@ fn search_intact(db: &Connection) -> rusqlite::Result<bool> {
     Ok(trigger == SEARCH_TRIGGER && secure_delete)
 }
 
+/// SQLITE_CORRUPT_VTAB, the code of a damaged FTS5 index. Plain SQLITE_CORRUPT (a bad page)
+/// is general database damage, and the search-index repair does not cover it.
+const SQLITE_CORRUPT_VTAB: i32 = 267;
+
+/// True when `e` is SQLITE_CORRUPT_VTAB, a damaged search index, not a damaged database.
+pub fn search_index_corrupt(e: &rusqlite::Error) -> bool {
+    e.sqlite_error()
+        .is_some_and(|e| e.extended_code == SQLITE_CORRUPT_VTAB)
+}
+
+/// FTS5 'integrity-check' of `search_fts`: `Some(error)` when the index disagrees with its
+/// content (an orphan entry fails some `taskr search` queries with SQLITE_CORRUPT_VTAB 267).
+/// A pass does not clear a ledger that taskr 0.32.0 or older wrote: a stale entry hidden by a
+/// newer entry for the same rowid passes the check until that document is replaced or purged,
+/// so each such ledger needs one `taskr search --repair` whatever the check says.
+/// It reads the whole index under the write lock, about 1.5 s per 200k rows, so only the
+/// operator's `taskr search --check|--repair` runs it; open and migration never scan for or
+/// repair orphan entries (migration still rebuilds a missing or outdated search schema).
+pub fn search_damage(db: &Connection) -> rusqlite::Result<Option<String>> {
+    match db.execute_batch("insert into search_fts(search_fts, rank) values('integrity-check', 0)")
+    {
+        Ok(()) => Ok(None),
+        Err(e) if search_index_corrupt(&e) => Ok(Some(e.to_string())),
+        Err(e) => Err(e),
+    }
+}
+
+/// Rebuilds the search index from documents and events (the migration's repair).
+pub fn search_repair(db: &mut Connection) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute_batch(SEARCH_REBUILD)?;
+    tx.commit()
+}
+
 // Every migration change needs a SCHEMA_VERSION bump because current ledgers skip it.
 pub fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -442,6 +476,61 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn a_damaged_search_index_survives_open_and_migration_until_repair() {
+        use crate::store::documents;
+        let root = std::env::temp_dir().join(format!("taskr-schema-orphan-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("ledger.db");
+        let mut db = open(&path).unwrap();
+        db.execute_batch("insert into tasks(id,name,role,created_at,updated_at) values(1,'kept','orchestrator','t','t');
+            insert into events(task_id,recipient_task_id,kind,summary,created_at) values(1,1,'note','orphantoken note','t');").unwrap();
+        documents::set(
+            &mut db,
+            1,
+            "goal",
+            "",
+            &documents::body(b"orphantoken goal", "goal.md"),
+        )
+        .unwrap();
+        assert_eq!(search_damage(&db).unwrap(), None);
+        // As on a damaged production ledger: an index entry whose content and docsize rows are gone.
+        db.execute_batch(
+            "delete from search_fts_content where id=(select min(id) from search_fts_content);
+            delete from search_fts_docsize where id not in (select id from search_fts_content);",
+        )
+        .unwrap();
+        assert!(search_damage(&db).unwrap().is_some());
+        // Repair is the operator's step: neither open nor a migration checks or rebuilds the index.
+        drop(db);
+        let db = open(&path).unwrap();
+        assert!(search_damage(&db).unwrap().is_some());
+        db.pragma_update(None, "user_version", SCHEMA_VERSION - 1)
+            .unwrap();
+        drop(db);
+        let mut db = open(&path).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        assert!(search_damage(&db).unwrap().is_some());
+        migrate(&mut db).unwrap();
+        assert!(search_damage(&db).unwrap().is_some());
+        // search_repair rebuilds from documents and events.
+        search_repair(&mut db).unwrap();
+        assert_eq!(search_damage(&db).unwrap(), None);
+        let hits: i64 = db
+            .query_row(
+                "select count(*) from search_fts where search_fts match 'orphantoken'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 2);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn legacy_and_current_are_idempotent() {
         for schema in [
             "",
@@ -465,5 +554,19 @@ mod tests {
                 "ok"
             );
         }
+    }
+
+    #[test]
+    fn only_corrupt_vtab_counts_as_a_damaged_search_index() {
+        let failure = |code| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                Some("database disk image is malformed".into()),
+            )
+        };
+        assert!(search_index_corrupt(&failure(267)));
+        assert!(!search_index_corrupt(&failure(11)));
+        assert!(!search_index_corrupt(&failure(523)));
+        assert!(!search_index_corrupt(&rusqlite::Error::QueryReturnedNoRows));
     }
 }

@@ -40,6 +40,26 @@ fn reject(text: impl Into<String>) -> Error {
         text: text.into(),
     }
 }
+/// `search` is a maintenance command without QUERY when `--check` or `--repair` ends true. Like
+/// goflag, the last occurrence of each flag wins (`--check --check=false` is a plain search).
+fn search_maintenance(args: &[String]) -> bool {
+    let (mut check, mut repair) = (false, false);
+    for arg in args.iter().take_while(|a| a.as_str() != "--") {
+        if !arg.starts_with('-') || arg == "-" {
+            continue;
+        }
+        let (name, value) = match arg.trim_start_matches('-').split_once('=') {
+            Some((name, value)) => (name, goflag::parse_bool(value) == Some(true)),
+            None => (arg.trim_start_matches('-'), true),
+        };
+        match name {
+            "check" => check = value,
+            "repair" => repair = value,
+            _ => {}
+        }
+    }
+    check || repair
+}
 fn open() -> Result<Connection> {
     let p = db::path().map_err(usage)?;
     let db = db::open(&p).map_err(|text| Error {
@@ -118,7 +138,17 @@ fn flags(cmd: &str, json: bool) -> FlagSet {
             f.int("root", 0, "campaign root id")
                 .string("kind", "", "document kind or decision, ask, answer, note")
                 .int("limit", 20, "maximum hits, 1 to 100 (default 20)")
-                .bool("raw", false, "use FTS5 query syntax");
+                .bool("raw", false, "use FTS5 query syntax")
+                .bool(
+                    "check",
+                    false,
+                    "check the search index (FTS5 integrity-check); no QUERY. A pass does not clear a ledger written by taskr 0.32.0 or older: repair it once anyway",
+                )
+                .bool(
+                    "repair",
+                    false,
+                    "rebuild the search index from documents and events; no QUERY",
+                );
         }
         "doc ls" => {
             f.bool("tree", false, "include descendants")
@@ -220,6 +250,7 @@ pub fn dispatch(json: bool, args: &[String]) -> Option<ExitCode> {
     }
     let mut f = flags(&name, json);
     let (min, max) = match name.as_str() {
+        "search" if search_maintenance(rest) => (0, 0),
         "search" | "log" | "doc ls" | "doc get" | "campaign" => (1, 1),
         "help" => (0, 1),
         _ => (0, 0),

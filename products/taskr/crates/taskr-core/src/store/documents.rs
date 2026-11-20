@@ -144,11 +144,14 @@ pub fn store(
     db.execute("insert into documents(root_id,task_id,kind,name,version,sha256,bytes,format,captured,reason,source_path,source_host,event_id,backfill,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",params![root,task,kind,name,version,null(&input.hash),input.bytes,null(&input.format),input.reason.is_empty(),null(&input.reason),null(&input.path),null(&input.host),event,backfill,at])?;
     let id = db.last_insert_rowid();
     if input.reason.is_empty() {
-        db.execute(
-            "delete from search_fts where src='doc' and task_id=? and kind=? and name=?",
-            params![task, kind, name],
-        )?;
+        // Insert before the delete: when the old version is the newest search row, delete-then-insert
+        // reuses its rowid in one transaction, and FTS5 secure-delete then keeps stale index entries
+        // that become orphans at the next replace (W3521; SQLite 3.45.1 and 3.51.1).
         db.execute("insert into search_fts(body,src,ref,kind,name,root_id,task_id,at) values(?,'doc',?,?,?,?,?,?)",params![input.body,id,kind,name,root,task,at])?;
+        db.execute(
+            "delete from search_fts where src='doc' and task_id=? and kind=? and name=? and rowid<>?",
+            params![task, kind, name, db.last_insert_rowid()],
+        )?;
     }
     record_upload(task, kind, name, input, event, backfill);
     Ok((
@@ -304,6 +307,9 @@ pub fn purge(db: &mut Connection, id: i64) -> Result<Value> {
             .query_map(params![task, kind, name], |r| r.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         tx.execute_batch("pragma secure_delete=on")?;
+        // Nothing indexed may follow this delete in the same transaction: a new search row could
+        // reuse a deleted rowid, and FTS5 secure-delete then keeps stale entries (W3521, as in
+        // store()). An indexed purge event or a batched purge-and-capture would bring it back.
         tx.execute(
             "delete from search_fts where src='doc' and task_id=? and kind=? and name=?",
             params![task, kind, name],
@@ -499,6 +505,47 @@ mod tests {
                     .unwrap(),
                 millis
             );
+        }
+    }
+    #[test]
+    fn replacing_the_newest_document_keeps_the_search_index_intact() {
+        // W3521: a delete-then-insert replace of the newest search row reused its rowid in one
+        // transaction, and FTS5 secure-delete kept stale entries. On SQLite 3.51.1 these bodies
+        // fail the integrity-check at replace 2 (seed 3) and replace 23 (seed 4) without the fix.
+        // A reused rowid can also hide its stale entry until the next replace, so each seed ends
+        // with a note (a newer search row) and one more replace, then checks again: seed 0 passes
+        // every check in the loop without the fix and fails only at that last replace.
+        for start in [0, 3, 4] {
+            let mut db = Connection::open_in_memory().unwrap();
+            crate::schema::migrate(&mut db).unwrap();
+            db.execute("insert into tasks(id,name,role,status,created_at,updated_at) values(1,'root','orchestrator','open','now','now')", []).unwrap();
+            let mut seed = 0x9e37_79b9_7f4a_7c15_u64 ^ start;
+            let mut next = || {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed
+            };
+            for round in 0..=40 {
+                if round == 40 {
+                    db.execute("insert into events(task_id,recipient_task_id,kind,summary,created_at) values(1,1,'note','t1 note','now')", []).unwrap();
+                }
+                let words = 1 + next() % 8000;
+                let text = (0..words)
+                    .map(|_| format!("t{}", next() % 10))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                set(&mut db, 1, "goal", "", &body(text.as_bytes(), "goal.md")).unwrap();
+                assert_eq!(
+                    crate::schema::search_damage(&db).unwrap(),
+                    None,
+                    "seed {start} replace {round}"
+                );
+            }
+            let rows: i64 = db
+                .query_row("select count(*) from search_fts", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 2);
         }
     }
 }
