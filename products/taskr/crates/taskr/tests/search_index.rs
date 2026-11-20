@@ -70,6 +70,19 @@ fn search_names_a_damaged_index_and_repair_rebuilds_it() {
             text(&rpc)
         );
     }
+    for flag in ["--check", "--repair"] {
+        let lane = h.output(
+            &[("TASKR_TASK".into(), "1".into())],
+            &["--json", "search", flag],
+            b"",
+        );
+        assert_eq!(lane.status.code(), Some(2), "{flag}: {}", text(&lane));
+        assert!(
+            text(&lane).contains("operator step"),
+            "{flag}: {}",
+            text(&lane)
+        );
+    }
     let check = h.output(&[], &["--json", "search", "--check"], b"");
     assert_eq!(check.status.code(), Some(4), "{}", text(&check));
     let repair = h.ok(&[], &["search", "--repair"]);
@@ -80,4 +93,16 @@ fn search_names_a_damaged_index_and_repair_rebuilds_it() {
     let hits = h.output(&[], &["--json", "search", "orphantoken"], b"");
     assert!(hits.status.success(), "{}", text(&hits));
     assert_eq!(String::from_utf8_lossy(&hits.stdout).lines().count(), 2);
+    // The last occurrence of a flag wins: ending false is a plain search, which needs a QUERY.
+    for args in [["--check", "--check=false"], ["--repair", "--repair=false"]] {
+        let bare = h.output(&[], &[&["--json", "search"][..], &args].concat(), b"");
+        assert_eq!(bare.status.code(), Some(2), "{args:?}: {}", text(&bare));
+        let query = h.output(
+            &[],
+            &[&["--json", "search"][..], &args, &["orphantoken"]].concat(),
+            b"",
+        );
+        assert!(query.status.success(), "{args:?}: {}", text(&query));
+        assert_eq!(String::from_utf8_lossy(&query.stdout).lines().count(), 2);
+    }
 }

@@ -307,6 +307,9 @@ pub fn purge(db: &mut Connection, id: i64) -> Result<Value> {
             .query_map(params![task, kind, name], |r| r.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         tx.execute_batch("pragma secure_delete=on")?;
+        // Nothing indexed may follow this delete in the same transaction: a new search row could
+        // reuse a deleted rowid, and FTS5 secure-delete then keeps stale entries (W3521, as in
+        // store()). An indexed purge event or a batched purge-and-capture would bring it back.
         tx.execute(
             "delete from search_fts where src='doc' and task_id=? and kind=? and name=?",
             params![task, kind, name],
@@ -509,7 +512,10 @@ mod tests {
         // W3521: a delete-then-insert replace of the newest search row reused its rowid in one
         // transaction, and FTS5 secure-delete kept stale entries. On SQLite 3.51.1 these bodies
         // fail the integrity-check at replace 2 (seed 3) and replace 23 (seed 4) without the fix.
-        for start in [3, 4] {
+        // A reused rowid can also hide its stale entry until the next replace, so each seed ends
+        // with a note (a newer search row) and one more replace, then checks again: seed 0 passes
+        // every check in the loop without the fix and fails only at that last replace.
+        for start in [0, 3, 4] {
             let mut db = Connection::open_in_memory().unwrap();
             crate::schema::migrate(&mut db).unwrap();
             db.execute("insert into tasks(id,name,role,status,created_at,updated_at) values(1,'root','orchestrator','open','now','now')", []).unwrap();
@@ -520,7 +526,10 @@ mod tests {
                 seed ^= seed << 17;
                 seed
             };
-            for round in 0..40 {
+            for round in 0..=40 {
+                if round == 40 {
+                    db.execute("insert into events(task_id,recipient_task_id,kind,summary,created_at) values(1,1,'note','t1 note','now')", []).unwrap();
+                }
                 let words = 1 + next() % 8000;
                 let text = (0..words)
                     .map(|_| format!("t{}", next() % 10))
@@ -536,7 +545,7 @@ mod tests {
             let rows: i64 = db
                 .query_row("select count(*) from search_fts", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(rows, 1);
+            assert_eq!(rows, 2);
         }
     }
 }

@@ -80,17 +80,29 @@ fn search_intact(db: &Connection) -> rusqlite::Result<bool> {
     Ok(trigger == SEARCH_TRIGGER && secure_delete)
 }
 
+/// SQLITE_CORRUPT_VTAB, the code of a damaged FTS5 index. Plain SQLITE_CORRUPT (a bad page)
+/// is general database damage, and the search-index repair does not cover it.
+const SQLITE_CORRUPT_VTAB: i32 = 267;
+
+/// True when `e` is SQLITE_CORRUPT_VTAB, a damaged search index, not a damaged database.
+pub fn search_index_corrupt(e: &rusqlite::Error) -> bool {
+    e.sqlite_error()
+        .is_some_and(|e| e.extended_code == SQLITE_CORRUPT_VTAB)
+}
+
 /// FTS5 'integrity-check' of `search_fts`: `Some(error)` when the index disagrees with its
-/// content (an orphan entry fails some `taskr search` queries with SQLITE_CORRUPT 267).
+/// content (an orphan entry fails some `taskr search` queries with SQLITE_CORRUPT_VTAB 267).
+/// A pass does not clear a ledger that taskr 0.32.0 or older wrote: a stale entry hidden by a
+/// newer entry for the same rowid passes the check until that document is replaced or purged,
+/// so each such ledger needs one `taskr search --repair` whatever the check says.
 /// It reads the whole index under the write lock, about 1.5 s per 200k rows, so only the
-/// operator's `taskr search --check|--repair` runs it; open and migration never do.
+/// operator's `taskr search --check|--repair` runs it; open and migration never scan for or
+/// repair orphan entries (migration still rebuilds a missing or outdated search schema).
 pub fn search_damage(db: &Connection) -> rusqlite::Result<Option<String>> {
     match db.execute_batch("insert into search_fts(search_fts, rank) values('integrity-check', 0)")
     {
         Ok(()) => Ok(None),
-        Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseCorrupt) => {
-            Ok(Some(e.to_string()))
-        }
+        Err(e) if search_index_corrupt(&e) => Ok(Some(e.to_string())),
         Err(e) => Err(e),
     }
 }
@@ -542,5 +554,19 @@ mod tests {
                 "ok"
             );
         }
+    }
+
+    #[test]
+    fn only_corrupt_vtab_counts_as_a_damaged_search_index() {
+        let failure = |code| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                Some("database disk image is malformed".into()),
+            )
+        };
+        assert!(search_index_corrupt(&failure(267)));
+        assert!(!search_index_corrupt(&failure(11)));
+        assert!(!search_index_corrupt(&failure(523)));
+        assert!(!search_index_corrupt(&rusqlite::Error::QueryReturnedNoRows));
     }
 }

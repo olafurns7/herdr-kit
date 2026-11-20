@@ -5,6 +5,10 @@ const CAP: usize = (32 << 10) - 96;
 pub(super) const TREES: &str = "with recursive tree(root,id) as (select id,id from tasks where parent_id is null and status != 'closed' union all select tree.root,t.id from tasks t join tree on t.parent_id=tree.id) ";
 const EVENT_COLS: &str = "e.id,e.task_id,t.name as task_name,e.recipient_task_id,e.launch_id,e.kind,e.summary,e.data,e.related_event_id,e.answered_by,e.event_key,e.created_at";
 pub(super) fn rows(db: &Connection, sql: &str, args: Vec<Sql>) -> Result<Vec<Value>> {
+    Ok(sql_rows(db, sql, args)?)
+}
+/// `rows` with the SQLite error intact, for callers that classify its extended code.
+fn sql_rows(db: &Connection, sql: &str, args: Vec<Sql>) -> rusqlite::Result<Vec<Value>> {
     let mut stmt = db.prepare(sql)?;
     let names: Vec<String> = stmt
         .column_names()
@@ -428,6 +432,26 @@ fn document_kind(kind: &str) -> bool {
 }
 /// The repair step named by a damaged-index error.
 const SEARCH_REPAIR: &str = "other ledger reads are unaffected; repair is an operator step: on the ledger host, in a maintenance window, run `taskr search --repair`";
+/// A failed search query: FTS5 syntax under --raw is a usage error, and only SQLITE_CORRUPT_VTAB
+/// (a damaged search index) gets the repair advice; any other corruption stays a plain error.
+fn search_error(e: rusqlite::Error, raw: bool) -> Error {
+    let damaged = taskr_core::schema::search_index_corrupt(&e);
+    let e = Error::from(e);
+    if raw
+        && (e.text.contains("fts5:")
+            || e.text.contains("unterminated string")
+            || e.text.contains("no such column:"))
+    {
+        usage(format!("invalid FTS5 query: {}", e.text))
+    } else if damaged {
+        Error {
+            code: e.code,
+            text: format!("search index is damaged ({}); {SEARCH_REPAIR}", e.text),
+        }
+    } else {
+        e
+    }
+}
 pub fn search(f: &FlagSet) -> Result<()> {
     if f.get_bool("check") || f.get_bool("repair") {
         return search_maintenance(f);
@@ -451,7 +475,10 @@ pub fn search(f: &FlagSet) -> Result<()> {
             goflag::quote(kind)
         )));
     }
-    let mut query = f.positional[0].clone();
+    let Some(query) = f.positional.first() else {
+        return Err(usage("search: QUERY is required"));
+    };
+    let mut query = query.clone();
     if query.contains('\0') {
         return Err(usage("search query must not contain a NUL byte"));
     }
@@ -488,22 +515,7 @@ pub fn search(f: &FlagSet) -> Result<()> {
     }
     sql.push_str(" order by bm25(search_fts),at desc,ref desc limit ?");
     args.push(limit.into());
-    let hits = rows(&db, &sql, args).map_err(|e| {
-        if raw
-            && (e.text.contains("fts5:")
-                || e.text.contains("unterminated string")
-                || e.text.contains("no such column:"))
-        {
-            usage(format!("invalid FTS5 query: {}", e.text))
-        } else if e.text.starts_with("database disk image is malformed") {
-            Error {
-                code: e.code,
-                text: format!("search index is damaged ({}); {SEARCH_REPAIR}", e.text),
-            }
-        } else {
-            e
-        }
-    })?;
+    let hits = sql_rows(&db, &sql, args).map_err(|e| search_error(e, raw))?;
     for mut hit in hits {
         if hit["src"] != "doc" {
             hit.as_object_mut().unwrap().remove("name");
@@ -543,6 +555,11 @@ fn search_maintenance(f: &FlagSet) -> Result<()> {
     if store::rpc_context().is_some() {
         return Err(usage(
             "search --check and --repair take the ledger's write lock: run it on the ledger host, in a maintenance window",
+        ));
+    }
+    if !store::env("TASKR_TASK").is_empty() {
+        return Err(usage(
+            "search --check and --repair are an operator step, not a lane's: TASKR_TASK is set; report the damage to your lead",
         ));
     }
     let mut db = open()?;
@@ -725,6 +742,35 @@ pub fn notes(f: &FlagSet) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_a_damaged_search_index_gets_the_repair_advice() {
+        let failure = |code| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                Some("database disk image is malformed".into()),
+            )
+        };
+        let vtab = search_error(failure(267), false);
+        assert_eq!(vtab.code, ExitCode::Database);
+        assert!(
+            vtab.text
+                .starts_with("search index is damaged (database disk image is malformed"),
+            "{}",
+            vtab.text
+        );
+        assert!(vtab.text.contains("taskr search --repair"), "{}", vtab.text);
+        for code in [11, 523] {
+            let page = search_error(failure(code), false);
+            assert_eq!(page.code, ExitCode::Database);
+            assert!(
+                page.text.starts_with("database disk image is malformed"),
+                "{}",
+                page.text
+            );
+            assert!(!page.text.contains("search index"), "{code}: {}", page.text);
+            assert!(!page.text.contains("unaffected"), "{code}: {}", page.text);
+        }
+    }
     #[test]
     fn go_timestamp_layout_and_duration_saturation() {
         for timestamp in [
