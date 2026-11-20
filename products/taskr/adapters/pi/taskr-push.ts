@@ -4,8 +4,8 @@
  * On session_start it starts one `taskr mcp --channel` child (argv only, no shell; the
  * pi process environment, so a worker's TASKR_TASK/TASKR_LAUNCH bind it) and performs
  * the MCP initialize handshake. Each `notifications/claude/channel` becomes
- * `pi.sendUserMessage(params.content, {deliverAs: "followUp"})`; nothing else the child
- * writes reaches the model, and the event itself is never parsed or acted on. The child
+ * a follow-up with its event metadata and content; nothing else the child writes
+ * reaches the model, and the event itself is never acted on by the shim. The child
  * owns the lease, the attempts, the envelope and the receipts; acks are the model's own
  * acts (taskr CLI, or a separately configured plain `taskr mcp`). This shim adds no tool
  * and no socket.
@@ -143,7 +143,12 @@ export default function taskrPush(pi: ExtensionAPI): void {
       if (message.method !== "notifications/claude/channel" || "id" in message) return;
       const content = message.params?.content;
       if (typeof content !== "string" || content === "") return;
-      pi.sendUserMessage(content, { deliverAs: "followUp" });
+      const meta = message.params.meta;
+      const fields = ["event", "attempt", "kind", "task", "fence", "events"]
+        .filter((key) => typeof meta?.[key] === "string")
+        .map((key) => `${key}=${JSON.stringify(meta[key])}`);
+      const body = fields.length ? `taskr ${fields.join(" ")}\n${content}` : content;
+      pi.sendUserMessage(body, { deliverAs: "followUp" });
     };
     // Newline-delimited JSON in arbitrary chunks; a line over LINE_MAX is dropped whole.
     let buffer = "";
