@@ -331,8 +331,7 @@ else: sys.exit(98)
         if code_mode == '0':
             prompt += waiting
         actual = json.loads((work / 'cdl').read_text())
-        settings = ('{"autoCompactEnabled":true,"enabledPlugins":'
-                    '{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}')
+        settings = '{"autoCompactEnabled":true,"enabledPlugins":{"posthog@claude-plugins-official":false}}'
         expected = dict(args=[*account,'--model',model,'--effort','high',
                               '--settings',settings,'--mcp-config',str(config),
                               '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
@@ -372,7 +371,7 @@ else: sys.exit(98)
     success(c, ('--resume','id with spaces',"quote'arg"))
     assert not (c[0] / 'agent-list').exists()
     assert c[3].splitlines()[1:] == ['To make this the hub: taskr set 42 hub=on']
-    c = run('hub session disables PostHog and the plugin notice')
+    c = run('hub session disables only the PostHog plugin')
     success(c)
     c = run('hub account is the leading cdl pair', args=('42','--account',"account ' quoted",'--','--resume','saved-session'))
     success(c, ('--resume','saved-session'), account=('--account',"account ' quoted"))
