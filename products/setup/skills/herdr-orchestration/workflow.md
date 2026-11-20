@@ -1,6 +1,6 @@
 # Workflow: ledger, brief variants, reviews, and results
 
-Load when: registering a campaign root or changing its plan; configuring durable local loops; writing an orchestrator, sub-orchestrator, or code-reviewer brief; at settled waits on a reviewer; running a head gate; working without a ledger; when a prompt stalls or an agent is blocked or its status looks wrong. Part of herdr-orchestration; `SKILL.md` is the core (brief header, universal brief rules, wait command).
+Load when: registering a campaign root or changing its plan; configuring durable local loops; writing an orchestrator, sub-orchestrator, or code-reviewer brief; during a status pass; at settled waits on a reviewer; running a head gate; working without a ledger; when a prompt stalls or an agent is blocked or its status looks wrong. Part of herdr-orchestration; `SKILL.md` is the core (brief header, universal brief rules, wait command).
 
 ## Goal, plan, and documents
 
@@ -131,7 +131,7 @@ With a branch per lane, the parent merges each lane branch into the campaign bra
 
 ## Context cost
 
-Long-lived orchestrator contexts dominate Claude cost. Keep worker output out of your context: read the report file and `git diff --stat`, not full transcripts, and open a diff hunk only when a decision needs it. Prefer a fresh orchestrator session per task, with a `taskr handover`, over a multi-day session. The host layer owns compaction settings.
+Long-lived orchestrator contexts dominate Claude cost. Keep worker output out of your context: read the report file and `git diff --stat`, not full transcripts, and open a diff hunk only when a decision needs it. On a status pass, leads, sub-orchestrators, and the hub read only each worker report's opening `## Report head` section. When accepting a result, merging, or making a decision, read the full relevant report and the diff for code changes. Prefer a fresh orchestrator session per task, with a `taskr handover`, over a multi-day session. The host layer owns compaction settings.
 
 Session cap: a worker lane whose newest ledger event (its own, or a prompt or answer sent to it) is 12 h old or older, or whose session has read 150 M tokens, starts its next round in a fresh session. `herdr-lead idle <root> [--hours N] [--tokens N]` lists those lanes, and as `unread` any whose tokens it cannot read, read-only; run it at each settled wait and before each handover, or as a herdr-loop CHECK. Active time never counts toward the 12 h, and nothing is stopped, prompted or relaunched automatically. Before the next round for a listed lane, do not prompt the old session. Write a handover file in the campaign directory (brief path, report path, what the report says is done, open findings, the exact next step), stop the old agent (`teardown.md` "Per-worker teardown"), and start the round fresh (`recovery.md` "Fresh round after the session cap"). The cap never restarts a Claude orchestrator: hub, campaign leads and sub-orchestrators keep their sessions.
 

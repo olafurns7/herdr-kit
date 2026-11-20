@@ -421,7 +421,7 @@ export FLEET_ROLE=hub
 export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=$code_mode
 step=6
 umask "$old_umask"
-set -- --model "$model" --effort "$effort" --settings '{"autoCompactEnabled":true}' \
+set -- --model "$model" --effort "$effort" --settings '{"autoCompactEnabled":true,"enabledPlugins":{"posthog@claude-plugins-official":false,"slack@claude-plugins-official":false}}' \
     --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr "$@" -- "$prompt"
 [ -z "$account" ] || set -- --account "$account" "$@"
 exec "$herdr_bin_dir/cdl" "$@"
