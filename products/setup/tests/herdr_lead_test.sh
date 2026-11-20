@@ -45,6 +45,8 @@ case "$1 $2" in
         ;;
     'pane wait-output') [ "${ENV_BAD:-}" != 1 ] || exit 1 ;;
     'agent start')
+        # Preserve argument boundaries for exact launcher contract checks.
+        printf '%s\n' "$@" >"$CASE/start-argv"
         : >"$CASE/started"
         [ "${DIALOG:-}" != 1 ] || { printf '%s\n' '{"error":{"code":"agent_not_ready"}}' >&2; exit 1; }
         ;;
@@ -247,6 +249,22 @@ expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/
 has() { grep -F -- "$2" "$case_dir/$1" >/dev/null || fail "$1 missing $2: $(cat "$case_dir/$1")"; }
 lacks() { if grep -F -- "$2" "$case_dir/$1" >/dev/null; then fail "$1 unexpectedly contains $2"; fi; }
 start() { run start 42 wA:p1 --worktree "$work" "$@"; }
+expect_start_argv() {
+    denied=$1 strict=$2
+    shift 2
+    {
+        printf '%s\n' agent start orch-example --kind claude --pane wA:p1 --timeout 90000 --
+        [ $# -eq 0 ] || printf '%s\n' "$@"
+        printf '%s\n' --model claude-opus-5-5 --effort high --dangerously-skip-permissions \
+            --settings '{"agentPushNotifEnabled":false,"autoCompactEnabled":true,"autoCompactWindow":250000,"disableClaudeAiConnectors":true,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false,"slack@claude-plugins-official":false,"stripe@claude-plugins-official":false}}' \
+            --add-dir "$work"
+        for denied_tool in $denied; do printf '%s\n' --disallowedTools "$denied_tool"; done
+        [ -z "$strict" ] || printf '%s\n' "$strict"
+        printf '%s\n' --mcp-config "$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json" \
+            --dangerously-load-development-channels server:taskr
+    } >"$case_dir/expected-start-argv"
+    diff -u "$case_dir/expected-start-argv" "$case_dir/start-argv" || fail 'agent start argv differs'
+}
 
 for command in start move; do
     new_case "$command refuses a lane with neither orch nor hub prefix before any calls or state"
@@ -600,7 +618,7 @@ has calls 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0 && '
 has calls 'taskr|adopt|42|--workspace|wA|--tab|wA:t1|--pane|wA:p1|env=/'
 has calls 'herdr|pane|send-keys|wA:p1|Enter'
 has calls 'herdr|agent|wait|orch-example|--until|idle|--timeout|90000'
-has calls '--model|claude-opus-5-5|--effort|high|--dangerously-skip-permissions|--settings|{"agentPushNotifEnabled":false,"autoCompactEnabled":true,"autoCompactWindow":250000,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}'
+expect_start_argv 'Agent Workflow ListAgents SendFeedback ReportFindings ScheduleWakeup' --strict-mcp-config
 has calls "--mcp-config|$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json|--dangerously-load-development-channels|server:taskr"
 has calls 'do not run taskr adopt'
 lacks calls 'Additional brief.'
@@ -622,6 +640,57 @@ printf '%s\n' '{"mcpServers":{"taskr":{"command":"taskr","args":["mcp","--channe
 [ "$(grep -c 'taskr|adopt' "$case_dir/calls")" = 1 ] || fail 'adopted twice'
 [ "$(grep -c 'herdr|agent|start' "$case_dir/calls")" = 1 ] || fail 'started twice'
 
+new_case '--mcp keeps user MCP loading without changing denied tools or the channel'
+start --mcp
+expect_rc 0
+expect_start_argv 'Agent Workflow ListAgents SendFeedback ReportFindings ScheduleWakeup' ''
+
+# Each opt-out removes exactly one deny pair; repeated flags compose.
+for allowed in Agent Workflow ListAgents SendFeedback ReportFindings ScheduleWakeup; do
+    new_case "--allow-tool $allowed keeps only that denied tool"
+    start --allow-tool "$allowed"
+    expect_rc 0
+    case $allowed in
+        Agent) denied='Workflow ListAgents SendFeedback ReportFindings ScheduleWakeup' ;;
+        Workflow) denied='Agent ListAgents SendFeedback ReportFindings ScheduleWakeup' ;;
+        ListAgents) denied='Agent Workflow SendFeedback ReportFindings ScheduleWakeup' ;;
+        SendFeedback) denied='Agent Workflow ListAgents ReportFindings ScheduleWakeup' ;;
+        ReportFindings) denied='Agent Workflow ListAgents SendFeedback ScheduleWakeup' ;;
+        ScheduleWakeup) denied='Agent Workflow ListAgents SendFeedback ReportFindings' ;;
+    esac
+    expect_start_argv "$denied" --strict-mcp-config
+done
+
+new_case '--mcp and repeated --allow-tool compose with jobs, account and resume'
+start --mcp --allow-tool Agent --allow-tool Workflow --allow-tool Agent --jobs --account example --resume 'sid with spaces'
+expect_rc 0
+expect_start_argv 'ListAgents SendFeedback ReportFindings ScheduleWakeup' '' --account example --resume 'sid with spaces'
+config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
+jq -e '.mcpServers | keys == ["taskr","taskr-jobs"]' "$config" >/dev/null || fail 'MCP opt-out lost taskr servers'
+
+for command in start move; do
+    for bad_tool in '' '-Agent' 'Agent name' 'Agent/Workflow' 'Agent,Workflow' 'Agent;Workflow' 'Agent"' 'Agent
+Workflow' "$(printf '%0201d' 0)"; do
+        new_case "$command refuses invalid --allow-tool NAME before any calls or state"
+        run "$command" 42 wA:p1 --worktree "$work" --allow-tool "$bad_tool"
+        expect_rc 2
+        has err '--allow-tool NAME'
+        [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+        [ ! -e "$home/.local/state" ] || fail 'created state'
+    done
+    new_case "$command refuses --allow-tool without NAME before any calls or state"
+    run "$command" 42 wA:p1 --worktree "$work" --allow-tool
+    expect_rc 2
+    has err '--allow-tool needs NAME'
+    [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+    [ ! -e "$home/.local/state" ] || fail 'created state'
+done
+
+new_case '--allow-tool uses literal names and accepts the herdr-launch name charset and length'
+start --allow-tool 'Agent*' --allow-tool 'Bash(git:*)' --allow-tool "$(printf '%0200d' 0)"
+expect_rc 0
+expect_start_argv 'Agent Workflow ListAgents SendFeedback ReportFindings ScheduleWakeup' --strict-mcp-config
+
 # Every start above ran its pane setup with an inherited Code Mode 1 and proved it became an explicit 0.
 new_case 'HERDR_LEAD_CODE_MODE=1 exports Code Mode in the lead pane'
 LEAD_CODE_MODE=1 EXPECT_CODE_MODE=1
@@ -634,7 +703,7 @@ for window in 100000 180000 1000000; do
     COMPACT_WINDOW=$window
     start
     expect_rc 0
-    has calls "--settings|{\"agentPushNotifEnabled\":false,\"autoCompactEnabled\":true,\"autoCompactWindow\":$window,\"enabledPlugins\":"
+    has calls "--settings|{\"agentPushNotifEnabled\":false,\"autoCompactEnabled\":true,\"autoCompactWindow\":$window,\"disableClaudeAiConnectors\":true,\"enabledPlugins\":"
     lacks calls '"autoCompactWindow":250000'
 done
 
@@ -658,6 +727,7 @@ config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
 jq -e '. == {mcpServers:{taskr:{command:"taskr",args:["mcp","--channel","--as","42","--session","7"],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}},"taskr-jobs":{command:"taskr",args:["mcp","--jobs","--as","42","--session","7","--binding","herdr-lead-root-42-gen-7"]}}}' "$config" >/dev/null || fail 'bad jobs config'
 [ "$(ls -l "$config" | cut -c 1-10)" = -rw------- ] || fail 'config mode is not 0600'
 has calls '--account|example|--resume|sid with spaces|--model|'
+expect_start_argv 'Agent Workflow ListAgents SendFeedback ReportFindings ScheduleWakeup' --strict-mcp-config --account example --resume 'sid with spaces'
 has calls "--mcp-config|$config|--dangerously-load-development-channels|server:taskr"
 lacks calls 'server:taskr-jobs'
 [ "$(cat "$home/.local/state/herdr-orch/lead-push/42/handover-7.md")" = 'handover text' ] || fail 'handover lost'
@@ -851,6 +921,13 @@ has calls 'herdr|pane|send-keys|wA:p1|esc|ctrl+c|ctrl+c'
 config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
 jq -e '.mcpServers | keys == ["taskr","taskr-jobs"] and .["taskr-jobs"].args == ["mcp","--jobs","--as","42","--session","7","--binding","herdr-lead-root-42-gen-7"]' "$config" >/dev/null || fail 'move lost jobs identity'
 jq -e '.mcpServers.taskr.env == {TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"} and (.mcpServers["taskr-jobs"] | has("env") | not)' "$config" >/dev/null || fail 'jobs move lost digest env or added env to taskr-jobs'
+expect_start_argv 'Agent Workflow ListAgents SendFeedback ReportFindings ScheduleWakeup' --strict-mcp-config
+
+new_case 'move carries MCP and tool opt-outs into the new generation'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead
+move --mcp --allow-tool ScheduleWakeup --allow-tool ListAgents --no-handover
+expect_rc 0
+expect_start_argv 'Agent Workflow SendFeedback ReportFindings' ''
 
 new_case 'move asks for a handover, stops the predecessor, then starts'
 CAMPAIGN=$moved_campaign AGENTS=$old_lead

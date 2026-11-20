@@ -167,6 +167,8 @@ herdr-lead check <root>
 
 Do not use `herdr-launch` for a lead: it registers a child. `herdr-lead` accepts any Claude lane that allows `orch-` or `hub-` (default `opus-high`), checks the target shell and predecessor lease, clears worker identity, adopts the root once, and keeps the worktree cwd. It writes immutable `0600` configs and handovers under `$HOME/.local/state/herdr-orch/lead-push/<root>/`, passes the config with `--mcp-config`, and answers the development-channel dialog. `herdr-hub` and `herdr-lead` turn on digest pushes (hold 120 s; ask, owner_ask, answer, owner_answer and fail kinds still push at once); `herdr-launch` workers get one push per event. `herdr-lead` never writes `.mcp.json`. Its acceptance check must still pass on every start.
 
+The lead helper denies only Agent, Workflow, ListAgents, SendFeedback, ReportFindings and ScheduleWakeup with `--disallowedTools`, leaving other built-in tool defaults unchanged. `--strict-mcp-config` loads only the explicit taskr config (also taskr-jobs with `--jobs`), retaining the `server:taskr` development channel; claude.ai connectors and the Slack and Stripe plugins are disabled. For one `start` or `move`, `--mcp` keeps user, project and enabled plugin MCP servers, and repeatable `--allow-tool NAME` omits the deny rule for that exact name (1–200 characters of `A-Za-z0-9_.:*()-`, not starting with `-`); other settings stay the same. These defaults reduce the context leads read on every turn without changing worker or hub launches.
+
 After the lead is closed and its generation's work/recovery are settled, delete
 its `$HOME/.local/state/herdr-orch/lead-push/<root>/taskr-mcp-<gen>.json` by literal path.
 

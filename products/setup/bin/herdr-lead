@@ -2,7 +2,7 @@
 # Start one same-host Claude root lead, bound to one immutable adopt generation.
 set -u
 
-usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--account NAME [--resume SID]] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--lane opus-high] [--account NAME [--resume SID]] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT | herdr-lead idle ROOT [--hours N] [--tokens N|NM]'
+usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--mcp] [--allow-tool NAME]... [--lane opus-high] [--account NAME [--resume SID]] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--mcp] [--allow-tool NAME]... [--lane opus-high] [--account NAME [--resume SID]] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT | herdr-lead idle ROOT [--hours N] [--tokens N|NM]'
 root= pane= gen= mcp_config= agent= lease=unknown check_task= step=0
 tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf=
 cleanup() {
@@ -332,9 +332,22 @@ case $command in start | move) ;; *) die "$usage" ;; esac
 pane=$1
 shift
 identifier "$pane" || die 'invalid PANE'
-worktree= lane=opus-high resume= account= predecessor= prompt_file= no_handover= jobs=false
+worktree= lane=opus-high resume= account= predecessor= prompt_file= no_handover= jobs=false mcp= allow_tools=
+nl='
+'
 while [ $# -gt 0 ]; do
     if [ "$1" = --jobs ]; then jobs=true; shift; continue; fi
+    if [ "$1" = --mcp ]; then mcp=1; shift; continue; fi
+    if [ "$1" = --allow-tool ]; then
+        [ $# -ge 2 ] || die '--allow-tool needs NAME'
+        case $2 in
+            '' | -* | *[!A-Za-z0-9_.:*\(\)-]*) die "--allow-tool NAME '$2' must be 1-200 characters of A-Za-z0-9_.:*()- and not start with -" ;;
+        esac
+        [ "${#2}" -le 200 ] || die '--allow-tool NAME is longer than 200 characters'
+        allow_tools=$allow_tools$nl$2$nl
+        shift 2
+        continue
+    fi
     if [ "$command" = move ] && [ "$1" = --no-handover ]; then
         no_handover=1
         shift
@@ -476,8 +489,15 @@ tmp=
 
 step_line 6 'start Claude and answer development-channel dialog'
 set -- --model "$model" --effort "$effort" --dangerously-skip-permissions \
-    --settings '{"agentPushNotifEnabled":false,"autoCompactEnabled":true,"autoCompactWindow":'"$compact_window"',"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false}}' \
-    --add-dir "$worktree" --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr
+    --settings '{"agentPushNotifEnabled":false,"autoCompactEnabled":true,"autoCompactWindow":'"$compact_window"',"disableClaudeAiConnectors":true,"enabledPlugins":{"posthog@claude-plugins-official":false,"cc-plugin-you-should-know@builtin":false,"slack@claude-plugins-official":false,"stripe@claude-plugins-official":false}}' \
+    --add-dir "$worktree"
+# Bare deny rules remove unused schemas; an opt-out matches one tool name literally.
+for tool in Agent Workflow ListAgents SendFeedback ReportFindings ScheduleWakeup; do
+    case $allow_tools in *"$nl$tool$nl"*) ;; *) set -- "$@" --disallowedTools "$tool" ;; esac
+done
+[ -n "$mcp" ] || set -- "$@" --strict-mcp-config
+# The channel is the taskr server in this explicit config, so strict loading keeps it.
+set -- "$@" --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr
 [ -z "$resume" ] || set -- --resume "$resume" "$@"
 [ -z "$account" ] || set -- --account "$account" "$@"
 latest=$(latest_gen) || fail 'read generation before agent start'
