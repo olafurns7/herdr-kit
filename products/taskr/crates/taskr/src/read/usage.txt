@@ -26,6 +26,7 @@ read:         status [--tree ID] [--all] | asks [--open] [--tree ID] [--owner] [
               notes [--owner] [--root ID] [--since EVENT|DURATION] [--limit N]   (root notes, newest first; default 48h, 50)
 tmp:          tmp ID [--mkdir]   (this host's lane tmp dir <base>/<root-id>/<task-id>, base $TASKR_TMP_BASE or /tmp/taskr-<uid>; --mkdir makes them 0700)
 search:       search QUERY [--root ID] [--kind K] [--limit N] [--raw]   (documents and decision/ask/answer/note; default 20, max 100)
+              search --check | --repair   (FTS5 integrity-check of the search index; --repair rebuilds it from documents and events)
 daemon:       daemon [--stay] [--once] [--status] [--restart]   (the Herdr plugin's event bridge and the hub server; one per HOME)
 info:         version | help [CMD]
 client:       --request-key KEY <command> [args]   (with a server.url: retry a command whose answer was lost)

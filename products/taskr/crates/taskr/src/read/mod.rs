@@ -40,6 +40,11 @@ fn reject(text: impl Into<String>) -> Error {
         text: text.into(),
     }
 }
+/// `--check` or `--repair` (also `=true`) makes `search` a maintenance command without QUERY.
+fn search_maintenance(arg: &str) -> bool {
+    let a = arg.trim_start_matches('-');
+    arg.starts_with('-') && matches!(a, "check" | "repair" | "check=true" | "repair=true")
+}
 fn open() -> Result<Connection> {
     let p = db::path().map_err(usage)?;
     let db = db::open(&p).map_err(|text| Error {
@@ -118,7 +123,17 @@ fn flags(cmd: &str, json: bool) -> FlagSet {
             f.int("root", 0, "campaign root id")
                 .string("kind", "", "document kind or decision, ask, answer, note")
                 .int("limit", 20, "maximum hits, 1 to 100 (default 20)")
-                .bool("raw", false, "use FTS5 query syntax");
+                .bool("raw", false, "use FTS5 query syntax")
+                .bool(
+                    "check",
+                    false,
+                    "check the search index (FTS5 integrity-check); no QUERY",
+                )
+                .bool(
+                    "repair",
+                    false,
+                    "rebuild the search index from documents and events; no QUERY",
+                );
         }
         "doc ls" => {
             f.bool("tree", false, "include descendants")
@@ -220,6 +235,14 @@ pub fn dispatch(json: bool, args: &[String]) -> Option<ExitCode> {
     }
     let mut f = flags(&name, json);
     let (min, max) = match name.as_str() {
+        "search"
+            if rest
+                .iter()
+                .take_while(|a| a.as_str() != "--")
+                .any(|a| search_maintenance(a)) =>
+        {
+            (0, 0)
+        }
         "search" | "log" | "doc ls" | "doc get" | "campaign" => (1, 1),
         "help" => (0, 1),
         _ => (0, 0),

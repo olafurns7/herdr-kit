@@ -426,7 +426,13 @@ fn document_kind(kind: &str) -> bool {
         "brief" | "prompt" | "report" | "handover" | "goal" | "plan"
     )
 }
+/// The repair step named by a damaged-index error.
+const SEARCH_REPAIR: &str =
+    "run `taskr search --repair` on the ledger host (other ledger reads are unaffected)";
 pub fn search(f: &FlagSet) -> Result<()> {
+    if f.get_bool("check") || f.get_bool("repair") {
+        return search_maintenance(f);
+    }
     let root = f.get_int("root");
     let limit = f.get_int("limit");
     let kind = f.get_string("kind");
@@ -490,6 +496,11 @@ pub fn search(f: &FlagSet) -> Result<()> {
                 || e.text.contains("no such column:"))
         {
             usage(format!("invalid FTS5 query: {}", e.text))
+        } else if e.text.starts_with("database disk image is malformed") {
+            Error {
+                code: e.code,
+                text: format!("search index is damaged ({}); {SEARCH_REPAIR}", e.text),
+            }
         } else {
             e
         }
@@ -514,6 +525,40 @@ pub fn search(f: &FlagSet) -> Result<()> {
         hit["snippet"] = json!(s);
         cli::emit(f.json(), &hit, false);
     }
+    Ok(())
+}
+/// `taskr search --check` reports the FTS5 integrity-check; `--repair` rebuilds the index, then checks it.
+fn search_maintenance(f: &FlagSet) -> Result<()> {
+    let repair = f.get_bool("repair");
+    if f.get_bool("check") && repair {
+        return Err(usage("search: use --check or --repair, not both"));
+    }
+    if ["root", "kind", "limit", "raw"]
+        .iter()
+        .any(|k| f.was_set(k))
+    {
+        return Err(usage(
+            "search: --check and --repair take no QUERY, --root, --kind, --limit or --raw",
+        ));
+    }
+    let mut db = open()?;
+    let started = std::time::Instant::now();
+    if repair {
+        taskr_core::schema::search_repair(&mut db)?;
+    }
+    if let Some(damage) = taskr_core::schema::search_damage(&db)? {
+        return Err(Error {
+            code: ExitCode::Database,
+            text: if repair {
+                format!("search index is still damaged after the rebuild ({damage})")
+            } else {
+                format!("search index is damaged ({damage}); {SEARCH_REPAIR}")
+            },
+        });
+    }
+    let rows: i64 = db.query_row("select count(*) from search_fts", [], |r| r.get(0))?;
+    let out = json!({"ok":true,"search_index":if repair {"rebuilt"} else {"ok"},"rows":rows,"ms":started.elapsed().as_millis() as i64});
+    cli::emit(f.json(), &out, false);
     Ok(())
 }
 pub fn doc_ls(f: &FlagSet) -> Result<()> {

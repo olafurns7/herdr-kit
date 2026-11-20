@@ -48,7 +48,8 @@ pub const CONSUMER_LEASES: &str = "create table if not exists consumer_leases (
   check (holder is null or (launch_id is null) != (session_gen is null))
 );
 ";
-pub const SCHEMA_VERSION: i64 = 5;
+/// v6: one FTS5 integrity-check of the search index per ledger (W3521), rebuilt when damaged.
+pub const SCHEMA_VERSION: i64 = 6;
 #[cfg(test)]
 const SCHEMA_HASH: &str = "ebc65fd213a8958a6547464754880e30301d462946192c8bcaf6bc39b15c1c14";
 
@@ -78,6 +79,28 @@ fn search_intact(db: &Connection) -> rusqlite::Result<bool> {
     }
     let (trigger, secure_delete): (String, bool) = db.query_row("select coalesce((select sql from sqlite_master where type='trigger' and name='search_events_insert'), ''), coalesce((select v from search_fts_config where k='secure-delete') = 1, 0)", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
     Ok(trigger == SEARCH_TRIGGER && secure_delete)
+}
+
+/// FTS5 'integrity-check' of `search_fts`: `Some(error)` when the index disagrees with its
+/// content (an orphan entry fails some `taskr search` queries with SQLITE_CORRUPT 267).
+/// It reads the whole index, about 1.5 s per 200k rows, so only migration and
+/// `taskr search --check|--repair` run it, never every open.
+pub fn search_damage(db: &Connection) -> rusqlite::Result<Option<String>> {
+    match db.execute_batch("insert into search_fts(search_fts, rank) values('integrity-check', 0)")
+    {
+        Ok(()) => Ok(None),
+        Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseCorrupt) => {
+            Ok(Some(e.to_string()))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Rebuilds the search index from documents and events (the migration's repair).
+pub fn search_repair(db: &mut Connection) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute_batch(SEARCH_REBUILD)?;
+    tx.commit()
 }
 
 // Every migration change needs a SCHEMA_VERSION bump because current ledgers skip it.
@@ -125,7 +148,7 @@ pub fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
             tx.execute_batch(&format!("alter table {table} add column {column} {kind}"))?;
         }
     }
-    if search_intact(&tx)? {
+    if search_intact(&tx)? && search_damage(&tx)?.is_none() {
         tx.execute_batch("insert into search_fts(search_fts, rank) values('secure-delete', 1)")?;
     } else {
         tx.execute_batch(SEARCH_REBUILD)?;
@@ -438,6 +461,51 @@ mod tests {
             (SCHEMA_VERSION, "4/5".into(), 1, Some("1/7/-/0/e".into()), 1)
         );
         assert!(search_intact(&db).unwrap());
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn v5_migration_rebuilds_a_search_index_with_an_orphan_row() {
+        use crate::store::documents;
+        let root = std::env::temp_dir().join(format!("taskr-schema-orphan-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("ledger.db");
+        let mut db = open(&path).unwrap();
+        db.execute_batch("insert into tasks(id,name,role,created_at,updated_at) values(1,'kept','orchestrator','t','t');
+            insert into events(task_id,recipient_task_id,kind,summary,created_at) values(1,1,'note','orphantoken note','t');").unwrap();
+        documents::set(
+            &mut db,
+            1,
+            "goal",
+            "",
+            &documents::body(b"orphantoken goal", "goal.md"),
+        )
+        .unwrap();
+        assert_eq!(search_damage(&db).unwrap(), None);
+        // As on the plex ledger: an index entry whose content and docsize rows are gone.
+        db.execute_batch(
+            "delete from search_fts_content where id=(select min(id) from search_fts_content);
+            delete from search_fts_docsize where id not in (select id from search_fts_content);",
+        )
+        .unwrap();
+        assert!(search_damage(&db).unwrap().is_some());
+        // A current ledger skips the check on open: it reads the whole index.
+        drop(db);
+        let db = open(&path).unwrap();
+        assert!(search_damage(&db).unwrap().is_some());
+        // A v5 ledger checks once on migration and rebuilds from documents and events.
+        db.pragma_update(None, "user_version", 5).unwrap();
+        drop(db);
+        let db = open(&path).unwrap();
+        assert_eq!(search_damage(&db).unwrap(), None);
+        let hits: i64 = db
+            .query_row(
+                "select count(*) from search_fts where search_fts match 'orphantoken'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 2);
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
