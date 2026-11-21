@@ -288,7 +288,7 @@ claude_flags() {
 }
 # codex_flags MODEL EFFORT TRUST
 codex_flags() {
-    printf '%s' "|-m|$1|-c|model_reasoning_effort=\"$2\"|--dangerously-bypass-approvals-and-sandbox|-c|projects={$3}|--dangerously-bypass-hook-trust"
+    printf '%s' "|-m|$1|-c|model_reasoning_effort=\"$2\"|-c|check_for_update_on_startup=false|--dangerously-bypass-approvals-and-sandbox|-c|projects={$3}|--dangerously-bypass-hook-trust"
 }
 setup=' export FLEET_ROLE=worker TASKR_TASK=2468 TASKR_LAUNCH=3579'
 # Claude review seats and gather lanes get a 5-minute prompt cache; every other
