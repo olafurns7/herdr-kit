@@ -136,9 +136,12 @@ start_agent() {
             esac
             set -- "$@" --settings "$(claude_settings)"
             [ -z "$push" ] || set -- "$@" --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr ;;
-        codex) set -- -m "$model" -c "model_reasoning_effort=\"$effort\"" \
-            --dangerously-bypass-approvals-and-sandbox \
-            -c "projects={$codex_trust}" --dangerously-bypass-hook-trust ;;
+        codex)
+            # Disable the startup update dialog for this launch.
+            set -- -m "$model" -c "model_reasoning_effort=\"$effort\"" \
+                -c check_for_update_on_startup=false \
+                --dangerously-bypass-approvals-and-sandbox \
+                -c "projects={$codex_trust}" --dangerously-bypass-hook-trust ;;
         opencode) set -- --standalone --auto ;;
         pi) set -- --provider "$provider" --model "$model" --thinking "$effort" --approve
             [ -z "$push" ] || set -- "$@" --extension "$HERDR_PUSH_PI_EXTENSION" ;;
