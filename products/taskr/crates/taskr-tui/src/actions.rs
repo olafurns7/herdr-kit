@@ -187,6 +187,10 @@ impl Job {
                 let waiting = reply["asker_waiting"].as_bool().unwrap_or(true);
                 let note = match reply["error"].as_str() {
                     Some(error) => format!("not delivered to its pane: {error}"),
+                    None if reply["prompt"] == "skipped" => format!(
+                        "not typed: the asker's push is not live; pushed when live; root plain now: read its pane, then taskr prompt {} --pane",
+                        reply["task_id"]
+                    ),
                     None if !waiting && !prompt => {
                         "the asker stopped waiting; prompt it by hand".into()
                     }
@@ -452,6 +456,12 @@ mod tests {
             matches!(run(answer(true), late), Ok(Done::Answered { note, .. }) if note.is_empty())
         );
         assert_eq!(calls().len(), 3);
+        // Recorded, but taskr did not type it into a push lane that is not push-live.
+        let skipped = r#"echo '{"answer_id":6,"ask_id":5,"asker_waiting":false,"delivered":false,"ok":true,"prompt":"skipped","reason":"not_push_live","task_id":1}'"#;
+        assert!(
+            matches!(run(answer(true), skipped), Ok(Done::Answered { answer_id: 6, note }) if note == "not typed: the asker's push is not live; pushed when live; root plain now: read its pane, then taskr prompt 1 --pane")
+        );
+        assert_eq!(calls().len(), 1);
         // The ledger's own refusal: not recorded, in its words.
         let refused =
             r#"echo '{"error":"ask 5 is already answered by event 6","kind":"rejected"}'; exit 6"#;

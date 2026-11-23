@@ -534,7 +534,9 @@ Most keys only read. Three do more:
   your own. A structured ask's options come from its question, with each
   description under its label and `★` on the recommended one. `j` `k`
   choose, `tab` types, `Enter` reviews the answer and `y` sends it. When the
-  asker is no longer waiting, the answer is also sent to its pane as a prompt.
+  asker is no longer waiting, the answer is also sent to its pane as a prompt,
+  unless the asker is a push-lane root that is not push-live: then it is
+  recorded and not typed, and is pushed when push is live.
 
   The answer is sent as `B: label`. On a structured ask, `tab` types a note
   after the option, sent as `B: label — note`. When a structured ask allows
@@ -559,7 +561,7 @@ Most keys only read. Three do more:
 
   | Outcome | When | Shown |
   | --- | --- | --- |
-  | Recorded | the reply has an `answer_id`, whatever the exit status | `✓ answered ASK as event ID`, with `not delivered to its pane: …` when the prompt failed |
+  | Recorded | the reply has an `answer_id`, whatever the exit status | `✓ answered ASK as event ID`, with `not delivered to its pane: …` when the prompt failed, or `not typed: …` when taskr skipped it (`"prompt":"skipped"`) with what to do for a root that is plain now |
   | Not recorded | the ledger's own refusal: exit 6 with `"kind":"rejected"` | `! not recorded: REASON`; the answer is kept to read in full (`a` on its ask, or the picker once the ask has left), and nothing sends it again |
   | Unknown | anything else: a timeout, transport, exit 5, a queued request, no reply or a malformed one | `? ask ASK: answer outcome unknown; checking the ledger` |
 
