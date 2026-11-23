@@ -139,6 +139,12 @@ case $1 in
             [ "${STUB_FAIL:-}" != 'taskr doc ls' ] || exit 1
             cat "$STUB_CALLER_DOCS" ;;
         'work list') cat "$STUB_RESERVED" ;;
+        # The row of $STUB_RESERVED's .work[] with work_id $4, as taskr prints one.
+        'work show')
+            jq -ce --argjson id "$4" '.work[] | select(.work_id == $id) | . + {ok: true}' "$STUB_RESERVED" && exit 0
+            printf '%s\n' '{"error":"work does not exist","kind":"rejected"}'
+            echo 'taskr work: work does not exist' >&2
+            exit 6 ;;
         'work observe')
             [ "${STUB_FAIL:-}" != 'taskr work observe' ] || exit 1
             if [ -n "${STUB_OBSERVE:-}" ]; then printf '%s\n' "$STUB_OBSERVE";
@@ -3101,7 +3107,7 @@ for bad_deny in 'null' 'false' '[]' '{"model":"bad"}' '{"model":["["]}' '{"model
 done
 
 # --work: ticket W12 of campaign 42, depending on W3. ticket_list [JQ_FILTER]
-# writes the `taskr --json work list 42` reply the stub prints.
+# writes the campaign the stub's `taskr --json work show ID` reads rows from.
 ticket_list() {
     jq -n '{campaign:42,generation:1,parked:false,configuration:null,work:[
         {work_id:12,campaign:42,title:"Cart totals",revision:2,state:"queued",revisions:[
@@ -3110,7 +3116,8 @@ ticket_list() {
         {work_id:3,campaign:42,title:"Prices",revision:1,state:"done",revisions:[]}]}' \
         | jq "${1:-.}" >"$STUB_RESERVED"
 }
-work_list_call='taskr|--json|work|list|42'
+show_call='taskr|--json|work|show|12'
+dep_call='taskr|--json|work|show|3'
 
 new_case '--work with --reserved is refused before any call'
 ticket_list
@@ -3127,15 +3134,20 @@ for refused in 'missing:.work |= map(select(.work_id != 12)):W12 is not a ticket
     'acceptance:.work[0].revisions[1].contract.acceptance = "":W12 spec lacks acceptance' \
     'scope:del(.work[0].revisions[1].contract.scope):W12 spec lacks scope' \
     'dependencies:del(.work[0].revisions[1].contract.dependencies):W12 spec lacks dependencies' \
+    'other campaign:.work[0].campaign = 43:W12 is not a ticket in campaign 42' \
     'open dependency:.work[1].state = "active":W12 depends on W3, which is active' \
-    'foreign dependency:.work |= map(select(.work_id != 3)):W12 depends on W3, which is not in campaign 42'; do
+    'missing dependency:.work |= map(select(.work_id != 3)):W12 depends on W3, which is not in campaign 42' \
+    'foreign dependency:.work[1].campaign = 43:W12 depends on W3, which is not in campaign 42'; do
     new_case "--work refuses a ticket: ${refused%%:*}"
     filter=${refused#*:}
     ticket_list "${filter%:*}"
     run_launch sh "$launch_sh" --work 12 opus-medium impl-cart "$brief" "$report" 42
     expect_rc 2
     expect_err "${refused##*:}"
-    expect_calls "$work_list_call"
+    case $refused in
+        *dependency:*) expect_calls "$show_call" "$dep_call" ;;
+        *) expect_calls "$show_call" ;;
+    esac
     [ ! -e "$work/brief.W12.md" ] || fail 'refused ticket wrote a work brief'
 done
 
@@ -3153,7 +3165,7 @@ cmp -s "$brief" "$case_dir/brief.orig" || fail 'the lead brief was modified'
     sed '1,3d' "$brief"
 } >"$case_dir/want-brief"
 cmp -s "$case_dir/want-brief" "$work/brief.W12.md" || fail "work brief differs: $(diff "$case_dir/want-brief" "$work/brief.W12.md" | tr '\n' ' ')"
-expect_calls "$work_list_call" "$(tab_calls impl-cart)" \
+expect_calls "$show_call" "$dep_call" "$(tab_calls impl-cart)" \
     "$(brief=$work/brief.W12.md; tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium \
         "$claude_setup" "|$(claude_flags medium)" | sed '1a\
 taskr|set|2468|work=12')"
@@ -3183,7 +3195,7 @@ printf '%s\n' 'earlier' >"$work/brief.W12.md"
 run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 42
 expect_rc 2
 expect_err "work brief '$work/brief.W12.md' already exists"
-expect_calls "$work_list_call"
+expect_calls "$show_call" "$dep_call"
 [ "$(cat "$work/brief.W12.md")" = earlier ] || fail 'existing work brief was overwritten'
 
 new_case '--work: a failed taskr set is a step 2 failure'
@@ -3193,6 +3205,61 @@ run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 4
 expect_rc 1
 expect_err "step 2 (taskr set 2468 work=12) failed; so far: workspace=wA task=2468 launch=- tab=wA:t7 pane=wA:p7 work_brief=$work/brief.W12.md"
 if grep -E '^taskr\|launch\|' "$case_dir/calls" >/dev/null; then fail 'launch after a failed taskr set'; fi
+
+# Past `work list`'s 1000-row cap: the list holds W1-W1000 only, W4537 and
+# its dependency W999 are read by id.
+new_case '--work finds a ticket past the 1000-row work list'
+jq -n '{campaign:42,generation:1,parked:false,configuration:null,work:(
+    [range(1; 1001) | {work_id:., campaign:42, title:"Row \(.)", revision:1, state:"done", revisions:[]}]
+    + [{work_id:4537,campaign:42,title:"Late ticket",revision:1,state:"queued",revisions:[
+        {revision:1,contract:{intent:"Ship the late ticket.",acceptance:["late test passes"],scope:["src/late"],dependencies:[{work:999,revision:1}]}}]}])}' \
+    >"$case_dir/campaign.json"
+jq '.work |= .[:1000]' "$case_dir/campaign.json" >"$case_dir/list.json"
+[ "$(jq '.work | length' "$case_dir/list.json")" -eq 1000 ] || fail 'list fixture is not 1000 rows'
+if jq -e '.work[] | select(.work_id == 4537)' "$case_dir/list.json" >/dev/null; then fail 'list fixture holds W4537'; fi
+# The stub's work list prints the capped list, work show reads the campaign.
+mkdir "$case_dir/cap-bin"
+cat >"$case_dir/cap-bin/taskr" <<EOF
+#!/bin/sh
+if [ "\$*" = '--json work list 42' ]; then printf '%s\n' 'taskr|--json|work|list|42' >>"\$STUB_CALLS"; cat '$case_dir/list.json'; exit 0; fi
+[ "\$1 \$2 \$3" != '--json work show' ] || STUB_RESERVED='$case_dir/campaign.json'
+exec '$stub_dir/taskr' "\$@"
+EOF
+chmod 0755 "$case_dir/cap-bin/taskr"
+run_path=$case_dir/cap-bin:$run_path
+run_launch sh "$launch_sh" --work W4537 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 work_brief=$work/brief.W4537.md account=default"
+{
+    sed -n '1,3p' "$brief"
+    printf '%s\n' 'Work: W4537 Late ticket' 'Intent: Ship the late ticket.' 'Acceptance:' \
+        '- late test passes' 'Scope: src/late'
+    sed '1,3d' "$brief"
+} >"$case_dir/want-brief"
+cmp -s "$case_dir/want-brief" "$work/brief.W4537.md" 2>/dev/null || fail 'W4537 work brief missing or different'
+grep -qxF 'taskr|--json|work|show|4537' "$case_dir/calls" || fail 'W4537 not read by id'
+grep -qxF 'taskr|--json|work|show|999' "$case_dir/calls" || fail 'dependency W999 not read by id'
+grep -qxF 'taskr|set|2468|work=4537' "$case_dir/calls" || fail 'task did not get work=4537'
+
+new_case '--work: a failed work show stops before any tab'
+ticket_list
+STUB_FAIL='taskr --json'
+run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 2
+expect_err 'W12: taskr work show 12 failed'
+expect_calls "$show_call"
+
+new_case '--work: a failed dependency read stops before any tab'
+ticket_list
+printf '%s\n' '#!/bin/sh' '[ "$*" != "--json work show 3" ] || { echo "taskr|--json|work|show|3" >>"$STUB_CALLS"; exit 5; }' \
+    "exec '$stub_dir/taskr' \"\$@\"" >"$case_dir/taskr"
+mkdir "$case_dir/dep-bin" && mv "$case_dir/taskr" "$case_dir/dep-bin/taskr" && chmod 0755 "$case_dir/dep-bin/taskr"
+run_path=$case_dir/dep-bin:$run_path
+run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 2
+expect_err 'W12: taskr work show 3 failed'
+expect_calls "$show_call" "$dep_call"
+[ ! -e "$work/brief.W12.md" ] || fail 'failed dependency read wrote a work brief'
 
 new_case '--work rejects a malformed id'
 run_launch sh "$launch_sh" --work W0x opus-medium impl-cart "$brief" "$report" 42

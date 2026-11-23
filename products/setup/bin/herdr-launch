@@ -736,12 +736,20 @@ fi
 # Compact output is what the parsers below read.
 unset TASKR_FORMAT
 
-# --work: PARENT's tickets as `taskr --json work list` prints them (.work[]
-# entries from show(), taskr-core/src/store/work/mod.rs:402-437). The ticket's
-# spec is the contract of its current revision.
+# --work: the ticket and its dependencies as `taskr --json work show ID` prints
+# them (show(), taskr-core/src/store/work/mod.rs), read by id because `work
+# list` stops at 1000 rows. A missing id, or one in another campaign, counts as
+# absent. The ticket's spec is the contract of its current revision.
 if [ -n "$work_id" ]; then
-    tickets=$(taskr --json work list "$parent") || die "W$work_id: taskr work list $parent failed"
-    refusal=$(printf '%s\n' "$tickets" | jq -r --argjson id "$work_id" --argjson root "$parent" '
+    # work_row ID: the row, or nothing when the id is missing or not in PARENT.
+    work_row() {
+        row=$(taskr --json work show "$1") || {
+            printf '%s\n' "$row" | jq -e '.error == "work does not exist"' >/dev/null 2>&1 || return 1
+            return 0
+        }
+        printf '%s\n' "$row" | jq -c --argjson root "$parent" 'select(.campaign == $root)'
+    }
+    work_refusal='
         def spec: . as $w | [$w.revisions[]? | select(.revision == $w.revision) | .contract][0];
         def nonempty: (type == "string" or type == "array") and length > 0;
         (.work // []) as $all | [$all[] | select(.work_id == $id and .campaign == $root)][0] as $w |
@@ -753,11 +761,29 @@ if [ -n "$work_id" ]; then
              if ($c.scope | type) == "array" then empty else "scope" end,
              if ($c.dependencies | type) == "array" then empty else "dependencies" end] as $missing |
             if $missing != [] then "W\($id) spec lacks \($missing | join(", "))"
-            else first($c.dependencies[] | (.work? // .) as $d | [$all[] | select(.work_id == $d)][0] as $dw |
+            elif $deps then first($c.dependencies[] | (.work? // .) as $d | [$all[] | select(.work_id == $d)][0] as $dw |
                     select($dw.state != "done" and $dw.state != "accepted") |
                     "W\($id) depends on W\($d), which is \($dw.state // "not in campaign \($root)")") // empty
+            else empty
             end
-        end') || die "W$work_id: unreadable taskr work list $parent"
+        end'
+    ticket=$(work_row "$work_id") || die "W$work_id: taskr work show $work_id failed"
+    tickets=$(printf '%s\n' "$ticket" | jq -s '{work: .}') || die "W$work_id: unreadable taskr work show $work_id"
+    refusal=$(printf '%s\n' "$tickets" | jq -r --argjson id "$work_id" --argjson root "$parent" \
+        --argjson deps false "$work_refusal") || die "W$work_id: unreadable taskr work show $work_id"
+    [ -z "$refusal" ] || die "$refusal"
+    # Dependencies that are not positive integers stay absent, as before.
+    dep_ids=$(printf '%s\n' "$ticket" | jq -r '. as $w | [$w.revisions[] | select(.revision == $w.revision) | .contract][0] |
+        [.dependencies[] | (.work? // .) | select(type == "number" and . > 0 and . == floor)] | unique[]') \
+        || die "W$work_id: unreadable taskr work show $work_id"
+    for dep in $dep_ids; do
+        [ "$dep" = "$work_id" ] && continue
+        row=$(work_row "$dep") || die "W$work_id: taskr work show $dep failed"
+        ticket=$(printf '%s\n%s\n' "$ticket" "$row")
+    done
+    tickets=$(printf '%s\n' "$ticket" | jq -s '{work: .}') || die "W$work_id: unreadable taskr work show"
+    refusal=$(printf '%s\n' "$tickets" | jq -r --argjson id "$work_id" --argjson root "$parent" \
+        --argjson deps true "$work_refusal") || die "W$work_id: unreadable taskr work show"
     [ -z "$refusal" ] || die "$refusal"
     work_brief=${brief%.md}.W$work_id.md
     [ ! -e "$work_brief" ] && [ ! -L "$work_brief" ] || die "work brief '$work_brief' already exists"
