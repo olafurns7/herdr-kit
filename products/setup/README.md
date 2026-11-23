@@ -114,13 +114,32 @@ usually give the reason. An older version can show no line: then run
 `claude --version`.
 
 First start: Claude Code asks for confirmation before the first Code Mode
-session. Select **Yes, turn on Code Mode** in the hub pane; Claude Code then
-restarts. We expect this once for each Claude config home, which is once for
-each Codator account; this is not verified. The `herdr-hub` prover does not
-answer this dialog, and it answers the development-channel dialog only once.
-If that dialog shows again after the restart, press Enter. Do the first start
-on each account by hand. If the dialog stops an unattended `herdr-hub move`
-before the channel lease, the prover fails after 600 s.
+session. This "Code Mode (experimental)" dialog comes before the development-channel
+dialog, and its default is **No, start without it**: Enter or Esc starts the
+session without Code Mode. After **Yes, turn on Code Mode**, Claude Code saves
+the answer, restarts, and can show the development-channel dialog again. A
+config home that never accepted Code Mode shows the consent dialog; with
+Codator each account has its own config home.
+
+Do this once for each account, before its first Code Mode hub:
+
+1. In a plain terminal pane, run
+   `env CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 cdl --account ACCOUNT`.
+2. Select **Yes, turn on Code Mode** and let Claude Code restart.
+3. Quit it.
+
+The `herdr-hub` prover never answers the consent dialog. If it sees it, it
+records a ledger note once and waits: select **Yes, turn on Code Mode** in the
+hub pane by hand. The prover then answers the development-channel dialog and
+waits up to 600 s from your answer. If the consent dialog is still there after
+600 s, the push check fails with that reason: select **Yes, turn on Code Mode**,
+press Enter on the development-channel dialog by hand, then run
+`herdr-hub check ROOT`, which prints `live` when the channel is up. If you
+select No, the hub starts without Code Mode; its prompt tells it to record a
+ledger note when Code Mode is off. A taskr prompt typed into the pane while the
+dialog is open can answer it No (a separate taskr fix is pending), so do the
+First start step before a Code Mode move. `herdr-hub move` with Code Mode on
+prints a warning about this step and does not check it.
 
 Resume: a Code Mode session resumes only with the variable at `1`. With the
 variable at `0`, Claude refuses to resume a Code Mode session. A session that
