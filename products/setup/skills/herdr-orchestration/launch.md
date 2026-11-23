@@ -105,7 +105,7 @@ The hub registers one long-lived root per repository once, with its location fla
 ### Owner hub in its current pane
 
 `herdr-hub` and `herdr-lead` start and move accept a `hub` lane, such as `fable-high`; a lead uses an `orch` lane unless the operator names a `hub` lane with `--lane`.
-The hub and leads start with Claude Code Mode off; the hub turns it on only with `HERDR_HUB_CODE_MODE=1`, a lead only with `HERDR_LEAD_CODE_MODE=1`. A Code Mode session resumes only with Code Mode on, so a `--resume` of a hub session that started with Code Mode needs `HERDR_HUB_CODE_MODE=1 herdr-hub move ...` (or that variable exported in the hub pane shell); otherwise move without `--resume`: [setup README "Code Mode"](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/README.md#code-mode).
+The hub and leads start with Claude Code Mode off; the hub turns it on only with `HERDR_HUB_CODE_MODE=1`, a lead only with `HERDR_LEAD_CODE_MODE=1`. A Code Mode session resumes only with Code Mode on, and `herdr-hub move` keeps the moving hub's Code Mode by default (`--code-mode on|off` overrides it); a `--resume` of a hub session that started with Code Mode needs it on, for example `herdr-hub move ... --code-mode on -- --resume <session id>`; otherwise move without `--resume`: [setup README "Code Mode"](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/README.md#code-mode).
 
 To restart a running hub onto a new session, the hub records its handover and then runs, in its own pane:
 
@@ -191,8 +191,7 @@ Both commands restore the flag and keep the session. `herdr-lead`
 refuses `--resume` without `--account`. `check` reports
 `push-dropped` and prints a repair command if the current process lost the flag.
 If that hub session started with Code Mode, omit `-- --resume`; or, to keep
-the session, run the hub move as `HERDR_HUB_CODE_MODE=1 herdr-hub move ...`
-(README "Code Mode").
+the session, run the hub move with `--code-mode on` (README "Code Mode").
 See `recovery.md` "Your own session" before a move.
 
 A session with Monitor or CronCreate tasks can show an exit dialog after the

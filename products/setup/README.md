@@ -128,16 +128,20 @@ started without Code Mode resumes without it. `herdr-hub` does not detect the
 mode of the session it resumes. For a hub session that started with Code Mode,
 for example one started before the default changed, start a new session from
 the handover with `herdr-hub move ROOT` without `--resume`; or, to keep the
-session, run `HERDR_HUB_CODE_MODE=1 herdr-hub move ROOT --lane <lane>
---account <account> -- --resume <session-id>`. After a Herdr server restart, Herdr may resume panes with a plain
+session, run `herdr-hub move ROOT --lane <lane> --account <account>
+--code-mode on -- --resume <session-id>`. After a Herdr server restart, Herdr may resume panes with a plain
 `claude --resume`. That command can be without the variable, and then a Code
 Mode session refuses to resume. Quit it and resume with `herdr-hub` as `recovery.md` says.
 
 To turn on Code Mode for the hub, export `HERDR_HUB_CODE_MODE=1` in the hub
-pane shell before you run `herdr-hub`. To move into a Code Mode hub, run
-`HERDR_HUB_CODE_MODE=1 herdr-hub move ROOT ...`: the move then types
-`env HERDR_HUB_CODE_MODE=1` before the `herdr-hub` command; an export in the
-pane shell still works. Any other value, or no value, keeps the hub at `0`. A `"0"` in the
+pane shell before you run `herdr-hub`. Any other value, or no value, keeps the
+hub at `0`. `herdr-hub move` keeps the moving hub's Code Mode by default: it is
+on when the caller has `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` or
+`HERDR_HUB_CODE_MODE=1`, and off otherwise. `--code-mode on|off` on the move
+overrides that. The move prints its decision and source, and when Code Mode is
+on it types `env HERDR_HUB_CODE_MODE=1` before the `herdr-hub` command; the
+helper log's `move: run` line shows it. With Code Mode off it types no prefix,
+so a `HERDR_HUB_CODE_MODE=1` exported in the hub pane shell still turns it on. A `"0"` in the
 `env` block of `~/.claude/settings.json`, or in managed settings for an
 organization, keeps Code Mode off even with the switch. A running session keeps
 its mode until it stops.
