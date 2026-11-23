@@ -254,8 +254,8 @@ if [ "$mode" = __move-helper ]; then
     printf 'herdr-hub: move: stop the hub in %s (generation %s)\n' "$pane" "$old_gen"
     "$herdr_bin_dir/herdr-lead" stop "$root" "$pane" --session "$session" || fail 'stop the hub'
     typed="$(quote "$herdr_bin_dir/herdr-hub") $root --lane $(quote "$lane")"
-    # The pane shell lacks the caller's opt-in; env carries it in any shell.
-    [ "$code_mode_flag" != on ] || typed="env HERDR_HUB_CODE_MODE=1 $typed"
+    # The typed line always carries the decision, so neither a missing nor an exported pane-shell value changes it.
+    if [ "$code_mode_flag" = on ]; then typed="env HERDR_HUB_CODE_MODE=1 $typed"; else typed="env HERDR_HUB_CODE_MODE=0 $typed"; fi
     [ "$jobs" = false ] || typed="$typed --jobs"
     [ -z "$account" ] || typed="$typed --account $(quote "$account")"
     if [ $# -gt 0 ]; then

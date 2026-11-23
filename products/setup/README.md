@@ -138,10 +138,10 @@ pane shell before you run `herdr-hub`. Any other value, or no value, keeps the
 hub at `0`. `herdr-hub move` keeps the moving hub's Code Mode by default: it is
 on when the caller has `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` or
 `HERDR_HUB_CODE_MODE=1`, and off otherwise. `--code-mode on|off` on the move
-overrides that. The move prints its decision and source, and when Code Mode is
-on it types `env HERDR_HUB_CODE_MODE=1` before the `herdr-hub` command; the
-helper log's `move: run` line shows it. With Code Mode off it types no prefix,
-so a `HERDR_HUB_CODE_MODE=1` exported in the hub pane shell still turns it on. A `"0"` in the
+overrides that. The move prints its decision and source, and it
+types `env HERDR_HUB_CODE_MODE=1` or `env HERDR_HUB_CODE_MODE=0` before the
+`herdr-hub` command, so a value exported in the hub pane shell does not change
+the decision; the helper log's `move: run` line shows it. A `"0"` in the
 `env` block of `~/.claude/settings.json`, or in managed settings for an
 organization, keeps Code Mode off even with the switch. A running session keeps
 its mode until it stops.

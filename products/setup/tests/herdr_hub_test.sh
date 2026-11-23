@@ -581,7 +581,7 @@ else: sys.exit(98)
             bindir = c[1] / '.local/bin'
             assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
                     '--lane','other','--session','sess-hub','--code-mode','off','--']
-            assert shlex.split((c[0] / 'typed').read_text()) == [str(bindir / 'herdr-hub'),'42','--lane','other']
+            assert shlex.split((c[0] / 'typed').read_text()) == ['env','HERDR_HUB_CODE_MODE=0',str(bindir / 'herdr-hub'),'42','--lane','other']
         else:
             success(c, new=args[0] == '--new', model='example-hub-model')
     assert not refused, refused
@@ -611,7 +611,7 @@ else: sys.exit(98)
     bindir = c[1] / '.local/bin'
     assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
             '--lane','opus-high','--session','sess-hub','--code-mode','off','--','--resume','id with spaces']
-    assert (c[0] / 'typed').read_text() == f"'{bindir}/herdr-hub' 42 --lane 'opus-high' -- '--resume' 'id with spaces'", text
+    assert (c[0] / 'typed').read_text() == f"env HERDR_HUB_CODE_MODE=0 '{bindir}/herdr-hub' 42 --lane 'opus-high' -- '--resume' 'id with spaces'", text
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
 
     c = run('jobs move forwards opt-in across detached helper and shell-quoted successor',
@@ -622,12 +622,12 @@ else: sys.exit(98)
     bindir = c[1] / '.local/bin'
     assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
             '--lane','opus-high','--session','sess-hub','--code-mode','off','--jobs','--account',"account ' quoted",'--','--resume','id with spaces',"quote'arg"]
-    assert shlex.split((c[0] / 'typed').read_text()) == [str(bindir / 'herdr-hub'),'42','--lane','opus-high','--jobs','--account',"account ' quoted",
+    assert shlex.split((c[0] / 'typed').read_text()) == ['env','HERDR_HUB_CODE_MODE=0',str(bindir / 'herdr-hub'),'42','--lane','opus-high','--jobs','--account',"account ' quoted",
                                                         '--','--resume','id with spaces',"quote'arg"]
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
 
     # The pane shell lacks the caller's opt-in. The move reads the hub's Code Mode before the CLAUDE* strip,
-    # passes it to the helper as --code-mode, and the helper types it through env; --code-mode on move wins.
+    # passes it to the helper as --code-mode, and the helper types it through env both ways; --code-mode on move wins.
     for location, extra, decision, source in [
             ({'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE':'1'}, (), 'on', 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1'),
             ({'HERDR_HUB_CODE_MODE':'1'}, (), 'on', 'HERDR_HUB_CODE_MODE=1'),
@@ -644,9 +644,14 @@ else: sys.exit(98)
         assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
                 '--lane','opus-high','--session','sess-hub','--code-mode',decision,'--']
         typed = (c[0] / 'typed').read_text()
-        prefix = ['env','HERDR_HUB_CODE_MODE=1'] if decision == 'on' else []
-        assert shlex.split(typed) == [*prefix, str(bindir / 'herdr-hub'),'42','--lane','opus-high'], typed
+        assert shlex.split(typed) == ['env',f'HERDR_HUB_CODE_MODE={int(decision == "on")}', str(bindir / 'herdr-hub'),'42','--lane','opus-high'], typed
         assert f'herdr-hub: move: run {typed}\n' in text, text
+        # Model the hub pane shell: run the typed line in a shell that exports the opposite value.
+        executable(bindir / 'herdr-hub', '#!/bin/sh\nprintf %s "$HERDR_HUB_CODE_MODE"\n')
+        opposite = '0' if decision == 'on' else '1'
+        seen = subprocess.run(['sh','-c',typed], env={'PATH':'/usr/bin:/bin','HERDR_HUB_CODE_MODE':opposite},
+                              capture_output=True, text=True, check=True).stdout
+        assert seen == str(int(decision == 'on')), (typed, seen)
 
     c = run('move helper failure is noted on the root', args=('move','42','--no-handover'), mode='move-stuck')
     expect(c, 0)
