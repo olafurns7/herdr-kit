@@ -63,7 +63,10 @@ installation resolves setup source from the same selected taskr tag.
 restarts its Claude lead with the taskr push channel through the sibling `cdl`
 wrapper (needs `--codator` and Codator). Usage, checks and recovery:
 [launch.md](skills/herdr-orchestration/launch.md). The hub starts with
-[Code Mode](#code-mode) off unless `HERDR_HUB_CODE_MODE=1`.
+[Code Mode](#code-mode) off unless `HERDR_HUB_CODE_MODE=1`. The hub auto-compacts
+at 400000 tokens (`autoCompactWindow` in its `--settings`); set
+`HERDR_HUB_COMPACT_WINDOW` to an integer from 100000 to 1000000 to change that.
+`herdr-hub move` passes a set value on to the new hub.
 
 ## Code Mode
 
