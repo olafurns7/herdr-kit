@@ -196,6 +196,9 @@ case " $prefixes " in *' orch '* | *' hub '*) ;; *) die 'hub lane must allow orc
 [ -x "$herdr_bin_dir/cdl" ] || die 'sibling cdl must be executable'
 [ "$mode" = start ] || [ -x "$herdr_bin_dir/herdr-lead" ] || die 'sibling herdr-lead must be executable'
 host=$(uname -n) || die 'read local host'
+# TMPDIR for this process, so cdl and the hub get the per-user disk folder (README.md "Temp files").
+agent_tmp_setup=$(agent_tmp_command) || die 'agent temp folder command unavailable'
+eval "$agent_tmp_setup" || die 'agent temp folder refused'
 state_dir=$HOME/.local/state/herdr-orch/lead-push/$root
 if [ "$mode" = move ]; then
     # nohup keeps the helper in this process group, which the caller may kill with this session.

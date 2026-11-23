@@ -834,6 +834,10 @@ PY
         || step_fail '1 (reserved pane or agent name occupied)'
 fi
 
+# Agent temp files go to a per-user disk folder (README.md "Temp files"); step 4
+# runs this in the pane, so it creates and checks the folder on the agent's host.
+agent_tmp_setup=$(agent_tmp_command) || die 'agent temp folder command unavailable'
+
 # Step 1: a new tab in the task workspace, or the given pane.
 if [ -z "$given_pane" ]; then
     [ -n "$cwd" ] || cwd=$(pwd -P)
@@ -1005,7 +1009,7 @@ if [ "$kind" = opencode ]; then
     setup="$setup && opencode() { $opencode_cli \"\$@\"; } && export OPENCODE_CONFIG_CONTENT=$opencode_config"
     setup="$setup && { opencode models --standalone 2>/dev/null | grep -qxF $opencode_model || { echo \"herdr-launch-model-missing=\$TASKR_LAUNCH:\"$opencode_model\"@\$(uname -n)\"; false; }; }"
 fi
-setup="$setup && herdr_launch_ok=$launch"
+setup="$setup && $agent_tmp_setup && herdr_launch_ok=$launch"
 setup_command=$setup
 if [ -n "$reserved_task" ]; then
     # Keep long inherited PATH/config text off the interactive terminal input line.

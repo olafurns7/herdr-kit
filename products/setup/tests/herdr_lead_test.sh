@@ -3,7 +3,12 @@
 set -eu
 repo_dir=$(CDPATH= cd "$(dirname "$0")/.." && pwd -P)
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/herdr-lead-test.XXXXXX")
-trap 'find "$scratch" -depth -delete' 0
+# The agent temp folder (README.md "Temp files") goes under a short fake base,
+# never /var/tmp: the folder must stay within 24 bytes.
+agent_tmp_base=$(mktemp -d /tmp/h.XXX)
+trap 'find "$scratch" "$agent_tmp_base" -depth -delete' 0
+agent_tmp_dir=$agent_tmp_base/agent-$(id -u)
+agent_tmp_setup=$(HERDR_TEST_AGENT_TMP_BASE=$agent_tmp_base && . "$repo_dir/bin/herdr-lanes.sh" && agent_tmp_command)
 trap 'exit 1' 1 2 3 15
 # Match the launcher's physical cwd even when TMPDIR traverses a symlink.
 scratch=$(CDPATH= cd -- "$scratch" && pwd -P)
@@ -39,7 +44,7 @@ case "$1 $2" in
         # cwd quoting works, and the Codator functions forward their argv.
         case $4 in
             *'unset TASKR_TASK TASKR_LAUNCH'*)
-                TASKR_TASK=99 TASKR_LAUNCH=100 CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 sh -c "$4 && test -z \"\${TASKR_TASK-}\" && test -z \"\${TASKR_LAUNCH-}\" && test \"\${CLAUDE_CODE_EXPERIMENTAL_CODE_MODE-unset}\" = \"\${EXPECT_CODE_MODE:-0}\" && test \"\$FLEET_ROLE/\$CLAUDE_CODE_SANDBOXED\" = worker/1 && test \"\$PWD\" = \"\$WORK\" && claude --version && codex --version" || exit 1
+                TASKR_TASK=99 TASKR_LAUNCH=100 CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 sh -c "$4 && test -z \"\${TASKR_TASK-}\" && test -z \"\${TASKR_LAUNCH-}\" && test \"\${CLAUDE_CODE_EXPERIMENTAL_CODE_MODE-unset}\" = \"\${EXPECT_CODE_MODE:-0}\" && test \"\$FLEET_ROLE/\$CLAUDE_CODE_SANDBOXED\" = worker/1 && test \"\$TMPDIR\" = \"\$EXPECT_TMPDIR\" && test \"\$PWD\" = \"\$WORK\" && claude --version && codex --version" || exit 1
                 ;;
         esac
         ;;
@@ -243,6 +248,7 @@ run() {
         GET_STATUSES="$GET_STATUSES" HERDR_LEAD_ENTER_DELAYS="$ENTER_DELAYS" STOP_IGNORED="$STOP_IGNORED" NO_HANDOVER="$NO_HANDOVER" ACKS="$ACKS" \
         AGENTS_AFTER_WAIT="$AGENTS_AFTER_WAIT" CALLER_HOST="$CALLER_HOST" PROCESS="$PROCESS" EXIT_MODAL="$EXIT_MODAL" DIALOG_TALL="$DIALOG_TALL" \
         HERDR_LEAD_CODE_MODE="$LEAD_CODE_MODE" EXPECT_CODE_MODE="$EXPECT_CODE_MODE" HERDR_LEAD_COMPACT_WINDOW="$COMPACT_WINDOW" \
+        HERDR_TEST_AGENT_TMP_BASE="$agent_tmp_base" TMPDIR=/caller/tmp EXPECT_TMPDIR="$agent_tmp_dir" \
         sh "$repo_dir/bin/herdr-lead" "$@" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
 }
 expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/err")"; }
@@ -615,6 +621,8 @@ has calls 'codator|claude|--version'
 has calls 'codator|codex|--version'
 has calls 'herdr-lead-env=//worker/1/'
 has calls 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0 && '
+# The pane stub fails unless the setup replaced the caller TMPDIR (README.md "Temp files").
+has calls " && $agent_tmp_setup && cd -- "
 has calls 'taskr|adopt|42|--workspace|wA|--tab|wA:t1|--pane|wA:p1|env=/'
 has calls 'herdr|pane|send-keys|wA:p1|Enter'
 has calls 'herdr|agent|wait|orch-example|--until|idle|--timeout|90000'
@@ -639,6 +647,16 @@ printf '%s\n' '{"mcpServers":{"taskr":{"command":"taskr","args":["mcp","--channe
 [ -z "$(find "$case_dir" -name .mcp.json -print)" ] || fail 'wrote .mcp.json'
 [ "$(grep -c 'taskr|adopt' "$case_dir/calls")" = 1 ] || fail 'adopted twice'
 [ "$(grep -c 'herdr|agent|start' "$case_dir/calls")" = 1 ] || fail 'started twice'
+
+new_case 'a refused agent temp folder stops before any control-plane call'
+rm -rf "$agent_tmp_dir"
+ln -s / "$agent_tmp_dir"
+start
+rm -f "$agent_tmp_dir"
+expect_rc 2
+has err "herdr-agent-tmp: $agent_tmp_dir must be a directory owned by you, not a symlink"
+has err 'herdr-lead: agent temp folder refused'
+[ ! -s "$case_dir/calls" ] || fail "control-plane calls after a refusal: $(cat "$case_dir/calls")"
 
 new_case '--mcp keeps user MCP loading without changing denied tools or the channel'
 start --mcp

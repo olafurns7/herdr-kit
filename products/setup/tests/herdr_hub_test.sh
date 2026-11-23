@@ -3,7 +3,7 @@
 set -eu
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 exec python3 - "$repo_dir" "${HUB_SH:-sh}" <<'PY'
-import fcntl, json, os, pty, shlex, shutil, signal, subprocess, sys, tempfile, termios, time
+import atexit, fcntl, json, os, pty, shlex, shutil, signal, subprocess, sys, tempfile, termios, time
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -69,6 +69,11 @@ with patch('os.getsid', return_value=424242) as sid, patch('os.getpgid', return_
     else: raise AssertionError('permission failure was suppressed')
 print('PASS: owned-process cleanup checks', flush=True)
 
+# The agent temp folder (README.md "Temp files") goes under a short fake base,
+# never /var/tmp: the folder must stay within 24 bytes.
+agent_tmp_base = Path(subprocess.run(['mktemp', '-d', '/tmp/h.XXX'], check=True, capture_output=True, text=True).stdout.strip())
+agent_tmp_dir = agent_tmp_base / f'agent-{os.getuid()}'
+atexit.register(shutil.rmtree, agent_tmp_base, True)
 with tempfile.TemporaryDirectory(prefix='herdr-hub-test.') as scratch:
     # getcwd reports the physical path when TMPDIR traverses a symlink.
     scratch = Path(scratch).resolve()
@@ -243,7 +248,7 @@ from pathlib import Path
 case = Path(os.environ['CASE'])
 (case / 'cdl').write_text(json.dumps({'args':sys.argv[1:], 'task':os.getenv('TASKR_TASK'),
     'launch':os.getenv('TASKR_LAUNCH'), 'role':os.getenv('FLEET_ROLE'),
-    'code_mode':os.getenv('CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'), 'pid':os.getpid(), 'cwd':os.getcwd(), 'umask':os.umask(0)}))
+    'code_mode':os.getenv('CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'), 'tmpdir':os.getenv('TMPDIR'), 'pid':os.getpid(), 'cwd':os.getcwd(), 'umask':os.umask(0)}))
 mode = os.environ.get('MODE', '')
 # Claude's channel flag is variadic: an untagged value after it is rejected at startup.
 flag = sys.argv.index('--dangerously-load-development-channels')
@@ -282,7 +287,8 @@ else: sys.exit(98)
         if seed: seed(home)
         env = dict(HOME=str(home), PATH=f'{stubs}:/usr/bin:/bin', CASE=str(case), MODE=mode,
                    HERDR_PANE_ID='wA:p1', HERDR_WORKSPACE_ID='wA', HERDR_TAB_ID='wA:t1',
-                   TASKR_TASK='99', TASKR_LAUNCH='100', TASKR_DB=str(home / 'scratch.db'))
+                   TASKR_TASK='99', TASKR_LAUNCH='100', TASKR_DB=str(home / 'scratch.db'),
+                   HERDR_TEST_AGENT_TMP_BASE=str(agent_tmp_base), TMPDIR='/caller/tmp')
         env.update(location or {})
         master, slave = pty.openpty()
         def child_setup():
@@ -336,7 +342,8 @@ else: sys.exit(98)
         expected = dict(args=[*account,'--model',model,'--effort','high',
                               '--settings',settings,'--mcp-config',str(config),
                               '--dangerously-load-development-channels','server:taskr',*extra,'--',prompt],
-                        task=None, launch=None, role='hub', code_mode=code_mode, pid=process.pid, cwd=str(work), umask=0o002)
+                        task=None, launch=None, role='hub', code_mode=code_mode, tmpdir=str(agent_tmp_dir),
+                        pid=process.pid, cwd=str(work), umask=0o002)
         assert actual == expected, {'actual':actual, 'expected':expected}
         # The hub takes digest pushes with a 2-minute hold.
         servers = {'taskr':{'command':'taskr','args':['mcp','--channel','--as','42','--session','7'],
@@ -348,6 +355,8 @@ else: sys.exit(98)
         assert config.read_text() == json.dumps({'mcpServers':servers}, separators=(',', ':')) + '\n'
         assert config.stat().st_mode & 0o777 == 0o600
         assert state.stat().st_mode & 0o777 == 0o700
+        # cdl gets the per-user disk folder, not the caller's TMPDIR (README.md "Temp files").
+        assert agent_tmp_dir.stat().st_mode & 0o777 == 0o700 and not agent_tmp_dir.is_symlink()
         assert (state / 'handover-7.md').stat().st_mode & 0o777 == 0o600
         assert (state / 'handover-7.md').read_text() == 'handover text\n'
         assert not (state / 'start.lock').exists()
@@ -459,6 +468,17 @@ else: sys.exit(98)
         assert text in c[4]
         assert not any(a[0] == 'adopt' for a,t,l in c[5])
         assert not (c[1] / '.local/state').exists()
+
+    shutil.rmtree(agent_tmp_dir, True)
+    agent_tmp_dir.symlink_to('/')
+    try:
+        c = run('a refused agent temp folder stops before any control-plane call')
+    finally:
+        agent_tmp_dir.unlink()
+    expect(c, 2)
+    assert f'herdr-agent-tmp: {agent_tmp_dir} must be a directory owned by you, not a symlink' in c[4], c[4]
+    assert 'herdr-hub: agent temp folder refused' in c[4] and not c[5], (c[4], c[5])
+    assert not (c[0] / 'cdl').exists() and not (c[1] / '.local/state').exists()
 
     for kind, prefixes, message in [('claude',['impl'],'allow orch'),('codex',['orch'],'Claude hubs only')]:
         c = run('reject incompatible lane', args=('42','--lane','other'),

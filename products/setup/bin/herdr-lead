@@ -370,6 +370,9 @@ herdr_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || die 'resolve la
 . "$herdr_bin_dir/herdr-lanes.sh"
 lane_info "$lane" || die "unknown lane '$lane'"
 [ "$kind" = claude ] || die 'Claude leads only'
+# The lead's pane is on this host: check the agent temp folder (README.md "Temp files") before anything stops.
+agent_tmp_setup=$(agent_tmp_command) || die 'agent temp folder command unavailable'
+(eval "$agent_tmp_setup") || die 'agent temp folder refused'
 case " $prefixes " in *' orch '* | *' hub '*) ;; *) die 'lead lane must allow orch or hub prefix' ;; esac
 [ -n "$worktree" ] || die '--worktree is required'
 worktree=$(CDPATH= cd -- "$worktree" 2>/dev/null && pwd -P) || die '--worktree must be an existing directory'
@@ -447,7 +450,7 @@ setup=" unset TASKR_TASK TASKR_LAUNCH && export FLEET_ROLE=worker CLAUDE_CODE_SA
 if [ -x "$HOME/.local/bin/codator" ]; then
     setup="$setup && codex() { \"\$HOME/.local/bin/codator\" codex \"\$@\"; } && claude() { \"\$HOME/.local/bin/codator\" claude \"\$@\"; }"
 fi
-setup="$setup && cd -- $(quote "$worktree") && herdr_lead_ok=$marker"
+setup="$setup && $agent_tmp_setup && cd -- $(quote "$worktree") && herdr_lead_ok=$marker"
 herdr pane run "$pane" "$setup" >/dev/null || fail 'prepare pane environment'
 herdr pane run "$pane" 'echo "herdr-lead-env=$TASKR_TASK/$TASKR_LAUNCH/$FLEET_ROLE/$CLAUDE_CODE_SANDBOXED/$herdr_lead_ok"' >/dev/null || fail 'echo pane environment'
 herdr pane wait-output "$pane" --match "herdr-lead-env=//worker/1/$marker" --timeout 15000 >/dev/null || fail 'pane worker identity was not cleared'
