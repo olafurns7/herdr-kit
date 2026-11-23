@@ -31,7 +31,7 @@ Load each file at the step that names it, not up front. Each says at its top whe
 | `workflow.md` | registering a campaign root or changing its plan; durable task-local loops; writing an orchestrator, sub-orchestrator, or code-reviewer brief; settled waits on a reviewer; a head gate; work without a ledger; a stalled, blocked, or odd-looking agent |
 | `owner.md` | (hub or campaign lead) asking the owner anything or handing the owner an action, each milestone, parking a campaign, going idle on unattended work, answering "what happened" |
 | `decisions.md` | (hub or campaign lead) deciding anything a brief or an owner answer did not settle, before asking the owner, and before sending another root a message |
-| `teardown.md` | stopping an owned worker, closing a tab or workspace, after a reboot or crash |
+| `teardown.md` | stopping an owned worker, closing a tab or workspace, a ticket landing or its PR merging, after a reboot or crash |
 | `recovery.md` | any resume or prompt to a restored pane; your own session restarted; the taskr server unreachable |
 | `model-selection.md` | choosing a model; operator-specific policy lives in the fleet overlay |
 
