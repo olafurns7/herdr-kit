@@ -1,7 +1,30 @@
 //! Root-to-root peer text uses the existing inbox and delivery receipts.
 use super::*;
 
-/// Choose once, on the ledger server, before any pane prerequisite. A push is terminal.
+/// A root whose inbox lease names a push adapter, live or not. A release clears the holder,
+/// so a released lease counts when an adapter has ever pushed to the root. The mark has no
+/// end: a plain root that was a push lane keeps it.
+fn push_lane(db: &Connection, root: i64) -> Result<bool> {
+    Ok(db.query_row(
+        "select exists(select 1 from consumer_leases l where l.task_id=?1 and (l.holder glob 'mcp-channel-*' or l.holder glob 'codex-queue-*' or l.holder is null and exists(select 1 from delivery_attempts d where d.task_id=?1 and d.session_gen is not null and d.adapter in ('claude-channel','codex-queue'))))",
+        [root],
+        |r| r.get(0),
+    )?)
+}
+
+/// An open push-lane root that is not push-live: its pane may be starting up at a dialog.
+/// Only an open root without a launch can become push-live; others keep the pane.
+pub fn not_push_live(db: &Connection, t: &Task) -> Result<bool> {
+    Ok(t.parent.is_none()
+        && t.launch.is_none()
+        && t.status == "open"
+        && consumer::push_generation(db, t)?.is_none()
+        && push_lane(db, t.id)?)
+}
+
+/// Choose once, on the ledger server, before any pane prerequisite. A push is terminal,
+/// and so is the refusal of a push lane that is not push-live: its pane may be starting
+/// up at a dialog that typed text would answer.
 pub fn route(
     db: &mut Connection,
     target: i64,
@@ -39,6 +62,17 @@ pub fn route(
                     ));
                 }
                 return Err(reject(format!("root {target} is not push-live")));
+            }
+            if !pane && not_push_live(tx, &to)? {
+                return Ok(Some(json!({
+                    "target": target,
+                    "outcome": "rejected",
+                    "reason": "not_push_live",
+                    "error": format!(
+                        "not_push_live: root {target} is a push lane and is not push-live (restarting?); not typed; retry when push is live; pass --pane only after you have read its pane and it shows the agent's input line, not a dialog"
+                    ),
+                    "_exit": ExitCode::Transport as u8,
+                })));
             }
             return Ok(None);
         }

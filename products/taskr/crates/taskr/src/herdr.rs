@@ -252,6 +252,11 @@ pub(crate) fn run_machine_prompt(
                     if !code.is_empty() {
                         detail["herdr_error"] = json!(code);
                     }
+                    if code == "agent_blocked" {
+                        detail["herdr_message"] = json!(format!(
+                            "{target} is at a dialog or permission prompt (agent blocked); not typed"
+                        ));
+                    }
                     if exit == 2 || code == "agent_blocked" || code.contains("not_found") {
                         "rejected"
                     } else {
