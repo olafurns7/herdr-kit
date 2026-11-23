@@ -195,6 +195,13 @@ if [ "$jobs" = true ]; then
         esac
     done
 fi
+# The hub's auto-compact window (README.md); Claude accepts 100000 to 1000000. An empty value is refused, not defaulted.
+compact_window=${HERDR_HUB_COMPACT_WINDOW-400000}
+case $compact_window in
+    '' | 0* | *[!0-9]*) compact_window= ;;
+    *) [ "${#compact_window}" -le 7 ] && [ "$compact_window" -ge 100000 ] && [ "$compact_window" -le 1000000 ] || compact_window= ;;
+esac
+[ -n "$compact_window" ] || die "HERDR_HUB_COMPACT_WINDOW must be an integer from 100000 to 1000000 (got '${HERDR_HUB_COMPACT_WINDOW-}')"
 step=1
 pane=${HERDR_PANE_ID:-} workspace=${HERDR_WORKSPACE_ID:-} tab=${HERDR_TAB_ID:-}
 identifier "$pane" && identifier "$workspace" && identifier "$tab" || die 'valid HERDR_PANE_ID, HERDR_WORKSPACE_ID and HERDR_TAB_ID are required'
@@ -270,6 +277,8 @@ if [ "$mode" = __move-helper ]; then
     printf 'herdr-hub: move: stop the hub in %s (generation %s)\n' "$pane" "$old_gen"
     "$herdr_bin_dir/herdr-lead" stop "$root" "$pane" --session "$session" || fail 'stop the hub'
     typed="$(quote "$herdr_bin_dir/herdr-hub") $root --lane $(quote "$lane")"
+    # The pane shell lacks the caller's window; unset, the new hub takes its own default.
+    [ -z "${HERDR_HUB_COMPACT_WINDOW+set}" ] || typed="HERDR_HUB_COMPACT_WINDOW=$compact_window $typed"
     # The typed line always carries the decision, so neither a missing nor an exported pane-shell value changes it.
     if [ "$code_mode_flag" = on ]; then typed="env HERDR_HUB_CODE_MODE=1 $typed"; else typed="env HERDR_HUB_CODE_MODE=0 $typed"; fi
     [ "$jobs" = false ] || typed="$typed --jobs"
@@ -480,7 +489,7 @@ export FLEET_ROLE=hub
 export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=$code_mode
 step=6
 umask "$old_umask"
-set -- --model "$model" --effort "$effort" --settings '{"autoCompactEnabled":true,"enabledPlugins":{"posthog@claude-plugins-official":false,"slack@claude-plugins-official":false}}' \
+set -- --model "$model" --effort "$effort" --settings '{"autoCompactEnabled":true,"autoCompactWindow":'"$compact_window"',"enabledPlugins":{"posthog@claude-plugins-official":false,"slack@claude-plugins-official":false}}' \
     --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr "$@" -- "$prompt"
 [ -z "$account" ] || set -- --account "$account" "$@"
 exec "$herdr_bin_dir/cdl" "$@"

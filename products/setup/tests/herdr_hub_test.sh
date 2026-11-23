@@ -354,7 +354,7 @@ else: sys.exit(98)
     def expect(case, rc):
         assert case[2].returncode == rc, (case[2].returncode, case[3], case[4])
 
-    def success(case, extra=(), new=False, jobs=False, account=(), model='example-opus', code_mode='0'):
+    def success(case, extra=(), new=False, jobs=False, account=(), model='example-opus', code_mode='0', window=400000):
         expect(case, 0)
         work, home, process, out, err, calls = case
         state = home / '.local/state/herdr-orch/lead-push/42'
@@ -371,7 +371,7 @@ else: sys.exit(98)
                        'then follow the waiting rule; it applies only then.')
         prompt += waiting
         actual = json.loads((work / 'cdl').read_text())
-        settings = ('{"autoCompactEnabled":true,"enabledPlugins":'
+        settings = ('{"autoCompactEnabled":true,"autoCompactWindow":' + str(window) + ',"enabledPlugins":'
                     '{"posthog@claude-plugins-official":false,"slack@claude-plugins-official":false}}')
         expected = dict(args=[*account,'--model',model,'--effort','high',
                               '--settings',settings,'--mcp-config',str(config),
@@ -412,6 +412,27 @@ else: sys.exit(98)
                                                       'pane-reads','consent-note','inbox-reads'}
         assert out.splitlines()[0] == f'ROOT=42 GEN=7 mcp_config={config} prover_log={state}/hub-check-7.log'
 
+    # The hub's window goes in --settings, never in an environment variable that leads would inherit.
+    def hub_window(case):
+        args = json.loads((case[0] / 'cdl').read_text())['args']
+        return json.loads(args[args.index('--settings') + 1]).get('autoCompactWindow')
+    c = run('hub caps the auto-compact window at 400000 by default')
+    expect(c, 0)
+    assert hub_window(c) == 400000, hub_window(c)
+    success(c)
+    for value in ('100000','300000','1000000'):
+        c = run('hub takes HERDR_HUB_COMPACT_WINDOW ' + value, location={'HERDR_HUB_COMPACT_WINDOW':value})
+        expect(c, 0)
+        assert hub_window(c) == int(value), hub_window(c)
+        success(c, window=int(value))
+    for value in ('99999','1000001','0400000','abc','400k','-400000','10000000',''):
+        for args in [('42',), ('--new','example-hub'), ('move','42')]:
+            c = run(f'{args[0]} refuses HERDR_HUB_COMPACT_WINDOW {value!r} before any effect', args=args,
+                    mode='move' if args[0] == 'move' else '', location={'HERDR_HUB_COMPACT_WINDOW':value})
+            expect(c, 2)
+            assert f"HERDR_HUB_COMPACT_WINDOW must be an integer from 100000 to 1000000 (got '{value}')" in c[4], c[4]
+            assert not c[5] and not (c[0] / 'herdr-calls').exists() and not (c[0] / 'setsid-args').exists()
+            assert not (c[0] / 'cdl').exists() and not (c[1] / '.local/state').exists()
     c = run('existing root may already record current pane; exact argv', args=('42','--','--resume','id with spaces',"quote'arg"))
     success(c, ('--resume','id with spaces',"quote'arg"))
     assert not (c[0] / 'agent-list').exists()
@@ -772,6 +793,18 @@ else: sys.exit(98)
         seen = subprocess.run(['sh','-c',typed], env={'PATH':'/usr/bin:/bin','HERDR_HUB_CODE_MODE':opposite},
                               capture_output=True, text=True, check=True).stdout
         assert seen == str(int(decision == 'on')), (typed, seen)
+
+    # A set window is typed for the new hub, as Code Mode is; without one the typed line has no window (the cases above).
+    c = run('move passes HERDR_HUB_COMPACT_WINDOW to the new hub', args=('move','42'), mode='move', location={'HERDR_HUB_COMPACT_WINDOW':'300000'})
+    expect(c, 0)
+    text = wait_for(move_log(c), 'herdr-hub: moved 42: generation 9 live')
+    bindir = c[1] / '.local/bin'
+    typed = (c[0] / 'typed').read_text()
+    assert shlex.split(typed) == ['env','HERDR_HUB_CODE_MODE=0','HERDR_HUB_COMPACT_WINDOW=300000',str(bindir / 'herdr-hub'),'42','--lane','opus-high'], typed
+    assert f'herdr-hub: move: run {typed}\n' in text, text
+    executable(bindir / 'herdr-hub', '#!/bin/sh\nprintf %s "$HERDR_HUB_COMPACT_WINDOW"\n')
+    seen = subprocess.run(['sh','-c',typed], env={'PATH':'/usr/bin:/bin'}, capture_output=True, text=True, check=True).stdout
+    assert seen == '300000', (typed, seen)
 
     c = run('move helper failure is noted on the root', args=('move','42','--no-handover'), mode='move-stuck')
     expect(c, 0)
