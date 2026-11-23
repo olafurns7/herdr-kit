@@ -3248,7 +3248,11 @@ rm -f "$agent_tmp_dir"
 # A fake id makes the folder BASE/agent-x/.., which resolves to /, a real
 # directory that this user does not own and that is not itself a symlink.
 # A logging chmod proves the owner check refuses it, not a failed chmod.
+# As root / is owned by the runner and the helper would chmod it, so skip.
 new_case 'agent temp folder: a foreign-owned directory is refused'
+if [ "$(id -u)" = 0 ]; then
+printf '  SKIP (running as root)\n'
+else
 mkdir -p "$case_dir/idbin"
 printf '%s\n' '#!/bin/sh' 'printf "%s\n" "x/.."' >"$case_dir/idbin/id"
 printf '%s\n' '#!/bin/sh' ": >\"$case_dir/chmod-called\"" 'exec /bin/chmod "$@"' >"$case_dir/idbin/chmod"
@@ -3260,6 +3264,7 @@ expect_rc 1
 expect_err "herdr-agent-tmp: $agent_tmp_base/agent-x/.. must be a directory owned by you"
 [ ! -e "$case_dir/chmod-called" ] || fail 'chmod ran on a foreign-owned folder'
 rm -f "$agent_tmp_base/agent-x"
+fi
 
 new_case 'agent temp folder: over 24 bytes is refused before mkdir'
 agent_tmp_long=$agent_tmp_base/abcdefghijklmn
