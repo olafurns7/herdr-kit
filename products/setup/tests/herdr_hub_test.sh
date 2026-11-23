@@ -129,6 +129,19 @@ if args[:2] == ['agent', 'list']:
     agents = [] if (case / 'stopped').exists() else [{'name':'hub-claude', 'pane_id':'wA:p2' if mode == 'old-pane-live' else 'wA:p1',
                                                       'agent_session':{'value':session}}]
     print(json.dumps({'result':{'agents':agents}}))
+elif args[:2] == ['pane', 'read'] and mode.startswith('consent'):
+    # consent-answered: a person selects Yes after two reads; consent-again: the channel dialog was answered before it.
+    reads = case / 'pane-reads'
+    n = int(reads.read_text()) + 1 if reads.exists() else 1
+    reads.write_text(str(n))
+    channel = ['Loading development channels', '\u276f 1. I am using this for local development', '  2. Exit', 'Enter to confirm \u00b7 Esc to cancel']
+    consent = ['\u256d\u2500\u2500\u256e', '\u2502 Code Mode (experimental) \u2502', '\u276f No, start without it', '  Yes, turn on Code Mode',
+               'Enter to confirm \u00b7 Esc to start without it']
+    if mode == 'consent-again' and n <= 2: lines = channel
+    elif mode == 'consent-stuck' or n <= 4: lines = consent
+    elif mode == 'consent-off': lines = ['$']
+    else: lines = channel if not (case / 'dialog-answered').exists() or n <= 7 else ['$']
+    print(json.dumps({'result':{'lines':lines}}))
 elif args[:2] == ['pane', 'read']:
     if mode in ('dialog', 'dialog-tall') and not (case / 'dialog-answered').exists():
         lines = ['Loading development channels']
@@ -169,6 +182,10 @@ if cmd == 'campaign':
           'pane_id':'wA:p2' if mode in ('old-pane-live', 'old-pane-free', 'fail-agent-list') else 'wA:p1'}}))
 elif cmd == 'consumer':
     if mode in ('dialog', 'dialog-tall') and not (case / 'dialog-answered').exists(): print('{"live":false}')
+    elif mode == 'consent-stuck': print('{"live":false}')
+    # Live once the channel dialog is done: after read 7, past the last one shown.
+    elif mode.startswith('consent') and (not (case / 'pane-reads').exists() or int((case / 'pane-reads').read_text()) <= 7):
+        print('{"live":false}')
     elif mode in ('cdl-exit-lease', 'prover-lease-conflict') and (case / 'adopted').exists():
         (case / 'waiting-lease').touch()
         print('{"live":false}')
@@ -220,7 +237,8 @@ elif cmd == 'inbox' and mode == 'backlog':
 elif cmd == 'inbox': print(json.dumps({'acked_event_id':8 if mode in ('unacked', 'cdl-exit-ack') else 9}))
 elif cmd == 'close': print('{"task_id":43}')
 elif cmd == 'note':
-    (case / 'note').write_text(args[1])
+    # The consent note comes before the result note, which ends the cdl stub.
+    (case / ('consent-note' if 'consent dialog is waiting' in args[1] else 'note')).write_text(args[1])
     print('{"event_id":10}')
 else: sys.exit(99)
 ''')
@@ -374,7 +392,8 @@ else: sys.exit(98)
         assert all(a[0] != 'set' for a,t,l in calls)
         assert not (work / '.mcp.json').exists()
         # Every file produced by the shim is confined to the scratch HOME.
-        assert {p.name for p in work.iterdir()} <= {'home','calls','clock','adopted','ready','cdl','note','agent-list','agent-lists','prover-stdin','herdr-calls','dialog-answered'}
+        assert {p.name for p in work.iterdir()} <= {'home','calls','clock','adopted','ready','cdl','note','agent-list','agent-lists','prover-stdin','herdr-calls','dialog-answered',
+                                                      'pane-reads','consent-note'}
         assert out.splitlines()[0] == f'ROOT=42 GEN=7 mcp_config={config} prover_log={state}/hub-check-7.log'
 
     c = run('existing root may already record current pane; exact argv', args=('42','--','--resume','id with spaces',"quote'arg"))
@@ -422,6 +441,46 @@ else: sys.exit(98)
     success(c)
     sent = [a for a,e in map(json.loads, (c[0] / 'herdr-calls').read_text().splitlines()) if a[:2] == ['pane','send-keys']]
     assert sent == [['pane','send-keys','wA:p1','Enter']], sent
+
+    # The Code Mode consent dialog: Enter would start the hub without Code Mode, so the prover sends nothing to it.
+    consent_note = ("hub push check 7: Code Mode consent dialog is waiting in wA:p1: select 'Yes, turn on Code Mode' by hand "
+                    '(README Code Mode, First start)')
+    def sent_keys(c):
+        return [a for a,e in map(json.loads, (c[0] / 'herdr-calls').read_text().splitlines()) if a[:2] == ['pane','send-keys']]
+    def notes(c):
+        return [a for a,t,l in c[5] if a[0] == 'note']
+    enter = ['pane','send-keys','wA:p1','Enter']
+    code_mode_on = {'HERDR_HUB_CODE_MODE':'1'}
+
+    c = run('prover never answers a Code Mode consent dialog that stays past the deadline', mode='consent-stuck', location=code_mode_on)
+    expect(c, 0)
+    state = c[1] / '.local/state/herdr-orch/lead-push/42'
+    reason = ("Code Mode consent dialog still waiting in wA:p1 after 600 s: select 'Yes, turn on Code Mode' by hand "
+              '(README Code Mode, First start)')
+    log = (state / 'hub-check-7.log').read_text()
+    assert sent_keys(c) == [], sent_keys(c)
+    assert notes(c) == [['note',consent_note,'--as','42'], ['note',f'hub push check 7: failed: {reason}','--as','42']], notes(c)
+    assert (state / 'hub-check-7.result').read_text() == f'failed: {reason}\n', log
+    assert log.count('consent dialog is waiting') == 1, log
+    assert not any(a[0] == 'new' for a,t,l in c[5])
+
+    c = run('prover answers the channel dialog once after a person answers the consent dialog', mode='consent-answered', location=code_mode_on)
+    success(c, code_mode='1')
+    assert sent_keys(c) == [enter], sent_keys(c)
+    assert [a[1] for a in notes(c)] == [consent_note, 'hub push check 7: live'], notes(c)
+
+    c = run('prover answers the channel dialog again after the consent restart', mode='consent-again', location=code_mode_on)
+    success(c, code_mode='1')
+    assert sent_keys(c) == [enter, enter], sent_keys(c)
+    assert [a[1] for a in notes(c)] == [consent_note, 'hub push check 7: live'], notes(c)
+
+    c = run('consent text with Code Mode off records no note and gets no key', mode='consent-off')
+    success(c)
+    assert sent_keys(c) == [] and [a[1] for a in notes(c)] == ['hub push check 7: live'], (sent_keys(c), notes(c))
+
+    c = run('prover answers the development-channel dialog once with Code Mode on', mode='dialog', location=code_mode_on)
+    success(c, code_mode='1')
+    assert sent_keys(c) == [enter] and len(notes(c)) == 1, (sent_keys(c), notes(c))
 
     c = run('prover reads a channel dialog taller than 40 visible lines', mode='dialog-tall')
     success(c)
