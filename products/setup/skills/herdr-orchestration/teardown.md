@@ -1,6 +1,6 @@
-# Teardown: host capacity and per-worker teardown
+# Teardown: host capacity, per-worker and per-ticket teardown
 
-Load when: before stopping an owned worker, before closing a tab or workspace, after collecting a worker's result, and after a reboot or crash (before resuming anything; then `recovery.md`). Before adding a heavy agent, load the core's Preflight for capacity limits. Part of herdr-orchestration; `SKILL.md` is the core.
+Load when: before stopping an owned worker, before closing a tab or workspace, after collecting a worker's result, when a ticket lands, and after a reboot or crash (before resuming anything; then `recovery.md`). Before adding a heavy agent, load the core's Preflight for capacity limits. Part of herdr-orchestration; `SKILL.md` is the core.
 
 ## Host capacity
 
@@ -53,16 +53,25 @@ taskr close <task> --outcome <outcome>             # ledger only, after the tear
 
 `accepted` means taken as delivered, `reworked` taken after a fix round, `rejected` not taken, and `abandoned` stopped before a result. Always give an outcome when a lane produced or was meant to produce work; gate lanes and lanes not meant to produce work close without one.
 
-Closing the last tab of a workspace closes the workspace. Do not trigger a cascading closure by accident. When the finished helper holds the last tab, leave it at the shell prompt; the next helper in that workspace may reuse it under `launch.md`, and the tab closes with the task workspace.
+Closing the last tab of a workspace closes the workspace. Do not trigger a cascading closure by accident. While the ticket is still open and the finished helper holds the last tab, leave it at the shell prompt; the next helper in that workspace may reuse it under `launch.md`. Once the ticket lands, the workspace closes under "Close the task workspace when the ticket lands".
 
 ## Inventory before cleanup
 
 Run `herdr-worktrees [REPO]` (or `herdr-worktrees --json [REPO]`) before cleanup. It reads local refs only; ahead/behind and merged evidence may be stale or unknown. Check the task by hand with `taskr status --all` (the lane's workspace identifies it).
 
-`merged` is local content evidence, not removal permission. Removal still needs the task closed, ownership checks, and plain `git worktree remove` (never `--force`). Review and preserve ignored entries: Git can delete them even without `--force`. Anything `dirty`, `unpushed`, `open`, `missing`, or unknown needs its owner's decision; `current` stays in use. Cleanup belongs to whole-task completion.
+`merged` is local content evidence, not removal permission. Removal still needs the task closed, ownership checks, and plain `git worktree remove` (never `--force`). Review and preserve ignored entries: Git can delete them even without `--force`. Anything `dirty`, `unpushed`, `open`, `missing`, or unknown needs its owner's decision; `current` stays in use. Cleanup happens when the ticket lands (next section).
+
+## Close the task workspace when the ticket lands
+
+- Trigger: the ticket's last lane is accepted and the ticket lands: `taskr work done`, or its PR merged. For a gate-only or research ticket, the trigger is the accepted result. Act in the same turn.
+- First check the whole workspace: every pane in it is at its shell prompt (the pane checks above, for each tab from `herdr tab list --workspace "$task_workspace_id"`); every tab is one you recorded, so a `herdr-loop` watcher tab or any tab you did not create stops the close; every task in it is closed; and no other open ticket (`taskr work list ROOT`) uses this workspace or worktree.
+- Close the task workspace you created by its recorded id: `herdr workspace close "$task_workspace_id"`. Never add `--group`.
+- If Herdr refuses because the workspace has linked worktree workspaces and asks for `--group`, leave it open and name it in a root note.
+- Once the PR has merged (or the ticket has no PR), remove the task's worktree under "Inventory before cleanup": plain `git worktree remove`, never `--force`. Any state other than `merged`, and a locked worktree, goes to its owner's decision. Branches stay; no prune, gc or `rm`.
+- At `taskr work done` with the PR not yet merged, close the workspace but keep the worktree; remove the worktree when the PR merges, after repeating the last check above (no other open ticket uses it). Then only the worktree step remains. A lead that will not be there at merge names the worktree in its handover.
 
 ## Workspace lifecycle, reboot, and crash
 
-- Do not close a workspace or remove a worktree when one worker finishes. Workspace and worktree lifecycle belongs to whole-task completion, subject to ownership and preservation of changes. Never add `--force` or `--group` for cleanup.
+- Do not close a workspace or remove a worktree when one worker finishes. Close them when the ticket lands ("Close the task workspace when the ticket lands"), subject to ownership and preservation of changes. Never add `--force` or `--group` for cleanup.
 - After a reboot or crash: run `herdr agent list` and `ps -A -o rss=,pid=,comm= | sort -rn | head` (POSIX `ps`, so it also works on macOS), tear down stranded sessions first, then resume work.
 - Never close workspaces you did not create, and never run `herdr server stop` during active work.
