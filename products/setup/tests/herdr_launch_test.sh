@@ -10,6 +10,12 @@ launch_sh=$repo_dir/bin/herdr-launch
 
 root=$(mktemp -d "${TMPDIR:-/tmp}/herdr-launch-test.XXXXXX")
 trap 'rm -rf "$root"' 0
+# The agent temp folder (README.md "Temp files") goes under a short fake base,
+# never /var/tmp: the folder must stay within 24 bytes.
+agent_tmp_base=$(mktemp -d /tmp/h.XXX)
+trap 'rm -rf "$root" "$agent_tmp_base"' 0
+agent_tmp_dir=$agent_tmp_base/agent-$(id -u)
+agent_tmp_setup=$(HERDR_TEST_AGENT_TMP_BASE=$agent_tmp_base && . "$repo_dir/bin/herdr-lanes.sh" && agent_tmp_command)
 trap 'exit 1' 1 2 3 15
 
 stub_dir=$root/stubs
@@ -233,7 +239,7 @@ run_launch() {
         STUB_NATIVE="$STUB_NATIVE" STUB_OBSERVE="$STUB_OBSERVE" \
         STUB_INIT_RC="$STUB_INIT_RC" STUB_INIT_NATIVE="$STUB_INIT_NATIVE" \
         STUB_SOURCE_PROBE="$STUB_SOURCE_PROBE" STUB_PROMPT="$STUB_PROMPT" STUB_LOG_GOT="$STUB_LOG_GOT" \
-        STUB_EXEC="$STUB_EXEC" \
+        STUB_EXEC="$STUB_EXEC" HERDR_TEST_AGENT_TMP_BASE="$agent_tmp_base" \
         STUB_MACHINES="$STUB_MACHINES" STUB_MACHINE_LABEL="$STUB_MACHINE_LABEL" \
         STUB_PROBE="$STUB_PROBE" STUB_CWD_OK="$STUB_CWD_OK" STUB_COMMON="$STUB_COMMON" \
         STUB_CLI="$STUB_CLI" STUB_CODATOR="$STUB_CODATOR" STUB_ACCOUNT="$STUB_ACCOUNT" \
@@ -304,7 +310,7 @@ tail_calls() {
     printf '%s\n' \
         "taskr|new|$1|--parent|42|--role|$2|--workspace|$ws|--tab|$4|--pane|$3|--cwd|$tcwd|--brief|$brief|--report|$report" \
         "taskr|launch|2468|--provider|$5|--model|$6|--effort|$7" \
-        "herdr|pane|run|$3|$8 && herdr_launch_ok=3579" \
+        "herdr|pane|run|$3|$8 && $agent_tmp_setup && herdr_launch_ok=3579" \
         "herdr|pane|run|$3|$env_check" \
         "herdr|pane|wait-output|$3|--match|herdr-launch-env=2468/3579/worker/3579|--timeout|15000" \
         "herdr|agent|start|$1|--kind|$5|--pane|$3|--timeout|90000|--$9" \
@@ -1483,7 +1489,7 @@ outside the diff'
     grep -qF "taskr|new|gather-callers|--parent|42|--role|researcher|--workspace|wA|--tab|wA:t7|--pane|wA:p7|--cwd|$work|--brief|$gather_brief|--report|$gather_report" \
         "$case_dir/calls" || fail 'helper is not ledgered under caller with the written brief'
     grep -qF '|--model|claude-haiku-5-5|' "$case_dir/calls" || fail 'default lane is not haiku-gather'
-    grep -qF "herdr|pane|run|wA:p7|$seat_setup && herdr_launch_ok=3579" "$case_dir/calls" || fail 'helper lacks the 5-minute cache'
+    grep -qF "herdr|pane|run|wA:p7|$seat_setup && $agent_tmp_setup && herdr_launch_ok=3579" "$case_dir/calls" || fail 'helper lacks the 5-minute cache'
     expect_out "task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default
 report=$gather_report
 taskr close 2468 --outcome accepted   # or rejected
@@ -3193,6 +3199,112 @@ run_launch sh "$launch_sh" --work W0x opus-medium impl-cart "$brief" "$report" 4
 expect_rc 2
 expect_err "--work 'W0x' is not W<id> or <id>"
 expect_no_calls
+
+# W4508: agent temp files go to a per-user disk folder (README.md "Temp files").
+# agent_tmp_command is the one line each launcher runs; the tests point its
+# base at a short fake folder through HERDR_TEST_AGENT_TMP_BASE.
+# agent_tmp_run SHELL [PATH]: run the line with a caller TMPDIR; out is the
+# exported TMPDIR, err the refusal.
+agent_tmp_run() {
+    run_status=0
+    out=$(env -i PATH="${2:-/usr/bin:/bin}" TMPDIR=/caller/tmp "$1" -c "$agent_tmp_setup && printf %s \"\$TMPDIR\"" 2>"$case_dir/err") || run_status=$?
+    err=$(cat "$case_dir/err")
+    rc=$run_status
+}
+agent_tmp_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+for agent_tmp_shell in sh zsh bash; do
+    command -v "$agent_tmp_shell" >/dev/null 2>&1 || continue
+    new_case "agent temp folder: created 0700 and replaces a caller TMPDIR ($agent_tmp_shell)"
+    rm -rf "$agent_tmp_dir"
+    agent_tmp_run "$agent_tmp_shell"
+    expect_rc 0
+    [ "$out" = "$agent_tmp_dir" ] || fail "TMPDIR '$out', expected '$agent_tmp_dir'"
+    [ "$(agent_tmp_mode "$agent_tmp_dir")" = 700 ] || fail "mode $(agent_tmp_mode "$agent_tmp_dir")"
+    chmod 0755 "$agent_tmp_dir"
+    agent_tmp_run "$agent_tmp_shell"
+    expect_rc 0
+    [ "$(agent_tmp_mode "$agent_tmp_dir")" = 700 ] || fail 'an existing folder kept mode 755'
+done
+
+new_case 'agent temp folder: a symlink is refused and its target untouched'
+rm -rf "$agent_tmp_dir" "$agent_tmp_base/target"
+mkdir -m 0755 "$agent_tmp_base/target"
+ln -s target "$agent_tmp_dir"
+agent_tmp_run sh
+expect_rc 1
+[ -z "$out" ] || fail "TMPDIR exported after a refusal: $out"
+expect_err "herdr-agent-tmp: $agent_tmp_dir must be a directory owned by you, not a symlink; not starting"
+[ "$(agent_tmp_mode "$agent_tmp_base/target")" = 755 ] || fail 'the symlink target was changed'
+rm -f "$agent_tmp_dir"
+
+new_case 'agent temp folder: a non-directory is refused'
+: >"$agent_tmp_dir"
+agent_tmp_run sh
+expect_rc 1
+[ -z "$out" ] || fail "TMPDIR exported after a refusal: $out"
+expect_err 'must be a directory owned by you, not a symlink; not starting'
+rm -f "$agent_tmp_dir"
+
+# A fake id makes the folder BASE/agent-x/.., which resolves to /, a real
+# directory that this user does not own and that is not itself a symlink.
+# A logging chmod proves the owner check refuses it, not a failed chmod.
+new_case 'agent temp folder: a foreign-owned directory is refused'
+mkdir -p "$case_dir/idbin"
+printf '%s\n' '#!/bin/sh' 'printf "%s\n" "x/.."' >"$case_dir/idbin/id"
+printf '%s\n' '#!/bin/sh' ": >\"$case_dir/chmod-called\"" 'exec /bin/chmod "$@"' >"$case_dir/idbin/chmod"
+chmod 0755 "$case_dir/idbin/id" "$case_dir/idbin/chmod"
+ln -s / "$agent_tmp_base/agent-x"
+agent_tmp_run sh "$case_dir/idbin:/usr/bin:/bin"
+expect_rc 1
+[ -z "$out" ] || fail "TMPDIR exported after a refusal: $out"
+expect_err "herdr-agent-tmp: $agent_tmp_base/agent-x/.. must be a directory owned by you"
+[ ! -e "$case_dir/chmod-called" ] || fail 'chmod ran on a foreign-owned folder'
+rm -f "$agent_tmp_base/agent-x"
+
+new_case 'agent temp folder: over 24 bytes is refused before mkdir'
+agent_tmp_long=$agent_tmp_base/abcdefghijklmn
+agent_tmp_setup_saved=$agent_tmp_setup
+agent_tmp_setup=$(HERDR_TEST_AGENT_TMP_BASE=$agent_tmp_long && . "$repo_dir/bin/herdr-lanes.sh" && agent_tmp_command)
+agent_tmp_run sh
+agent_tmp_setup=$agent_tmp_setup_saved
+expect_rc 1
+expect_err "herdr-agent-tmp: $agent_tmp_long/agent-$(id -u) is over 24 bytes (Codex socket path limit); not starting"
+[ ! -e "$agent_tmp_long" ] || fail 'the long folder was created'
+
+new_case 'agent temp folder: the default base is /var/tmp; a relative base is refused'
+default_setup=$(unset HERDR_TEST_AGENT_TMP_BASE; . "$repo_dir/bin/herdr-lanes.sh" && agent_tmp_command)
+case $default_setup in "herdr_agent_tmp='/var/tmp'/agent-\$(id -u) && "*) ;; *) fail "default line: $default_setup" ;; esac
+run_status=0
+(HERDR_TEST_AGENT_TMP_BASE=relative && . "$repo_dir/bin/herdr-lanes.sh" && agent_tmp_command) >/dev/null 2>"$case_dir/err" || run_status=$?
+[ "$run_status" -ne 0 ] || fail 'a relative base was accepted'
+
+# The pane runs the line, so a --machine lane creates the folder on its own
+# host. STUB_EXEC runs the real setup chain for each lane kind.
+for agent_tmp_lane in opus-medium:impl-tmp:implementer sol-medium:rev-tmp:reviewer glm-free:glm-tmp:implementer; do
+    agent_tmp_role=${agent_tmp_lane##*:} agent_tmp_lane=${agent_tmp_lane%:*}
+    new_case "agent temp folder: the pane chain exports it (${agent_tmp_lane%%:*})" "$agent_tmp_role"
+    rm -rf "$agent_tmp_dir"
+    STUB_EXEC=1
+    printf '%s\n' opencode/glm-5.3-flash-free >"$home/.opencode/bin/models.txt"
+    run_launch sh "$launch_sh" "${agent_tmp_lane%%:*}" "${agent_tmp_lane#*:}" "$brief" "$report" 42
+    expect_rc 0
+    grep -qF " && $agent_tmp_setup && herdr_launch_ok=3579" "$case_dir/calls.shell" || fail 'setup lacks the agent temp line'
+    [ "$(agent_tmp_mode "$agent_tmp_dir")" = 700 ] || fail 'the pane did not create the folder 0700'
+    replay=$(cd "$work" && env -i HOME="$home" PATH=/usr/bin:/bin TMPDIR=/caller/tmp sh -c "$(sed -n 1p "$case_dir/calls.shell") && printf %s \"\$TMPDIR\"") \
+        || fail 'replayed setup failed'
+    [ "$replay" = "$agent_tmp_dir" ] || fail "pane TMPDIR '$replay', expected '$agent_tmp_dir'"
+done
+
+new_case 'agent temp folder: a refused folder stops at step 5 before the agent starts'
+rm -rf "$agent_tmp_dir"
+ln -s / "$agent_tmp_dir"
+STUB_EXEC=1
+run_launch sh "$launch_sh" opus-medium impl-tmp "$brief" "$report" 42
+expect_rc 1
+expect_err 'step 5 (the pane shell did not echo herdr-launch-env=2468/3579/worker/3579)'
+grep -qF "herdr-agent-tmp: $agent_tmp_dir must be a directory owned by you" "$case_dir/calls.screen" || fail 'the pane does not show the refusal'
+if grep -E '^herdr\|agent\|start\|' "$case_dir/calls" >/dev/null; then fail 'started with a refused folder'; fi
+rm -f "$agent_tmp_dir"
 
 fi
 

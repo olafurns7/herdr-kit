@@ -271,6 +271,22 @@ URL. Flags are mutually exclusive; invalid URLs are refused. Local ledgers,
 hub roles, and legacy hub URLs require manual reconciliation before changing
 roles. Apply the printed service/daemon steps yourself.
 
+## Temp files
+
+`herdr-launch` (every lane kind), `herdr-lead` and `herdr-hub` set `TMPDIR`
+to `/var/tmp/agent-UID` for the agent they start, because `/tmp` is a
+RAM-backed tmpfs on some hosts. Claude Code moves its `claude-UID` task and
+scratchpad folder there, and its Bash tools and stdio MCP servers inherit
+`TMPDIR` (measured). Codex reads `TMPDIR` (read from its binary, not yet
+measured in a session). Fixed paths stay on `/tmp`: the `/tmp` writable root
+of the Codex sandbox and Claude's sandbox default `/tmp/claude`. The launcher creates the folder with mode 0700 and refuses to start
+when the path is a symlink, is not a directory, or belongs to another user.
+`herdr-launch` runs this step in the pane, so a `--machine` lane gets the
+folder on its own host. Codex binds `TMPDIR/codex-daemon-UID/<64 hex>` and
+AF_UNIX allows 107 bytes, so the folder may have at most 24 bytes; a longer
+one is refused. A `TMPDIR` that the caller set is replaced. Nothing sweeps the
+folder by age; `systemd-tmpfiles` cleans `/var/tmp` on some hosts.
+
 ## Memory isolation
 
 slotr caps each run unit with `MemoryMax` and `OOMPolicy=continue`, so a

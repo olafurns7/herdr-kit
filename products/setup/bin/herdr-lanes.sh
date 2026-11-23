@@ -90,3 +90,19 @@ lane_info() {
     prefixes=$(printf '%s\n' "$lane_row" | sed -n '4p')
     provider=$(printf '%s\n' "$lane_row" | sed -n '5p')
 }
+
+# agent_tmp_command prints one shell command line that creates the per-user
+# disk folder for agent temp files, checks it, and exports TMPDIR to it
+# (README.md "Temp files"). herdr-launch and herdr-lead append it to the pane
+# setup, so it runs on the agent's host as that user; herdr-hub evals it.
+# HERDR_TEST_AGENT_TMP_BASE replaces /var/tmp for the stub tests only.
+# Codex binds TMPDIR/codex-daemon-UID/<64 hex>; AF_UNIX allows 107 bytes, so
+# the folder may have at most 24.
+agent_tmp_command() {
+    agent_tmp_base=${HERDR_TEST_AGENT_TMP_BASE:-/var/tmp}
+    case $agent_tmp_base in
+        /*[[:cntrl:]]* | [!/]*) printf '%s\n' 'agent temp base must be an absolute single-line path' >&2; return 1 ;;
+    esac
+    agent_tmp_base=$(printf '%s\n' "$agent_tmp_base" | sed "s/'/'\\\\''/g")
+    printf '%s' "herdr_agent_tmp='$agent_tmp_base'"'/agent-$(id -u) && { [ "$(($(printf %s "$herdr_agent_tmp" | wc -c)))" -le 24 ] || { printf "herdr-agent-tmp: %s is over 24 bytes (Codex socket path limit); not starting\n" "$herdr_agent_tmp" >&2; false; }; } && { (umask 077; mkdir -p -- "$herdr_agent_tmp") 2>/dev/null; [ -d "$herdr_agent_tmp" ] && [ ! -L "$herdr_agent_tmp" ] && [ -O "$herdr_agent_tmp" ] && chmod 0700 -- "$herdr_agent_tmp" || { printf "herdr-agent-tmp: %s must be a directory owned by you, not a symlink; not starting\n" "$herdr_agent_tmp" >&2; false; }; } && export TMPDIR="$herdr_agent_tmp"'
+}
