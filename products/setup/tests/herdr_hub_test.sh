@@ -137,7 +137,13 @@ elif args[:2] == ['pane', 'read'] and mode.startswith('consent'):
     channel = ['Loading development channels', '\u276f 1. I am using this for local development', '  2. Exit', 'Enter to confirm \u00b7 Esc to cancel']
     consent = ['\u256d\u2500\u2500\u256e', '\u2502 Code Mode (experimental) \u2502', '\u276f No, start without it', '  Yes, turn on Code Mode',
                'Enter to confirm \u00b7 Esc to start without it']
+    # consent-late: a person selects Yes after 14 reads; read 3 fails. consent-flap: the dialog comes and goes forever.
+    if mode == 'consent-late' and n == 3: sys.exit(1)
     if mode == 'consent-again' and n <= 2: lines = channel
+    elif mode == 'consent-both': lines = channel + consent
+    elif mode == 'consent-both-rev': lines = consent + channel
+    elif mode == 'consent-flap': lines = consent if n % 2 else ['$']
+    elif mode == 'consent-late': lines = consent if n <= 14 else channel if not (case / 'dialog-answered').exists() else ['$']
     elif mode == 'consent-stuck' or n <= 4: lines = consent
     elif mode == 'consent-off': lines = ['$']
     else: lines = channel if not (case / 'dialog-answered').exists() or n <= 7 else ['$']
@@ -158,8 +164,8 @@ elif args[:2] == ['pane', 'process-info']:
 elif args[:2] == ['pane', 'run']:
     (case / 'typed').write_text(args[3])
     state = Path(os.environ['HOME']) / '.local/state/herdr-orch/lead-push/42'
-    # move-slow: the successor's prover reports 1200 fake seconds later (see the date stub).
-    if mode == 'move-slow': (case / 'typed-at').write_text((case / 'clock').read_text())
+    # move-slow: the successor's prover reports 1200 fake seconds later, move-slow-consent 2700 (see the date stub).
+    if mode.startswith('move-slow'): (case / 'typed-at').write_text((case / 'clock').read_text())
     else: (state / 'hub-check-9.result').write_text('live\\n')
 elif args[:2] == ['agent', 'wait']: pass
 else: sys.exit(99)
@@ -182,7 +188,8 @@ if cmd == 'campaign':
           'pane_id':'wA:p2' if mode in ('old-pane-live', 'old-pane-free', 'fail-agent-list') else 'wA:p1'}}))
 elif cmd == 'consumer':
     if mode in ('dialog', 'dialog-tall') and not (case / 'dialog-answered').exists(): print('{"live":false}')
-    elif mode == 'consent-stuck': print('{"live":false}')
+    elif mode in ('consent-stuck', 'consent-both', 'consent-both-rev', 'consent-flap'): print('{"live":false}')
+    elif mode == 'consent-late' and not (case / 'dialog-answered').exists(): print('{"live":false}')
     # Live once the channel dialog is done: after read 7, past the last one shown.
     elif mode.startswith('consent') and (not (case / 'pane-reads').exists() or int((case / 'pane-reads').read_text()) <= 7):
         print('{"live":false}')
@@ -234,6 +241,12 @@ elif cmd == 'inbox' and mode == 'backlog':
     reads.write_text(str(n))
     acked = min(n * 3 // 2, 40)
     print(json.dumps({'acked_event_id':acked, 'events':[{'id':i} for i in range(acked + 1, 41)]}))
+elif cmd == 'inbox' and mode == 'consent-late':
+    # The hub acks the check 10 reads later, past the first 600 s.
+    reads = case / 'inbox-reads'
+    n = int(reads.read_text()) + 1 if reads.exists() else 1
+    reads.write_text(str(n))
+    print(json.dumps({'acked_event_id':8 if n <= 10 else 9}))
 elif cmd == 'inbox': print(json.dumps({'acked_event_id':8 if mode in ('unacked', 'cdl-exit-ack') else 9}))
 elif cmd == 'close': print('{"task_id":43}')
 elif cmd == 'note':
@@ -247,7 +260,8 @@ n=0
 [ ! -f "$CASE/clock" ] || n=$(cat "$CASE/clock")
 n=$((n + 30))
 printf '%s\\n' "$n" >"$CASE/clock"
-if [ "$MODE" = move-slow ] && [ -f "$CASE/typed-at" ] && [ "$n" -ge $(($(cat "$CASE/typed-at") + 1200)) ]; then
+case $MODE in move-slow) slow=1200 ;; move-slow-consent) slow=2700 ;; *) slow= ;; esac
+if [ -n "$slow" ] && [ -f "$CASE/typed-at" ] && [ "$n" -ge $(($(cat "$CASE/typed-at") + slow)) ]; then
     printf 'live\\n' >"$HOME/.local/state/herdr-orch/lead-push/42/hub-check-9.result"
 fi
 printf '%s\\n' "$n"
@@ -350,10 +364,12 @@ else: sys.exit(98)
                   f'handle each with the taskr MCP tools, and ack with its fence. Read the handover at {state}/handover-7.md. '
                   f'A "hub push check 7" event will arrive: record it and ack it.'
                   f' Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note.')
-        # The waiting text is for direct tools only; a Code Mode hub does not get it.
+        # A Code Mode hub reports when Code Mode is off, and then has the same waiting text.
         waiting = (f' Waiting: run a command whose result you need in the foreground, in the same response, with a Bash timeout that fits it. Use run_in_background only for a job over 10 minutes or when pushed events need you meanwhile; then end the turn and let its completion notification start the next one. Never sleep, poll or read a task\'s output file to check on a command, and never send a response whose only tool call is a wait or an ack.')
-        if code_mode == '0':
-            prompt += waiting
+        if code_mode == '1':
+            prompt += (' If this session has no REPL tool, Code Mode is off: record at once `taskr note "hub 7: Code Mode is off in this session" --as 42`, '
+                       'then follow the waiting rule; it applies only then.')
+        prompt += waiting
         actual = json.loads((work / 'cdl').read_text())
         settings = ('{"autoCompactEnabled":true,"enabledPlugins":'
                     '{"posthog@claude-plugins-official":false,"slack@claude-plugins-official":false}}')
@@ -393,7 +409,7 @@ else: sys.exit(98)
         assert not (work / '.mcp.json').exists()
         # Every file produced by the shim is confined to the scratch HOME.
         assert {p.name for p in work.iterdir()} <= {'home','calls','clock','adopted','ready','cdl','note','agent-list','agent-lists','prover-stdin','herdr-calls','dialog-answered',
-                                                      'pane-reads','consent-note'}
+                                                      'pane-reads','consent-note','inbox-reads'}
         assert out.splitlines()[0] == f'ROOT=42 GEN=7 mcp_config={config} prover_log={state}/hub-check-7.log'
 
     c = run('existing root may already record current pane; exact argv', args=('42','--','--resume','id with spaces',"quote'arg"))
@@ -410,10 +426,12 @@ else: sys.exit(98)
     success(c, code_mode='0')
     c = run('hub turns on Code Mode only with HERDR_HUB_CODE_MODE=1', location={'HERDR_HUB_CODE_MODE':'1'})
     success(c, code_mode='1')
-    assert ' Waiting: ' not in json.loads((c[0] / 'cdl').read_text())['args'][-1], 'Code Mode hub got the waiting text'
+    prompt = json.loads((c[0] / 'cdl').read_text())['args'][-1]
+    assert prompt.count(' Waiting: ') == 1 and prompt.count('taskr note "hub 7: Code Mode is off in this session" --as 42') == 1, prompt
     c = run('hub without Code Mode gets the waiting text')
     success(c, code_mode='0')
-    assert ' Waiting: ' in json.loads((c[0] / 'cdl').read_text())['args'][-1], 'direct-tools hub lost the waiting text'
+    prompt = json.loads((c[0] / 'cdl').read_text())['args'][-1]
+    assert prompt.count(' Waiting: ') == 1 and 'Code Mode' not in prompt, prompt
     c = run('hub Code Mode opt-in resumes a Code Mode session', args=('42','--','--resume','saved-session'),
             location={'HERDR_HUB_CODE_MODE':'1','CLAUDE_CODE_EXPERIMENTAL_CODE_MODE':'0'})
     success(c, ('--resume','saved-session'), code_mode='1')
@@ -473,6 +491,25 @@ else: sys.exit(98)
     success(c, code_mode='1')
     assert sent_keys(c) == [enter, enter], sent_keys(c)
     assert [a[1] for a in notes(c)] == [consent_note, 'hub push check 7: live'], notes(c)
+
+    for mode in ('consent-both', 'consent-both-rev'):
+        c = run('prover sends no key when both dialogs are on the screen: ' + mode, mode=mode, location=code_mode_on)
+        expect(c, 0)
+        assert sent_keys(c) == [], sent_keys(c)
+        assert notes(c) == [['note',consent_note,'--as','42'], ['note',f'hub push check 7: failed: {reason}','--as','42']], notes(c)
+
+    c = run('a late Yes gives the lease and the ack a full deadline', mode='consent-late', location=code_mode_on)
+    success(c, code_mode='1')
+    assert sent_keys(c) == [enter], sent_keys(c)
+    assert [a[1] for a in notes(c)] == [consent_note, 'hub push check 7: live'], notes(c)
+    # The ack came after the first deadline (about 660 on the test clock).
+    assert int((c[0] / 'clock').read_text()) > 700, (c[0] / 'clock').read_text()
+
+    c = run('a consent dialog that comes and goes restarts the deadline only once', mode='consent-flap', location=code_mode_on)
+    expect(c, 0)
+    assert sent_keys(c) == [] and (c[0] / 'note').read_text().startswith('hub push check 7: failed: '), (sent_keys(c), notes(c))
+    assert [a[1] for a in notes(c)].count(consent_note) == 1, notes(c)
+    assert int((c[0] / 'clock').read_text()) < 1400, (c[0] / 'clock').read_text()
 
     c = run('consent text with Code Mode off records no note and gets no key', mode='consent-off')
     success(c)
@@ -635,10 +672,14 @@ else: sys.exit(98)
         path = case[0] / 'herdr-calls'
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
     def move_log(case):
-        # The first line names the Code Mode decision; the second names the helper log.
+        # The first line names the Code Mode decision; with Code Mode on the consent warning is next; then the helper log.
         lines = case[3].splitlines()
         assert lines[0].startswith('herdr-hub: move: Code Mode '), case[3]
-        return Path(lines[1].split('; log ')[1])
+        on = lines[0].startswith('herdr-hub: move: Code Mode on (')
+        warning = ("herdr-hub: move: Code Mode on: the new hub's account must have accepted Code Mode once, "
+                   'or the new hub waits at the consent dialog (README Code Mode, First start)')
+        assert lines.count(warning) == on and (not on or lines[1] == warning), case[3]
+        return Path(lines[1 + on].split('; log ')[1])
     def wait_for(path, text):
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -750,6 +791,12 @@ else: sys.exit(98)
     log = move_log(c)
     wait_for(log, 'herdr-hub: moved 42: generation 9 live')
     assert int((c[0] / 'clock').read_text()) - int((c[0] / 'typed-at').read_text()) >= 1200
+
+    c = run('move helper follows a Code Mode prover past 2520 s', args=('move','42','--code-mode','on'), mode='move-slow-consent')
+    expect(c, 0)
+    log = move_log(c)
+    wait_for(log, 'herdr-hub: moved 42: generation 9 live')
+    assert int((c[0] / 'clock').read_text()) - int((c[0] / 'typed-at').read_text()) >= 2700
 
     nosetsid = scratch / 'nosetsid'
     nosetsid.mkdir()

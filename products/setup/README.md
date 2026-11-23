@@ -130,9 +130,16 @@ Do this once for each account, before its first Code Mode hub:
 
 The `herdr-hub` prover never answers the consent dialog. If it sees it, it
 records a ledger note once and waits: select **Yes, turn on Code Mode** in the
-hub pane by hand. The prover then answers the development-channel dialog once
-more. If the consent dialog is still there after 600 s, the push check fails
-with that reason. If you select No, the hub starts without Code Mode.
+hub pane by hand. The prover then answers the development-channel dialog and
+waits up to 600 s from your answer. If the consent dialog is still there after
+600 s, the push check fails with that reason: select **Yes, turn on Code Mode**,
+press Enter on the development-channel dialog by hand, then run
+`herdr-hub check ROOT`, which prints `live` when the channel is up. If you
+select No, the hub starts without Code Mode; its prompt tells it to record a
+ledger note when Code Mode is off. A taskr prompt typed into the pane while the
+dialog is open can answer it No (a separate taskr fix is pending), so do the
+First start step before a Code Mode move. `herdr-hub move` with Code Mode on
+prints a warning about this step and does not check it.
 
 Resume: a Code Mode session resumes only with the variable at `1`. With the
 variable at `0`, Claude refuses to resume a Code Mode session. A session that
