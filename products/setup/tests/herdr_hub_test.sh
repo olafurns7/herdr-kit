@@ -468,10 +468,13 @@ else: sys.exit(98)
         assert not (c[1] / '.local/state').exists()
 
     for args in [(), ('0',), ('42','--unknown'), ('42','--lane'), ('42','--account',''), ('42','--account'),
-                 ('move','42','--account',''), ('move','42','--account'), ('--new','Bad'), ('--new','x'*33)]:
+                 ('move','42','--account',''), ('move','42','--account'), ('--new','Bad'), ('--new','x'*33),
+                 ('42','--code-mode','on'), ('--new','example-hub','--code-mode','off'), ('check','42','--code-mode','on'),
+                 ('move','42','--code-mode'), ('move','42','--code-mode','yes'), ('move','42','--code-mode','')]:
         c = run('invalid arguments', args=args)
         expect(c, 2)
         assert not c[5]
+        if args[-2:] in (('--code-mode','yes'), ('--code-mode','')): assert '--code-mode must be on or off' in c[4], c[4]
     for args in [('check','42','--jobs'), ('42','--jobs','--allow-ask','17'),
                  ('42','--jobs','--lane','other')]:
         c = run('unsupported jobs combination refuses before effects', args=args,
@@ -552,6 +555,11 @@ else: sys.exit(98)
     def herdr_calls(case):
         path = case[0] / 'herdr-calls'
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+    def move_log(case):
+        # The first line names the Code Mode decision; the second names the helper log.
+        lines = case[3].splitlines()
+        assert lines[0].startswith('herdr-hub: move: Code Mode '), case[3]
+        return Path(lines[1].split('; log ')[1])
     def wait_for(path, text):
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -568,12 +576,12 @@ else: sys.exit(98)
             refused.append((args, c[2].returncode, c[4]))
             continue
         if moving:
-            log = Path(c[3].splitlines()[0].split('; log ')[1])
+            log = move_log(c)
             wait_for(log, 'herdr-hub: moved 42: generation 9 live')
             bindir = c[1] / '.local/bin'
             assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
-                    '--lane','other','--session','sess-hub','--']
-            assert shlex.split((c[0] / 'typed').read_text()) == [str(bindir / 'herdr-hub'),'42','--lane','other']
+                    '--lane','other','--session','sess-hub','--code-mode','off','--']
+            assert shlex.split((c[0] / 'typed').read_text()) == ['env','HERDR_HUB_CODE_MODE=0',str(bindir / 'herdr-hub'),'42','--lane','other']
         else:
             success(c, new=args[0] == '--new', model='example-hub-model')
     assert not refused, refused
@@ -593,7 +601,7 @@ else: sys.exit(98)
             args=('move','42','--','--resume','id with spaces'), mode='move', location={'CLAUDECODE':'1'})
     expect(c, 0)
     state = c[1] / '.local/state/herdr-orch/lead-push/42'
-    log = Path(c[3].splitlines()[0].split('; log ')[1])
+    log = move_log(c)
     assert log.parent == state and 'end this turn now' in c[3], c[3]
     text = wait_for(log, 'herdr-hub: moved 42: generation 9 live')
     calls = herdr_calls(c)
@@ -602,21 +610,48 @@ else: sys.exit(98)
     assert keys == [['pane','send-keys','wA:p1','esc','ctrl+c','ctrl+c']], keys
     bindir = c[1] / '.local/bin'
     assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
-            '--lane','opus-high','--session','sess-hub','--','--resume','id with spaces']
-    assert (c[0] / 'typed').read_text() == f"'{bindir}/herdr-hub' 42 --lane 'opus-high' -- '--resume' 'id with spaces'", text
+            '--lane','opus-high','--session','sess-hub','--code-mode','off','--','--resume','id with spaces']
+    assert (c[0] / 'typed').read_text() == f"env HERDR_HUB_CODE_MODE=0 '{bindir}/herdr-hub' 42 --lane 'opus-high' -- '--resume' 'id with spaces'", text
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
 
     c = run('jobs move forwards opt-in across detached helper and shell-quoted successor',
             args=('move','42','--jobs','--account',"account ' quoted",'--','--resume','id with spaces',"quote'arg"), mode='move')
     expect(c, 0)
-    log = Path(c[3].splitlines()[0].split('; log ')[1])
+    log = move_log(c)
     wait_for(log, 'herdr-hub: moved 42: generation 9 live')
     bindir = c[1] / '.local/bin'
     assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
-            '--lane','opus-high','--session','sess-hub','--jobs','--account',"account ' quoted",'--','--resume','id with spaces',"quote'arg"]
-    assert shlex.split((c[0] / 'typed').read_text()) == [str(bindir / 'herdr-hub'),'42','--lane','opus-high','--jobs','--account',"account ' quoted",
+            '--lane','opus-high','--session','sess-hub','--code-mode','off','--jobs','--account',"account ' quoted",'--','--resume','id with spaces',"quote'arg"]
+    assert shlex.split((c[0] / 'typed').read_text()) == ['env','HERDR_HUB_CODE_MODE=0',str(bindir / 'herdr-hub'),'42','--lane','opus-high','--jobs','--account',"account ' quoted",
                                                         '--','--resume','id with spaces',"quote'arg"]
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
+
+    # The pane shell lacks the caller's opt-in. The move reads the hub's Code Mode before the CLAUDE* strip,
+    # passes it to the helper as --code-mode, and the helper types it through env both ways; --code-mode on move wins.
+    for location, extra, decision, source in [
+            ({'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE':'1'}, (), 'on', 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1'),
+            ({'HERDR_HUB_CODE_MODE':'1'}, (), 'on', 'HERDR_HUB_CODE_MODE=1'),
+            (None, (), 'off', 'default off'),
+            ({'HERDR_HUB_CODE_MODE':'yes','CLAUDE_CODE_EXPERIMENTAL_CODE_MODE':'0'}, (), 'off', 'default off'),
+            ({'HERDR_HUB_CODE_MODE':'1','CLAUDE_CODE_EXPERIMENTAL_CODE_MODE':'1'}, ('--code-mode','off'), 'off', '--code-mode'),
+            (None, ('--code-mode','on'), 'on', '--code-mode')]:
+        c = run(f'move keeps Code Mode {decision} from {source} ({location})', args=('move','42',*extra), mode='move', location=location)
+        expect(c, 0)
+        assert c[3].splitlines()[0] == f'herdr-hub: move: Code Mode {decision} ({source})', c[3]
+        log = move_log(c)
+        text = wait_for(log, 'herdr-hub: moved 42: generation 9 live')
+        bindir = c[1] / '.local/bin'
+        assert json.loads((c[0] / 'setsid-args').read_text()) == [str(bindir / 'herdr-hub'),'__move-helper','42',
+                '--lane','opus-high','--session','sess-hub','--code-mode',decision,'--']
+        typed = (c[0] / 'typed').read_text()
+        assert shlex.split(typed) == ['env',f'HERDR_HUB_CODE_MODE={int(decision == "on")}', str(bindir / 'herdr-hub'),'42','--lane','opus-high'], typed
+        assert f'herdr-hub: move: run {typed}\n' in text, text
+        # Model the hub pane shell: run the typed line in a shell that exports the opposite value.
+        executable(bindir / 'herdr-hub', '#!/bin/sh\nprintf %s "$HERDR_HUB_CODE_MODE"\n')
+        opposite = '0' if decision == 'on' else '1'
+        seen = subprocess.run(['sh','-c',typed], env={'PATH':'/usr/bin:/bin','HERDR_HUB_CODE_MODE':opposite},
+                              capture_output=True, text=True, check=True).stdout
+        assert seen == str(int(decision == 'on')), (typed, seen)
 
     c = run('move helper failure is noted on the root', args=('move','42','--no-handover'), mode='move-stuck')
     expect(c, 0)
@@ -625,7 +660,7 @@ else: sys.exit(98)
 
     c = run('move helper stops nothing when another agent took the hub pane', args=('move','42'), mode='move-replaced')
     expect(c, 0)
-    log = Path(c[3].splitlines()[0].split('; log ')[1])
+    log = move_log(c)
     wait_for(c[0] / 'note', 'herdr-hub move failed: stop the hub')
     assert 'wA:p1 runs hub-claude (session sess-other), not the lead of root 42' in log.read_text(), log.read_text()
     assert not [a for a, env in herdr_calls(c) if a[:2] == ['pane','send-keys']]
@@ -633,7 +668,7 @@ else: sys.exit(98)
 
     c = run('move helper follows the prover past 700 s', args=('move','42'), mode='move-slow')
     expect(c, 0)
-    log = Path(c[3].splitlines()[0].split('; log ')[1])
+    log = move_log(c)
     wait_for(log, 'herdr-hub: moved 42: generation 9 live')
     assert int((c[0] / 'clock').read_text()) - int((c[0] / 'typed-at').read_text()) >= 1200
 
@@ -674,7 +709,7 @@ else: sys.exit(98)
         if mode == 'check-dropped':
             assert len(lines) == 3, c[3]
             assert lines[1] == 'Repair: herdr-hub move 42 --lane <lane> --account <account> -- --resume <session-id>', c[3]
-            assert lines[2] == 'If that session started with Code Mode: omit -- --resume; or, to keep the session, stop the hub, export HERDR_HUB_CODE_MODE=1 at the pane prompt and run herdr-hub 42 --lane <lane> --account <account> -- --resume <session-id> there (README "Code Mode")', c[3]
+            assert lines[2] == 'If that session started with Code Mode: omit -- --resume; or, to keep the session, run herdr-hub move 42 --lane <lane> --account <account> --code-mode on -- --resume <session-id> (README "Code Mode")', c[3]
         assert not (c[1] / '.local/state').exists()
 
     # Review 7952 F1: an old prover finishes after its hub exited and a rerun reclaimed the lock. It must not

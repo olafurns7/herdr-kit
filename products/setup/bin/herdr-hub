@@ -1,7 +1,7 @@
 #!/bin/sh
 # Adopt the current hub pane and exec cdl with a generation-bound push channel.
 set -u
-usage='usage: herdr-hub ROOT [--jobs] [--lane opus-high] [--account NAME] [-- CLAUDE_ARGS...] | herdr-hub --new NAME [--jobs] [--lane opus-high] [--account NAME] [-- CLAUDE_ARGS...] | herdr-hub move ROOT [--jobs] [--lane opus-high] [--account NAME] [--no-handover] [-- CLAUDE_ARGS...] | herdr-hub check ROOT'
+usage='usage: herdr-hub ROOT [--jobs] [--lane opus-high] [--account NAME] [-- CLAUDE_ARGS...] | herdr-hub --new NAME [--jobs] [--lane opus-high] [--account NAME] [-- CLAUDE_ARGS...] | herdr-hub move ROOT [--jobs] [--lane opus-high] [--account NAME] [--no-handover] [--code-mode on|off] [-- CLAUDE_ARGS...] | herdr-hub check ROOT'
 root= pane= gen= mcp_config= lease=unknown check_task= step=0 mode=start
 tmp= adopt_err= lock= lock_owner= guard=
 cleanup() {
@@ -139,7 +139,7 @@ if [ "$1" = check ]; then
     '; then
         printf 'push-dropped\n'
         printf 'Repair: herdr-hub move %s --lane <lane> --account <account> -- --resume <session-id>\n' "$root"
-        printf 'If that session started with Code Mode: omit -- --resume; or, to keep the session, stop the hub, export HERDR_HUB_CODE_MODE=1 at the pane prompt and run herdr-hub %s --lane <lane> --account <account> -- --resume <session-id> there (README "Code Mode")\n' "$root"
+        printf 'If that session started with Code Mode: omit -- --resume; or, to keep the session, run herdr-hub move %s --lane <lane> --account <account> --code-mode on -- --resume <session-id> (README "Code Mode")\n' "$root"
         exit 1
     fi
     if [ "$lease" = live ] && printf '%s\n' "$lease_json" | jq -e --argjson gen "$gen" '.session_gen == $gen' >/dev/null; then
@@ -147,7 +147,7 @@ if [ "$1" = check ]; then
     fi
     printf 'stale\n'; exit 1
 fi
-mode=start name= lane=opus-high account= no_handover= session= jobs=false
+mode=start name= lane=opus-high account= no_handover= session= jobs=false code_mode_flag=
 case $1 in
     move | __move-helper) mode=$1; shift; [ $# -gt 0 ] || die "$usage" ;;
 esac
@@ -169,6 +169,10 @@ while [ $# -gt 0 ]; do
         --account) [ $# -ge 2 ] && [ -n "$2" ] || die "$usage"; account=$2; shift 2 ;;
         --no-handover) [ "$mode" = move ] || die "$usage"; no_handover=1; shift ;;
         --session) [ "$mode" = __move-helper ] && [ $# -ge 2 ] || die "$usage"; session=$2; shift 2 ;;
+        --code-mode)
+            [ "$mode" != start ] && [ $# -ge 2 ] || die "$usage"
+            case $2 in on | off) code_mode_flag=$2 ;; *) die '--code-mode must be on or off' ;; esac
+            shift 2 ;;
         --) shift; break ;;
         *) die "$usage" ;;
     esac
@@ -214,13 +218,24 @@ if [ "$mode" = move ]; then
     (umask 077 && mkdir -p -- "$state_dir" && chmod 0700 "$state_dir") || fail 'create state directory'
     move_log=$state_dir/hub-move-$$.log
     ( set -C; : >"$move_log" ) || fail 'move log already exists or could not be created'
+    # The new hub keeps this hub's Code Mode unless --code-mode says otherwise; read it before the CLAUDE* strip.
+    if [ -n "$code_mode_flag" ]; then
+        code_mode_source=--code-mode
+    elif [ "${CLAUDE_CODE_EXPERIMENTAL_CODE_MODE:-}" = 1 ]; then
+        code_mode_flag=on code_mode_source=CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1
+    elif [ "${HERDR_HUB_CODE_MODE:-}" = 1 ]; then
+        code_mode_flag=on code_mode_source=HERDR_HUB_CODE_MODE=1
+    else
+        code_mode_flag=off code_mode_source='default off'
+    fi
+    printf 'herdr-hub: move: Code Mode %s (%s)\n' "$code_mode_flag" "$code_mode_source"
     # The helper outlives this Claude session; it must not carry Claude's environment into herdr.
     for v in $(env | sed -n 's/^\(CLAUDE[A-Z0-9_]*\)=.*/\1/p'); do unset "$v"; done
     unset TASKR_TASK TASKR_LAUNCH
     set -- -- "$@"
     [ -z "$account" ] || set -- --account "$account" "$@"
     [ "$jobs" = false ] || set -- --jobs "$@"
-    setsid "$herdr_bin_dir/herdr-hub" __move-helper "$root" --lane "$lane" --session "$session" "$@" </dev/null >>"$move_log" 2>&1 &
+    setsid "$herdr_bin_dir/herdr-hub" __move-helper "$root" --lane "$lane" --session "$session" --code-mode "$code_mode_flag" "$@" </dev/null >>"$move_log" 2>&1 &
     helper=$!
     # Return only once the helper has left this process group, which the caller may kill.
     tries=0
@@ -239,6 +254,8 @@ if [ "$mode" = __move-helper ]; then
     printf 'herdr-hub: move: stop the hub in %s (generation %s)\n' "$pane" "$old_gen"
     "$herdr_bin_dir/herdr-lead" stop "$root" "$pane" --session "$session" || fail 'stop the hub'
     typed="$(quote "$herdr_bin_dir/herdr-hub") $root --lane $(quote "$lane")"
+    # The typed line always carries the decision, so neither a missing nor an exported pane-shell value changes it.
+    if [ "$code_mode_flag" = on ]; then typed="env HERDR_HUB_CODE_MODE=1 $typed"; else typed="env HERDR_HUB_CODE_MODE=0 $typed"; fi
     [ "$jobs" = false ] || typed="$typed --jobs"
     [ -z "$account" ] || typed="$typed --account $(quote "$account")"
     if [ $# -gt 0 ]; then
