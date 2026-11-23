@@ -1,6 +1,6 @@
 # Teardown: host capacity and per-worker teardown
 
-Load when: before stopping an owned worker, before closing a tab or workspace, after collecting a worker's result, and after a reboot or crash (before resuming anything; then `recovery.md`). Before adding a heavy agent, load the core's Preflight for capacity limits. Part of herdr-orchestration; `SKILL.md` is the core.
+Load when: before stopping an owned worker, before closing a tab or workspace, after collecting a worker's result, when a ticket lands, and after a reboot or crash (before resuming anything; then `recovery.md`). Before adding a heavy agent, load the core's Preflight for capacity limits. Part of herdr-orchestration; `SKILL.md` is the core.
 
 ## Host capacity
 
@@ -64,10 +64,11 @@ Run `herdr-worktrees [REPO]` (or `herdr-worktrees --json [REPO]`) before cleanup
 ## Close the task workspace when the ticket lands
 
 - Trigger: the ticket's last lane is accepted and the ticket lands: `taskr work done`, or its PR merged. For a gate-only or research ticket, the trigger is the accepted result. Act in the same turn.
-- First run the per-worker checks: no working agent in the workspace, and every task in it closed.
+- First check the whole workspace: every pane in it is at its shell prompt (the pane checks above, for each tab from `herdr tab list --workspace "$task_workspace_id"`); every tab is one you recorded, so a `herdr-loop` watcher tab or any tab you did not create stops the close; every task in it is closed; and no other open ticket (`taskr work list ROOT`) uses this workspace or worktree.
 - Close the task workspace you created by its recorded id: `herdr workspace close "$task_workspace_id"`. Never add `--group`.
-- If Herdr refuses because the workspace has linked worktree workspaces and asks for `--group`, leave it open and name it in your note.
-- Then remove the task's worktree under "Inventory before cleanup": plain `git worktree remove`, never `--force`. A dirty, unpushed, locked, missing or unknown worktree goes to its owner's decision. Branches stay; no prune, gc or `rm`.
+- If Herdr refuses because the workspace has linked worktree workspaces and asks for `--group`, leave it open and name it in a root note.
+- Then remove the task's worktree under "Inventory before cleanup": plain `git worktree remove`, never `--force`. Any state other than `merged`, and a locked worktree, goes to its owner's decision. Branches stay; no prune, gc or `rm`.
+- At `taskr work done` with the PR not yet merged, close the workspace but keep the worktree; remove the worktree when the PR merges. Then only the worktree step remains. A lead that will not be there at merge names the worktree in its handover.
 
 ## Workspace lifecycle, reboot, and crash
 
