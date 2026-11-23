@@ -95,6 +95,12 @@ pub fn answer(f: &FlagSet) -> Result<Value> {
         return Ok(ans);
     }
     let asker = ans["task_id"].as_i64().expect("asker");
+    // The answer is in the asker's inbox; it is pushed when the root is push-live again.
+    if store::message::not_push_live(&db, &store::task(&db, asker)?)? {
+        ans["prompt"] = json!("skipped");
+        ans["reason"] = json!("not_push_live");
+        return Ok(ans);
+    }
     let aid = ans["answer_id"].as_i64().expect("answer");
     let body = format!(
         "taskr answer to ask {}: {}",

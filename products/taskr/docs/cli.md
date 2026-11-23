@@ -181,7 +181,7 @@ Add `--json` (or set `TASKR_FORMAT=json`) for plain JSON.
 | 2 | Wrong usage. |
 | 3 | Interrupted. |
 | 4 | Database error. |
-| 5 | Transport: the hub was unreachable or a prompt could not be delivered. The line says how to retry. |
+| 5 | Transport: the hub was unreachable or a prompt could not be delivered (reason `not_push_live`: a push-lane root that is not push-live). The line says how to retry. |
 | 6 | Refused: a stale launch, a closed task, the wrong host. Stop; do not retry. |
 
 On a client host, the reports `got`, `ready`, `done`, `fail`, `decide`,

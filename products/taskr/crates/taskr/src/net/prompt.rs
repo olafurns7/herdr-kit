@@ -1,6 +1,6 @@
 use super::rpc::{Client, request};
 use super::{Error, ExitCode, Result, exit, new_key, reply_error};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 
@@ -107,7 +107,7 @@ pub fn relay(
                 super::shell_join(args)
             );
         }
-        return Err(Error::new(
+        let mut e = Error::new(
             exit(rep["exit"].as_i64().unwrap()),
             match b["kind"].as_str() {
                 Some("usage") => "usage",
@@ -121,7 +121,12 @@ pub fn relay(
                 _ => "rejected",
             },
             message,
-        ));
+        );
+        if b["reason"] == "not_push_live" {
+            let outcome = if json_mode { "outcome" } else { "o" };
+            e.body = Some(json!({"target":b["target"],outcome:b["outcome"],"reason":b["reason"]}));
+        }
+        return Err(e);
     }
     if b["path"] == "push" {
         println!(

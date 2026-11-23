@@ -3007,9 +3007,22 @@ fn a_relayed_prompt_to_a_push_lane_that_is_not_push_live_is_refused() {
     );
     let before = text(&h, "select count(*)||'' from events");
     let argv = ["prompt", &target, "--as", &sender, "--text", "hello"];
+    let refusal = format!("\"reason\":\"not_push_live\",\"target\":{target}}}");
     let (code, out, err) = run(&h, &direct, &argv);
-    assert_eq!(code, Some(6), "{out}{err}");
-    assert!(out.contains("not_push_live"), "{out}{err}");
+    assert_eq!(code, Some(5), "{out}{err}");
+    assert!(
+        out.starts_with("x1 5 {\"err\":\"not_push_live: root ")
+            && out.contains("\"k\":\"herdr\",\"o\":\"rejected\"")
+            && out.trim_end().ends_with(&refusal),
+        "{out}{err}"
+    );
+    let (code, out, err) = run(&h, &direct, &[&["--json"][..], &argv].concat());
+    assert_eq!(code, Some(5), "{out}{err}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["outcome"], "rejected", "{v}");
+    assert_eq!(v["reason"], "not_push_live", "{v}");
+    assert_eq!(v["target"], n(&target), "{v}");
+    assert_eq!(v["kind"], "herdr", "{v}");
     assert_eq!(text(&h, "select count(*)||'' from events"), before);
     assert!(!h.home.join("pane-called").exists());
     assert!(!h.home.join("client/pane-called").exists());
