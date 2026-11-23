@@ -2980,6 +2980,45 @@ fn orchestrator_server_pane_decision_survives_a_new_push_lease() {
 }
 
 #[test]
+fn a_relayed_prompt_to_a_push_lane_that_is_not_push_live_is_refused() {
+    let h = Harness::new();
+    let target = id(
+        &h.ok(
+            &[],
+            &["new", "target", "--role", "orchestrator", "--pane", "w1:p1"],
+        ),
+        "task_id",
+    );
+    h.conn()
+        .execute(
+            "insert into consumer_leases(task_id,fence,holder,session_gen,acquired_at,expires_at) values(?,1,'mcp-channel-1',0,'2026-01-01T00:00:00.000Z','2026-01-01T00:01:00.000Z')",
+            [n(&target)],
+        )
+        .unwrap();
+    let (_hub, url, _) = start_hub(&h);
+    let direct = client(&h, &url);
+    let sender = id(
+        &h.ok(&direct, &["new", "sender", "--role", "orchestrator"]),
+        "task_id",
+    );
+    h.script(
+        "herdr",
+        "#!/bin/sh\necho typed >> \"$HOME/pane-called\"\necho '{\"result\":{}}'\n",
+    );
+    let before = text(&h, "select count(*)||'' from events");
+    let argv = ["prompt", &target, "--as", &sender, "--text", "hello"];
+    let (code, out, err) = run(&h, &direct, &argv);
+    assert_eq!(code, Some(6), "{out}{err}");
+    assert!(out.contains("not_push_live"), "{out}{err}");
+    assert_eq!(text(&h, "select count(*)||'' from events"), before);
+    assert!(!h.home.join("pane-called").exists());
+    assert!(!h.home.join("client/pane-called").exists());
+    let sent = h.ok(&direct, &[&argv[..], &["--pane"]].concat());
+    assert_eq!(sent["path"], "pane");
+    assert!(h.home.join("pane-called").exists());
+}
+
+#[test]
 fn a_server_without_wait_push_stops_the_adapter_loudly() {
     let h = Harness::new();
     let (_hub, url, _) = start_hub(&h);
