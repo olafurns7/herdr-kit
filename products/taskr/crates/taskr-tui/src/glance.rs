@@ -2917,30 +2917,37 @@ mod tests {
     use crate::frames::fixture;
 
     /// An answer recorded and not typed: at 80 columns ANSWERED HERE and the footer still
-    /// name the root to prompt by hand.
+    /// name the root to prompt by hand. The answer goes the owner's way (a, enter, y) and
+    /// its result through `input::done`, so the footer is the line the owner sees.
     #[test]
     fn a_not_typed_note_keeps_the_root_id_at_80_columns() {
-        use crate::{Outcome, Sent, actions::Job};
+        use crate::{
+            actions::Done,
+            input::{self, Effect},
+        };
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new(fixture());
-        app.screen = Screen::Asks;
-        let ask = app.data.glance.needs_you[0].clone();
-        let note = crate::actions::not_typed(&serde_json::json!(64712));
-        app.status = Some(format!("✓ answered {} as event 61902 · {note}", ask.ask_id));
-        app.outcomes.push(Sent {
-            job: Job::Answer {
-                ask_id: ask.ask_id,
-                text: "A: yes".into(),
-                prompt: true,
-                key: "tui-not-typed".into(),
-            },
-            ask,
-            state: Outcome::Recorded {
-                answer_id: 61902,
-                note,
-            },
-        });
+        app.fetch.loaded = true;
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 30)).unwrap();
+        let mut effect = Effect::None;
+        for code in [KeyCode::Char('a'), KeyCode::Enter, KeyCode::Char('y')] {
+            terminal.draw(|f| crate::draw(f, &app)).unwrap();
+            effect = input::key(&mut app, KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        let Effect::Run(job) = effect else {
+            panic!("no answer sent: {effect:?}")
+        };
+        let note = crate::actions::not_typed(&serde_json::json!(64712));
+        input::done(
+            &mut app,
+            &job,
+            Ok(Done::Answered {
+                answer_id: 61902,
+                note,
+            }),
+        );
+        app.screen = Screen::Asks;
         terminal.draw(|f| crate::draw(f, &app)).unwrap();
         let text = crate::frames::text(terminal.backend().buffer());
         let rows: Vec<&str> = text.lines().collect();

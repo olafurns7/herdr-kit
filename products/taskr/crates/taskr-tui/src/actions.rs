@@ -64,8 +64,9 @@ pub enum Done {
 }
 
 /// What the owner should know when taskr recorded an answer and did not type it: the
-/// asker root's push is not live. The root's id and the action come first, so a clipped
-/// line (the footer, ANSWERED HERE) still names the root at 80 columns.
+/// asker root's push is not live. The root's id and its state come first, so a clipped
+/// line (the footer, ANSWERED HERE) still names the root at 80 columns; the action comes
+/// last, and under about 120 columns it is cut (docs/tui.md has the whole command).
 pub(crate) fn not_typed(root: &serde_json::Value) -> String {
     format!(
         "not typed: push to root {root} is not live; pushed when live; if the root is plain: read its pane, then prompt --pane"
