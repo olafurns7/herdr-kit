@@ -266,7 +266,9 @@ if [ -n "$slow" ] && [ -f "$CASE/typed-at" ] && [ "$n" -ge $(($(cat "$CASE/typed
 fi
 printf '%s\\n' "$n"
 ''')
-    executable(stubs / 'sleep', '#!/bin/sh\nexit 0\n')
+    # Waits of a second or more are skipped; sub-second polls sleep for real, so herdr-hub's
+    # 0.1 s poll loops (move helper start, start.guard) keep their wall-clock bound on a loaded host (W4667).
+    executable(stubs / 'sleep', '#!/bin/sh\ncase $1 in 0.*) exec /bin/sleep "$@" ;; esac\nexit 0\n')
     # Require portable sed argv even when this fixture runs with GNU sed.
     executable(stubs / 'sed', '''#!/bin/sh
 for arg; do
@@ -336,7 +338,8 @@ else: sys.exit(98)
         try:
             # Reap cdl promptly, as the interactive parent shell would.
             if mode.startswith('cdl-exit-'): process.wait(timeout=5)
-            out, err = process.communicate(timeout=25)
+            # 45 s: above herdr-hub move's 30 s helper-start bound, so a loaded host fails there, not here (W4667).
+            out, err = process.communicate(timeout=45)
             if mode.startswith('cdl-exit-'):
                 deadline = started + 5
                 while not (case / 'note').exists() and time.monotonic() < deadline:
