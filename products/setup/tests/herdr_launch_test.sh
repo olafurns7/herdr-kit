@@ -3293,6 +3293,25 @@ for agent_tmp_shell in sh zsh bash; do
     [ "$(agent_tmp_mode "$agent_tmp_dir")" = 700 ] || fail 'an existing folder kept mode 755'
 done
 
+# BSD chmod (macOS) takes "--" after the mode as a file name and fails. The
+# folder starts at 0755, so mode 700 proves the chmod in the line ran.
+new_case 'agent temp folder: the line works with a BSD chmod (W5244)'
+mkdir -p "$case_dir/bsdbin"
+cat >"$case_dir/bsdbin/chmod" <<'EOF'
+#!/bin/sh
+for arg; do
+    [ "$arg" != -- ] || { printf '%s\n' 'chmod: --: No such file or directory' >&2; exit 1; }
+done
+exec /bin/chmod "$@"
+EOF
+chmod 0755 "$case_dir/bsdbin/chmod"
+rm -rf "$agent_tmp_dir"
+mkdir -m 0755 "$agent_tmp_dir"
+agent_tmp_run sh "$case_dir/bsdbin:/usr/bin:/bin"
+expect_rc 0
+[ "$out" = "$agent_tmp_dir" ] || fail "TMPDIR '$out', expected '$agent_tmp_dir'"
+[ "$(agent_tmp_mode "$agent_tmp_dir")" = 700 ] || fail "mode $(agent_tmp_mode "$agent_tmp_dir")"
+
 new_case 'agent temp folder: a symlink is refused and its target untouched'
 rm -rf "$agent_tmp_dir" "$agent_tmp_base/target"
 mkdir -m 0755 "$agent_tmp_base/target"
