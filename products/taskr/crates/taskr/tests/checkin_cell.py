@@ -133,6 +133,22 @@ def run(binary):
         c.run(); assert len(c.nudges()) == 2
     case('one nudge per pass with three due, under 5 seconds', cap)
 
+    def push_lane(c):
+        # Root 1's push adapter left an expired lease: not push-live, so it is skipped
+        # with nothing typed or recorded, and root 2, plain and due, is nudged in the same pass.
+        c.root(1); c.root(2)
+        c.sql("insert into consumer_leases(task_id,fence,holder,session_gen,acquired_at,expires_at) values(1,1,'mcp-channel-1',0,'2026-10-08T00:00:00.000Z','2026-10-08T00:01:00.000Z')")
+        c.clock('01:30:00'); c.run()
+        assert [n[1:3] for n in c.nudges()] == [(2, 'R2')], c.nudges()
+        prompts = c.calls(['agent', 'prompt'])
+        assert len(prompts) == 1 and prompts[0][2] == 'w2:p0', prompts
+        assert not c.sql("select id from events where task_id=1 and kind in('prompt','prompt_outcome')")
+        logs = [p.read_text() for p in c.home.rglob('daemon.log')]
+        assert any('check-in skipped: root 1 is a push lane and is not push-live; nothing typed' in t for t in logs), logs
+        c.clock('03:00:00'); c.run()
+        assert [n[1] for n in c.nudges()] == [2] and len(c.calls(['agent', 'prompt'])) == 1, c.nudges()
+    case('push lane not push-live: no prompt call or event; a due plain root is nudged in the same pass', push_lane)
+
     def slow_prompt(c):
         for rid in [1, 2, 3]: c.root(rid); c.signal(rid)
         script = c.home / 'bin/herdr'
