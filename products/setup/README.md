@@ -125,7 +125,7 @@ the answer, restarts, and can show the development-channel dialog again. A
 config home that never accepted Code Mode shows the consent dialog; with
 Codator each account has its own config home.
 
-Do this once for each account, before its first Code Mode hub:
+Do this once for each account, before its first Code Mode hub or lead:
 
 1. In a plain terminal pane, run
    `env CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 cdl --account ACCOUNT`.
@@ -140,8 +140,9 @@ waits up to 600 s from your answer. If the consent dialog is still there after
 press Enter on the development-channel dialog by hand, then run
 `herdr-hub check ROOT`, which prints `live` when the channel is up. If you
 select No, the hub starts without Code Mode; its prompt tells it to record a
-ledger note when Code Mode is off. A taskr prompt typed into the pane while the
-dialog is open can answer it No (a separate taskr fix is pending), so do the
+ledger note when Code Mode is off. Text typed into the pane while the dialog is
+open can answer it No. `taskr prompt` no longer types into a restarting push lane
+(W4656, `not_push_live`), but `--pane` and other typed text still can, so do the
 First start step before a Code Mode move. `herdr-hub move` with Code Mode on
 prints a warning about this step and does not check it.
 
@@ -177,6 +178,21 @@ lead pane shell, which also overrides a `1` in user settings. With it,
 `herdr-lead` exports `1`, but a `0` in user or managed settings still wins.
 Keep the same switch for `herdr-lead move --resume` of a lead that started
 with Code Mode, or Claude refuses to resume it.
+
+Like the hub prover, `herdr-lead` never answers the consent dialog. With
+`HERDR_LEAD_CODE_MODE=1`, if it sees the dialog at step 6, it records one
+ledger note on the root and waits: select **Yes, turn on Code Mode** in the
+lead pane by hand. `herdr-lead` then answers the development-channel dialog,
+or, if that dialog does not come within 90 s of the first read without the
+consent dialog, waits for the lead to be idle. A failed pane read does not end
+the wait. If someone selects **No**, Claude Code starts without Code Mode,
+`herdr-lead` answers the development-channel dialog, and the lead comes up
+without Code Mode; no note says so. If the consent dialog is still there 600 s
+after `herdr-lead` first saw it, step 6 fails with that reason, and Claude
+Code still waits in the lead pane. Read the printed state, then select **Yes,
+turn on Code Mode**, quit Claude Code so the pane is back at its shell prompt
+(a rerun refuses a pane that is not), and run the same `herdr-lead start`
+again. Do the First start step for the lead's account first.
 
 Limits for a fleet:
 
