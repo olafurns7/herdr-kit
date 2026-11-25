@@ -171,6 +171,11 @@ pub(super) fn sweep(db: &mut db::Connection, sock: &str, log: &Log) -> Result<()
             "taskr check-in (automatic, not the owner): say why with a root note, park, or close"
         };
         let attempt = store::transaction(db, |tx| {
+            // A push lane that is not push-live may be restarting at a start-up dialog that
+            // the typed Enter would answer; a later pass checks in once push is live.
+            if store::message::not_push_live(tx, &store::task(tx, root.id)?)? {
+                return Ok(None);
+            }
             if tx.query_row(
                 "select exists(select 1 from events where event_key=?)",
                 [&key],
@@ -256,5 +261,64 @@ mod message_tests {
         )
         .unwrap();
         assert_eq!(anchor(&db, &root, now).unwrap().unwrap().0, "R1");
+    }
+
+    /// An idle root two hours quiet, due an R2 check-in, with one inbox lease.
+    fn due_root(holder: &str, expires: &str) -> db::Connection {
+        let db = db::Connection::open_in_memory().unwrap();
+        db.execute_batch(taskr_core::schema::SCHEMA).unwrap();
+        db.execute_batch(taskr_core::schema::DELIVERY_ATTEMPTS)
+            .unwrap();
+        db.execute_batch(taskr_core::schema::CONSUMER_LEASES)
+            .unwrap();
+        let now = store::real_now();
+        let old = store::stamp(now - time::Duration::hours(2));
+        db.execute("insert into tasks(id,name,role,status,pane_id,lead_status,lead_present,lead_observed_at,created_at,updated_at) values(1,'root1','orchestrator','open','w1:p0','idle',1,?,?,?)", params![store::stamp(now), old, old]).unwrap();
+        db.execute("insert into consumer_leases(task_id,fence,holder,session_gen,acquired_at,expires_at) values(1,1,?,0,?,?)", params![holder, old, expires]).unwrap();
+        db
+    }
+
+    /// One pass; returns the prompt and prompt_outcome events it recorded.
+    fn swept(db: &mut db::Connection, name: &str) -> Vec<(i64, String)> {
+        let dir = std::env::temp_dir().join(format!("taskr-checkin-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = Log::open(&dir.join("daemon.log"));
+        // No herdr listens here: a typed prompt records delivery_unknown.
+        sweep(db, &dir.join("no-herdr.sock").to_string_lossy(), &log).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut stmt = db
+            .prepare("select task_id,kind from events where kind in('prompt','prompt_outcome') order by id")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_push_lane_that_is_not_push_live_is_not_checked_in_on() {
+        // A killed adapter leaves its holder in an expired lease: nothing is recorded or typed.
+        let mut db = due_root("mcp-channel-1", "2026-01-01T00:00:00.000Z");
+        assert_eq!(swept(&mut db, "restarting"), vec![]);
+        // Once push-live again, a later pass checks in on it as before.
+        db.execute(
+            "update consumer_leases set expires_at='2999-01-01T00:00:00.000Z'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            swept(&mut db, "live"),
+            vec![(1, "prompt".into()), (1, "prompt_outcome".into())]
+        );
+    }
+
+    #[test]
+    fn a_plain_root_is_checked_in_on_as_before() {
+        // A lease whose holder is not a push adapter keeps the root plain.
+        let mut db = due_root("custom-holder", "2026-01-01T00:00:00.000Z");
+        assert_eq!(
+            swept(&mut db, "plain"),
+            vec![(1, "prompt".into()), (1, "prompt_outcome".into())]
+        );
     }
 }

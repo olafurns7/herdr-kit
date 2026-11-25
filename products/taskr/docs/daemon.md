@@ -66,7 +66,9 @@ without a lane event or ordinary prompt (R2). R2 allows only closed, planned,
 done or failed lanes; an open lane blocks it even when its agent is idle.
 It also requires no open owner ask. Root replies and check-in prompts do
 not restart the silence timer. A parked, waiting, working or blocked lead is
-never prompted. Nudges identify themselves as automatic check-ins, not
+never prompted. A push-lane root that is not push-live (see [push](push.md)) is
+skipped for that pass with nothing recorded or typed, since it may be restarting at a
+start-up dialog; a later pass nudges it once push is live. Nudges identify themselves as automatic check-ins, not
 owner instructions, and do not grant authority to park or close. Delivery
 does not wait for activity or require a receipt: one nudge per pass and
 anchor, with at least 60 minutes between a root's nudges.
