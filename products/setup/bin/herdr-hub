@@ -261,11 +261,10 @@ if [ "$mode" = move ]; then
     setsid "$herdr_bin_dir/herdr-hub" __move-helper "$root" --lane "$lane" --session "$session" --code-mode "$code_mode_flag" "$@" </dev/null >>"$move_log" 2>&1 &
     helper=$!
     # Return only once the helper has left this process group, which the caller may kill.
-    # Up to 30 s (300 x 0.1 s): the helper starts in milliseconds, but 10 s ran out on a loaded host (W4667).
     tries=0
     until [ -s "$move_log" ]; do
         tries=$((tries + 1))
-        [ "$tries" -le 300 ] || fail "move helper did not start within 30 s; read $move_log"
+        [ "$tries" -le 100 ] || fail "move helper did not start within 10 s; read $move_log"
         sleep 0.1
     done
     grep -F 'started in its own session' "$move_log" >/dev/null || fail "move helper did not detach; nothing was stopped: $(cat -- "$move_log")"

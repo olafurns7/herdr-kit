@@ -338,8 +338,7 @@ else: sys.exit(98)
         try:
             # Reap cdl promptly, as the interactive parent shell would.
             if mode.startswith('cdl-exit-'): process.wait(timeout=5)
-            # 45 s: above herdr-hub move's 30 s helper-start bound, so a loaded host fails there, not here (W4667).
-            out, err = process.communicate(timeout=45)
+            out, err = process.communicate(timeout=25)
             if mode.startswith('cdl-exit-'):
                 deadline = started + 5
                 while not (case / 'note').exists() and time.monotonic() < deadline:
