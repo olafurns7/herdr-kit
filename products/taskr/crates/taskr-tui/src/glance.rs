@@ -2118,7 +2118,8 @@ pub(crate) fn draw(f: &mut Frame, app: &App) {
 }
 
 /// The lines of each answer sent from here, newest first: what is known of it, and on a
-/// line of its own what the owner should know of a recorded one (not delivered to its pane).
+/// line of its own what the owner should know of a recorded one (not delivered to its pane,
+/// not typed).
 fn answered_here(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
     use crate::Outcome;
     let t = &app.theme;
@@ -2914,6 +2915,43 @@ fn activity(app: &App, width: usize) -> Vec<Line<'static>> {
 mod tests {
     use super::*;
     use crate::frames::fixture;
+
+    /// An answer recorded and not typed: at 80 columns ANSWERED HERE and the footer still
+    /// name the root to prompt by hand.
+    #[test]
+    fn a_not_typed_note_keeps_the_root_id_at_80_columns() {
+        use crate::{Outcome, Sent, actions::Job};
+        let mut app = App::new(fixture());
+        app.screen = Screen::Asks;
+        let ask = app.data.glance.needs_you[0].clone();
+        let note = crate::actions::not_typed(&serde_json::json!(64712));
+        app.status = Some(format!("✓ answered {} as event 61902 · {note}", ask.ask_id));
+        app.outcomes.push(Sent {
+            job: Job::Answer {
+                ask_id: ask.ask_id,
+                text: "A: yes".into(),
+                prompt: true,
+                key: "tui-not-typed".into(),
+            },
+            ask,
+            state: Outcome::Recorded {
+                answer_id: 61902,
+                note,
+            },
+        });
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| crate::draw(f, &app)).unwrap();
+        let text = crate::frames::text(terminal.backend().buffer());
+        let rows: Vec<&str> = text.lines().collect();
+        let (footer, body) = rows.split_last().unwrap();
+        let here = body
+            .iter()
+            .find(|r| r.contains("not typed"))
+            .unwrap_or_else(|| panic!("no note under ANSWERED HERE:\n{text}"));
+        assert!(here.contains("push to root 64712"), "{text}");
+        assert!(footer.contains("not typed: push to root 64712"), "{text}");
+    }
 
     #[test]
     fn tmp_size_yields_to_remote_primary_row_at_46_columns() {

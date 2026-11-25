@@ -561,7 +561,7 @@ Most keys only read. Three do more:
 
   | Outcome | When | Shown |
   | --- | --- | --- |
-  | Recorded | the reply has an `answer_id`, whatever the exit status | `✓ answered ASK as event ID`, with `not delivered to its pane: …` when the prompt failed, or `not typed: …` when taskr skipped it (`"prompt":"skipped"`) with what to do for a root that is plain now |
+  | Recorded | the reply has an `answer_id`, whatever the exit status | `✓ answered ASK as event ID`, with `not delivered to its pane: …` when the prompt failed, or `not typed: push to root N is not live; …` when taskr skipped it (`"prompt":"skipped"`): it is pushed when push is live; if root N is plain now, read its pane, then `taskr prompt N --pane --text "taskr answer to ask ASK: TEXT"` |
   | Not recorded | the ledger's own refusal: exit 6 with `"kind":"rejected"` | `! not recorded: REASON`; the answer is kept to read in full (`a` on its ask, or the picker once the ask has left), and nothing sends it again |
   | Unknown | anything else: a timeout, transport, exit 5, a queued request, no reply or a malformed one | `? ask ASK: answer outcome unknown; checking the ledger` |
 
