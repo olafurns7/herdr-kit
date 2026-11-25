@@ -104,10 +104,17 @@ case "$1 $2" in
             esac
         elif [ -n "${CONSENT:-}" ]; then
             # The Code Mode consent dialog; a person answers it after two reads (by-hand: also the channel dialog).
+            # fail-read: consent, a failed read, consent, then the channel dialog. fail-forever: consent, then every
+            # read fails. flicker: consent, one read without it, then consent again.
             n=0
             [ ! -f "$CASE/pane-reads" ] || n=$(cat "$CASE/pane-reads")
             n=$((n + 1))
             printf '%s\n' "$n" >"$CASE/pane-reads"
+            case $CONSENT:$n in
+                fail-read:2) exit 1 ;;
+                fail-forever:1) ;;
+                fail-forever:*) exit 1 ;;
+            esac
             consent='╭──────────────────────────╮
 │ Code Mode (experimental) │
 │ ❯ No, start without it   │
@@ -119,7 +126,9 @@ case "$1 $2" in
 Enter to confirm · Esc to cancel'
             screen=$channel
             case $CONSENT:$n in
-                stuck:* | answered:[12] | by-hand:[12]) screen=$consent ;;
+                stuck:* | answered:[12] | by-hand:[12] | fail-read:[13] | fail-forever:1 | flicker:1) screen=$consent ;;
+                flicker:2) screen='$' ;;
+                flicker:*) screen=$consent ;;
                 both:[12]) screen="$channel
 $consent" ;;
                 both-rev:[12]) screen="$consent
@@ -871,6 +880,35 @@ expect_rc 1
 has err "step 6 failed: Code Mode consent dialog still waiting in wA:p1 after 600 s: select 'Yes, turn on Code Mode' by hand (README Code Mode, First start)"
 lacks calls 'herdr|pane|send-keys'
 lacks calls 'herdr|agent|prompt'
+[ "$(cat "$case_dir/notes")" = "$consent_note" ] || fail "notes: $(cat "$case_dir/notes" 2>/dev/null)"
+
+new_case 'Code Mode consent dialog after a failed pane read still gets no key; one Enter on the channel dialog'
+LEAD_CODE_MODE=1 EXPECT_CODE_MODE=1 DIALOG=1 CONSENT=fail-read
+start
+expect_rc 0
+[ ! -f "$case_dir/key-on-consent" ] || fail "sent a key to the consent dialog: $(cat "$case_dir/key-on-consent")"
+[ "$(cat "$case_dir/notes")" = "$consent_note" ] || fail "notes: $(cat "$case_dir/notes" 2>/dev/null)"
+[ "$(grep -c 'herdr|pane|send-keys|wA:p1|Enter' "$case_dir/calls")" = 1 ] || fail 'did not send exactly one Enter'
+has out 'herdr-lead: answered the development-channel dialog'
+
+new_case 'Code Mode consent dialog then failed reads up to the deadline fails with the consent reason'
+LEAD_CODE_MODE=1 EXPECT_CODE_MODE=1 DIALOG=1 CONSENT=fail-forever
+start
+expect_rc 1
+has err "step 6 failed: Code Mode consent dialog still waiting in wA:p1 after 600 s: select 'Yes, turn on Code Mode' by hand (README Code Mode, First start)"
+lacks calls 'herdr|pane|send-keys'
+lacks calls 'herdr|agent|wait|orch-example|--until|idle'
+lacks calls 'herdr|agent|prompt'
+[ "$(cat "$case_dir/notes")" = "$consent_note" ] || fail "notes: $(cat "$case_dir/notes" 2>/dev/null)"
+
+new_case 'Code Mode consent dialog seen again after a read without it keeps its 600 s'
+LEAD_CODE_MODE=1 EXPECT_CODE_MODE=1 DIALOG=1 CONSENT=flicker
+start
+expect_rc 1
+has err "step 6 failed: Code Mode consent dialog still waiting in wA:p1 after 600 s: select 'Yes, turn on Code Mode' by hand (README Code Mode, First start)"
+lacks calls 'herdr|pane|send-keys'
+# The date stub adds 30 s per call: 600 s from the first sighting takes more than 10 reads, a 90 s window 4.
+[ "$(cat "$case_dir/pane-reads")" -gt 10 ] || fail "failed after $(cat "$case_dir/pane-reads") reads, before 600 s"
 [ "$(cat "$case_dir/notes")" = "$consent_note" ] || fail "notes: $(cat "$case_dir/notes" 2>/dev/null)"
 
 new_case 'Code Mode consent and channel dialogs both answered by hand: no key, the idle wait decides'

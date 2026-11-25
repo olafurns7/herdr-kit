@@ -530,18 +530,24 @@ if ! start_err=$(herdr agent start "$agent" --kind claude --pane "$pane" --timeo
     note "agent start: $start_err"
     dialog_shown "$pane" || [ "$dialog" = none ] || fail 'read failed start dialog'
     [ "$dialog" != none ] || fail "agent start failed without development-channel dialog: $start_err"
-    # Leave the consent dialog to a person: wait up to 600 s, then up to 90 s more, once, for the development-channel
-    # dialog that Claude Code shows after its restart. A failed pane read is no proof either way.
-    consent_seen= consent_left=
+    # Leave the consent dialog to a person: wait up to 600 s from its first sighting while it shows, and up to 90 s
+    # from the first read without it for the development-channel dialog that Claude Code shows after its restart.
+    # A consent dialog seen again ends that 90 s window. A failed pane read is no proof either way: the last
+    # screen that was read stands.
+    consent_seen= consent_deadline= left_deadline=
     while [ "$dialog" != channel ]; do
-        if [ "$dialog" = consent ] && [ -z "$consent_seen" ]; then
-            consent_seen=1 deadline=$(($(date +%s) + 600))
-            consent_note="lead start $gen: Code Mode consent dialog is waiting in $pane: select 'Yes, turn on Code Mode' by hand (README Code Mode, First start)"
-            say "$consent_note"
-            ledger note "$consent_note" --as "$root" >/dev/null || say 'could not record consent note'
-        fi
-        if [ "$dialog" = none ] && [ -z "$consent_left" ]; then
-            consent_left=1 deadline=$(($(date +%s) + 90))
+        if [ "$dialog" = consent ]; then
+            left_deadline=
+            if [ -z "$consent_seen" ]; then
+                consent_seen=1 consent_deadline=$(($(date +%s) + 600))
+                consent_note="lead start $gen: Code Mode consent dialog is waiting in $pane: select 'Yes, turn on Code Mode' by hand (README Code Mode, First start)"
+                say "$consent_note"
+                ledger note "$consent_note" --as "$root" >/dev/null || say 'could not record consent note'
+            fi
+            deadline=$consent_deadline
+        else
+            [ -n "$left_deadline" ] || left_deadline=$(($(date +%s) + 90))
+            deadline=$left_deadline
         fi
         if ! [ "$(date +%s)" -lt "$deadline" ]; then
             [ "$dialog" != consent ] || fail "Code Mode consent dialog still waiting in $pane after 600 s: select 'Yes, turn on Code Mode' by hand (README Code Mode, First start)"
@@ -549,7 +555,8 @@ if ! start_err=$(herdr agent start "$agent" --kind claude --pane "$pane" --timeo
             break
         fi
         sleep 3
-        dialog_shown "$pane" || :
+        prev=$dialog
+        dialog_shown "$pane" || [ -n "$dialog" ] || dialog=$prev
     done
     if [ "$dialog" = channel ]; then
         herdr pane send-keys "$pane" Enter >/dev/null || fail 'answer development-channel dialog'
