@@ -3,6 +3,7 @@
 import concurrent.futures
 import contextlib
 import datetime
+import errno
 import fcntl
 import json
 import os
@@ -178,7 +179,11 @@ class AdmissionTest(unittest.TestCase):
         self.logs = []
 
     def free_block(self):
-        for base in range(24000, 30000, 64):
+        # Start the scan at a per-process offset: concurrent runs (other worktrees' gates)
+        # would otherwise all pick the first free block and take each other's ports.
+        bases = list(range(24000, 30000, 64))
+        start = os.getpid() % len(bases)
+        for base in bases[start:] + bases[:start]:
             with contextlib.ExitStack() as stack:
                 try:
                     for port in range(base, base + 128):
@@ -187,6 +192,22 @@ class AdmissionTest(unittest.TestCase):
                 except OSError:
                     continue
         self.fail('no scratch port block')
+
+    def occupied_port(self, port):
+        # slotr's port probe binds each probed port for a moment, so a test bind can meet
+        # EADDRINUSE from the daemon under test. Retry for up to 5 s: a probe ends in
+        # milliseconds even on a loaded host; a port held longer is a real conflict.
+        deadline = time.monotonic() + 5
+        while True:
+            sock = socket.socket()
+            try:
+                sock.bind(('127.0.0.1', port))
+                return sock
+            except OSError as error:
+                sock.close()
+                if error.errno != errno.EADDRINUSE or time.monotonic() >= deadline:
+                    raise
+                threading.Event().wait(0.02)
 
     def write_config(self):
         cfg = dict(pools=dict(runtime=dict(slots=self.cfg.get("runtime_slots", 2),
@@ -449,8 +470,7 @@ class AdmissionTest(unittest.TestCase):
         self.assertFalse((self.runtime / 'slotr/ticket-1').exists())
 
     def test_ports_busy_then_free_slot(self):
-        with socket.socket() as occupied:
-            occupied.bind(('127.0.0.1', self.cfg['ports']['base']))
+        with self.occupied_port(self.cfg['ports']['base']):
             _, output = self.start('skip')
             h = self.admitted('skip', output)
             self.assertEqual(h['slot'], 1)
@@ -458,8 +478,7 @@ class AdmissionTest(unittest.TestCase):
         self.children[0].wait(timeout=3)
         self.cfg['runtime_slots'] = 1
         self.write_config()
-        with socket.socket() as occupied:
-            occupied.bind(('127.0.0.1', self.cfg['ports']['base']))
+        with self.occupied_port(self.cfg['ports']['base']):
             _, output = self.start('busy')
             self.wait(lambda: bool(self.status()['queue']))
             self.assertEqual(self.status()['queue'][0]['wait_reason'], 'ports_busy')
@@ -2387,7 +2406,7 @@ class AdmissionTest(unittest.TestCase):
             with contextlib.ExitStack() as stack:
                 base = self.cfg['ports']['base'] + 64
                 for port in [base, base + 32]:
-                    stack.enter_context(socket.socket()).bind(('127.0.0.1', port))
+                    stack.enter_context(self.occupied_port(port))
                 _, w = self.start('W', cost=3072)
                 self.wait(lambda: len(self.status()['queue']) == 1)
                 self.set_stats(30000)
@@ -2825,7 +2844,7 @@ class AdmissionTest(unittest.TestCase):
         lock=(self.runtime/'legacy-heavy.lock').open('a')
         with contextlib.ExitStack() as ports:
             for port in [self.cfg['ports']['base']+64,self.cfg['ports']['base']+96]:
-                ports.enter_context(socket.socket()).bind(('127.0.0.1',port))
+                ports.enter_context(self.occupied_port(port))
             self.start('H',pool='heavy',cost=1024)
             q=self.wait(lambda: self.status()['pools']['heavy']['queue'])[0]
             self.advance(301); self.pause(0.2)
@@ -3044,7 +3063,7 @@ class AdmissionTest(unittest.TestCase):
         base=self.cfg['ports']['base']+64
         with contextlib.ExitStack() as external:
             for port in [base,base+32]:
-                external.enter_context(socket.socket()).bind(('127.0.0.1',port))
+                external.enter_context(self.occupied_port(port))
             self.managed('set','H',5)
             self.start('H',pool='heavy',cost=1024)
             self.wait(lambda: bool(self.status()['pools']['heavy']['queue']))
@@ -3062,7 +3081,7 @@ class AdmissionTest(unittest.TestCase):
         base=self.cfg['ports']['base']+64
         external=contextlib.ExitStack(); self.addCleanup(external.close)
         for port in [base,base+32]:
-            external.enter_context(socket.socket()).bind(('127.0.0.1',port))
+            external.enter_context(self.occupied_port(port))
         self.start('blocked',pool='heavy',cost=1024)
         self.wait(lambda: bool(self.status()['pools']['heavy']['queue']))
         _,lower=self.start('lower',cost=1024); self.wait(lower.exists)
@@ -3150,11 +3169,14 @@ class AdmissionTest(unittest.TestCase):
                             return Path(f'/proc/{pid}/stat').read_text().split()[2]=='Z'
                         except (FileNotFoundError, ProcessLookupError):
                             return True
-                    deadline=time.monotonic()+2
-                    self.wait(lambda: terminated() or time.monotonic()>=deadline)
+                    # 15 s: 2 s failed at load average 17 (W4667). slotr opens the audit file
+                    # O_NONBLOCK; a blocking open of this FIFO never returns (the test opens
+                    # no reader until cleanup), so any finite deadline still catches that wait.
+                    deadline=time.monotonic()+15
+                    self.wait(lambda: terminated() or time.monotonic()>=deadline, timeout=16)
                     self.assertTrue(terminated(), 'audit FIFO delayed workload termination')
                     self.assertEqual(out.with_suffix('.term').exists(),label=='term')
-                    self.assertEqual(child.wait(timeout=3),75)
+                    self.assertEqual(child.wait(timeout=15),75)
                     self.assertIn('stop audit gap',(self.root/(label+'.log')).read_text())
                 finally:
                     # Release an old binary's blocked open so failure cleanup can finish.

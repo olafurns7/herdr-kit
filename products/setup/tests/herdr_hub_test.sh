@@ -266,7 +266,9 @@ if [ -n "$slow" ] && [ -f "$CASE/typed-at" ] && [ "$n" -ge $(($(cat "$CASE/typed
 fi
 printf '%s\\n' "$n"
 ''')
-    executable(stubs / 'sleep', '#!/bin/sh\nexit 0\n')
+    # Waits of a second or more are skipped; sub-second polls sleep for real, so herdr-hub's
+    # 0.1 s poll loops (move helper start, start.guard) keep their wall-clock bound on a loaded host (W4667).
+    executable(stubs / 'sleep', '#!/bin/sh\ncase $1 in 0.*) exec /bin/sleep "$@" ;; esac\nexit 0\n')
     # Require portable sed argv even when this fixture runs with GNU sed.
     executable(stubs / 'sed', '''#!/bin/sh
 for arg; do
