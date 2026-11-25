@@ -172,8 +172,17 @@ pub(super) fn sweep(db: &mut db::Connection, sock: &str, log: &Log) -> Result<()
         };
         let attempt = store::transaction(db, |tx| {
             // A push lane that is not push-live may be restarting at a start-up dialog that
-            // the typed Enter would answer; a later pass checks in once push is live.
+            // the typed Enter would answer; a later pass checks in once push is live. The
+            // mark has no end, so the skip is logged, at most hourly per root.
             if store::message::not_push_live(tx, &store::task(tx, root.id)?)? {
+                log.limited(
+                    &format!("checkin-skip:{}", root.id),
+                    Duration::from_secs(3600),
+                    &format!(
+                        "check-in skipped: root {} is a push lane and is not push-live; nothing typed",
+                        root.id
+                    ),
+                );
                 return Ok(None);
             }
             if tx.query_row(
@@ -309,6 +318,32 @@ mod message_tests {
         assert_eq!(
             swept(&mut db, "live"),
             vec![(1, "prompt".into()), (1, "prompt_outcome".into())]
+        );
+    }
+
+    #[test]
+    fn a_skipped_push_lane_is_logged_once_an_hour_not_every_pass() {
+        let mut db = due_root("mcp-channel-1", "2026-01-01T00:00:00.000Z");
+        let dir = std::env::temp_dir().join(format!("taskr-checkin-{}-logged", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("daemon.log");
+        let log = Log::open(&path);
+        let sock = dir.join("no-herdr.sock").to_string_lossy().into_owned();
+        for _ in 0..3 {
+            sweep(&mut db, &sock, &log).unwrap();
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let skips: Vec<_> = text
+            .lines()
+            .filter(|l| l.contains("check-in skipped"))
+            .collect();
+        assert_eq!(skips.len(), 1, "{text}");
+        assert!(
+            skips[0].ends_with(
+                "check-in skipped: root 1 is a push lane and is not push-live; nothing typed"
+            ),
+            "{text}"
         );
     }
 

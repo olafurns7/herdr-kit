@@ -66,16 +66,25 @@ without a lane event or ordinary prompt (R2). R2 allows only closed, planned,
 done or failed lanes; an open lane blocks it even when its agent is idle.
 It also requires no open owner ask. Root replies and check-in prompts do
 not restart the silence timer. A parked, waiting, working or blocked lead is
-never prompted. A push-lane root that is not push-live (see [push](push.md)) is
-skipped for that pass with nothing recorded or typed, since it may be restarting at a
-start-up dialog; a later pass nudges it once push is live. Nudges identify themselves as automatic check-ins, not
-owner instructions, and do not grant authority to park or close. Delivery
-does not wait for activity or require a receipt: one nudge per pass and
-anchor, with at least 60 minutes between a root's nudges.
+never prompted. An open push-lane root that is not push-live (see
+[push](push.md)) is skipped, since it may be restarting at a start-up dialog
+that a typed Enter would answer: no ledger event, nothing typed, and the pass
+goes on to the next root. A later pass nudges it once push is live. The
+push-lane mark has no end, so a root whose adapter stopped for good, or that
+runs plain again, gets no nudge and no owner notification for as long as it
+stays not push-live. `daemon.log` records each skip as `check-in skipped:
+root N is a push lane and is not push-live; nothing typed`, at most once an
+hour per root while the daemon runs (a restart or `--once` logs it again).
+Nudges identify themselves as automatic check-ins, not owner instructions, and
+do not grant authority to park or close. Delivery does not wait for activity or
+require a receipt: one nudge per pass and anchor, with at least 60 minutes
+between a root's nudges.
 
 The latest R1 nudge gets one owner notification after 60 minutes if its anchor is still
 unacknowledged, even when newer results keep arriving. An unchanged R2 anchor gets one
 notification after 60 minutes unless the lead has replied with a root note or `next`.
+Both need a sent nudge, so a skipped root gets none; a nudge sent before the root
+stopped being push-live still gets its notification.
 Remote leads get the notification at the rule threshold, with no prompt, only when their
 host heartbeat is fresh (younger than 30 seconds), with at least 60 minutes between a
 remote root's escalation claims across both rules. R1 notification ages count from the
