@@ -136,6 +136,25 @@ visible_text() {
           then .result.lines | join(" ")
           else error("missing visible lines") end | gsub("[\u2500-\u257f]"; " ") | gsub("\\s+"; " ")'
 }
+# A start dialog is visible in the pane; $dialog names it (none: the pane was read and shows no start dialog).
+# On the Code Mode consent dialog Enter and Esc both choose No, so it is looked for first, whatever else is on the
+# screen, and only when the lead starts with Code Mode (as herdr-hub's dialog_shown).
+dialog_shown() {
+    dialog=
+    screen=$(visible_text "$1") || return 1
+    if [ "$code_mode" = 1 ]; then
+        case $screen in *'Code Mode (experimental)'*)
+            case $screen in *'No, start without it'*)
+                case $screen in *'Yes, turn on Code Mode'*) dialog=consent; return 0 ;; esac ;;
+            esac ;;
+        esac
+    fi
+    case $screen in
+        *'Loading development channels'*'1. I am using this for local development'*'Enter to confirm'*) dialog=channel; return 0 ;;
+    esac
+    dialog=none
+    return 1
+}
 # Stop the root's lead in PANE and wait for the root's lease to expire. The pane may be reused by
 # another agent, so the identity is rechecked right before each key sequence.
 stop_pane() {
@@ -509,13 +528,33 @@ lease=unknown
 # A blocked start (agent_not_ready) is the expected development-channel dialog; keep its stderr for failures.
 if ! start_err=$(herdr agent start "$agent" --kind claude --pane "$pane" --timeout 90000 -- "$@" 2>&1 >/dev/null); then
     note "agent start: $start_err"
-    screen=$(visible_text "$pane") || fail 'read failed start dialog'
-    case $screen in
-        *'Loading development channels'*'1. I am using this for local development'*'Enter to confirm'*) ;;
-        *) fail "agent start failed without development-channel dialog: $start_err" ;;
-    esac
-    herdr pane send-keys "$pane" Enter >/dev/null || fail 'answer development-channel dialog'
-    say 'answered the development-channel dialog'
+    dialog_shown "$pane" || [ "$dialog" = none ] || fail 'read failed start dialog'
+    [ "$dialog" != none ] || fail "agent start failed without development-channel dialog: $start_err"
+    # Leave the consent dialog to a person: wait up to 600 s, then up to 90 s more, once, for the development-channel
+    # dialog that Claude Code shows after its restart. A failed pane read is no proof either way.
+    consent_seen= consent_left=
+    while [ "$dialog" != channel ]; do
+        if [ "$dialog" = consent ] && [ -z "$consent_seen" ]; then
+            consent_seen=1 deadline=$(($(date +%s) + 600))
+            consent_note="lead start $gen: Code Mode consent dialog is waiting in $pane: select 'Yes, turn on Code Mode' by hand (README Code Mode, First start)"
+            say "$consent_note"
+            ledger note "$consent_note" --as "$root" >/dev/null || say 'could not record consent note'
+        fi
+        if [ "$dialog" = none ] && [ -z "$consent_left" ]; then
+            consent_left=1 deadline=$(($(date +%s) + 90))
+        fi
+        if ! [ "$(date +%s)" -lt "$deadline" ]; then
+            [ "$dialog" != consent ] || fail "Code Mode consent dialog still waiting in $pane after 600 s: select 'Yes, turn on Code Mode' by hand (README Code Mode, First start)"
+            # No development-channel dialog came: a person may have answered it; the idle wait decides.
+            break
+        fi
+        sleep 3
+        dialog_shown "$pane" || :
+    done
+    if [ "$dialog" = channel ]; then
+        herdr pane send-keys "$pane" Enter >/dev/null || fail 'answer development-channel dialog'
+        say 'answered the development-channel dialog'
+    fi
     idle_err=$(herdr agent wait "$agent" --until idle --timeout 90000 2>&1 >/dev/null) || fail "agent did not become idle: $idle_err"
 fi
 

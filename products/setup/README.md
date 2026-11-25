@@ -178,6 +178,15 @@ lead pane shell, which also overrides a `1` in user settings. With it,
 Keep the same switch for `herdr-lead move --resume` of a lead that started
 with Code Mode, or Claude refuses to resume it.
 
+Like the hub prover, `herdr-lead` never answers the consent dialog. With
+`HERDR_LEAD_CODE_MODE=1`, if it sees the dialog at step 6, it records one
+ledger note on the root and waits: select **Yes, turn on Code Mode** in the
+lead pane by hand. `herdr-lead` then answers the development-channel dialog,
+or, if that dialog does not come within 90 s, waits for the lead to be idle.
+If the consent dialog is still there after 600 s, step 6 fails with that
+reason; inspect the printed state before any recovery, as for any failed
+start. Do the First start step for the lead's account first.
+
 Limits for a fleet:
 
 - On a tool call from Claude's code, a `PreToolUse` hook that cannot start, is
