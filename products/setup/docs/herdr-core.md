@@ -84,11 +84,12 @@ beside normal work, days before the stop.
    sh products/setup/install.sh FLAGS --herdr-backend hc
    ```
 
-6. **Owner**, the ledger host: enable the taskr unit with the lines the
+6. **Owner**, the ledger host: run the taskr unit with the hc drop-in, as the
    installer printed; with hc the Herdr plugin no longer starts the daemon.
+   `enable --now` is not enough: it leaves a running daemon on Herdr 0.9.
 
    ```sh
-   systemctl --user daemon-reload && systemctl --user enable --now taskr.service
+   systemctl --user daemon-reload && systemctl --user enable taskr.service && systemctl --user restart taskr.service
    taskr daemon --status     # fresh, supervised
    ```
 
@@ -117,6 +118,19 @@ beside normal work, days before the stop.
 8. One lead: run one end-to-end lane (`herdr-launch --gather ...`): `got`,
    `ready`, `done` in the ledger, then teardown closes its terminal.
 
+## After a reboot
+
+hc resumes no agent. A kept terminal comes back as a plain shell without the
+`herdr0 enter` environment, so `herdr` there is Herdr 0.9 or missing. In each
+root's terminal, first restore it with the ids that terminal carries (its
+`ws=`, `tab=` and `pane=` labels in `hc get NAME`):
+
+```sh
+exec herdr0 enter --workspace W --tab T --pane PANE -- "$SHELL" -l
+```
+
+Then start the root with the step-7 line for it.
+
 ## Retire Herdr 0.9
 
 **Owner**, after one full day on hc, each host: stop the Herdr 0.9 server
@@ -131,10 +145,13 @@ Possible until Herdr 0.9 is retired; its server keeps running until then.
 1. Roots: save state and exit, as in the stop's steps 3 and 4.
 2. **Owner**, each host: install herdr-kit again with the same `FLAGS` and
    without `--herdr-backend hc` (a previous commit if the release itself is
-   at fault). The installer writes the taskr unit without the `herdr0` shim.
+   at fault). The unit file is the same in both modes; the hc switch and the
+   `herdr0` shim live in its drop-in, which no install removes. Remove it
+   before the reload, or the daemon stays on hc.
 
    ```sh
    sh products/setup/install.sh FLAGS
+   rm -f ~/.config/systemd/user/taskr.service.d/herdr-kit-hc.conf
    systemctl --user daemon-reload && systemctl --user restart taskr.service
    ```
 
