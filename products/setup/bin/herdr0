@@ -46,7 +46,6 @@ The owner starts a root from a plain terminal, after starting the hc core:
 
 SHELLS = {"sh", "bash", "zsh", "fish", "dash", "ksh", "nu"}
 STATUS = {"idle": "idle", "working": "working", "blocked": "blocked", "done": "done", "error": "blocked"}
-RESERVED = {"ws", "tab", "pane", "ws_label", "tab_label", "agent", "agent_name", "agent_session"}
 ID_CHARS = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 KEYS = {"enter": "enter", "return": "enter", "escape": "esc", "esc": "esc", "tab": "tab",
         "space": "space", "backspace": "backspace", "up": "up", "down": "down",
@@ -210,13 +209,35 @@ def pane_obj(t):
     p = {"pane_id": lb.get("pane"), "tab_id": lb.get("tab"), "workspace_id": lb.get("ws"),
          "cwd": cwd, "foreground_cwd": cwd, "focused": False, "agent_status": agent_status(t),
          "terminal_id": t.get("address"), "terminal_title": title,
-         "terminal_title_stripped": title, "revision": t.get("turn", 0)}
+         "terminal_title_stripped": title, "revision": t.get("turn", 0), "tokens": tokens([t])}
     if has_agent(t):
         p["agent"] = lb.get("agent") or "unknown"
         if lb.get("agent_session"):
             p["agent_session"] = {"agent": p["agent"], "kind": "id", "source": "herdr0",
                                   "value": lb["agent_session"]}
     return p
+
+
+def tokens(rows):
+    """report-metadata tokens, kept as tok_KEY labels; a workspace shows the union of its terminals'."""
+    out = {}
+    for t in rows:
+        out.update({k[4:]: v for k, v in labels(t).items() if k.startswith("tok_")})
+    return out
+
+
+def token_labels(o):
+    kvs = []
+    for tok in o["--token"]:
+        k, eq, v = tok.partition("=")
+        if not eq or not re.match(r"^[a-z0-9_]+$", k):
+            raise Fail("usage", f"--token needs key=value, got {tok!r}", 2)
+        kvs.append(f"tok_{k}={v}")
+    for k in o["--clear-token"]:
+        if not re.match(r"^[a-z0-9_]+$", k):
+            raise Fail("usage", f"--clear-token needs a key, got {k!r}", 2)
+        kvs.append(f"tok_{k}=")
+    return kvs
 
 
 def agent_obj(t):
@@ -374,14 +395,25 @@ def workspace(ctx, sub, argv):
             status = next((agent_status(t) for t in rows if has_agent(t)), "unknown")
             out.append({"workspace_id": ws, "label": labels(rows[0]).get("ws_label") or ws, "number": n,
                         "active_tab_id": tabs[0], "tab_count": len(tabs), "pane_count": len(rows),
-                        "focused": False, "agent_status": status})
+                        "focused": False, "agent_status": status, "tokens": tokens(rows)})
         return emit("workspace_list", {"workspaces": out}, "workspace:list")
     if sub == "close":
         _, pos = opts(argv, set())
         if len(pos) != 1:
             raise Fail("usage", "workspace close WORKSPACE", 2)
         return close(ctx, f"ws={pos[0]}", "workspace", pos[0], "workspace:close")
-    if sub in ("focus",):
+    if sub == "report-metadata":
+        o, pos = opts(argv, {"--source"}, ("--token", "--clear-token"))
+        if len(pos) != 1:
+            raise Fail("usage", "workspace report-metadata WORKSPACE --token k=v", 2)
+        rows = ctx.terminals([f"ws={pos[0]}"])
+        if not rows:
+            raise Fail("workspace_not_found", f"workspace {pos[0]} not found")
+        kvs = token_labels(o)
+        for t in rows if kvs else []:
+            hc(["label", "--json", t["address"], *kvs])
+        return emit("workspace_metadata", {"workspace_id": pos[0]}, "workspace:report_metadata")
+    if sub == "focus":
         return emit("ok", {}, "workspace:focus")
     unsupported(f"workspace {sub}")
 
@@ -496,7 +528,7 @@ def pane(ctx, sub, argv):
         info = {"pane_id": pid, "shell_pid": t.get("pid"), "foreground_process_group_id": fg.get("pid"),
                 "foreground_processes": procs}
         return emit("process_info", {"process_info": info}, "pane:process_info")
-    o, pos = opts(argv, {"--source", "--lines", "--match", "--timeout", "--regex"}, ("--token",),
+    o, pos = opts(argv, {"--source", "--lines", "--match", "--timeout", "--regex"}, ("--token", "--clear-token"),
                   ("--current",))
     if not pos:
         raise Fail("usage", f"pane {sub} PANE ...", 2)
@@ -524,12 +556,7 @@ def pane(ctx, sub, argv):
             raise Fail("usage", "pane wait-output PANE --match TEXT", 2)
         return wait_output(t, pid, pattern, "--regex" in o, ms_to_s(o.get("--timeout"), 30000))
     if sub == "report-metadata":
-        kvs = []
-        for tok in o["--token"]:
-            k, eq, v = tok.partition("=")
-            if not eq or not re.match(r"^[a-z0-9_]+$", k):
-                raise Fail("usage", f"--token needs key=value, got {tok!r}", 2)
-            kvs.append(f"tok_{k}={v}")
+        kvs = token_labels(o)
         if kvs:
             hc(["label", "--json", t["address"], *kvs])
         return emit("pane_metadata", {"pane_id": pid}, "pane:report_metadata")

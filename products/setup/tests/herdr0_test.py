@@ -298,6 +298,19 @@ class Herdr0(unittest.TestCase):
         p = self.herdr("pane", "get", f"{ws}:p1", ok=False)
         self.assertEqual(self.error(p), "pane_not_found")
 
+    def test_tokens_for_the_taskr_token_daemon(self):
+        ws = self.workspace()["workspace"]["workspace_id"]
+        self.js("tab", "create", "--workspace", ws)
+        self.herdr("workspace", "report-metadata", ws, "--source", "taskr", "--token", "taskr_campaign=7",
+                   "--clear-token", "taskr_parent")
+        self.assertIn(["label", "--json", "t2", "tok_taskr_campaign=7", "tok_taskr_parent="], self.calls())
+        self.assertEqual(self.js("workspace", "list")["workspaces"][0]["tokens"], {"taskr_campaign": "7"})
+        self.herdr("pane", "report-metadata", f"{ws}:p1", "--source", "taskr", "--token", "taskr_owner_ask=1")
+        panes = {p["pane_id"]: p["tokens"] for p in self.js("pane", "list")["panes"]}
+        self.assertEqual(panes[f"{ws}:p1"], {"taskr_campaign": "7", "taskr_owner_ask": "1"})
+        self.herdr("pane", "report-metadata", f"{ws}:p1", "--clear-token", "taskr_owner_ask")
+        self.assertNotIn("taskr_owner_ask", self.js("pane", "get", f"{ws}:p1")["pane"]["tokens"])
+
     # refusals
     def test_no_core_refuses_before_any_hc_call(self):
         env = {"HC_SOCKET": os.path.join(self.tmp, "absent.sock")}
