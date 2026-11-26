@@ -42,9 +42,36 @@ number() { case $1 in '' | *[!0-9]* | 0) return 1 ;; esac; }
 identifier() { case $1 in '' | *[!A-Za-z0-9:_-]*) return 1 ;; esac; }
 # Root reads/adoption must not inherit the caller's worker identity. Routing stays.
 ledger() ( unset TASKR_TASK TASKR_LAUNCH; taskr "$@"; )
+# The newest KIND event id on the root after event SINCE, or SINCE when there is none. SINCE 0 reads the whole
+# log, which on a long-lived root is tens of MB and can pass the ledger's reply limit; --since reads only later events.
+newest() {
+    if [ "$2" -gt 0 ]; then
+        log=$(ledger --json log "$root" --since "$2" --limit 0) || return 1
+    else
+        log=$(ledger --json log "$root" --limit 0) || return 1
+    fi
+    printf '%s\n' "$log" | jq -ser --arg kind "$1" --argjson since "$2" '[.[] | select(.kind == $kind) | .id] | max // $since'
+}
+# The root's generation: its latest adopt id. FLOOR is an adopt id of this root; without one the root's lease gives
+# it, since taskr takes a root lease only at the generation current then, and adopt ids only grow. With no floor,
+# or no adopt at or after it, the whole log is read.
 latest_gen() {
-    log=$(ledger --json log "$root" --limit 0) || return 1
-    printf '%s\n' "$log" | jq -ser '[.[] | select(.kind == "adopt") | .id] | max // 0'
+    floor=${1:-}
+    if [ -z "$floor" ]; then
+        floor=$(ledger --json consumer show --as "$root") || return 1
+        floor=$(printf '%s\n' "$floor" | jq -er '.session_gen | if type == "number" and . > 0 then . else 0 end') || return 1
+    fi
+    if [ "$floor" -gt 0 ]; then
+        found=$(newest adopt $((floor - 1))) || return 1
+        [ "$found" -lt "$floor" ] || { printf '%s\n' "$found"; return 0; }
+    fi
+    newest adopt 0
+}
+# The root's own row. status --tree lists the task first, then its descendants; campaign would also read every
+# lane, ask and a log page, which takes minutes on a hub root.
+root_row() {
+    row=$(ledger --json status --tree "$root") || return 1
+    printf '%s\n' "$row" | jq -ce --argjson root "$root" -n 'first(inputs | select(.id == $root))'
 }
 read_lease() {
     lease=unknown
@@ -54,10 +81,6 @@ read_lease() {
 current_lease() {
     printf '%s\n' "$lease_json" | jq -e --argjson gen "$gen" \
         '.live == true and .session_gen == $gen and (.holder | type == "string" and startswith("mcp-channel-"))' >/dev/null
-}
-latest_handover() {
-    log=$(ledger --json log "$root" --limit 0) || return 1
-    printf '%s\n' "$log" | jq -ser '[.[] | select(.kind == "handover") | .id] | max // 0'
 }
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # start.guard serializes every change to start.lock: acquire, reclaim, release and the hold mark.
@@ -230,13 +253,14 @@ state_dir=$HOME/.local/state/herdr-orch/lead-push/$root
 if [ "$mode" = move ]; then
     # nohup keeps the helper in this process group, which the caller may kill with this session.
     command -v setsid >/dev/null 2>&1 || fail 'herdr-hub move needs setsid to detach its helper (util-linux); nothing was stopped'
-    campaign=$(ledger --json campaign "$root") || fail 'read root campaign'
-    printf '%s\n' "$campaign" | jq -e --argjson root "$root" --arg pane "$pane" \
-        '.root | .id == $root and .role == "orchestrator" and .status == "open" and .pane_id == $pane' >/dev/null ||
+    row=$(root_row) || fail 'read root campaign'
+    printf '%s\n' "$row" | jq -e --arg pane "$pane" \
+        '.parent_id == null and .role == "orchestrator" and .status == "open" and .pane_id == $pane' >/dev/null ||
         fail 'ROOT must be an open root orchestrator recorded at this pane'
     gen=$(latest_gen) || fail 'read latest adopt'
     if [ -z "$no_handover" ]; then
-        handover_id=$(latest_handover) || fail 'read latest handover'
+        # Only a handover after the adopt counts, so the read starts there.
+        handover_id=$(newest handover "$gen") || fail 'read latest handover'
         [ "$handover_id" -gt "$gen" ] || fail "no handover since adopt $gen: run taskr handover --as $root --note TEXT first, or pass --no-handover"
     fi
     gen=
@@ -300,7 +324,7 @@ if [ "$mode" = __move-helper ]; then
     herdr pane run "$pane" "$typed" >/dev/null || fail 'type herdr-hub in the hub pane'
     deadline=$(($(date +%s) + 180))
     while :; do
-        new_gen=$(latest_gen) || fail 'read latest adopt'
+        new_gen=$(latest_gen "$old_gen") || fail 'read latest adopt'
         [ "$new_gen" -le "$old_gen" ] || break
         [ "$(date +%s)" -lt "$deadline" ] || fail 'herdr-hub did not adopt within 180 s; read the hub pane'
         sleep 3
@@ -321,9 +345,9 @@ if [ "$mode" = __move-helper ]; then
     exit 0
 fi
 if [ -z "$name" ]; then
-    campaign=$(ledger --json campaign "$root") || fail 'read root campaign'
-    printf '%s\n' "$campaign" | jq -e --argjson root "$root" '.root | .id == $root and .role == "orchestrator" and .status == "open"' >/dev/null || fail 'ROOT is not an open root orchestrator'
-    old=$(printf '%s\n' "$campaign" | jq -r '.root.pane_id // ""') || fail 'read recorded hub pane'
+    row=$(root_row) || fail 'read root campaign'
+    printf '%s\n' "$row" | jq -e '.parent_id == null and .role == "orchestrator" and .status == "open"' >/dev/null || fail 'ROOT is not an open root orchestrator'
+    old=$(printf '%s\n' "$row" | jq -r '.pane_id // ""') || fail 'read recorded hub pane'
     if [ -n "$old" ] && [ "$old" != "$pane" ]; then
         agents=$(herdr agent list) || fail 'read agent list'
         printf '%s\n' "$agents" | jq -e --arg old "$old" \
@@ -361,7 +385,7 @@ handover=$state_dir/handover-$gen.md
 [ ! -e "$handover" ] && [ ! -L "$handover" ] || fail 'handover already exists'
 mv -n -- "$tmp" "$handover" && [ ! -e "$tmp" ] || fail 'handover already exists or could not be saved'
 tmp=
-latest=$(latest_gen) || fail 'read latest adopt'
+latest=$(latest_gen "$gen") || fail 'read latest adopt'
 [ "$latest" = "$gen" ] || fail 'generation conflict after adopt; do not re-adopt'
 
 step=4
@@ -378,9 +402,17 @@ tmp=
 rm -f -- "$adopt_err" || fail 'remove adopt stderr temporary file'
 adopt_err=
 
-hub_ref=$(ledger --json log "$root" --limit 0) || fail 'read hub ref'
-hub_ref=$(printf '%s\n' "$hub_ref" | jq -sr '[.[] | select(.kind == "ref" and .data.key == "hub")] | max_by(.id) | .data.value // ""') || fail 'parse hub ref'
-latest=$(latest_gen) || fail 'read generation before exec'
+# The adopt's handover lists the root's latest non-empty refs on its first "- Refs: " line ("none" without any).
+# A taskr without that line gets the whole-log read.
+refs=$(sed -n '/^- Refs: /{s/^- Refs: //p;q;}' "$handover") || fail 'read hub ref'
+if [ -n "$refs" ]; then
+    hub_ref=
+    case ", $refs, " in *', hub=on, '*) hub_ref=on ;; esac
+else
+    hub_ref=$(ledger --json log "$root" --limit 0) || fail 'read hub ref'
+    hub_ref=$(printf '%s\n' "$hub_ref" | jq -sr '[.[] | select(.kind == "ref" and .data.key == "hub")] | max_by(.id) | .data.value // ""') || fail 'parse hub ref'
+fi
+latest=$(latest_gen "$gen") || fail 'read generation before exec'
 [ "$latest" = "$gen" ] || fail 'generation conflict before exec'
 
 prove() (
@@ -434,7 +466,7 @@ prove() (
         if [ -n "$consent_seen" ] && [ -z "$consent_left" ]; then
             case $dialog in channel | none) consent_left=1 deadline=$(($(date +%s) + 600)) ;; esac
         fi
-        latest=$(latest_gen) || fail 'read generation while waiting for lease'
+        latest=$(latest_gen "$gen") || fail 'read generation while waiting for lease'
         [ "$latest" = "$gen" ] || fail 'generation conflict while waiting for lease'
         read_lease || fail 'read live-check lease'
         if current_lease; then break; fi
@@ -462,7 +494,7 @@ prove() (
     cap=$(($(date +%s) + 1800))
     while :; do
         kill -0 "$$" 2>/dev/null || fail 'cdl exited before the ack'
-        latest=$(latest_gen) || fail 'read generation during live check'
+        latest=$(latest_gen "$gen") || fail 'read generation during live check'
         [ "$latest" = "$gen" ] || fail 'generation conflict during live check'
         read_lease && current_lease || fail 'current-generation channel lease lost'
         deliveries=$(ledger --json delivery ls --as "$root") || fail 'read check delivery'

@@ -87,16 +87,23 @@ def live():
 if cmd == "campaign":
     print(json.dumps({"root": {"id": 42, "name": "example", "role": "orchestrator", "status": "open",
                                "pane_id": "wOLD9:p1", "host": ""}}))
+elif cmd == "status":
+    # status --tree: the root row first (taskr omits a null parent_id), then its descendants.
+    print(json.dumps({"id": 42, "name": "example", "role": "orchestrator", "status": "open", "pane_id": "wOLD9:p1"}))
 elif cmd == "log":
-    print(json.dumps({"record": "event", "id": 7 if (case / "adopted").exists() else 5, "kind": "adopt"}))
+    since = int(argv[argv.index("--since") + 1]) if "--since" in argv else 0
+    event = 7 if (case / "adopted").exists() else 5
+    if event > since:
+        print(json.dumps({"record": "event", "id": event, "kind": "adopt"}))
 elif cmd == "consumer":
     print(json.dumps({"live": True, "holder": "mcp-channel-1", "session_gen": 7} if live() else {"live": False}))
 elif cmd == "adopt":
     (case / "adopted").write_text(json.dumps(argv))
     print("handover text")
+    print("- Refs: none")
     print(f"taskr adopt: task 42 now at pane {argv[argv.index('--pane') + 1]} (was wOLD9:p1); event 7", file=sys.stderr)
 elif cmd == "glance":
-    print(json.dumps({"caller_host": ""}))
+    print(json.dumps({"caller_host": "", "campaigns": [{"id": 42, "name": "example"}]}))
 elif cmd == "new":
     print(json.dumps({"task_id": 43}))
 elif cmd == "launch":

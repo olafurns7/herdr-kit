@@ -182,26 +182,37 @@ mode = os.environ.get('MODE', '')
 cmd = args[0]
 if mode == 'fail-' + cmd: sys.exit(1)
 if mode == 'fail-accepted-close' and cmd == 'close' and args[-1] == 'accepted': sys.exit(1)
+root = {'id':42, 'name':'hub', 'role': 'gate' if mode == 'not-root' else 'orchestrator',
+        'status': 'closed' if mode == 'closed' else 'open',
+        'pane_id':'wA:p2' if mode in ('old-pane-live', 'old-pane-free', 'fail-agent-list') else 'wA:p1'}
+# A sub-orchestrator has a parent; taskr omits a null parent_id.
+if mode == 'not-top': root['parent_id'] = 5
 if cmd == 'campaign':
-    print(json.dumps({'root': {'id':42, 'name':'hub', 'role': 'gate' if mode == 'not-root' else 'orchestrator',
-          'status': 'closed' if mode == 'closed' else 'open',
-          'pane_id':'wA:p2' if mode in ('old-pane-live', 'old-pane-free', 'fail-agent-list') else 'wA:p1'}}))
+    print(json.dumps({'root': root}))
+elif cmd == 'status':
+    # status --tree lists the task, then its descendants; root-last checks the read selects by id.
+    rows = [root, {'id':43, 'name':'lane', 'role':'orchestrator', 'status':'open', 'parent_id':42, 'pane_id':'wA:p9'}]
+    if mode == 'no-row': rows = rows[1:]
+    if mode == 'root-last': rows.reverse()
+    for row in rows: print(json.dumps(row))
 elif cmd == 'consumer':
-    if mode in ('dialog', 'dialog-tall') and not (case / 'dialog-answered').exists(): print('{"live":false}')
-    elif mode in ('consent-stuck', 'consent-both', 'consent-both-rev', 'consent-flap'): print('{"live":false}')
-    elif mode == 'consent-late' and not (case / 'dialog-answered').exists(): print('{"live":false}')
+    # A lease row keeps the generation it was taken at after it expires; no-lease: the root never had one.
+    free = '{"live":false}' if mode == 'no-lease' else '{"live":false,"session_gen":3}'
+    if mode in ('dialog', 'dialog-tall') and not (case / 'dialog-answered').exists(): print(free)
+    elif mode in ('consent-stuck', 'consent-both', 'consent-both-rev', 'consent-flap'): print(free)
+    elif mode == 'consent-late' and not (case / 'dialog-answered').exists(): print(free)
     # Live once the channel dialog is done: after read 7, past the last one shown.
     elif mode.startswith('consent') and (not (case / 'pane-reads').exists() or int((case / 'pane-reads').read_text()) <= 7):
-        print('{"live":false}')
+        print(free)
     elif mode in ('cdl-exit-lease', 'prover-lease-conflict') and (case / 'adopted').exists():
         (case / 'waiting-lease').touch()
-        print('{"live":false}')
-    elif mode == 'lost-lease' and (case / 'ready').exists(): print('{"live":false}')
+        print(free)
+    elif mode == 'lost-lease' and (case / 'ready').exists(): print(free)
     elif mode == 'unknown': print('{}')
     elif mode == 'busy' or (case / 'adopted').exists() or mode.startswith('check-'):
         print(json.dumps({'live': True, 'holder': 'other' if mode == 'wrong-holder' else 'mcp-channel-123',
-                          'session_gen': 6 if mode in ('wrong-lease', 'check-stale') else 7}))
-    else: print('{"live":false}')
+                          'session_gen': {'wrong-lease':6, 'check-stale':6, 'check-floor-gone':20}.get(mode, 7)}))
+    else: print(free)
 elif cmd == 'new':
     print(json.dumps({'task_id':43 if '--parent' in args else 42}))
 elif cmd == 'adopt':
@@ -211,18 +222,27 @@ elif cmd == 'adopt':
     if mode == 'config-symlink': (state / 'taskr-mcp-7.json').symlink_to(case / 'missing')
     if mode == 'handover-exists': (state / 'handover-7.md').write_text('keep')
     print('handover text')
+    # The root's refs line comes first; a lane's refs line follows. refs-missing: a taskr without the line.
+    refs = {'hub-on':'hub=on, pr=12', 'hub-off':'pr=12', 'hub-lane':'pr=12'}.get(mode, 'none')
+    if mode != 'refs-missing': print('- Refs: ' + refs)
+    if mode == 'hub-lane': print('- Refs: hub=on')
     print('taskr adopt: task 42 now at pane wA:p1 (was wA:p1); event 7', file=sys.stderr)
 elif cmd == 'log':
     gen = 8 if (mode == 'generation-conflict' or
                 (mode == 'prover-conflict' and (case / 'ready').exists()) or
                 (mode == 'prover-lease-conflict' and (case / 'waiting-lease').exists())) else 7
     if (case / 'typed').exists(): gen = 9
-    print(json.dumps({'kind':'adopt','id':gen}))
-    if mode.startswith('move'): print(json.dumps({'kind':'handover','id':8}))
-    if mode in ('hub-on', 'hub-off'):
-        print(json.dumps({'kind':'ref','id':1,'data':{'key':'hub','value':'on'}}))
-    if mode == 'hub-off': print(json.dumps({'kind':'ref','id':2,'data':{'key':'hub','value':''}}))
-elif cmd == 'glance': print('{"caller_host":""}')
+    # --since keeps only later events, as taskr does; an older adopt (3) and handover (4) sit below every floor.
+    since = int(args[args.index('--since') + 1]) if '--since' in args else 0
+    events = [{'kind':'adopt','id':3}, {'kind':'handover','id':4}, {'kind':'adopt','id':gen}]
+    if mode.startswith('move'): events.append({'kind':'handover','id':8})
+    if mode in ('hub-on', 'hub-off', 'refs-missing'):
+        events.append({'kind':'ref','id':1,'data':{'key':'hub','value':'on'}})
+    if mode == 'hub-off': events.append({'kind':'ref','id':2,'data':{'key':'hub','value':''}})
+    for e in events:
+        if e['id'] > since: print(json.dumps(e))
+# Glance lists each active root; its host is omitted when it is the ledger host.
+elif cmd == 'glance': print('{"caller_host":"","campaigns":[{"id":42,"name":"hub"}]}')
 elif cmd == 'launch': print('{"launch_id":8}')
 elif cmd == 'ready':
     if mode == 'prover-stdin':
@@ -365,7 +385,7 @@ else: sys.exit(98)
     def expect(case, rc):
         assert case[2].returncode == rc, (case[2].returncode, case[3], case[4])
 
-    def success(case, extra=(), new=False, jobs=False, account=(), model='example-opus', code_mode='0', window=400000):
+    def success(case, extra=(), new=False, jobs=False, account=(), model='example-opus', code_mode='0', window=400000, full_log=False):
         expect(case, 0)
         work, home, process, out, err, calls = case
         state = home / '.local/state/herdr-orch/lead-push/42'
@@ -403,7 +423,13 @@ else: sys.exit(98)
         # cdl gets the per-user disk folder, not the caller's TMPDIR (README.md "Temp files").
         assert agent_tmp_dir.stat().st_mode & 0o777 == 0o700 and not agent_tmp_dir.is_symlink()
         assert (state / 'handover-7.md').stat().st_mode & 0o777 == 0o600
-        assert (state / 'handover-7.md').read_text() == 'handover text\n'
+        assert (state / 'handover-7.md').read_text().startswith('handover text\n- Refs: ') or full_log
+        # The root is read from status --tree, never campaign; every log read starts after a known adopt (W5421).
+        assert not any(a[0] == 'campaign' for a,t,l in calls), calls
+        assert (['status','--tree','42'] in [a for a,t,l in calls]) != new, calls
+        logs = [a for a,t,l in calls if a[0] == 'log']
+        full = [a for a in logs if a == ['log','42','--limit','0']]
+        assert len(full) == full_log and all(a == ['log','42','--since','6','--limit','0'] for a in logs if a not in full), logs
         assert not (state / 'start.lock').exists()
         assert not (work / 'cdl-rejected').exists()
         assert (state / 'hub-check-7.result').read_text() == 'live\n'
@@ -490,6 +516,14 @@ else: sys.exit(98)
     c = run('newer cleared hub ref restores suggestion', mode='hub-off')
     success(c)
     assert 'To make this the hub: taskr set 42 hub=on' in c[3]
+    c = run("a lane's hub ref is not the root's", mode='hub-lane')
+    success(c)
+    assert 'To make this the hub: taskr set 42 hub=on' in c[3]
+    c = run('a handover without a refs line falls back to the whole log', mode='refs-missing')
+    success(c, full_log=True)
+    assert 'To make this the hub:' not in c[3]
+    c = run('the root row is found by id wherever status --tree lists it', mode='root-last')
+    success(c)
 
     c = run('prover answers the development-channel dialog once', mode='dialog')
     success(c)
@@ -587,7 +621,7 @@ else: sys.exit(98)
         c = run(mode, mode=mode)
         expect(c, 1)
         assert text in c[4]
-        assert [a[0] for a,t,l in c[5]] == ['campaign']
+        assert [a[:3] for a,t,l in c[5]] == [['status','--tree','42']]
         assert not (c[1] / '.local/state').exists()
 
     for mode, reason, gate in [('cdl-exit-lease','cdl exited before the channel lease',False),
@@ -603,7 +637,8 @@ else: sys.exit(98)
         assert ('closed check task 43 as abandoned' in (state / 'hub-check-7.log').read_text()) == gate
         assert (state / 'start.lock').is_dir()
 
-    for mode, text in [('busy','still live after 75 s'),('closed','not an open root'),('not-root','not an open root')]:
+    for mode, text in [('busy','still live after 75 s'),('closed','not an open root'),('not-root','not an open root'),
+                       ('not-top','not an open root'),('no-row','read root campaign'),('fail-status','read root campaign')]:
         c = run(mode, mode=mode)
         expect(c, 1)
         assert text in c[4]
@@ -785,6 +820,15 @@ else: sys.exit(98)
             '--lane','opus-high','--session','sess-hub','--code-mode','off','--','--resume','id with spaces']
     assert (c[0] / 'typed').read_text() == f"env HERDR_HUB_CODE_MODE=0 '{bindir}/herdr-hub' 42 --lane 'opus-high' -- '--resume' 'id with spaces'", text
     assert not any(a[0] == 'adopt' for a,t,l in c[5])
+    # Move, its helper and herdr-lead stop read the root row and bounded logs only: from the lease's generation 3,
+    # the handover from adopt 7, and the successor from the old generation 7 (W5421).
+    reads = [json.loads(line)[0] for line in (c[0] / 'calls').read_text().splitlines()]
+    assert not any(a[0] == 'campaign' for a in reads), reads
+    logs = [a for a in reads if a[0] == 'log']
+    for bounded in (['log','42','--since','2','--limit','0'], ['log','42','--since','7','--limit','0'], ['log','42','--since','6','--limit','0']):
+        assert bounded in logs, (bounded, logs)
+    assert ['log','42','--limit','0'] not in logs, logs
+    assert ['status','--tree','42'] in reads, reads
 
     c = run('jobs move forwards opt-in across detached helper and shell-quoted successor',
             args=('move','42','--jobs','--account',"account ' quoted",'--','--resume','id with spaces',"quote'arg"), mode='move')
@@ -884,10 +928,17 @@ else: sys.exit(98)
     assert not [a for a, env in herdr_calls(c) if a[:2] == ['pane','send-keys']]
 
     for mode, rc, output in [('check-live',0,'live'),('check-stale',1,'stale'),('',1,'stale'),
-                             ('unknown',2,'unknown'),('fail-log',2,'unknown'),('fail-consumer',2,'unknown')]:
+                             ('unknown',2,'unknown'),('fail-log',2,'unknown'),('fail-consumer',2,'unknown'),
+                             ('check-floor-gone',1,'stale'),('no-lease',1,'stale')]:
         c = run('check '+mode, args=('check','42'), mode=mode)
         expect(c, rc)
         assert c[3].strip() == output
+        # The lease's generation bounds the log read; without one, or with no adopt at or after it, the whole log is read.
+        logs = [a for a,t,l in c[5] if a[0] == 'log']
+        if mode in ('check-live', 'check-stale', ''):
+            assert logs == [['log','42','--since',{'check-stale':'5','':'2'}.get(mode, '6'),'--limit','0']], logs
+        if mode == 'check-floor-gone': assert logs == [['log','42','--since','19','--limit','0'], ['log','42','--limit','0']], logs
+        if mode in ('no-lease', 'unknown'): assert logs == [['log','42','--limit','0']], logs
         assert not (c[1] / '.local/state').exists()
 
     for mode in ['check-dropped', 'check-flag', 'check-channels', 'check-other-generation']:

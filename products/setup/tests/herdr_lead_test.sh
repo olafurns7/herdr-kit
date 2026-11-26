@@ -162,13 +162,22 @@ case "$1 $2" in
     'campaign 42')
         campaign='{"root":{"id":42,"name":"example","role":"orchestrator","status":"open"}}'
         printf '%s\n' "${CAMPAIGN:-$campaign}" ;;
+    'status --tree')
+        # The task first, then its descendants (ROOT_LAST: the other order); taskr omits a null parent_id.
+        campaign='{"root":{"id":42,"name":"example","role":"orchestrator","status":"open"}}'
+        row=$(printf '%s\n' "${CAMPAIGN:-$campaign}" | jq -c '.root | del(.host)')
+        lane='{"id":43,"name":"lane","role":"orchestrator","status":"open","parent_id":42,"pane_id":"wA:p9"}'
+        if [ -n "${ROOT_LAST:-}" ]; then printf '%s\n' "$lane" "$row"; else printf '%s\n' "$row" "$lane"; fi ;;
     'consumer show')
         if [ -f "$CASE/started" ] || [ "${LEASE:-}" = live ]; then
             printf '{"live":true,"holder":"%s","session_gen":%s}\n' "${HOLDER:-mcp-channel-123}" "${LEASE_GEN:-7}"
         elif [ "${LEASE:-}" = bad ]; then
             printf '{}\n'
+        elif [ "${LEASE:-}" = none ]; then
+            printf '{"live":false,"session_gen":null}\n'
         else
-            printf '{"live":false}\n'
+            # An expired lease keeps the generation it was taken at.
+            printf '{"live":false,"session_gen":2}\n'
         fi
         ;;
     'adopt 42')
@@ -182,11 +191,19 @@ case "$1 $2" in
         esac
         ;;
     'log 42')
-        printf '{"record":"event","id":%s,"kind":"adopt"}\n' "${LATEST:-7}"
-        printf '{"record":"event","id":3,"kind":"handover"}\n'
-        [ ! -f "$CASE/handover" ] || printf '{"record":"event","id":6,"kind":"handover"}\n'
+        # --since keeps only later events, as taskr does.
+        since=0
+        [ "${3:-}" != --since ] || since=$4
+        for event in 2:adopt 3:handover "${LATEST:-7}:adopt"; do
+            [ "${event%%:*}" -le "$since" ] || printf '{"record":"event","id":%s,"kind":"%s"}\n' "${event%%:*}" "${event#*:}"
+        done
+        [ ! -f "$CASE/handover" ] || printf '{"record":"event","id":9,"kind":"handover"}\n'
         ;;
-    'glance ') printf '{"caller_host":"%s"}\n' "${CALLER_HOST:-}" ;;
+    'glance ')
+        # Glance lists each active root, its host omitted when it is the ledger host; QUIET: a quiet root, by id only.
+        campaign='{"root":{"id":42,"name":"example","role":"orchestrator","status":"open"}}'
+        printf '%s\n' "${CAMPAIGN:-$campaign}" | jq -c --arg caller "${CALLER_HOST:-}" --arg quiet "${QUIET:-}" \
+            '{caller_host:$caller, campaigns:(if $quiet == "" then [.root | {id,name} + (if (.host // "") == "" then {} else {host} end)] else [] end)}' ;;
     'new lead-push-check-7') printf '{"task_id":43}\n' ;;
     'launch 43') printf '{"launch_id":8}\n' ;;
     'ready lead push check 7')
@@ -278,7 +295,7 @@ EOF
     FAIL= LEASE= LATEST= LEASE_GEN= AGENTS= BUSY= ENV_BAD= DIALOG= ACK= RECEIVED= DELIVERY_GEN= CONFIG_EXISTS= HOLDER= CAMPAIGN=
     DIALOG_SCREEN= STOP_IGNORED= NO_HANDOVER= ACKS= AGENTS_AFTER_WAIT= CALLER_HOST=
     PROMPT_RESULT= PROMPT_VISIBLE= WAIT_RESULTS= GET_STATUSES= ENTER_DELAYS= PROCESS= EXIT_MODAL= DIALOG_TALL=
-    LEAD_CODE_MODE= EXPECT_CODE_MODE= COMPACT_WINDOW= CONSENT= DELIVERIES= SIGNAL_IN_CHECK= CLOSE_FAIL=
+    LEAD_CODE_MODE= EXPECT_CODE_MODE= COMPACT_WINDOW= CONSENT= DELIVERIES= SIGNAL_IN_CHECK= CLOSE_FAIL= ROOT_LAST= QUIET=
     printf 'case: %s\n' "$name"
 }
 run() {
@@ -291,7 +308,7 @@ run() {
         GET_STATUSES="$GET_STATUSES" HERDR_LEAD_ENTER_DELAYS="$ENTER_DELAYS" STOP_IGNORED="$STOP_IGNORED" NO_HANDOVER="$NO_HANDOVER" ACKS="$ACKS" \
         AGENTS_AFTER_WAIT="$AGENTS_AFTER_WAIT" CALLER_HOST="$CALLER_HOST" PROCESS="$PROCESS" EXIT_MODAL="$EXIT_MODAL" DIALOG_TALL="$DIALOG_TALL" \
         HERDR_LEAD_CODE_MODE="$LEAD_CODE_MODE" EXPECT_CODE_MODE="$EXPECT_CODE_MODE" HERDR_LEAD_COMPACT_WINDOW="$COMPACT_WINDOW" CONSENT="$CONSENT" \
-        DELIVERIES="$DELIVERIES" SIGNAL_IN_CHECK="$SIGNAL_IN_CHECK" CLOSE_FAIL="$CLOSE_FAIL" HERDR_TEST_AGENT_TMP_BASE="$agent_tmp_base" TMPDIR=/caller/tmp EXPECT_TMPDIR="$agent_tmp_dir" \
+        DELIVERIES="$DELIVERIES" SIGNAL_IN_CHECK="$SIGNAL_IN_CHECK" CLOSE_FAIL="$CLOSE_FAIL" ROOT_LAST="$ROOT_LAST" QUIET="$QUIET" HERDR_TEST_AGENT_TMP_BASE="$agent_tmp_base" TMPDIR=/caller/tmp EXPECT_TMPDIR="$agent_tmp_dir" \
         sh "$repo_dir/bin/herdr-lead" "$@" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
 }
 expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/err")"; }
@@ -408,6 +425,51 @@ start
 expect_rc 1
 lacks calls 'herdr|pane|run'
 lacks calls 'taskr|adopt'
+
+new_case 'sub-orchestrator refused as a root'
+CAMPAIGN='{"root":{"id":42,"name":"example","role":"orchestrator","status":"open","parent_id":5}}'
+start
+expect_rc 1
+has err 'ROOT is not an open root orchestrator'
+lacks calls 'taskr|adopt'
+
+new_case 'failed root read refused'
+FAIL='taskr status'
+start
+expect_rc 1
+has err 'read root campaign'
+lacks calls 'taskr|adopt'
+
+new_case 'start reads the root row and only generation-bounded logs'
+ROOT_LAST=1
+start
+expect_rc 0
+has calls 'taskr|status|--tree|42|env=/'
+has calls 'taskr|log|42|--since|6|--limit|0|env=/'
+lacks calls 'taskr|campaign|'
+if grep '^taskr|log|' "$case_dir/calls" | grep -v '^taskr|log|42|--since|6|--limit|0|env=/$' >/dev/null; then
+    fail 'start read a log without the generation bound'
+fi
+
+new_case 'stop reads the host of a quiet root from campaign'
+CAMPAIGN='{"root":{"id":42,"name":"example","role":"orchestrator","status":"open","pane_id":"wA:p1","host":"other.example.com"}}'
+QUIET=1
+run stop 42 wA:p1
+expect_rc 1
+has err 'root 42 was adopted on other.example.com, not this host'
+has calls 'taskr|campaign|42|env=/'
+QUIET=
+run stop 42 wA:p1
+expect_rc 1
+has err 'root 42 was adopted on other.example.com, not this host'
+[ "$(grep -c '^taskr|campaign|' "$case_dir/calls")" = 1 ] || fail 'stop read campaign for an active root'
+
+new_case 'check without a lease generation reads the whole log'
+LEASE=none
+run check 42
+expect_rc 1
+has out stale
+has calls 'taskr|log|42|--limit|0|env=/'
 
 new_case 'busy target refused'
 BUSY=wA:p1
@@ -1127,17 +1189,22 @@ new_case 'move asks for a handover, stops the predecessor, then starts'
 CAMPAIGN=$moved_campaign AGENTS=$old_lead
 move
 expect_rc 0
+# Both handover reads start at the generation (7), which the expired lease's generation (2) bounds (W5421).
+[ "$(grep -c '^taskr|log|42|--since|7|--limit|0|env=/$' "$case_dir/calls")" = 2 ] || fail 'move did not bound both handover reads at the generation'
+has calls 'taskr|log|42|--since|1|--limit|0|env=/'
+lacks calls 'taskr|log|42|--limit|0|'
+lacks calls 'taskr|campaign|'
 has calls 'herdr|agent|prompt|orch-example|'
 has calls 'taskr handover --as 42'
 has calls 'Session timers to re-arm: each CronCreate job or background loop you armed'
 has calls 'herdr|agent|wait|wA:p1|--until|idle|--timeout|120000'
 has calls 'herdr|pane|send-keys|wA:p1|esc|ctrl+c|ctrl+c'
-has out 'herdr-lead: move: handover event 6 recorded'
+has out 'herdr-lead: move: handover event 9 recorded'
 has out 'herdr-lead: 42 live at 7 (event 9 received and acked)'
 [ "$(grep -c 'taskr|adopt' "$case_dir/calls")" = 1 ] || fail 'adopted twice'
 [ -n "$(grep -n 'taskr handover' "$case_dir/calls" | head -1)" ] || fail 'no handover prompt'
 [ "$(grep -n 'send-keys|wA:p1|esc' "$case_dir/calls" | cut -d: -f1)" -lt "$(grep -n 'taskr|adopt' "$case_dir/calls" | cut -d: -f1)" ] || fail 'adopted before stopping'
-grep -F 'move: handover event 6 recorded' "$home/.local/state/herdr-orch/lead-push/42/"lead-start-*.log >/dev/null || fail 'start log misses move lines'
+grep -F 'move: handover event 9 recorded' "$home/.local/state/herdr-orch/lead-push/42/"lead-start-*.log >/dev/null || fail 'start log misses move lines'
 jq -e '.mcpServers == {taskr:{command:"taskr",args:["mcp","--channel","--as","42","--session","7"],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}}}' "$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json" >/dev/null || fail 'move config lacks digest env'
 
 new_case 'move without a recorded handover stops nothing'
