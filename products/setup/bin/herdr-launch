@@ -141,7 +141,9 @@ start_agent() {
             set -- -m "$model" -c "model_reasoning_effort=\"$effort\"" \
                 -c check_for_update_on_startup=false \
                 --dangerously-bypass-approvals-and-sandbox \
-                -c "projects={$codex_trust}" --dangerously-bypass-hook-trust ;;
+                -c "projects={$codex_trust}" --dangerously-bypass-hook-trust
+            # Under herdr-core its daemon would run commands outside the terminal.
+            [ "${HERDR_KIT_BACKEND:-}" != hc ] || set -- "$@" --no-daemon ;;
         opencode) set -- --standalone --auto ;;
         pi) set -- --provider "$provider" --model "$model" --thinking "$effort" --approve
             [ -z "$push" ] || set -- "$@" --extension "$HERDR_PUSH_PI_EXTENSION" ;;
@@ -572,6 +574,13 @@ if [ -n "$gather" ]; then
     set -- "${gather_lane:-${HERDR_GATHER_LANE:-haiku-gather}}" "gather-$gather" "$brief" "$report" "$TASKR_TASK"
 fi
 [ $# -eq 5 ] || [ $# -eq 6 ] || die "$usage"
+# Under herdr-core every herdr call must reach herdr0 through the shim; a shell rc file
+# that puts ~/.local/bin first would reach Herdr 0.9 instead.
+if [ "${HERDR_KIT_BACKEND:-}" = hc ]; then
+    hc_shim=$HOME/.local/lib/herdr-kit/hc-bin/herdr
+    hc_found=$(command -v herdr 2>/dev/null) || hc_found=missing
+    [ "$hc_found" = "$hc_shim" ] || die "HERDR_KIT_BACKEND=hc but herdr is $hc_found, not $hc_shim: put ${hc_shim%/herdr} first on PATH"
+fi
 lane=$1 name=$2 brief=$3 report=$4 parent=$5 given_pane=${6-}
 [ -z "$reserved_task" ] || [ -n "$given_pane" ] || die '--reserved requires PANE'
 
@@ -826,6 +835,8 @@ reserved_check() {
 }
 if [ -n "$reserved_task" ]; then
     [ -z "$push" ] || die '--reserved uses the durable work controller, not a push sidecar'
+    [ "$kind" != codex ] || [ "${HERDR_KIT_BACKEND:-}" != hc ] \
+        || die '--reserved Codex needs the herdr socket for its identity proof; not under HERDR_KIT_BACKEND=hc'
     reserved_cli=${TASKR_WORK_EXECUTABLE-}
     [ -n "$reserved_cli" ] || reserved_cli=$(command -v taskr) || die 'reserved taskr CLI is missing'
     case $reserved_cli in /*/taskr) ;; *) die 'reserved taskr executable must be an absolute path named taskr' ;; esac
@@ -841,6 +852,8 @@ if [ -n "$reserved_task" ]; then
     fi
     taskr() { "$reserved_cli" "$@"; }
     reserved_server() {
+        # herdr0 checks the hc core before any hc call and exits 3 without one.
+        [ "${HERDR_KIT_BACKEND:-}" != hc ] || return 0
         python3 - <<'PY'
 import os, socket
 path = os.environ.get('HERDR_SOCKET_PATH') or os.path.expanduser('~/.config/herdr/herdr.sock')

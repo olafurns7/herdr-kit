@@ -919,15 +919,27 @@ fn resident(
         .as_ref()
         .map_or_else(Vec::new, |db| watched(db).unwrap_or_default());
     let (pane_send, pane_recv) = tokio::sync::watch::channel(panes);
-    rt.spawn(subscription::subscribe(
-        state.sock.clone(),
-        stay,
-        pane_recv,
-        stopped,
-        send,
-        connected.clone(),
-        state.log.clone(),
-    ));
+    if herdr::hc() {
+        rt.spawn(subscription::poll(
+            state.sock.clone(),
+            stay,
+            subscription::POLL,
+            stopped,
+            send,
+            connected.clone(),
+            state.log.clone(),
+        ));
+    } else {
+        rt.spawn(subscription::subscribe(
+            state.sock.clone(),
+            stay,
+            pane_recv,
+            stopped,
+            send,
+            connected.clone(),
+            state.log.clone(),
+        ));
+    }
     let mut heartbeat = Instant::now() + Duration::from_secs(15);
     let mut fallback = Instant::now() + Duration::from_secs(60);
     let mut relay = Instant::now() + uplink::LEGACY;

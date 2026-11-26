@@ -1,0 +1,899 @@
+#!/usr/bin/env python3
+"""herdr0: answers the herdr 0.9 subcommands herdr-kit calls by calling hc.
+
+herdr-kit's launchers and taskr keep calling `herdr`; under HERDR_KIT_BACKEND=hc a
+shim directory puts this program first on PATH as `herdr`. One herdr pane is one
+hc terminal running a shell through `herdr0 enter`. herdr's ids (wXXXX,
+wXXXX:tN, wXXXX:pN) live as hc labels ws=, tab=, pane= on that terminal.
+
+Owner's root start (from a plain terminal, after the owner started the hc core):
+
+  hc run --bg --name NAME --keep --no-parent --cwd DIR -- herdr0 enter --new-workspace LABEL -- CMD
+
+Rules: every hc call is preceded by a check that the core socket accepts a
+connection (hc starts a core on demand, and that core keeps its starter's
+environment, so no agent may start one); every `hc run` passes --no-parent.
+"""
+import fcntl
+import json
+import math
+import os
+import re
+import secrets
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+HELP = """usage: herdr [--machine M] [--json] <command> ...
+
+herdr0 answers the herdr 0.9 commands herdr-kit uses by calling hc (${HC_BIN:-hc}).
+
+  workspace create|list|close     tab create|list|get|rename|close
+  pane current|get|list|read|run|send-keys|wait-output|process-info|report-metadata
+  agent start|prompt|wait|list|get|read      machine list      notification show (no-op)
+  herdr0 enter [--workspace W --tab T --pane P | --new-workspace LABEL] -- ARGV...
+
+Unsupported (exit 2): plugin, server, worktree, status, agent explain, --skill.
+Exit 3: no hc core running (the owner starts it; herdr0 never does).
+
+The owner starts a root from a plain terminal, after starting the hc core:
+
+  hc run --bg --name NAME --keep --no-parent --cwd DIR -- herdr0 enter --new-workspace LABEL -- CMD
+"""
+
+SHELLS = {"sh", "bash", "zsh", "fish", "dash", "ksh", "nu"}
+STATUS = {"idle": "idle", "working": "working", "blocked": "blocked", "done": "done", "error": "blocked"}
+ID_CHARS = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+KEYS = {"enter": "enter", "return": "enter", "escape": "esc", "esc": "esc", "tab": "tab",
+        "space": "space", "backspace": "backspace", "up": "up", "down": "down",
+        "left": "left", "right": "right"}
+
+
+class Fail(Exception):
+    def __init__(self, code, message, exit_code=1):
+        super().__init__(message)
+        self.code, self.message, self.exit_code = code, message, exit_code
+
+
+def unsupported(what):
+    print(f"herdr0: unsupported: {what}", file=sys.stderr)
+    sys.exit(2)
+
+
+# ---------------------------------------------------------------- hc access
+
+def socket_path():
+    if os.environ.get("HC_SOCKET"):
+        return os.environ["HC_SOCKET"]
+    session = os.environ.get("HC_SESSION") or "default"
+    home = os.path.expanduser("~")
+    config = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"),
+                          "herdr-core", "config.toml")
+    try:
+        import tomllib
+        with open(config, "rb") as f:
+            chosen = tomllib.load(f).get("socket")
+        if isinstance(chosen, str) and chosen:
+            return chosen
+    except (OSError, ValueError, ImportError):
+        pass
+    run = os.environ.get("XDG_RUNTIME_DIR")
+    if not run and os.path.isdir(f"/run/user/{os.getuid()}"):
+        run = f"/run/user/{os.getuid()}"
+    if run:
+        return os.path.join(run, "herdr-core", f"{session}.sock")
+    state = os.environ.get("XDG_STATE_HOME") or os.path.join(home, ".local", "state")
+    return os.path.join(state, "herdr-core", session, f"{session}.sock")
+
+
+def core_up():
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        s.connect(socket_path())
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def hc_bin():
+    name = os.environ.get("HC_BIN") or "hc"
+    found = shutil.which(name)
+    if not found:
+        raise Fail("hc_missing", f"{name} not found on PATH", 2)
+    if os.path.realpath(found) == os.path.realpath(__file__):
+        raise Fail("hc_is_herdr0", f"{name} resolves to herdr0 itself; set HC_BIN to the real hc", 2)
+    return found
+
+
+def hc(args, check=True, timeout=None):
+    """Run hc once, after the core-socket check. Returns (exit, stdout, stderr)."""
+    if not core_up():
+        print("herdr0: no hc core running; the owner starts it", file=sys.stderr)
+        sys.exit(3)
+    if args[0] == "run" and "--no-parent" not in args:
+        raise Fail("internal", "hc run without --no-parent", 2)
+    env = None
+    if args[0] in ("send", "keys"):
+        # From inside an agent terminal hc would wrap the text in <hc from=...> (notes.rs tagged()):
+        # send as a plain process, as herdr typed text as given.
+        env = {k: v for k, v in os.environ.items() if k not in ("HC_TERMINAL_ID", "HC_TERMINAL_SOCKET")}
+    retry_until = time.monotonic() + 10
+    while True:
+        try:
+            p = subprocess.run([hc_bin(), *args], capture_output=True, text=True, timeout=timeout, env=env)
+        except subprocess.TimeoutExpired:
+            raise Fail("timeout", f"hc {args[0]} did not return in time")
+        # A young terminal answers send with unavailable (exit 5) until its output settles; that
+        # answer means nothing was typed (input.rs settle()). Other exit-5 answers (a lost remote
+        # line, a core restart) can come after the text went in: never retry those.
+        if (args[0] != "send" or p.returncode != 5 or "is still starting" not in hc_error(p.stderr, "")[1]
+                or time.monotonic() >= retry_until):
+            break
+        time.sleep(0.5)
+        if not core_up():
+            print("herdr0: no hc core running; the owner starts it", file=sys.stderr)
+            sys.exit(3)
+    if check and p.returncode != 0:
+        raise_hc(args[0], p.returncode, p.stderr)
+    return p.returncode, p.stdout, p.stderr
+
+
+def hc_error(stderr, fallback):
+    """(kind, message) from hc's `{error: {kind, message, hint}}` on stderr."""
+    kind, message = "hc_error", stderr.strip() or fallback
+    try:
+        err = json.loads(stderr)["error"]
+        kind, message = err.get("kind") or kind, err.get("message") or message
+    except (ValueError, KeyError, TypeError):
+        pass
+    return kind, message
+
+
+def raise_hc(verb, code, stderr):
+    kind, message = hc_error(stderr, f"hc {verb} exited {code}")
+    if code == 9 or kind == "blocked":
+        raise Fail("agent_blocked", message)
+    if code == 3 or kind == "not_found":
+        raise Fail("not_found", message)
+    raise Fail(kind, message)
+
+
+def hc_json(args, **kw):
+    """hc with --json right after its verb, never after a `--` that starts argv or text."""
+    args = [*args, "--json"] if args[0] == "machine" else [args[0], "--json", *args[1:]]
+    _, out, _ = hc(args, **kw)
+    try:
+        return json.loads(out)
+    except ValueError:
+        raise Fail("hc_error", f"hc {args[0]} printed no JSON")
+
+
+# ---------------------------------------------------------------- model
+
+class Ctx:
+    def __init__(self, machine):
+        self.machine = machine
+
+    def mine(self, t):
+        addr = t.get("address", "")
+        if self.machine:
+            return addr.startswith(self.machine + "/")
+        return "/" not in addr
+
+    def terminals(self, labels=(), include_finished=False):
+        args = ["ls"]
+        if include_finished:
+            args.append("--all")
+        for kv in labels:
+            args += ["--label", kv]
+        rows = hc_json(args).get("terminals") or []
+        keep = [r["address"] for r in rows
+                if r.get("address") and self.mine(r) and (include_finished or r.get("state") == "live")]
+        # The CLI's ls rows are short (address, state, turn, cwd: cli/output.rs short());
+        # only `hc get` returns the whole record with labels, status and foreground.
+        full = (get_terminal(addr) for addr in keep)
+        return [t for t in full if t and (include_finished or t.get("state") == "live")]
+
+    def one(self, kv, what, ident):
+        rows = self.terminals([kv])
+        if len(rows) != 1:
+            raise Fail(f"{what}_not_found", f"{what} {ident} not found" if not rows
+                       else f"{what} {ident} matches {len(rows)} terminals")
+        return rows[0]
+
+
+def get_terminal(addr):
+    """The whole record (`hc get`), or None when it went away since it was listed (not_found, exit 3).
+
+    Any other failure is raised: a core or line problem is not a terminal that is gone.
+    """
+    code, out, err = hc(["get", "--json", addr], check=False)
+    if code == 3:
+        return None
+    if code != 0:
+        raise_hc("get", code, err)
+    try:
+        t = json.loads(out)
+    except ValueError:
+        raise Fail("hc_error", f"hc get {addr} printed no JSON")
+    if not isinstance(t, dict):
+        raise Fail("hc_error", f"hc get {addr} printed no record")
+    return t.get("terminal", t)
+
+
+def labels(t):
+    return t.get("labels") or {}
+
+
+def raw_status(t):
+    st = t.get("status")
+    if isinstance(st, dict):
+        return st.get("state")
+    return st if isinstance(st, str) else None
+
+
+def agent_status(t):
+    return STATUS.get(raw_status(t) or "", "unknown")
+
+
+def fg_name(t):
+    fg = t.get("foreground") or {}
+    return os.path.basename(str(fg.get("name") or "")).lstrip("-")
+
+
+def has_agent(t):
+    """An agent runs while the program reports status, or while a started agent holds the foreground."""
+    if raw_status(t):
+        return True
+    return bool(labels(t).get("agent")) and bool(fg_name(t)) and fg_name(t) not in SHELLS
+
+
+def pane_obj(t):
+    lb = labels(t)
+    fg = t.get("foreground") or {}
+    cwd = fg.get("cwd") or t.get("cwd") or ""
+    title = t.get("title") or ""
+    p = {"pane_id": lb.get("pane"), "tab_id": lb.get("tab"), "workspace_id": lb.get("ws"),
+         "cwd": cwd, "foreground_cwd": cwd, "focused": False, "agent_status": agent_status(t),
+         "terminal_id": t.get("address"), "terminal_title": title,
+         "terminal_title_stripped": title, "revision": t.get("turn", 0), "tokens": tokens([t])}
+    if has_agent(t):
+        p["agent"] = lb.get("agent") or "unknown"
+        if lb.get("agent_session"):
+            p["agent_session"] = {"agent": p["agent"], "kind": "id", "source": "herdr0",
+                                  "value": lb["agent_session"]}
+    return p
+
+
+def tokens(rows):
+    """report-metadata tokens, kept as tok_KEY labels; a workspace shows the union of its terminals'."""
+    out = {}
+    for t in rows:
+        out.update({k[4:]: v for k, v in labels(t).items() if k.startswith("tok_")})
+    return out
+
+
+def token_labels(o):
+    kvs = []
+    for tok in o["--token"]:
+        k, eq, v = tok.partition("=")
+        if not eq or not re.match(r"^[a-z0-9_]+$", k):
+            raise Fail("usage", f"--token needs key=value, got {tok!r}", 2)
+        kvs.append(f"tok_{k}={v}")
+    for k in o["--clear-token"]:
+        if not re.match(r"^[a-z0-9_]+$", k):
+            raise Fail("usage", f"--clear-token needs a key, got {k!r}", 2)
+        kvs.append(f"tok_{k}=")
+    return kvs
+
+
+def agent_obj(t):
+    a = pane_obj(t)
+    a.setdefault("agent", labels(t).get("agent") or "unknown")
+    name = labels(t).get("agent_name") or t.get("name")
+    if name:
+        a["name"] = name
+    a["state_change_seq"] = a["completion_seq"] = t.get("turn", 0)
+    a["interactive_ready"] = bool(raw_status(t))
+    return a
+
+
+def tab_obj(rows, tab_id):
+    lb = labels(rows[0])
+    status = next((agent_status(t) for t in rows if has_agent(t)), "unknown")
+    return {"tab_id": tab_id, "workspace_id": lb.get("ws"), "label": lb.get("tab_label") or tab_id,
+            "number": num(tab_id), "pane_count": len(rows), "focused": False, "agent_status": status}
+
+
+def num(ident):
+    m = re.search(r":[tp](\d+)$", ident or "")
+    return int(m.group(1)) if m else 0
+
+
+def emit(kind, result, ident):
+    result = dict(result)
+    result["type"] = kind
+    print(json.dumps({"id": f"cli:{ident}", "result": result}, separators=(",", ":")))
+
+
+def ms_to_s(ms, default):
+    try:
+        ms = int(ms)
+    except (TypeError, ValueError):
+        ms = default
+    return max(1, math.ceil(ms / 1000))
+
+
+def opts(argv, flags, multi=(), bools=()):
+    """Parse `--flag value`, repeatable `multi` flags and bare `bools`; returns (dict, positionals)."""
+    out, pos, i = {m: [] for m in multi}, [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            pos += argv[i + 1:]
+            break
+        key, _, inline = a.partition("=")
+        if key in flags or key in multi:
+            if inline == "" and "=" not in a:
+                if i + 1 >= len(argv):
+                    raise Fail("usage", f"{a} needs a value", 2)
+                i += 1
+                inline = argv[i]
+            if key in multi:
+                out[key].append(inline)
+            else:
+                out[key] = inline
+        elif a in bools:
+            out[a] = True
+        elif a.startswith("--"):
+            raise Fail("usage", f"unknown option {a}", 2)
+        else:
+            pos.append(a)
+        i += 1
+    return out, pos
+
+
+# ---------------------------------------------------------------- creation
+
+def state_dir():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    path = os.path.join(base, "herdr0")
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    return path
+
+
+class IdLock:
+    """Serialises id allocation and the run that claims it, among herdr0 calls on this host."""
+
+    def __enter__(self):
+        self.f = open(os.path.join(state_dir(), "ids.lock"), "w")
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        self.f.close()
+
+
+def mark_path(ctx, ws):
+    """The workspace's high-water tab/pane number, so a closed tab's ids are never handed out again."""
+    where = re.sub(r"[^A-Za-z0-9_.-]", "_", ctx.machine) if ctx.machine else "local"
+    path = os.path.join(state_dir(), "ids", where)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    return os.path.join(path, ws)
+
+
+def new_workspace_id(ctx):
+    used = {labels(t).get("ws") for t in ctx.terminals(include_finished=True)}
+    for _ in range(100):
+        w = "w" + "".join(secrets.choice(ID_CHARS) for _ in range(4))
+        if w not in used and not os.path.exists(mark_path(ctx, w)):
+            return w
+    raise Fail("internal", "no free workspace id")
+
+
+def next_number(ctx, ws):
+    """Claims the next number in ws; call under IdLock."""
+    rows = ctx.terminals([f"ws={ws}"], include_finished=True)
+    path = mark_path(ctx, ws)
+    try:
+        with open(path) as f:
+            mark = int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        mark = 0
+    n = 1 + max([mark] + [num(labels(t).get("tab")) for t in rows] + [num(labels(t).get("pane")) for t in rows])
+    with open(path + ".tmp", "w") as f:
+        f.write(f"{n}\n")
+    os.replace(path + ".tmp", path)
+    return n
+
+
+def self_path(ctx):
+    return "herdr0" if ctx.machine else os.path.realpath(__file__)
+
+
+def create_pane(ctx, ws, n, cwd, tab_label, ws_label, env):
+    tab, pane = f"{ws}:t{n}", f"{ws}:p{n}"
+    args = ["run", "--bg", "--no-parent"]
+    if ctx.machine:
+        args += ["--on", ctx.machine]
+    if cwd:
+        args += ["--cwd", cwd]
+    for kv in (f"ws={ws}", f"tab={tab}", f"pane={pane}", f"tab_label={tab_label or n}",
+               f"ws_label={ws_label or ws}"):
+        args += ["--label", kv]
+    argv = [self_path(ctx), "enter", "--workspace", ws, "--tab", tab, "--pane", pane, "--"]
+    if env:
+        argv = ["env", *env, *argv]
+    started = hc_json([*args, "--", *argv])
+    # run prints a short row, like ls; read the whole record back.
+    t = get_terminal(started["address"]) or started
+    t.setdefault("labels", {}).update({"ws": ws, "tab": tab, "pane": pane,
+                                       "tab_label": tab_label or str(n), "ws_label": ws_label or ws})
+    return t
+
+
+def check_env(env):
+    for kv in env:
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", kv):
+            raise Fail("usage", f"--env needs KEY=VALUE, got {kv!r}", 2)
+
+
+# ---------------------------------------------------------------- commands
+
+def workspace(ctx, sub, argv):
+    if sub == "create":
+        o, _ = opts(argv, {"--label", "--cwd"}, ("--env",), ("--focus", "--no-focus"))
+        check_env(o["--env"])
+        with IdLock():
+            ws = new_workspace_id(ctx)
+            t = create_pane(ctx, ws, next_number(ctx, ws), o.get("--cwd"), None, o.get("--label"), o["--env"])
+        p = pane_obj(t)
+        tab = tab_obj([t], p["tab_id"])
+        w = {"workspace_id": ws, "label": o.get("--label") or ws, "active_tab_id": p["tab_id"],
+             "tab_count": 1, "pane_count": 1, "focused": False, "agent_status": "unknown"}
+        return emit("workspace_created", {"workspace": w, "tab": tab, "root_pane": p}, "workspace:create")
+    if sub == "list":
+        groups = {}
+        for t in ctx.terminals():
+            if labels(t).get("ws"):
+                groups.setdefault(labels(t)["ws"], []).append(t)
+        out = []
+        for n, (ws, rows) in enumerate(sorted(groups.items()), 1):
+            tabs = sorted({labels(t).get("tab") for t in rows}, key=num)
+            status = next((agent_status(t) for t in rows if has_agent(t)), "unknown")
+            out.append({"workspace_id": ws, "label": labels(rows[0]).get("ws_label") or ws, "number": n,
+                        "active_tab_id": tabs[0], "tab_count": len(tabs), "pane_count": len(rows),
+                        "focused": False, "agent_status": status, "tokens": tokens(rows)})
+        return emit("workspace_list", {"workspaces": out}, "workspace:list")
+    if sub == "close":
+        _, pos = opts(argv, set())
+        if len(pos) != 1:
+            raise Fail("usage", "workspace close WORKSPACE", 2)
+        return close(ctx, f"ws={pos[0]}", "workspace", pos[0], "workspace:close")
+    if sub == "report-metadata":
+        o, pos = opts(argv, {"--source"}, ("--token", "--clear-token"))
+        if len(pos) != 1:
+            raise Fail("usage", "workspace report-metadata WORKSPACE --token k=v", 2)
+        rows = ctx.terminals([f"ws={pos[0]}"])
+        if not rows:
+            raise Fail("workspace_not_found", f"workspace {pos[0]} not found")
+        kvs = token_labels(o)
+        for t in rows if kvs else []:
+            hc(["label", "--json", t["address"], *kvs])
+        return emit("workspace_metadata", {"workspace_id": pos[0]}, "workspace:report_metadata")
+    if sub == "focus":
+        return emit("ok", {}, "workspace:focus")
+    unsupported(f"workspace {sub}")
+
+
+def close(ctx, kv, what, ident, cli):
+    rows = ctx.terminals([kv], include_finished=True)
+    if not rows:
+        raise Fail(f"{what}_not_found", f"{what} {ident} not found")
+    for t in rows:
+        if t.get("state") == "live":
+            hc(["kill", "--json", t["address"]])
+        hc(["rm", "--json", t["address"]])
+    return emit(f"{what}_closed", {f"{what}_id": ident}, cli)
+
+
+def tab(ctx, sub, argv):
+    if sub == "create":
+        o, _ = opts(argv, {"--workspace", "--cwd", "--label"}, ("--env",), ("--focus", "--no-focus"))
+        ws = o.get("--workspace") or os.environ.get("HERDR_WORKSPACE_ID")
+        if not ws:
+            raise Fail("usage", "tab create needs --workspace", 2)
+        check_env(o["--env"])
+        with IdLock():
+            rows = ctx.terminals([f"ws={ws}"])
+            if not rows:
+                raise Fail("workspace_not_found", f"workspace {ws} not found")
+            t = create_pane(ctx, ws, next_number(ctx, ws), o.get("--cwd"), o.get("--label"),
+                            labels(rows[0]).get("ws_label"), o["--env"])
+        p = pane_obj(t)
+        return emit("tab_created", {"tab": tab_obj([t], p["tab_id"]), "root_pane": p}, "tab:create")
+    if sub == "list":
+        o, _ = opts(argv, {"--workspace"})
+        groups = {}
+        for t in ctx.terminals([f"ws={o['--workspace']}"] if o.get("--workspace") else []):
+            if labels(t).get("tab"):
+                groups.setdefault(labels(t)["tab"], []).append(t)
+        tabs = [tab_obj(rows, tid) for tid, rows in sorted(groups.items(), key=lambda kv: num(kv[0]))]
+        return emit("tab_list", {"tabs": tabs}, "tab:list")
+    _, pos = opts(argv, set(), (), ("--focus", "--no-focus"))
+    if not pos:
+        raise Fail("usage", f"tab {sub} TAB", 2)
+    tid = pos[0]
+    if sub == "get":
+        rows = ctx.terminals([f"tab={tid}"])
+        if not rows:
+            raise Fail("tab_not_found", f"tab {tid} not found")
+        return emit("tab_info", {"tab": tab_obj(rows, tid)}, "tab:get")
+    if sub == "rename":
+        if len(pos) != 2:
+            raise Fail("usage", "tab rename TAB LABEL", 2)
+        rows = ctx.terminals([f"tab={tid}"])
+        if not rows:
+            raise Fail("tab_not_found", f"tab {tid} not found")
+        for t in rows:
+            hc(["label", "--json", t["address"], f"tab_label={pos[1]}"])
+            t["labels"]["tab_label"] = pos[1]
+        return emit("tab_info", {"tab": tab_obj(rows, tid)}, "tab:rename")
+    if sub == "close":
+        return close(ctx, f"tab={tid}", "tab", tid, "tab:close")
+    if sub == "focus":
+        return emit("ok", {}, "tab:focus")
+    unsupported(f"tab {sub}")
+
+
+def current_terminal(ctx):
+    me = os.environ.get("HC_TERMINAL_ID")
+    if me:
+        rows = [t for t in ctx.terminals() if t.get("address") == me]
+        if rows and labels(rows[0]).get("pane"):
+            return rows[0]
+    pane = os.environ.get("HERDR_PANE_ID")
+    if not pane:
+        raise Fail("pane_not_found", "not in a herdr0 pane (no HC_TERMINAL_ID or HERDR_PANE_ID)")
+    return ctx.one(f"pane={pane}", "pane", pane)
+
+
+def read_text(t, source, lines):
+    n = int(lines) if lines else 0
+    history = 0 if source == "visible" else max(n, 0)
+    # JSON: the text alone, without the CLI's "[hc] only its screen" note lines.
+    out = hc_json(["read", t["address"], "--lines", str(history)]).get("text") or ""
+    rows = out.rstrip("\n").split("\n")
+    while rows and not rows[-1].strip():
+        rows.pop()
+    if n > 0:
+        rows = rows[-n:]
+    return "\n".join(rows) + "\n"
+
+
+def pane(ctx, sub, argv):
+    if sub == "current":
+        opts(argv, set(), (), ("--current",))
+        return emit("pane_current", {"pane": pane_obj(current_terminal(ctx))}, "pane:current")
+    if sub == "list":
+        o, _ = opts(argv, {"--workspace", "--tab"})
+        kv = [f"ws={o['--workspace']}"] if o.get("--workspace") else []
+        kv += [f"tab={o['--tab']}"] if o.get("--tab") else []
+        rows = [t for t in ctx.terminals(kv) if labels(t).get("pane")]
+        return emit("pane_list", {"panes": [pane_obj(t) for t in sorted(rows, key=lambda t: num(labels(t)["pane"]))]},
+                    "pane:list")
+    if sub == "process-info":
+        o, pos = opts(argv, {"--pane"})
+        pid = o.get("--pane") or (pos[0] if pos else None)
+        if not pid:
+            raise Fail("usage", "pane process-info --pane PANE", 2)
+        t = ctx.one(f"pane={pid}", "pane", pid)
+        fg = t.get("foreground") or {}
+        procs = []
+        if fg.get("pid"):
+            argv_ = fg.get("argv") or []
+            procs.append({"pid": fg["pid"], "name": fg.get("name") or "", "argv": argv_,
+                          "cmdline": " ".join(argv_), "cwd": fg.get("cwd") or ""})
+        info = {"pane_id": pid, "shell_pid": t.get("pid"), "foreground_process_group_id": fg.get("pid"),
+                "foreground_processes": procs}
+        return emit("process_info", {"process_info": info}, "pane:process_info")
+    o, pos = opts(argv, {"--source", "--lines", "--match", "--timeout", "--regex"}, ("--token", "--clear-token"),
+                  ("--current",))
+    if not pos:
+        raise Fail("usage", f"pane {sub} PANE ...", 2)
+    pid, rest = pos[0], pos[1:]
+    t = ctx.one(f"pane={pid}", "pane", pid)
+    if sub == "get":
+        return emit("pane_info", {"pane": pane_obj(t)}, "pane:get")
+    if sub == "read":
+        sys.stdout.write(read_text(t, o.get("--source", "recent"), o.get("--lines")))
+        return
+    if sub == "run":
+        if len(rest) != 1:
+            raise Fail("usage", "pane run PANE COMMAND", 2)
+        hc(["send", "--json", t["address"], "--", rest[0]])
+        return emit("pane_run", {"pane_id": pid}, "pane:run")
+    if sub == "send-keys":
+        if not rest:
+            raise Fail("usage", "pane send-keys PANE KEY...", 2)
+        keys = [KEYS.get(k.lower(), k.lower() if len(k) > 1 else k) for k in rest]
+        hc(["keys", "--json", t["address"], *keys])
+        return emit("pane_keys", {"pane_id": pid}, "pane:send_keys")
+    if sub == "wait-output":
+        pattern = o.get("--match") or o.get("--regex")
+        if not pattern:
+            raise Fail("usage", "pane wait-output PANE --match TEXT", 2)
+        return wait_output(t, pid, pattern, "--regex" in o, ms_to_s(o.get("--timeout"), 30000))
+    if sub == "report-metadata":
+        kvs = token_labels(o)
+        if kvs:
+            hc(["label", "--json", t["address"], *kvs])
+        return emit("pane_metadata", {"pane_id": pid}, "pane:report_metadata")
+    if sub == "focus":
+        return emit("ok", {}, "pane:focus")
+    unsupported(f"pane {sub}")
+
+
+def matches(text, pattern, regex):
+    if regex:
+        return re.search(pattern, text) is not None
+    return pattern in text or pattern in text.replace("\n", "")
+
+
+def wait_output(t, pid, pattern, regex, seconds):
+    """Check the current screen first; hc only matches output printed after its wait starts.
+
+    The wait runs in short slices with a screen check before each, so output printed
+    between a check and the next wait's start is still seen.
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        if matches(read_text(t, "recent", 200), pattern, regex):
+            return emit("output_matched", {"pane_id": pid, "matched": True}, "pane:wait_output")
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise Fail("timeout", f"pane {pid} did not print {pattern!r} in {seconds} s")
+        began = time.monotonic()
+        if regex:
+            hc(["wait", "--json", t["address"], "--timeout", str(max(1, min(2, math.ceil(left))))], check=False)
+            pause(began)
+            continue
+        code, out, _ = hc(["wait", "--json", f"--output={pattern}", "--timeout",
+                           str(max(1, min(2, math.ceil(left)))), t["address"]], check=False)
+        pause(began)
+        try:
+            r = json.loads(out)
+        except ValueError:
+            r = {}
+        if code == 0 and r.get("ended") and r.get("reason") == "output":
+            return emit("output_matched", {"pane_id": pid, "matched": True}, "pane:wait_output")
+        if r.get("reason") == "exit":
+            raise Fail("pane_not_found", f"pane {pid} exited before printing {pattern!r}")
+
+
+def pause(began):
+    """hc wait can return at once (a plain shell, a blocked terminal): don't spin on it."""
+    spent = time.monotonic() - began
+    if spent < 0.5:
+        time.sleep(0.5 - spent)
+
+
+def session_from_args(kind, args):
+    """The native session an agent's own arguments name: claude --session-id/--resume/-r X, codex resume X."""
+    if kind == "claude":
+        for i, a in enumerate(args):
+            for flag in ("--session-id", "--resume"):
+                if a.startswith(flag + "="):
+                    return a.split("=", 1)[1]
+            if a in ("--session-id", "--resume", "-r") and i + 1 < len(args) and not args[i + 1].startswith("-"):
+                return args[i + 1]
+    if kind == "codex" and "resume" in args:
+        i = args.index("resume")
+        if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            return args[i + 1]
+    return ""
+
+
+def resolve_agent(ctx, target):
+    if ":" in target:
+        return ctx.one(f"pane={target}", "agent", target)
+    rows = [t for t in ctx.terminals([f"agent_name={target}"]) if has_agent(t)]
+    if not rows:
+        rows = [t for t in ctx.terminals() if t.get("name") == target]
+    if len(rows) != 1:
+        raise Fail("agent_not_found", f"agent {target} not found" if not rows
+                   else f"agent {target} matches {len(rows)} terminals")
+    return rows[0]
+
+
+def refresh(t):
+    full = get_terminal(t["address"])
+    if full is None:
+        raise Fail("agent_not_found", f"{t['address']} is gone")
+    return full
+
+
+def poll(t, until, seconds, sent_turn=None):
+    deadline = time.monotonic() + seconds
+    while True:
+        t = refresh(t)
+        if t.get("state") != "live":
+            raise Fail("agent_not_found", f"{t.get('address')} finished")
+        if agent_status(t) in until:
+            return t
+        if sent_turn is not None and "working" in until and t.get("turn", 0) > sent_turn:
+            return t
+        if time.monotonic() >= deadline:
+            raise Fail("timeout", f"agent status stayed {agent_status(t)}; wanted {'/'.join(sorted(until))}")
+        time.sleep(0.25)
+
+
+def agent(ctx, sub, argv):
+    if sub == "list":
+        rows = [t for t in ctx.terminals() if labels(t).get("pane") and has_agent(t)]
+        return emit("agent_list", {"agents": [agent_obj(t) for t in rows]}, "agent:list")
+    if sub == "explain":
+        unsupported("agent explain")
+    if sub == "start":
+        o, pos = opts(argv, {"--kind", "--pane", "--timeout", "--cwd"})
+        kind = o.get("--kind")
+        if not pos or not o.get("--pane") or (not kind and len(pos) < 2):
+            raise Fail("usage", "agent start NAME --kind K --pane P [-- ARGS...] | agent start NAME --pane P -- ARGV...", 2)
+        name = pos[0]
+        if kind:
+            # herdr 0.9: the words after -- are arguments to the kind's program. The kind is typed
+            # bare, so the pane's shell resolves it (herdr-launch defines claude/codex as functions there).
+            if not re.match(r"^[a-z][a-z0-9_-]*$", kind):
+                raise Fail("usage", f"agent kind {kind!r} is not valid", 2)
+            line = " ".join([kind, *map(shlex.quote, pos[1:])])
+            args = pos[1:]
+        else:
+            kind = os.path.basename(pos[1])
+            line = shlex.join(pos[1:])
+            args = pos[2:]
+        session = session_from_args(kind, args)
+        if not re.match(r"^[a-z][a-z0-9_-]{0,31}$", name):
+            raise Fail("usage", f"agent name {name!r} is not valid", 2)
+        if [t for t in ctx.terminals([f"agent_name={name}"]) if has_agent(t)]:
+            raise Fail("agent_name_taken", f"agent {name} is already live")
+        t = ctx.one(f"pane={o['--pane']}", "pane", o["--pane"])
+        if has_agent(t) or (fg_name(t) and fg_name(t) not in SHELLS):
+            raise Fail("pane_busy", f"pane {o['--pane']} is not at its shell prompt")
+        hc(["label", "--json", t["address"], f"agent={kind}", f"agent_name={name}", f"agent_session={session}"])
+        hc(["send", "--json", t["address"], "--", line])
+        t = poll(t, {"idle", "working", "done", "blocked"}, ms_to_s(o.get("--timeout"), 90000))
+        if agent_status(t) == "blocked":
+            raise Fail("agent_blocked", f"agent {name} started at a dialog or permission prompt")
+        return emit("agent_started", {"agent": agent_obj(t)}, "agent:start")
+    o, pos = opts(argv, {"--timeout", "--source", "--lines"}, ("--until",), ("--wait",))
+    if not pos:
+        raise Fail("usage", f"agent {sub} TARGET", 2)
+    t = resolve_agent(ctx, pos[0])
+    if sub == "get":
+        return emit("agent_info", {"agent": agent_obj(t)}, "agent:get")
+    if sub == "read":
+        sys.stdout.write(read_text(t, o.get("--source", "recent"), o.get("--lines")))
+        return
+    if sub == "focus":
+        return emit("ok", {}, "agent:focus")
+    until = {u for u in o["--until"]}
+    if sub == "wait":
+        t = poll(t, until or {"idle", "done"}, ms_to_s(o.get("--timeout"), 120000))
+        return emit("agent_info", {"agent": agent_obj(t)}, "agent:wait")
+    if sub == "prompt":
+        if len(pos) != 2:
+            raise Fail("usage", "agent prompt TARGET TEXT", 2)
+        if agent_status(t) == "blocked":
+            raise Fail("agent_blocked", f"{pos[0]} is blocked at a dialog or permission prompt; not typed")
+        seconds = ms_to_s(o.get("--timeout"), 30000)
+        if o.get("--wait") and not until:
+            hc_json(["send", "--wait", "--timeout", str(seconds), t["address"], "--", pos[1]], timeout=seconds + 30)
+            return emit("agent_info", {"agent": agent_obj(refresh(t))}, "agent:prompt")
+        sent = hc_json(["send", t["address"], "--", pos[1]], timeout=120)
+        if o.get("--wait"):
+            if sent.get("started") and "working" in until:
+                return emit("agent_info", {"agent": dict(agent_obj(refresh(t)), agent_status="working")},
+                            "agent:prompt")
+            t = poll(t, until, seconds, sent.get("turn", 0))
+        return emit("agent_info", {"agent": agent_obj(refresh(t))}, "agent:prompt")
+    unsupported(f"agent {sub}")
+
+
+def machine(ctx, sub, argv):
+    if sub != "list":
+        unsupported(f"machine {sub}")
+    rows = hc_json(["machine", "ls"]).get("machines") or []
+    out = [{"label": m.get("name"), "id": m.get("id"), "target": m.get("target"), "host": m.get("host"),
+            "enabled": True, "state": m.get("state")} for m in rows]
+    print(json.dumps(out, separators=(",", ":")))
+
+
+# ---------------------------------------------------------------- enter
+
+def enter(argv):
+    o, cmd = opts(argv, {"--workspace", "--tab", "--pane", "--new-workspace"})
+    env = os.environ.copy()
+    if o.get("--new-workspace"):
+        me = env.get("HC_TERMINAL_ID")
+        if not me:
+            raise Fail("usage", "enter --new-workspace runs inside an hc terminal (no HC_TERMINAL_ID)", 2)
+        ctx = Ctx(None)
+        with IdLock():
+            ws = new_workspace_id(ctx)
+            n = next_number(ctx, ws)
+            tab, pane_id = f"{ws}:t{n}", f"{ws}:p{n}"
+            hc(["label", "--json", me, f"ws={ws}", f"tab={tab}", f"pane={pane_id}", f"tab_label={n}",
+                f"ws_label={o['--new-workspace']}"])
+    else:
+        ws, tab, pane_id = o.get("--workspace"), o.get("--tab"), o.get("--pane")
+        if not (ws and tab and pane_id):
+            raise Fail("usage", "enter needs --workspace, --tab and --pane, or --new-workspace", 2)
+    shim = os.path.join(os.path.expanduser("~"), ".local", "lib", "herdr-kit", "hc-bin")
+    env.update({"HERDR_ENV": "1", "HERDR_KIT_BACKEND": "hc", "HERDR_WORKSPACE_ID": ws,
+                "HERDR_TAB_ID": tab, "HERDR_PANE_ID": pane_id,
+                "PATH": shim + os.pathsep + env.get("PATH", "")})
+    env.pop("HERDR_SOCKET_PATH", None)
+    if not cmd:
+        cmd = [env.get("SHELL") or "/bin/sh"]
+    try:
+        os.execvpe(cmd[0], cmd, env)
+    except OSError as e:
+        raise Fail("exec_failed", f"cannot run {cmd[0]}: {e}", 127)
+
+
+# ---------------------------------------------------------------- main
+
+def main(argv):
+    machine_label, i = None, 0
+    while i < len(argv) and argv[i].startswith("-"):
+        a = argv[i]
+        if a in ("-h", "--help"):
+            sys.stdout.write(HELP)
+            return 0
+        if a == "--json":
+            i += 1
+        elif a == "--machine" and i + 1 < len(argv):
+            machine_label, i = argv[i + 1], i + 2
+        elif a.startswith("--machine="):
+            machine_label, i = a.split("=", 1)[1], i + 1
+        elif a == "--skill":
+            unsupported("--skill (use hc --skill)")
+        elif a in ("-V", "--version"):
+            print("herdr0 (herdr 0.9 commands over hc)")
+            return 0
+        else:
+            unsupported(a)
+    rest = argv[i:]
+    if not rest:
+        sys.stderr.write(HELP)
+        return 2
+    group, sub, args = rest[0], (rest[1] if len(rest) > 1 else ""), rest[2:]
+    ctx = Ctx(machine_label)
+    if group == "enter":
+        enter(rest[1:])
+    elif group == "notification" and sub == "show":
+        return 0
+    elif group in ("plugin", "server", "worktree", "status", "notification"):
+        unsupported(" ".join(rest[:2]))
+    elif group in ("-h", "help") or sub in ("-h", "--help"):
+        sys.stdout.write(HELP)
+    else:
+        handler = {"workspace": workspace, "tab": tab, "pane": pane, "agent": agent, "machine": machine}.get(group)
+        if not handler:
+            unsupported(group)
+        handler(ctx, sub, args)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Fail as e:
+        print(json.dumps({"error": {"code": e.code, "message": e.message}}), file=sys.stderr)
+        sys.exit(e.exit_code)

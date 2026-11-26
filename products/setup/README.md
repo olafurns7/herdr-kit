@@ -2,6 +2,11 @@
 
 Fleet orchestration and the taskr plugin require [Herdr 0.9.0 or newer](https://herdr.dev/docs/install/).
 
+herdr-core (`hc`) is an opt-in backend: `install.sh --herdr-backend hc` selects
+`HERDR_KIT_BACKEND=hc`, and `herdr0` serves the same `herdr` commands over hc.
+The move, with the owner's install, core start, stop and rollback steps, is in
+[docs/herdr-core.md](docs/herdr-core.md).
+
 taskr owns installation. From a herdr-kit checkout:
 
 ```sh

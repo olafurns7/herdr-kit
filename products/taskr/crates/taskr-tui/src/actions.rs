@@ -136,7 +136,10 @@ impl Job {
             let Job::Focus { pane } = self else {
                 return Ok(Done::Ok);
             };
-            let socket = env::var("HERDR_SOCKET_PATH").map_err(|_| "not in a Herdr pane")?;
+            let socket = focus_socket(
+                env::var("HERDR_KIT_BACKEND").ok(),
+                env::var("HERDR_SOCKET_PATH").ok(),
+            )?;
             return focus(&socket, pane).map(|()| Done::Ok);
         };
         let command: Vec<String> = taskr.iter().cloned().chain(args).collect();
@@ -235,6 +238,15 @@ pub fn request_key(ask_id: i64) -> String {
 /// The one JSON value taskr printed on stdout, or None.
 fn reply(out: &client::Output) -> Option<serde_json::Value> {
     serde_json::from_slice(&out.stdout).ok()
+}
+
+/// The herdr socket `focus` may ask. Under `HERDR_KIT_BACKEND=hc` there is none:
+/// hc has no layout to focus, and herdr 0.9's socket is never asked.
+fn focus_socket(backend: Option<String>, socket: Option<String>) -> Result<String, String> {
+    if backend.as_deref() == Some("hc") {
+        return Err("focus is not available under hc".into());
+    }
+    socket.ok_or_else(|| "not in a Herdr pane".into())
 }
 
 /// A reply longer than this is not one of Herdr's.
@@ -595,6 +607,21 @@ mod tests {
         );
         assert!(focus(dir.join("none.sock").to_str().unwrap(), "w1:p2").is_err());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn focus_asks_no_herdr_socket_under_hc() {
+        let sock = || Some("/fixture/herdr.sock".to_string());
+        assert_eq!(
+            focus_socket(Some("hc".into()), sock()),
+            Err("focus is not available under hc".into())
+        );
+        assert_eq!(focus_socket(None, sock()), Ok("/fixture/herdr.sock".into()));
+        assert_eq!(
+            focus_socket(Some("herdr".into()), sock()),
+            Ok("/fixture/herdr.sock".into())
+        );
+        assert_eq!(focus_socket(None, None), Err("not in a Herdr pane".into()));
     }
 
     /// The write paths against a scratch ledger, never the live one: `TASKR_DB` and `HOME`

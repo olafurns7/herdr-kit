@@ -11,7 +11,10 @@ pub(super) fn restart(db: Option<&db::Connection>, dir: &Path, lock: &Path) -> R
         }
     };
     let socket = || {
-        if let Some(db) = db {
+        // The recorded socket may be herdr 0.9's; under hc use hc's core socket.
+        if herdr::hc() {
+            Ok(herdr::socket())
+        } else if let Some(db) = db {
             meta(db, "daemon_socket")
                 .map(|s| s.filter(|s| !s.is_empty()).unwrap_or_else(herdr::socket))
         } else {
@@ -138,11 +141,9 @@ fn detached_command(
     tmp_base: Option<&std::ffi::OsStr>,
 ) -> Command {
     let mut cmd = Command::new(exe);
-    cmd.args(args)
-        .env_clear()
-        .env("HOME", home)
-        .env("HERDR_SOCKET_PATH", sock)
-        .current_dir(home)
+    cmd.args(args).env_clear().env("HOME", home);
+    socket_env(&mut cmd, sock, herdr::hc());
+    cmd.current_dir(home)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -155,9 +156,41 @@ fn detached_command(
     cmd
 }
 
+/// The restarted daemon's socket variables: under hc it keeps the switch and
+/// HC_SOCKET pins the resolved core socket; herdr 0.9's path is not passed.
+fn socket_env(cmd: &mut Command, sock: &str, hc: bool) {
+    if hc {
+        cmd.env("HERDR_KIT_BACKEND", "hc").env("HC_SOCKET", sock);
+    } else {
+        cmd.env("HERDR_SOCKET_PATH", sock);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restart_env_under_hc_passes_the_core_socket_not_herdrs() {
+        let env = |hc| {
+            let mut cmd = Command::new("/fixture/taskr");
+            socket_env(&mut cmd, "/fixture/socket", hc);
+            cmd.get_envs()
+                .map(|(k, v)| (k.to_owned(), v.map(|v| v.to_owned())))
+                .collect::<Vec<_>>()
+        };
+        let some = |k: &str, v: &str| (k.into(), Some(std::ffi::OsString::from(v)));
+        assert_eq!(
+            env(true),
+            vec![
+                some("HC_SOCKET", "/fixture/socket"),
+                some("HERDR_KIT_BACKEND", "hc")
+            ]
+        );
+        assert_eq!(
+            env(false),
+            vec![some("HERDR_SOCKET_PATH", "/fixture/socket")]
+        );
+    }
     #[test]
     fn detached_restart_preserves_tmp_base_without_worker_identity() {
         let home = Path::new("/fixture/home");

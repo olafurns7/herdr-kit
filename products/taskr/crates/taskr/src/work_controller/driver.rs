@@ -116,8 +116,7 @@ impl Backend for Local {
         if !crate::write::herdr::up(&sock) {
             return Err(failure("Herdr unavailable; no CLI run or server start"));
         }
-        let mut cmd = Command::new("herdr");
-        cmd.args(args).env("HERDR_SOCKET_PATH", sock);
+        let cmd = crate::write::herdr::cli(&sock, args);
         let out = process::run(
             cmd,
             Duration::from_secs(if args.starts_with(&["agent", "wait"]) {

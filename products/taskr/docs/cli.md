@@ -303,5 +303,6 @@ are refused rather than exhausting the stack.
 | `TASKR_FORMAT=json` | JSON output. |
 | `TASKR_CHECKIN=1` | Enable optional taskr hub check-in nudges; off by default. |
 | `HERDR_SOCKET_PATH` | Herdr socket path; default `$HOME/.config/herdr/herdr.sock`. |
+| `HERDR_KIT_BACKEND` | `hc` selects herdr-core: the guard checks `HC_SOCKET` (else `$XDG_RUNTIME_DIR/herdr-core/${HC_SESSION:-default}.sock`) and `HERDR_SOCKET_PATH` is ignored. See [daemon.md](daemon.md#herdr-core-herdr_kit_backendhc). |
 | `TASKR_BIN` | taskr-tui's taskr CLI path; default `taskr` on `PATH`. |
 | `TASKR_TMP_BASE` | A dedicated taskr directory for lane tmp (default `/tmp/taskr-<uid>`), never HOME or a shared tmp/project directory. Absolute path; initialize its marker explicitly with `tmp ID --mkdir`. See [Lane tmp dirs](#lane-tmp-dirs). |

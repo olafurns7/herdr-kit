@@ -958,5 +958,82 @@ exec /bin/cp "$@"
     assert result.returncode == 0, result.stderr
     assert (h / '.agents/skills/herdr-fleet/SKILL.md').is_file()
 
+    # HERDR_KIT_BACKEND=hc: herdr0 and its shim link, the taskr unit and its
+    # drop-in; no plugin, no sidebar step, nothing enabled or started.
+    def hc_placed(h):
+        assert (h / '.local/bin/herdr0').read_bytes() == (setup / 'bin/herdr0').read_bytes()
+        assert (h / '.local/bin/herdr0').stat().st_mode & 0o777 == 0o755
+        shim = h / '.local/lib/herdr-kit/hc-bin/herdr'
+        assert shim.is_symlink() and os.readlink(shim) == str(h / '.local/bin/herdr0')
+        assert (h / '.config/systemd/user/taskr.service').read_bytes() == (setup / 'systemd/taskr.service').read_bytes()
+        dropin = (h / '.config/systemd/user/taskr.service.d/herdr-kit-hc.conf').read_text()
+        assert dropin == (setup / 'systemd/taskr-hc.conf').read_text()
+        assert 'Environment=HERDR_KIT_BACKEND=hc' in dropin
+        assert 'Environment=HC_SOCKET=%t/herdr-core/default.sock' in dropin
+        assert 'Environment=PATH=%h/.local/lib/herdr-kit/hc-bin:' in dropin
+        assert not (h / '.local/share/taskr/plugin').exists()
+
+    for remote in (False, True):
+        h = case(f'hc backend places shim, unit and drop-in, no plugin (remote={remote})')
+        out = run(h, '--fleet', '--herdr-backend', 'hc', binary=True, remote=remote)
+        hc_placed(h)
+        assert 'herdr-radar' not in out and 'herdr plugin' not in out, out
+        assert 'systemctl --user daemon-reload && systemctl --user enable taskr.service' in out
+        rerun = run(h, '--fleet', '--herdr-backend=hc', binary=True, remote=remote)
+        assert f'SKIP {h / ".local/lib/herdr-kit/hc-bin/herdr"} (identical)' in rerun
+        assert 'systemctl' not in rerun
+        hc_placed(h)
+
+    # A fake hc beside the fake herdr: fleet.sh takes hc's skill only when the
+    # installer exported HERDR_KIT_BACKEND=hc.
+    hc_stubs = scratch / 'hc-bin'
+    executable(hc_stubs / 'hc', '''#!/bin/sh
+printf '%s\\n' "$*" >>"$HOME/hc-control.log"
+[ "$*" = --skill ] || exit 99
+printf '%s\\n' 'upstream synthetic hc skill'
+''')
+    hc_path = {'PATH': f'{hc_stubs}:{stubs}:/usr/bin:/bin'}
+    herdr_skill = '.agents/skills/herdr/SKILL.md'
+    h = case('hc install exports the switch: fleet takes the hc skill')
+    run(h, '--fleet', '--herdr-backend', 'hc', extra=hc_path)
+    hc_placed(h)
+    assert (h / herdr_skill).read_text() == 'upstream synthetic hc skill\n'
+    assert (h / 'hc-control.log').read_text() == '--skill\n'
+    h = case('plain install with hc on PATH keeps the herdr skill and no switch')
+    run(h, '--fleet', extra=hc_path)
+    assert (h / herdr_skill).read_text() == 'upstream synthetic herdr skill\n'
+    assert not (h / 'hc-control.log').exists()
+    assert not (h / '.local/bin/herdr0').exists() and not (h / '.local/lib/herdr-kit').exists()
+
+    h = case('HERDR_KIT_BACKEND=hc selects the hc install; --herdr-backend herdr overrides it')
+    run(h, '--fleet', extra={'HERDR_KIT_BACKEND': 'hc', **hc_path})
+    hc_placed(h)
+    assert (h / herdr_skill).read_text() == 'upstream synthetic hc skill\n'
+    h = case('explicit herdr backend under the switch installs as before')
+    out = run(h, '--fleet', '--herdr-backend', 'herdr', binary=True, extra={'HERDR_KIT_BACKEND': 'hc', **hc_path})
+    assert (h / herdr_skill).read_text() == 'upstream synthetic herdr skill\n'
+    assert not (h / 'hc-control.log').exists()
+    assert not (h / '.local/bin/herdr0').exists() and not (h / '.local/lib/herdr-kit').exists()
+    assert not (h / '.config/systemd/user/taskr.service.d').exists()
+    assert (h / '.local/share/taskr/plugin/herdr-plugin.toml').is_file()
+    assert 'MANUAL: find the herdr-radar settings directory' in out
+
+    h = case('hc shim path held by another file is left alone')
+    write(h / '.local/lib/herdr-kit/hc-bin/herdr', 'SYNTH_USER_FILE\n')
+    out = run(h, '--fleet', '--herdr-backend', 'hc')
+    assert f'MERGE {h / ".local/lib/herdr-kit/hc-bin/herdr"} is not the herdr0 link' in out
+    assert (h / '.local/lib/herdr-kit/hc-bin/herdr').read_text() == 'SYNTH_USER_FILE\n'
+
+    h = case('hc backend turns radar off with one note and no Herdr call')
+    out = run(h, '--radar', '--herdr-backend', 'hc', binary=True, extra={'HERDR_ENV': '1'})
+    assert out.count('radar: skipped; the hc backend has no plugins') == 1, out
+    assert not (h / 'control.log').exists()
+
+    for bad in (('--herdr-backend',), ('--herdr-backend', 'tmux'), ('--herdr-backend=',)):
+        h = case(f'invalid backend refused: {bad}')
+        out = run(h, *bad, success=False)
+        assert '--herdr-backend' in out
+        assert not (h / '.local').exists()
+
 print(f'PASS: {count} installer cases ({sys.argv[2]})')
 PY

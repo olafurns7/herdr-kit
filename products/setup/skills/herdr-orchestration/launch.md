@@ -2,6 +2,18 @@
 
 Load when: before opening the taskr hub workspace; before creating a campaign or task worktree or workspace; before starting a campaign lead; before reusing or rearranging an existing tab or pane; for a manual launch, or recovery after `herdr-launch` is missing or failed (first inspect what the script completed, below). The core's Launch section covers an ordinary launch in a new helper tab or a fresh root pane. Part of herdr-orchestration; `SKILL.md` is the core, and its Launch section is the normal path.
 
+## herdr-core backend
+
+`HERDR_KIT_BACKEND=hc` selects herdr-core (`hc`). Unset or any other value means Herdr 0.9 and nothing in this section applies. Under the switch:
+
+- `herdr` on PATH is `herdr0`, which serves the `herdr` commands this skill uses over hc, with the same id shapes (`wN`, `wN:tN`, `wN:pN`) and `--machine`. Use those commands; `plugin`, `server` and `worktree` subcommands, `status` and `agent explain` exit 2 with `herdr0: unsupported: ...`. So the work controller's worktree step (`herdr worktree list`) does not work under hc. `herdr-launch --reserved` refuses a Codex lane before it starts; a fresh reserved Claude lane starts but fails closed at step 6 (no native identity, prompt withheld).
+- `herdr-hub move` does not work under hc. To restart or repair the hub, record its handover, quit the hub Claude, and at its hc shell terminal's prompt type the start form `herdr-hub <root> --lane <lane> --account <account> -- --resume <session id>` (without `-- --resume` for a new session).
+- No agent ever starts an hc core: never run `hc server`, `herdr-core`, the hc installer or any bare `hc` command, because the first `hc` call starts a core that keeps the caller's environment. With no core running, `herdr` exits 3 with `herdr0: no hc core running; the owner starts it`: stop and tell the owner (`owner.md`); the commands are in herdr-kit's [herdr-core runbook](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/docs/herdr-core.md).
+- The owner starts each root (hub or campaign lead) in its own terminal with one line, `hc run --bg --name NAME --keep --no-parent --cwd DIR -- herdr0 enter --new-workspace LABEL -- CMD`. Every terminal `herdr0` creates runs through `herdr0 enter`, which sets `HERDR_ENV=1`, the pane, workspace and tab ids, and the switch, and passes `--no-parent`, so lanes outlive their starter and never type notes into its input.
+- `herdr-launch` starts Codex with `--no-daemon`; a Codex lane without it runs its commands outside hc. Add it to any manual Codex start.
+- Plugins and radar are off: no `[[startup]]` hook starts the taskr daemon (its systemd unit does) and no radar plugin runs.
+- Status, `notification show`, reboot and teardown differ too: `workflow.md` "Blocked or odd status" (status), `owner.md` (notifications), `recovery.md` (reboot), `teardown.md` (closing).
+
 ## Another host
 
 For every Herdr read, send, close or launch on another host, use
@@ -107,7 +119,7 @@ The hub registers one long-lived root per repository once, with its location fla
 `herdr-hub` and `herdr-lead` start and move accept a `hub` lane, such as `fable-high`; a lead uses an `orch` lane unless the operator names a `hub` lane with `--lane`.
 The hub and leads start with Claude Code Mode off; the hub turns it on only with `HERDR_HUB_CODE_MODE=1`, a lead only with `HERDR_LEAD_CODE_MODE=1`. A Code Mode session resumes only with Code Mode on, and `herdr-hub move` keeps the moving hub's Code Mode by default (`--code-mode on|off` overrides it); a `--resume` of a hub session that started with Code Mode needs it on, for example `herdr-hub move ... --code-mode on -- --resume <session id>`; otherwise move without `--resume`. Neither `herdr-hub` nor `herdr-lead` answers the Code Mode consent dialog (Enter or Esc there means No): each records one ledger note on the root naming the hand step and waits up to 600 s for a person to select **Yes, turn on Code Mode**; then `herdr-lead` fails step 6 and the hub's push check fails, each with that reason, and the hand steps are in the README. Accept Code Mode once per account first: [setup README "Code Mode"](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/README.md#code-mode).
 
-To restart a running hub onto a new session, the hub records its handover and then runs, in its own pane:
+To restart a running hub onto a new session, the hub records its handover and then runs, in its own pane (under hc: the start form in "herdr-core backend" instead):
 
 ```bash
 taskr handover --as <root> --note "<checkpoint>"
@@ -179,7 +191,7 @@ Move leads one at a time, starting low-traffic; stop rollout on any failed live 
 For a plain lead, use an authorized `orch-` lane and send the brief with `herdr agent prompt`. It registers its own root if needed (`workflow.md` "Brief variants"), and its first ledger act on the root is `taskr adopt <root> --pane <pane>`. The hub checks that `taskr campaign <root>` does not read `unregistered` before reporting startup. A root without a pane cannot be watched or focused from the owner's view. Every lead brief says owner decisions and actions are owner asks; owner notes only summarize them (`owner.md`). A repository's worktree setup plugin may skip `orch/*` branches. The lead needs no dependencies and runs gates in task worktrees.
 
 Do not type `/restart` in a Claude push lane. Do not accept an update restart
-prompt. It drops the channel flag. Use the saved session ID and authorized lane:
+prompt. It drops the channel flag. Use the saved session ID and authorized lane (under hc the hub uses its start form, "herdr-core backend"):
 
 ```bash
 herdr-hub move <root> --lane <lane> --account <account> -- --resume <session id>

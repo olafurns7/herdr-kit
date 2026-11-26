@@ -72,6 +72,9 @@ def encoded(value):
 class Adapter:
     def __init__(self, args):
         require(len(args) == 7, "usage: herdr-codex-identity TASK LAUNCH ROOT GENERATION NAME PANE CWD")
+        # The identity proof reports through herdr 0.9's socket API, which herdr-core lacks.
+        require(os.environ.get("HERDR_KIT_BACKEND") != "hc",
+                "not supported under HERDR_KIT_BACKEND=hc (needs the herdr socket); work withheld")
         self.task, self.launch, self.root, self.generation = [int(n) for n in args[:4]]
         require(min(self.task, self.launch, self.root) > 0 and self.generation >= 0, "invalid reservation IDs")
         self.name, self.pane, cwd = args[4:]
