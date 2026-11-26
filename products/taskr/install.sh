@@ -656,8 +656,9 @@ if [ "$radar" -eq 1 ] || [ "$codator" -eq 1 ] || [ "$notifications" -eq 1 ] || [
                             # A client's status has no supervised key: no kill filter here.
                             add_next_step 'Run the client daemon under systemd with the hc drop-in:'
                             add_next_step 'systemctl --user daemon-reload && systemctl --user enable taskr.service && systemctl --user restart taskr.service'
-                            add_next_step 'Check it: taskr --json daemon --status shows "mode":"client", "running":true and the pid of'
-                            add_next_step 'systemctl --user show -p MainPID --value taskr.service; if the pid differs, end that other daemon.'
+                            add_next_step 'Check that the first shows "mode":"client" and "running":true with the pid the second prints; if the pids differ, end that other daemon (kill PID):'
+                            add_next_step 'taskr --json daemon --status'
+                            add_next_step 'systemctl --user show -p MainPID --value taskr.service'
                         else
                             add_next_step 'Run the ledger daemon under systemd with the hc drop-in:'
                             add_next_step 'systemctl --user daemon-reload && systemctl --user enable taskr.service && systemctl --user restart taskr.service'

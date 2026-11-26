@@ -1071,6 +1071,10 @@ printf '%s\\n' 'upstream synthetic hc skill'
     assert 'systemctl --user daemon-reload && systemctl --user enable taskr.service' in out
     assert 'Run the client daemon under systemd with the hc drop-in:' in out
     assert 'ledger daemon' not in out and 'supervised' not in out, out
+    steps = out.split('\nNext steps (run yourself):\n', 1)[1].splitlines()
+    check = next(i for i, line in enumerate(steps) if line.startswith('  Check that the first shows'))
+    assert steps[check].endswith(':') and steps[check + 1:check + 3] == [
+        '  taskr --json daemon --status', '  systemctl --user show -p MainPID --value taskr.service'], steps
     rerun = run(h, '--fleet', '--herdr-backend', 'hc')
     assert f'SKIP {h / unit_rel} (identical)' in rerun and (h / unit_rel).read_text() == client_unit
     out = run(h, '--herdr-backend', 'hc', '--taskr-client', 'http://100.64.0.2:7788')
@@ -1092,23 +1096,29 @@ printf '%s\\n' 'upstream synthetic hc skill'
     # The installer ends with one summary of every sidecar staged or found
     # staged in this run; moving a sidecar into place resolves it (SKIP).
     def sidecar_summary(out):
-        assert out.count('\nStaged sidecars (') <= 1, out
-        if '\nStaged sidecars (' not in out:
+        marker = '\nSidecars (resolve yourself; '
+        assert out.count(marker) <= 1, out
+        if marker not in out:
+            assert 'Staged sidecars:' not in out, out
             return None
-        block = out.split('\nStaged sidecars (', 1)[1]
+        block = out.split(marker, 1)[1]
         assert 'agents keep reading the old file until you do' in block.splitlines()[0]
         # Nothing the placer or next steps print comes after the block.
         for line in block.splitlines():
             assert not re.match(r'(INSTALL|UPDATE|SKIP|MERGE|KEEP|MANUAL|Next steps)\b', line), line
         found = {'staged': [], 'settings': [], 'stale': []}
-        section = 'staged'
+        section = None
         for line in block.splitlines()[1:]:
-            if line.startswith('Settings sidecars ('):
+            if line == 'Staged sidecars:':
+                section = 'staged'
+            elif line.startswith('Settings sidecars ('):
                 section = 'settings'
             elif line.startswith('Stale sidecars ('):
                 section = 'stale'
             elif line.startswith('  '):
+                assert section, line
                 found[section].append(line[2:])
+        assert block.count('Staged sidecars:') == (1 if found['staged'] else 0), block
         if found['staged']:
             assert 'compare it with FILE (diff -u FILE FILE.herdr-setup)' in block
             assert 'move the sidecar into place (mv FILE.herdr-setup FILE)' in block

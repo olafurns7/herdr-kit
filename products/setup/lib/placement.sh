@@ -343,8 +343,9 @@ print_sidecar_list() {
 
 print_sidecar_summary() {
     [ -n "$staged_sidecars$settings_sidecars$stale_sidecars" ] || return 0
-    printf '\nStaged sidecars (resolve yourself; agents keep reading the old file until you do):\n'
+    printf '\nSidecars (resolve yourself; agents keep reading the old file until you do):\n'
     if [ -n "$staged_sidecars" ]; then
+        printf '%s\n' 'Staged sidecars:'
         print_sidecar_list "$staged_sidecars"
         printf '%s\n' 'For each FILE.herdr-setup: compare it with FILE (diff -u FILE FILE.herdr-setup),' \
             'then move the sidecar into place (mv FILE.herdr-setup FILE); the next install' \
