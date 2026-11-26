@@ -61,7 +61,9 @@ beside normal work, days before the stop.
    ```
 
 5. **Owner**, each host: put the `herdr0` shim first on PATH in hc shells.
-   Append this one line at the end of `~/.zshrc` and `~/.bashrc`:
+   Append this one line at the end of `~/.zshrc`, `~/.bashrc` and `~/.profile`
+   (a bash login shell's stock `~/.profile` sources `~/.bashrc`, then puts
+   `~/.local/bin` first again):
 
    ```sh
    [ "${HERDR_KIT_BACKEND:-}" = hc ] && PATH="$HOME/.local/lib/herdr-kit/hc-bin:$PATH"
