@@ -375,6 +375,25 @@ class Herdr0(unittest.TestCase):
         self.herdr("pane", "run", f"{ws}:p1", "true", env={"FAKE_HC_SEND_UNAVAILABLE": "2"})
         self.assertEqual(len([c for c in self.calls() if c[0] == "send"]), 3)
 
+    def test_send_never_retries_after_the_text_may_have_gone_in(self):
+        ws = self.workspace()["workspace"]["workspace_id"]
+        self.clear_calls()
+        p = self.herdr("pane", "run", f"{ws}:p1", "echo once", env={"FAKE_HC_SEND_LOST": "1"}, ok=False)
+        self.assertEqual((p.returncode, self.error(p)), (1, "unavailable"))
+        self.assertEqual(len([c for c in self.calls() if c[0] == "send"]), 1)
+        self.assertEqual(self.fake()["terminals"]["t1"]["screen"].count("echo once"), 1)
+
+    def test_only_not_found_means_a_terminal_is_gone(self):
+        ws = self.workspace()["workspace"]["workspace_id"]
+        p = self.herdr("pane", "get", f"{ws}:p1", env={"FAKE_HC_GET_FAIL": "1"}, ok=False)
+        self.assertEqual((p.returncode, self.error(p)), (1, "unavailable"))
+        p = self.herdr("agent", "list", env={"FAKE_HC_GET_FAIL": "1"}, ok=False)
+        self.assertEqual(p.returncode, 1)
+        # A terminal removed between ls and get (not_found) is dropped from the list.
+        self.js("tab", "create", "--workspace", ws)
+        panes = self.js("pane", "list", "--workspace", ws, env={"FAKE_HC_GET_GONE": "t1"})["panes"]
+        self.assertEqual([p["pane_id"] for p in panes], [f"{ws}:p2"])
+
     def test_wait_output_pauses_when_hc_wait_returns_at_once(self):
         ws = self.workspace()["workspace"]["workspace_id"]
         self.clear_calls()

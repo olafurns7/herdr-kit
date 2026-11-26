@@ -129,26 +129,39 @@ def hc(args, check=True, timeout=None):
             p = subprocess.run([hc_bin(), *args], capture_output=True, text=True, timeout=timeout, env=env)
         except subprocess.TimeoutExpired:
             raise Fail("timeout", f"hc {args[0]} did not return in time")
-        # A young terminal answers send with unavailable (exit 5) until its output settles.
-        if args[0] != "send" or p.returncode != 5 or time.monotonic() >= retry_until:
+        # A young terminal answers send with unavailable (exit 5) until its output settles; that
+        # answer means nothing was typed (input.rs settle()). Other exit-5 answers (a lost remote
+        # line, a core restart) can come after the text went in: never retry those.
+        if (args[0] != "send" or p.returncode != 5 or "is still starting" not in hc_error(p.stderr, "")[1]
+                or time.monotonic() >= retry_until):
             break
         time.sleep(0.5)
         if not core_up():
             print("herdr0: no hc core running; the owner starts it", file=sys.stderr)
             sys.exit(3)
     if check and p.returncode != 0:
-        kind, message = "hc_error", p.stderr.strip() or f"hc {args[0]} exited {p.returncode}"
-        try:
-            err = json.loads(p.stderr)["error"]
-            kind, message = err.get("kind") or kind, err.get("message") or message
-        except (ValueError, KeyError, TypeError):
-            pass
-        if p.returncode == 9 or kind == "blocked":
-            raise Fail("agent_blocked", message)
-        if p.returncode == 3 or kind == "not_found":
-            raise Fail("not_found", message)
-        raise Fail(kind, message)
+        raise_hc(args[0], p.returncode, p.stderr)
     return p.returncode, p.stdout, p.stderr
+
+
+def hc_error(stderr, fallback):
+    """(kind, message) from hc's `{error: {kind, message, hint}}` on stderr."""
+    kind, message = "hc_error", stderr.strip() or fallback
+    try:
+        err = json.loads(stderr)["error"]
+        kind, message = err.get("kind") or kind, err.get("message") or message
+    except (ValueError, KeyError, TypeError):
+        pass
+    return kind, message
+
+
+def raise_hc(verb, code, stderr):
+    kind, message = hc_error(stderr, f"hc {verb} exited {code}")
+    if code == 9 or kind == "blocked":
+        raise Fail("agent_blocked", message)
+    if code == 3 or kind == "not_found":
+        raise Fail("not_found", message)
+    raise Fail(kind, message)
 
 
 def hc_json(args, **kw):
@@ -196,15 +209,22 @@ class Ctx:
 
 
 def get_terminal(addr):
-    """The whole record (`hc get`), or None when it went away since it was listed."""
-    code, out, _ = hc(["get", "--json", addr], check=False)
-    if code != 0:
+    """The whole record (`hc get`), or None when it went away since it was listed (not_found, exit 3).
+
+    Any other failure is raised: a core or line problem is not a terminal that is gone.
+    """
+    code, out, err = hc(["get", "--json", addr], check=False)
+    if code == 3:
         return None
+    if code != 0:
+        raise_hc("get", code, err)
     try:
         t = json.loads(out)
     except ValueError:
-        return None
-    return t.get("terminal", t) if isinstance(t, dict) else None
+        raise Fail("hc_error", f"hc get {addr} printed no JSON")
+    if not isinstance(t, dict):
+        raise Fail("hc_error", f"hc get {addr} printed no record")
+    return t.get("terminal", t)
 
 
 def labels(t):

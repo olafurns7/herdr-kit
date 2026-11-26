@@ -13,7 +13,10 @@ Test hooks kept in state.json:
   future:   {ADDRESS: [TEXT, ...]} output a later `wait --output` sees printed.
   machines: the `machine ls` rows.
 FAKE_HC_UNLINK_SOCKET=N removes $HC_SOCKET after the Nth call (a core that went away).
-FAKE_HC_SEND_UNAVAILABLE=N fails the first N sends with exit 5 (unavailable), as a young terminal does.
+FAKE_HC_SEND_UNAVAILABLE=N fails the first N sends with exit 5 (unavailable), as a young terminal does
+(nothing typed). FAKE_HC_SEND_LOST=1 types the text, then fails exit 5 as a lost remote line does.
+FAKE_HC_GET_FAIL=1 fails every get with exit 5 (unavailable); FAKE_HC_GET_GONE=ADDR answers get ADDR
+not_found (exit 3), as for a terminal removed after ls listed it.
 env.jsonl records HC_TERMINAL_ID and HC_TERMINAL_SOCKET as each call saw them.
 """
 import json
@@ -129,6 +132,10 @@ def main(argv):
                 if ("--all" in o or r["state"] == "live")
                 and all(r["labels"].get(k) == v for k, v in want)]
         out({"terminals": [short(r) for r in rows], "hidden_finished": 0})
+    if cmd == "get" and os.environ.get("FAKE_HC_GET_FAIL"):
+        fail("unavailable", "the core restarted while this ran (an update?)", 5)
+    if cmd == "get" and os.environ.get("FAKE_HC_GET_GONE") in rest:
+        fail("not_found", f"no terminal {os.environ['FAKE_HC_GET_GONE']}", 3)
     if cmd == "get":
         _, pos = split(rest, set())
         out(find(s, pos[0]))
@@ -147,7 +154,7 @@ def main(argv):
         if s.get("unavailable", 0) < int(os.environ.get("FAKE_HC_SEND_UNAVAILABLE") or 0):
             s["unavailable"] = s.get("unavailable", 0) + 1
             save(s)
-            fail("unavailable", f"{rec['address']} has not settled", 5)
+            fail("unavailable", f"{rec['address']} is still starting: its output has not settled", 5)
         if (rec["status"] or {}).get("state") == "blocked" and "--force" not in o:
             fail("blocked", f"{rec['address']} is blocked", 9)
         status_before = (rec["status"] or {}).get("state")
@@ -165,6 +172,8 @@ def main(argv):
         else:
             rec["screen"] += text + "\n"
         save(s)
+        if os.environ.get("FAKE_HC_SEND_LOST"):
+            fail("unavailable", "lost the line to box during the call", 5)
         state = (rec["status"] or {}).get("state")
         result = {"turn": turn, "status": status_before,
                   "started": None if state is None else state == "working"}
