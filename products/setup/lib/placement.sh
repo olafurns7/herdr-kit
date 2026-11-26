@@ -309,6 +309,64 @@ write_record() {
     fi
 }
 
+# Sidecars seen in this run, one path per line, for the summary the installer
+# prints last (print_sidecar_summary): staged (new text, move into place),
+# settings (the kit's template for a settings file, merged by hand) and stale
+# (another sidecar is in the way, so the new text was not staged).
+staged_sidecars= settings_sidecars= stale_sidecars=
+note_sidecar() {
+    case $1 in
+        settings) note_list=$settings_sidecars ;;
+        stale) note_list=$stale_sidecars ;;
+        *) note_list=$staged_sidecars ;;
+    esac
+    case "
+$note_list" in
+        *"
+$2
+"*) return 0 ;;
+    esac
+    note_list="$note_list$2
+"
+    case $1 in
+        settings) settings_sidecars=$note_list ;;
+        stale) stale_sidecars=$note_list ;;
+        *) staged_sidecars=$note_list ;;
+    esac
+}
+
+print_sidecar_list() {
+    printf '%s' "$1" | while IFS= read -r sidecar_path; do
+        printf '  %s\n' "$sidecar_path"
+    done
+}
+
+print_sidecar_summary() {
+    [ -n "$staged_sidecars$settings_sidecars$stale_sidecars" ] || return 0
+    printf '\nSidecars (resolve yourself; agents keep reading the old file until you do):\n'
+    if [ -n "$staged_sidecars" ]; then
+        printf '%s\n' 'Staged sidecars:'
+        print_sidecar_list "$staged_sidecars"
+        printf '%s\n' 'For each FILE.herdr-setup: compare it with FILE (diff -u FILE FILE.herdr-setup),' \
+            'then move the sidecar into place (mv FILE.herdr-setup FILE); the next install' \
+            'records FILE as SKIP (identical). A file that must keep a local change goes in' \
+            '~/.config/herdr-setup/keep (--keep) instead.'
+    fi
+    if [ -n "$settings_sidecars" ]; then
+        printf '%s\n' 'Settings sidecars (merge by hand; never move one into place):'
+        print_sidecar_list "$settings_sidecars"
+        printf '%s\n' "Each is the kit's template for your settings file: merge the keys and hooks" \
+            'QUICKSTART.md names into FILE and keep your own settings. It stays listed until' \
+            'FILE matches it or FILE is in ~/.config/herdr-setup/keep.'
+    fi
+    if [ -n "$stale_sidecars" ]; then
+        printf '%s\n' 'Stale sidecars (the new text was not staged: this path holds other content or a symlink):'
+        print_sidecar_list "$stale_sidecars"
+        printf '%s\n' 'For each: compare it with FILE, remove FILE.herdr-setup, and install again;' \
+            'the new text is then staged.'
+    fi
+}
+
 place_result=
 # The one placement helper for every file this script writes. It never
 # writes a keep-listed destination, never follows a symlink at the
@@ -368,18 +426,26 @@ place() {
     fi
     # ponytail: preserving a different user file and staging a sidecar is the
     # deliberate safety ceiling; merging user configuration needs judgment.
+    case $place_rel in
+        .claude/settings.json | .codex/hooks.json | .codex/config.toml) place_kind=settings ;;
+        *) place_kind=staged ;;
+    esac
     if [ -L "$place_sidecar" ]; then
         printf 'MERGE %s %s; sidecar %s is a symlink, nothing written\n' \
             "$place_dest" "$place_state" "$place_sidecar"
+        note_sidecar stale "$place_sidecar"
     elif [ ! -e "$place_sidecar" ]; then
         cp "$place_src" "$place_sidecar"
         chmod "$place_mode" "$place_sidecar"
         printf 'MERGE %s %s; staged %s\n' "$place_dest" "$place_state" "$place_sidecar"
+        note_sidecar "$place_kind" "$place_sidecar"
     elif [ -f "$place_sidecar" ] && cmp -s "$place_src" "$place_sidecar"; then
         printf 'MERGE %s %s; %s already staged\n' "$place_dest" "$place_state" "$place_sidecar"
+        note_sidecar "$place_kind" "$place_sidecar"
     else
         printf 'MERGE %s %s; %s holds other content, nothing written\n' \
             "$place_dest" "$place_state" "$place_sidecar"
+        note_sidecar stale "$place_sidecar"
     fi
 }
 

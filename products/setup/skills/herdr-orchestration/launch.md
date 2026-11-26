@@ -7,7 +7,17 @@ Load when: before opening the taskr hub workspace; before creating a campaign or
 `HERDR_KIT_BACKEND=hc` selects herdr-core (`hc`). Unset or any other value means Herdr 0.9 and nothing in this section applies. Under the switch:
 
 - `herdr` on PATH is `herdr0`, which serves the `herdr` commands this skill uses over hc, with the same id shapes (`wN`, `wN:tN`, `wN:pN`) and `--machine`. Use those commands; `plugin`, `server` and `worktree` subcommands, `status` and `agent explain` exit 2 with `herdr0: unsupported: ...`. So the work controller's worktree step (`herdr worktree list`) does not work under hc. `herdr-launch --reserved` refuses a Codex lane before it starts; a fresh reserved Claude lane starts but fails closed at step 6 (no native identity, prompt withheld).
-- `herdr-hub move` does not work under hc. To restart or repair the hub, record its handover, quit the hub Claude, and at its hc shell terminal's prompt type the start form `herdr-hub <root> --lane <lane> --account <account> -- --resume <session id>` (without `-- --resume` for a new session).
+- `herdr-hub move` does not work under hc. To restart or repair the hub, record its handover, quit the hub Claude, and at its hc shell terminal's prompt type the start form `herdr-hub <root> --lane <lane> --account <account> -- --resume <session id>` (without `-- --resume` for a new session). A session that started with Code Mode resumes only with Code Mode on: `env HERDR_HUB_CODE_MODE=1 herdr-hub <root> --lane <lane> --account <account> -- --resume <session id>`.
+- Start one root per Codator account at a time. A second start on an account whose first start has not finished fails with `account is busy`; start it after the first root is up, or on another account.
+- The Herdr worktree plugin does not run under hc: `herdr worktree` exits 2 and no repository setup plugin runs. Create a task worktree with git, then open its workspace (`.result.workspace.workspace_id` and `.result.root_pane.pane_id` in the output):
+
+  ```bash
+  git -C <source checkout> worktree add -b <type>/<slug> <worktree> origin/main
+  herdr workspace create --cwd <worktree> --label "task: <campaign>-<slice>" --no-focus
+  ```
+
+  If the repository's AGENTS.md names a worktree setup plugin, run its setup script by hand from the new worktree before a worker needs dependencies. For a plugin that reads `HERDR_PLUGIN_CONTEXT_JSON`: `env HERDR_ENV=1 HERDR_PLUGIN_CONTEXT_JSON='{"worktree":{"checkout_path":"<worktree>"}}' sh <source checkout>/.herdr/setup.sh`, with the setup script path the repository uses.
+- An install leaves a changed installed file in place and stages the new text beside it as `<file>.herdr-setup`; the installer's last block lists every such sidecar. Until the owner resolves one (compare it with the file, then move the sidecar into place: `mv <file>.herdr-setup <file>`), agents still read the old text. A settings sidecar (`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.codex/config.toml`) is the kit's template: the owner merges it by hand as QUICKSTART.md says and never moves it into place. A stale sidecar (listed as such) blocks the new text until it is removed and the install runs again. When this section's rules are missing from an installed skill file, look for its sidecar and tell the owner.
 - No agent ever starts an hc core: never run `hc server`, `herdr-core`, the hc installer or any bare `hc` command, because the first `hc` call starts a core that keeps the caller's environment. With no core running, `herdr` exits 3 with `herdr0: no hc core running; the owner starts it`: stop and tell the owner (`owner.md`); the commands are in herdr-kit's [herdr-core runbook](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/docs/herdr-core.md).
 - The owner starts each root (hub or campaign lead) in its own terminal with one line, `hc run --bg --name NAME --keep --no-parent --cwd DIR -- herdr0 enter --new-workspace LABEL -- CMD`. Every terminal `herdr0` creates runs through `herdr0 enter`, which sets `HERDR_ENV=1`, the pane, workspace and tab ids, and the switch, and passes `--no-parent`, so lanes outlive their starter and never type notes into its input.
 - `herdr-launch` starts Codex with `--no-daemon`; a Codex lane without it runs its commands outside hc. Add it to any manual Codex start.
@@ -252,7 +262,7 @@ task_workspace_id=$(printf '%s\n' "$wt" | jq -er '.result.workspace.workspace_id
 task_cwd=$(printf '%s\n' "$wt" | jq -er '.result.worktree.path')
 ```
 
-Never create a worktree per agent or only to organize the layout. If the repository links a worktree setup plugin, wait for the ready line that its AGENTS.md names before a worker needs dependencies: `herdr plugin log list --plugin <plugin-id> --limit 5`.
+Never create a worktree per agent or only to organize the layout. If the repository links a worktree setup plugin, wait for the ready line that its AGENTS.md names before a worker needs dependencies: `herdr plugin log list --plugin <plugin-id> --limit 5`. Under hc neither command works: see "herdr-core backend".
 
 ## First helper takes the root tab
 

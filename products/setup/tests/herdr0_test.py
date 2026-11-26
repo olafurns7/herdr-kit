@@ -530,6 +530,9 @@ class Herdr0(unittest.TestCase):
             p = self.herdr(*args, ok=False)
             self.assertEqual(p.returncode, 2, args)
             self.assertTrue(p.stderr.startswith("herdr0: unsupported: "), p.stderr)
+            if args == ["--skill"]:
+                self.assertIn("~/.agents/skills/herdr/SKILL.md", p.stderr)
+                self.assertNotIn("hc --skill", p.stderr)
         self.herdr("notification", "show", "--title", "x", "--body", "y")
         self.assertEqual(self.calls(), [])
 
