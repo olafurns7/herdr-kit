@@ -45,7 +45,7 @@ For review workers, compaction alone continues the current task. Resuming the sa
 
 ## After a Herdr server restart, reboot, or crash
 
-After a Herdr server restart, Herdr may relaunch integrated agent panes itself with the plain native resume command (`codex resume <id>`, `claude --resume <id>`). That command carries none of the lane's launch flags: not its effort, its permission flags, or a host account wrapper. Do not prompt a restored helper. Quit it as below, then resume it manually with the lane's current flags and effort.
+After a Herdr server restart, Herdr may relaunch integrated agent panes itself with the plain native resume command (`codex resume <id>`, `claude --resume <id>`). That command carries none of the lane's launch flags: not its effort, its permission flags, or a host account wrapper. Do not prompt a restored helper. Quit it as below, then resume it manually with the lane's current flags and effort. Under `HERDR_KIT_BACKEND=hc` nothing resumes an agent after a reboot: a kept terminal comes back as a plain shell. Roots come back only by `herdr-lead move <root> <pane> ... --resume <session id> --account <account>` (`herdr-hub move` for the hub); lanes are resumed as below or relaunched.
 
 After a reboot or crash, first tear down stranded sessions as `teardown.md` "Workspace lifecycle, reboot, and crash" says; read `teardown.md` before stopping any restored or stranded helper.
 

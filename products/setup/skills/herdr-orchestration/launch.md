@@ -2,6 +2,17 @@
 
 Load when: before opening the taskr hub workspace; before creating a campaign or task worktree or workspace; before starting a campaign lead; before reusing or rearranging an existing tab or pane; for a manual launch, or recovery after `herdr-launch` is missing or failed (first inspect what the script completed, below). The core's Launch section covers an ordinary launch in a new helper tab or a fresh root pane. Part of herdr-orchestration; `SKILL.md` is the core, and its Launch section is the normal path.
 
+## herdr-core backend
+
+`HERDR_KIT_BACKEND=hc` selects herdr-core (`hc`). Unset or any other value means Herdr 0.9 and nothing in this section applies. Under the switch:
+
+- `herdr` on PATH is `herdr0`, which serves the `herdr` commands this skill uses over hc, with the same id shapes (`wN`, `wN:tN`, `wN:pN`) and `--machine`. Use those commands; `plugin`, `server` and `worktree` subcommands, `status` and `agent explain` exit 2 with `herdr0: unsupported: ...`.
+- No agent ever starts an hc core: never run `hc server`, `herdr-core`, the hc installer or any bare `hc` command, because the first `hc` call starts a core that keeps the caller's environment. With no core running, `herdr` exits 3 with `herdr0: no hc core running; the owner starts it`: stop and tell the owner (`owner.md`); the commands are in herdr-kit's [herdr-core runbook](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/docs/herdr-core.md).
+- The owner starts each root (hub or campaign lead) in its own terminal with one line, `hc run --bg --name NAME --keep --no-parent --cwd DIR -- herdr0 enter --new-workspace LABEL -- CMD`. Every terminal `herdr0` creates runs through `herdr0 enter`, which sets `HERDR_ENV=1`, the pane, workspace and tab ids, and the switch, and passes `--no-parent`, so lanes outlive their starter and never type notes into its input.
+- `herdr-launch` starts Codex with `--no-daemon`; a Codex lane without it runs its commands outside hc. Add it to any manual Codex start.
+- Plugins and radar are off: no `[[startup]]` hook starts the taskr daemon (its systemd unit does) and no radar plugin runs.
+- Status, `notification show`, reboot and teardown differ too: `workflow.md` "Blocked or odd status" (status), `owner.md` (notifications), `recovery.md` (reboot), `teardown.md` (closing).
+
 ## Another host
 
 For every Herdr read, send, close or launch on another host, use

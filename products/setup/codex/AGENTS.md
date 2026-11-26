@@ -84,6 +84,11 @@ environment (`CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_PID`, ...),
 and every later pane shell then starts `claude` as a child session with
 transcripts and prompt history disabled. If the user wants a server restart,
 give them the commands to run from a terminal outside any agent session instead.
+The same holds for herdr-core: never run `hc server`, `herdr-core`, its
+installer, or a bare `hc` command (any `hc` call starts a core when none runs,
+and that core keeps your environment). Under `HERDR_KIT_BACKEND=hc` use the
+`herdr` commands; they refuse with exit 3 when no core runs, and the owner
+starts it.
 
 ## Owner questions (HERDR_ENV=1)
 

@@ -12,11 +12,15 @@ place "$setup_dir/docs/model-selection.md" "$home_dir/.agents/skills/herdr-orche
 if [ -e "$home_dir/.agents/skills/herdr-fleet/local.md" ] || [ -L "$home_dir/.agents/skills/herdr-fleet/local.md" ]; then
     printf '%s\n' 'PRESERVE ~/.agents/skills/herdr-fleet/local.md (private overlay)'
 fi
-if command -v herdr >/dev/null 2>&1; then
-    if herdr --skill >"$work_dir/herdr-skill.md" && [ -s "$work_dir/herdr-skill.md" ]; then
+# Under HERDR_KIT_BACKEND=hc the upstream skill is hc's own (herdr0 serves the
+# herdr commands); without hc installed, herdr's as before.
+skill_cli=herdr
+[ "${HERDR_KIT_BACKEND:-}" != hc ] || ! command -v hc >/dev/null 2>&1 || skill_cli=hc
+if command -v "$skill_cli" >/dev/null 2>&1; then
+    if "$skill_cli" --skill >"$work_dir/herdr-skill.md" && [ -s "$work_dir/herdr-skill.md" ]; then
         place "$work_dir/herdr-skill.md" "$home_dir/.agents/skills/herdr/SKILL.md"
     else
-        printf '%s\n' 'WARN: herdr --skill produced nothing; skill not refreshed' >&2
+        printf 'WARN: %s --skill produced nothing; skill not refreshed\n' "$skill_cli" >&2
     fi
 fi
 for asset in herdr-launch herdr-codex-identity herdr-loop herdr-worktrees herdr-lead herdr-hub herdr-lanes.sh kit-pr kit-prompt; do
