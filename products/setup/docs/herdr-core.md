@@ -7,7 +7,8 @@ orchestration skill's [launch.md](../skills/herdr-orchestration/launch.md)
 "herdr-core backend"; this file is for the owner.
 
 Placeholders: `HOST` is a machine's name, `TARGET` its ssh target, `ROOT` a
-taskr root id, `DIR` a working directory, `LABEL` a workspace label, `LANE`,
+taskr root id, `DIR` a working directory, `CHECKOUT` a herdr-kit checkout,
+`SHIM` a scratch directory, `LABEL` a workspace label, `LANE`,
 `ACCOUNT` and `SID` a root's recorded lane, account and native session,
 `PANE` a herdr-shaped pane id (`wN:pN`), `FILE` a handover path, and
 `FLAGS` the flags of that host's last herdr-kit install.
@@ -30,6 +31,10 @@ beside normal work, days before the stop.
    hc --version        # hc 0.1.22 or later
    herdr --version     # still Herdr 0.9
    ```
+
+   hc must be in `~/.local/bin` or `/usr/local/bin`: the taskr unit's hc
+   drop-in has a fixed `PATH` of the `herdr0` shim directory,
+   `~/.local/bin`, `/usr/local/bin`, `/usr/bin` and `/bin`.
 
 3. **Owner**, each host: start the core with a clean environment. A core keeps
    the environment it starts with, and so does every terminal it runs. Set
@@ -55,13 +60,37 @@ beside normal work, days before the stop.
    hc exec --on HOST -- uname -n         # prints HOST's name
    ```
 
-5. **Owner**, each host: probe. Open an hc shell terminal with the lead line
-   of the stop's step 7, attach to it (`hc attach probe`), and use `herdr`
-   commands only: a Claude and a Codex (`--no-daemon`) agent each report
-   `idle` and `working` in `herdr agent get`; a permission prompt shows
-   `blocked`; `herdr agent wait` returns; `herdr pane wait-output` matches
-   output printed after its start. Save each result, then `hc kill probe` and
-   `hc rm probe`. Do not start the stop until both agents report status.
+5. **Owner**, each host: put the `herdr0` shim first on PATH in hc shells.
+   Append this one line at the end of `~/.zshrc` and `~/.bashrc`:
+
+   ```sh
+   [ "${HERDR_KIT_BACKEND:-}" = hc ] && PATH="$HOME/.local/lib/herdr-kit/hc-bin:$PATH"
+   ```
+
+   It does nothing until the switch is set (only `herdr0 enter` sets it), and
+   a rollback may leave it. Without it a login shell's rc files can put Herdr
+   0.9's `herdr` first, and under the switch `herdr-launch`, `herdr-lead` and
+   `herdr-hub` then refuse with exit 2.
+6. **Owner**, each host: probe from a checkout of the release branch at
+   `CHECKOUT`; do not install the release before the stop. Make a scratch
+   shim directory `SHIM` with `ln -s CHECKOUT/products/setup/bin/herdr0
+   SHIM/herdr`, open an hc shell terminal and attach to it:
+
+   ```sh
+   hc run --bg --name probe --keep --no-parent --cwd DIR -- \
+     CHECKOUT/products/setup/bin/herdr0 enter --new-workspace probe -- "$SHELL" -l
+   hc attach probe
+   # inside:
+   export PATH="SHIM:$PATH"
+   command -v herdr      # SHIM/herdr
+   ```
+
+   Then use `herdr` commands only: a Claude and a Codex (`--no-daemon`) agent
+   each report `idle` and `working` in `herdr agent get`; a permission prompt
+   shows `blocked`; `herdr agent wait` returns; `herdr pane wait-output`
+   matches output printed after its start. Save each result, then
+   `hc kill probe` and `hc rm probe`. Do not start the stop until both agents
+   report status.
 
 ## The stop
 
@@ -93,28 +122,34 @@ beside normal work, days before the stop.
    taskr daemon --status     # fresh, supervised
    ```
 
-7. **Owner**: start the hub, then each active lead, each in its own terminal.
-   The hub's command adopts its root and resumes its session:
+7. **Owner**: start the hub, then each active lead. Run these lines only in
+   an hc shell terminal, never a plain terminal, where `herdr` is still
+   Herdr 0.9. The hub gets its own shell terminal; type its start line there:
 
    ```sh
    hc run --bg --name hub --keep --no-parent --cwd DIR -- \
-     herdr0 enter --new-workspace LABEL -- \
-     herdr-hub move ROOT --lane LANE --account ACCOUNT -- --resume SID
+     herdr0 enter --new-workspace LABEL -- "$SHELL" -l
+   hc attach hub
+   # inside:
+   command -v herdr      # ~/.local/lib/herdr-kit/hc-bin/herdr
+   herdr-hub ROOT --lane LANE --account ACCOUNT -- --resume SID
    ```
 
-   A lead gets a shell terminal the same way, then the hub (or the owner from
-   that hc shell, never a plain terminal, where `herdr` is still Herdr 0.9)
-   moves the lead into it:
+   A lead's `PANE` is an hc shell terminal at its prompt, such as the root
+   pane of `herdr tab create`. From a second hc shell terminal (`ops`, made
+   the same way), create it and start the lead:
 
    ```sh
-   hc run --bg --name lead-ROOT --keep --no-parent --cwd DIR -- \
-     herdr0 enter --new-workspace LABEL -- "$SHELL" -l
-   # in that terminal: echo "$HERDR_PANE_ID" gives PANE
-   herdr-lead move ROOT PANE --worktree DIR --lane LANE --account ACCOUNT --resume SID
+   command -v herdr      # ~/.local/lib/herdr-kit/hc-bin/herdr
+   herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd DIR --label lead-ROOT --no-focus \
+     | jq -er '.result.root_pane.pane_id'     # PANE
+   herdr-lead start ROOT PANE --worktree DIR --lane LANE --account ACCOUNT --resume SID
    ```
 
-   Each root: `taskr consumer show --as ROOT` shows a live holder, and one
-   pushed prompt is acked. Parked roots stay down until needed.
+   Under the switch the three launchers refuse with exit 2 when
+   `command -v herdr` is not the hc-bin shim. Each root: `taskr consumer show
+   --as ROOT` shows a live holder, and one pushed prompt is acked. Parked
+   roots stay down until needed.
 8. One lead: run one end-to-end lane (`herdr-launch --gather ...`): `got`,
    `ready`, `done` in the ledger, then teardown closes its terminal.
 
@@ -129,7 +164,7 @@ root's terminal, first restore it with the ids that terminal carries (its
 exec herdr0 enter --workspace W --tab T --pane PANE -- "$SHELL" -l
 ```
 
-Then start the root with the step-7 line for it.
+Then start the root with its step-7 start line.
 
 ## Retire Herdr 0.9
 
@@ -155,7 +190,9 @@ Possible until Herdr 0.9 is retired; its server keeps running until then.
    systemctl --user daemon-reload && systemctl --user restart taskr.service
    ```
 
-3. Start each root again in a Herdr 0.9 pane with `herdr-hub move` and
-   `herdr-lead move ... --resume SID` (orchestration `recovery.md`).
+3. Start each root again from a Herdr 0.9 pane with the start forms: type
+   `herdr-hub ROOT --lane LANE --account ACCOUNT -- --resume SID` in the hub's
+   pane, and run `herdr-lead start ROOT PANE --worktree DIR --lane LANE
+   --account ACCOUNT --resume SID` for each lead's shell pane.
 4. **Owner**: leave the hc core running or stop it with `hc server stop`;
    nothing in Herdr 0.9 uses it.
