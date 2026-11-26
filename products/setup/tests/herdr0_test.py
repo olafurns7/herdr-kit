@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -18,6 +19,18 @@ HERDR0 = os.path.join(HERE, "..", "bin", "herdr0")
 FAKE = os.path.join(HERE, "fake_hc")
 ROOT_LINE = ("hc run --bg --name NAME --keep --no-parent --cwd DIR -- "
              "herdr0 enter --new-workspace LABEL -- CMD")
+
+
+def serve(core):
+    """Accept and drop connections, as a live core would answer herdr0's socket check."""
+    def loop():
+        while True:
+            try:
+                conn, _ = core.accept()
+            except OSError:
+                return
+            conn.close()
+    threading.Thread(target=loop, daemon=True).start()
 
 
 class Herdr0(unittest.TestCase):
@@ -29,6 +42,7 @@ class Herdr0(unittest.TestCase):
         self.core = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.core.bind(self.sock_path)
         self.core.listen(64)
+        serve(self.core)
         self.env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": self.tmp,
@@ -121,6 +135,21 @@ class Herdr0(unittest.TestCase):
         self.assertEqual(p.returncode, 1)
         self.assertEqual(self.error(p), "workspace_not_found")
         self.assertFalse([c for c in self.calls() if c[0] == "run"])
+
+    def test_tab_create_in_existing_workspace_gets_new_numbers_and_keeps_ws_label(self):
+        ws = self.workspace("demo")["workspace"]["workspace_id"]
+        # The fake's ls prints short rows (no labels), as the real hc CLI does.
+        p = subprocess.run([FAKE, "ls", "--json"], capture_output=True, text=True, env=self.env, check=True)
+        self.assertNotIn("labels", json.loads(p.stdout)["terminals"][0])
+        r = self.js("tab", "create", "--workspace", ws, "--label", "two")
+        self.assertEqual((r["tab"]["tab_id"], r["root_pane"]["pane_id"]), (f"{ws}:t2", f"{ws}:p2"))
+        self.assertEqual(self.fake()["terminals"]["t2"]["labels"]["ws_label"], "demo")
+        r = self.js("tab", "create", "--workspace", ws)
+        self.assertEqual((r["tab"]["tab_id"], r["root_pane"]["pane_id"]), (f"{ws}:t3", f"{ws}:p3"))
+        self.assertEqual(self.fake()["terminals"]["t3"]["labels"]["ws_label"], "demo")
+        self.assertEqual(self.js("pane", "get", f"{ws}:p1")["pane"]["pane_id"], f"{ws}:p1")
+        self.assertEqual(len(self.js("pane", "list", "--workspace", ws)["panes"]), 3)
+        self.assertEqual(self.js("workspace", "list")["workspaces"][0]["label"], "demo")
 
     def test_lists_and_gets(self):
         ws = self.workspace()["workspace"]["workspace_id"]
@@ -335,6 +364,7 @@ class Herdr0(unittest.TestCase):
         core = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         core.bind(os.path.join(run, "herdr-core", "lab.sock"))
         core.listen(4)
+        serve(core)
         try:
             env = {"HC_SOCKET": "", "XDG_RUNTIME_DIR": run, "HC_SESSION": "lab"}
             self.herdr("agent", "list", env=env)

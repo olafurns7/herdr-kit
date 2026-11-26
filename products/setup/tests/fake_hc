@@ -3,7 +3,8 @@
 
 State lives in $FAKE_HC_STATE/state.json; every call is appended to
 $FAKE_HC_STATE/calls.jsonl as its argv. Shapes follow herdr-core's
-docs/commands.md and schema/hc.openrpc.json (Terminal, SendResult, WaitResult).
+docs/commands.md and schema/hc.openrpc.json (Terminal, SendResult, WaitResult);
+ls and run print short rows as the real CLI does, and get prints the whole record.
 
 Test hooks kept in state.json:
   on_send:  [{"match": TEXT, "screen": TEXT, "status": WORD|null, "foreground": NAME, "turn": N}]
@@ -71,6 +72,16 @@ def split(argv, values, flags=()):
     return o, pos
 
 
+def short(r):
+    """What the real CLI prints for ls and run rows (herdr-core cli/output.rs short())."""
+    keep = ["address", "name", "template", "parent", "state", "turn", "exit_code", "signal", "reason", "cwd"]
+    out = {k: r[k] for k in keep if r.get(k) is not None}
+    if (r.get("status") or {}).get("state"):
+        out["status"] = r["status"]["state"]
+    out["agent"] = ""
+    return out
+
+
 def find(s, t):
     rec = s["terminals"].get(t)
     if rec is None:
@@ -105,14 +116,14 @@ def main(argv):
                "foreground": {"pid": 1000 + n, "name": "zsh", "argv": ["zsh"], "cwd": cwd}}
         s["terminals"][addr] = rec
         save(s)
-        out(rec)
+        out(short(rec))
     if cmd == "ls":
         o, _ = split(rest, {"--label"}, {"--all", "--table"})
         want = [kv.split("=", 1) for kv in o.get("--label", [])]
         rows = [r for r in s["terminals"].values()
                 if ("--all" in o or r["state"] == "live")
                 and all(r["labels"].get(k) == v for k, v in want)]
-        out({"terminals": rows, "hidden_finished": 0, "machines": []})
+        out({"terminals": [short(r) for r in rows], "hidden_finished": 0})
     if cmd == "get":
         _, pos = split(rest, set())
         out(find(s, pos[0]))

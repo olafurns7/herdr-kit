@@ -166,7 +166,12 @@ class Ctx:
         for kv in labels:
             args += ["--label", kv]
         rows = hc_json(args).get("terminals") or []
-        return [t for t in rows if self.mine(t) and (include_finished or t.get("state") == "live")]
+        keep = [r["address"] for r in rows
+                if r.get("address") and self.mine(r) and (include_finished or r.get("state") == "live")]
+        # The CLI's ls rows are short (address, state, turn, cwd: cli/output.rs short());
+        # only `hc get` returns the whole record with labels, status and foreground.
+        full = (get_terminal(addr) for addr in keep)
+        return [t for t in full if t and (include_finished or t.get("state") == "live")]
 
     def one(self, kv, what, ident):
         rows = self.terminals([kv])
@@ -176,13 +181,27 @@ class Ctx:
         return rows[0]
 
 
+def get_terminal(addr):
+    """The whole record (`hc get`), or None when it went away since it was listed."""
+    code, out, _ = hc(["get", "--json", addr], check=False)
+    if code != 0:
+        return None
+    try:
+        t = json.loads(out)
+    except ValueError:
+        return None
+    return t.get("terminal", t) if isinstance(t, dict) else None
+
+
 def labels(t):
     return t.get("labels") or {}
 
 
 def raw_status(t):
     st = t.get("status")
-    return st.get("state") if isinstance(st, dict) else None
+    if isinstance(st, dict):
+        return st.get("state")
+    return st if isinstance(st, str) else None
 
 
 def agent_status(t):
@@ -358,7 +377,9 @@ def create_pane(ctx, ws, n, cwd, tab_label, ws_label, env):
     argv = [self_path(ctx), "enter", "--workspace", ws, "--tab", tab, "--pane", pane, "--"]
     if env:
         argv = ["env", *env, *argv]
-    t = hc_json([*args, "--", *argv])
+    started = hc_json([*args, "--", *argv])
+    # run prints a short row, like ls; read the whole record back.
+    t = get_terminal(started["address"]) or started
     t.setdefault("labels", {}).update({"ws": ws, "tab": tab, "pane": pane,
                                        "tab_label": tab_label or str(n), "ws_label": ws_label or ws})
     return t
@@ -612,8 +633,10 @@ def resolve_agent(ctx, target):
 
 
 def refresh(t):
-    rows = hc_json(["get", t["address"]])
-    return rows.get("terminal", rows) if isinstance(rows, dict) else t
+    full = get_terminal(t["address"])
+    if full is None:
+        raise Fail("agent_not_found", f"{t['address']} is gone")
+    return full
 
 
 def poll(t, until, seconds, sent_turn=None):
