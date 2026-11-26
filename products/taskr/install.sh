@@ -8,7 +8,9 @@ fail() {
 	exit 1
 }
 
+# hc has no plugins: no sidebar step under --herdr-backend hc.
 manual_herdr_sidebar() {
+	[ "${herdr_backend:-}" != hc ] || return 0
 	printf '%s\n' 'MANUAL: find the herdr-radar settings directory: herdr plugin config-dir hhdebb.herdr-radar'
 	printf '%s\n' 'MANUAL: add missing top-level keys to its config.toml; preserve existing values:' \
 		'parent_token = "taskr_parent"' 'parent_label_token = "taskr_campaign"' \
@@ -17,6 +19,7 @@ manual_herdr_sidebar() {
 
 # Isolate fail's exit and clean staging files so sidebar refusal cannot abort installation.
 configure_herdr_sidebar() (
+	[ "${herdr_backend:-}" != hc ] || return 0
 	install_tmp=
 	trap 'if [ -n "$install_tmp" ]; then rm -f "$install_tmp"; fi' 0
 	if [ "${TASKR_HERDR_CONFIG:-}" != 1 ] || [ "${HERDR_ENV:-}" != 1 ] ||
@@ -212,11 +215,15 @@ third_party/pstack/PROVENANCE.md
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 fleet=0 files_only=0 practices=0 verification=0 slotr=0 radar=0 codator=0 notifications=0
 keep_args= taskr_role= taskr_server_url= next_steps=
+# HERDR_KIT_BACKEND=hc (or --herdr-backend hc) installs for herdr-core: the
+# herdr0 shim and a taskr.service drop-in instead of the Herdr plugin.
+herdr_backend=herdr
+[ "${HERDR_KIT_BACKEND:-}" != hc ] || herdr_backend=hc
 home_dir=${HOME:?HOME must be set}
 home_physical=$(CDPATH= cd "$home_dir" && pwd -P)
 setup_dir=$script_dir/../setup
 usage() {
-    printf '%s\n' 'Usage: install.sh [--fleet] [--practices] [--verification] [--slotr] [--radar] [--codator] [--notifications] [--files-only] [--keep PATH] [--taskr-hub | --taskr-client http://HOST:PORT]'
+    printf '%s\n' 'Usage: install.sh [--fleet] [--practices] [--verification] [--slotr] [--radar] [--codator] [--notifications] [--files-only] [--keep PATH] [--taskr-hub | --taskr-client http://HOST:PORT] [--herdr-backend herdr|hc]'
 }
 # Accept only http://HOST:PORT with an optional trailing slash; taskr itself
 # checks that HOST belongs to the tailnet.
@@ -290,11 +297,29 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || fail '--keep requires a path'
             shift; queue_keep "$1" ;;
         --keep=*) queue_keep "${1#*=}" ;;
+        --herdr-backend | --herdr-backend=*)
+            if [ "$1" = --herdr-backend ]; then
+                [ "$#" -ge 2 ] || fail '--herdr-backend requires herdr or hc'
+                shift; herdr_backend=$1
+            else
+                herdr_backend=${1#*=}
+            fi
+            case $herdr_backend in herdr | hc) ;; *) fail '--herdr-backend must be herdr or hc' ;; esac ;;
         -h | --help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
     shift
 done
+# fleet.sh and radar.sh read the switch; the option decides it for this run.
+if [ "$herdr_backend" = hc ]; then
+    export HERDR_KIT_BACKEND=hc
+elif [ -n "${HERDR_KIT_BACKEND+x}" ]; then
+    HERDR_KIT_BACKEND=herdr
+fi
+# Older tags have no herdr0; only an hc install fetches it.
+[ "$herdr_backend" != hc ] || public_assets="$public_assets products/setup/bin/herdr0
+products/setup/systemd/taskr-hc.conf
+"
 
 kernel=$(uname -s)
 case $kernel in
@@ -331,6 +356,8 @@ with_skill=1
 [ "${TASKR_NO_SKILL:-}" != 1 ] || with_skill=0
 with_plugin=1
 [ "${TASKR_NO_PLUGIN:-}" != 1 ] || with_plugin=0
+# hc has no plugins; the systemd unit starts the daemon instead.
+[ "$herdr_backend" != hc ] || with_plugin=0
 with_tui=1
 [ "${TASKR_NO_TUI:-}" != 1 ] || with_tui=0
 token=${GH_TOKEN:-${GITHUB_TOKEN:-}}
@@ -512,7 +539,7 @@ fi
 
 # Source installs use the checkout. Standalone installs fetch only allowlisted
 # public assets from the selected product tag, never main or a private overlay.
-if [ "$radar" -eq 1 ] || [ "$codator" -eq 1 ] || [ "$notifications" -eq 1 ] || [ -n "$keep_args" ] || [ "$with_skill" -eq 1 ] || [ "$fleet" -eq 1 ] || [ "$practices" -eq 1 ] || [ "$verification" -eq 1 ] || [ "$with_plugin" -eq 1 ]; then
+if [ "$radar" -eq 1 ] || [ "$codator" -eq 1 ] || [ "$notifications" -eq 1 ] || [ -n "$keep_args" ] || [ "$with_skill" -eq 1 ] || [ "$fleet" -eq 1 ] || [ "$practices" -eq 1 ] || [ "$verification" -eq 1 ] || [ "$with_plugin" -eq 1 ] || [ "$herdr_backend" = hc ]; then
     if [ ! -f "$setup_dir/lib/placement.sh" ]; then
         [ "$files_only" -eq 0 ] || fail '--files-only requires a source checkout'
         encoded_tag=$(printf '%s' "$TAG" | sed 's|/|%2F|g')
@@ -536,7 +563,7 @@ if [ "$radar" -eq 1 ] || [ "$codator" -eq 1 ] || [ "$notifications" -eq 1 ] || [
     mkdir "$work_dir"
     umask 022
     . "$setup_dir/lib/placement.sh"
-    if [ "$radar" -eq 1 ] && [ "$files_only" -eq 0 ] && ! command -v jq >/dev/null 2>&1; then
+    if [ "$radar" -eq 1 ] && [ "$files_only" -eq 0 ] && [ "$herdr_backend" != hc ] && ! command -v jq >/dev/null 2>&1; then
         . "$setup_dir/lib/radar.sh"
         manual_radar
         printf '%s\n' 'ERROR: jq is required; install it and retry.' >&2
@@ -590,6 +617,39 @@ if [ "$radar" -eq 1 ] || [ "$codator" -eq 1 ] || [ "$notifications" -eq 1 ] || [
         place_taskr_skill_dir "$tmp/skill" "$SKILL_DIR"
     fi
     [ "$fleet" -eq 0 ] || . "$setup_dir/lib/fleet.sh"
+    if [ "$herdr_backend" = hc ]; then
+        # herdr0 answers as herdr only through the shim directory, which hc
+        # terminals and the taskr unit put first on PATH. Nothing is started.
+        for parent in .local/bin .local/lib/herdr-kit/hc-bin .config/systemd/user/taskr.service.d; do
+            resolves_inside_home "$parent" || fail "destination parent $parent leaves HOME"
+        done
+        place "$setup_dir/bin/herdr0" "$home_dir/.local/bin/herdr0" 0755
+        hc_shim=$home_dir/.local/lib/herdr-kit/hc-bin/herdr
+        if [ -L "$hc_shim" ] && [ "$(readlink "$hc_shim")" = "$home_dir/.local/bin/herdr0" ]; then
+            printf 'SKIP %s (identical)\n' "$hc_shim"
+        elif [ -e "$hc_shim" ] || [ -L "$hc_shim" ]; then
+            printf 'MERGE %s is not the herdr0 link; nothing written\n' "$hc_shim"
+        elif mkdir -p "$(dirname "$hc_shim")" && ln -s "$home_dir/.local/bin/herdr0" "$hc_shim"; then
+            printf 'INSTALL %s -> %s\n' "$hc_shim" "$home_dir/.local/bin/herdr0"
+        else
+            printf 'MERGE %s: could not create the herdr0 link\n' "$hc_shim"
+        fi
+        place "$setup_dir/systemd/taskr.service" "$home_dir/.config/systemd/user/taskr.service"
+        hc_unit=$place_result
+        place "$setup_dir/systemd/taskr-hc.conf" "$home_dir/.config/systemd/user/taskr.service.d/herdr-kit-hc.conf"
+        case $hc_unit:$place_result in
+            *INSTALL* | *UPDATE*)
+                case $next_steps in
+                    *'systemctl --user'*) ;;
+                    *)
+                        add_next_step 'Run the ledger daemon under systemd with the hc drop-in:'
+                        add_next_step 'systemctl --user daemon-reload && systemctl --user enable taskr.service && systemctl --user restart taskr.service'
+                        add_next_step 'End any unsupervised daemon so the unit daemon takes over:'
+                        add_next_step 'kill "$(taskr --json daemon --status | jq -er '\''select(.supervised|not).pid'\'')"'
+                        ;;
+                esac ;;
+        esac
+    fi
     [ "$notifications" -eq 0 ] || . "$setup_dir/lib/notifications.sh"
     if [ "$codator" -eq 1 ]; then
         for wrapper in cdx cdl; do

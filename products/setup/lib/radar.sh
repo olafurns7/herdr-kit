@@ -3,7 +3,14 @@ RADAR_REPO=olafurns7/herdr-radar
 RADAR_COMMIT=f0dcd825267b78671c29c0c9dd89e71ab5b42042
 RADAR_PLUGIN=hhdebb.herdr-radar
 
+# hc (HERDR_KIT_BACKEND=hc) has no plugins, so radar is off there.
+radar_hc_off() {
+    [ "${HERDR_KIT_BACKEND:-}" = hc ] || return 1
+    printf '%s\n' 'radar: skipped; the hc backend has no plugins'
+}
+
 manual_radar() {
+    ! radar_hc_off || return 0
     printf '%s\n' 'MANUAL: if a radar is already installed, stop it first and wait up to 10 seconds for animator.pid to name no live process:'
     printf 'herdr plugin action invoke %s.state-stop\n' "$RADAR_PLUGIN"
     printf '%s\n' 'MANUAL: install the patched radar inside Herdr with jq on PATH:'
@@ -112,6 +119,7 @@ wait_radar_pid() {
 }
 
 install_radar() {
+    ! radar_hc_off || return 0
     radar_changed=0
     radar_file_failed=0
     radar_state_stopped=0

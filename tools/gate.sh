@@ -29,5 +29,6 @@ done
 (cd products/setup && HOME="$work/setup-home" dash tests/install_test.sh)
 (cd products/setup && HOME="$work/setup-home" INSTALL_SH=dash dash tests/install_test.sh)
 (cd products/setup && node tests/taskr_hook_test.mjs)
+python3 -B products/setup/tests/herdr0_test.py
 (cd products/setup && sh tests/privacy_check.sh)
 echo "kit-gate: ok"

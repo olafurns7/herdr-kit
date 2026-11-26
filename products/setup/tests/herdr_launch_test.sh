@@ -3642,5 +3642,35 @@ run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "
 expect_rc 2
 expect_no_calls
 
+# HERDR_KIT_BACKEND=hc: herdr0 answers as herdr, so the calls stay the same;
+# Codex adds --no-daemon and nothing probes the herdr socket.
+new_case 'hc switch: codex lane adds --no-daemon' reviewer
+run_launch HERDR_KIT_BACKEND=hc sh "$launch_sh" sol-medium rev-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls rev-cart)" \
+    "$(tail_calls rev-cart reviewer wA:p7 wA:t7 codex gpt-6.1-sol medium "$setup" \
+        "$(codex_flags gpt-6.1-sol medium "\"$tcwd\"={trust_level=\"trusted\"}")|--no-daemon")"
+
+new_case 'hc switch: claude lane argv unchanged'
+run_launch HERDR_KIT_BACKEND=hc sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_calls "$(tab_calls impl-cart)" \
+    "$(tail_calls impl-cart implementer wA:p7 wA:t7 claude claude-opus-5-5 medium "$claude_setup" "|$(claude_flags medium)")"
+
+new_case 'hc switch: reserved launch never probes the herdr socket'
+reserved_snapshot
+STUB_SERVER_RC=1
+run_launch HERDR_KIT_BACKEND=hc HERDR_SOCKET_PATH=/nonexistent/herdr.sock \
+    sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
+expect_rc 0
+grep -q '^herdr|agent|start|impl-cart|' "$case_dir/calls" || fail 'no reserved start under hc'
+
+new_case 'hc switch: reserved Codex refuses before any call'
+reserved_snapshot
+run_launch HERDR_KIT_BACKEND=hc sh "$launch_sh" --reserved 2468 3579 sol-high impl-w3579 "$brief" "$report" 42 wA:p5
+expect_rc 2
+expect_err 'not under HERDR_KIT_BACKEND=hc'
+expect_no_calls
+
 printf '\n%s cases, %s failures\n' "$case_count" "$failures"
 [ "$failures" -eq 0 ]
