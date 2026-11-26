@@ -418,6 +418,10 @@ else: sys.exit(98)
             assert calls[0][0] == ['new','example-hub','--role','orchestrator','--workspace','wA','--tab','wA:t1','--pane','wA:p1']
         assert all(a[0] != 'set' for a,t,l in calls)
         assert not (work / '.mcp.json').exists()
+        # Under Herdr 0.9 the hub labels nothing: only herdr-core needs the agent label (hc_start_test.sh).
+        if (work / 'herdr-calls').exists():
+            labelled = [a for a,e in map(json.loads, (work / 'herdr-calls').read_text().splitlines()) if a[:2] == ['agent','label']]
+            assert not labelled, labelled
         # Every file produced by the shim is confined to the scratch HOME.
         assert {p.name for p in work.iterdir()} <= {'home','calls','clock','adopted','ready','cdl','note','agent-list','agent-lists','prover-stdin','herdr-calls','dialog-answered',
                                                       'pane-reads','consent-note','inbox-reads'}
