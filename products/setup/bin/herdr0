@@ -15,9 +15,10 @@ connection (hc starts a core on demand, and that core keeps its starter's
 environment, so no agent may start one); every `hc run` passes --no-parent.
 
 The Herdr desktop app shows only terminals labelled herdr.space=<id> (and herdr.tab=<id>).
-Every terminal herdr0 creates also carries herdr.space, herdr.tab and where='WS_LABEL / TAB_LABEL',
-derived from its herdr0 workspace and tab ids, so one herdr0 workspace is one app space and one
-herdr0 tab one app tab. `herdr0 app-labels` adds them to terminals made before that.
+Every terminal herdr0 creates also carries herdr.space and herdr.tab, derived from its herdr0
+workspace and tab ids, so one herdr0 workspace is one app space and one herdr0 tab one app tab.
+`herdr0 app-labels` adds them to terminals made before that. The app owns the `where` label: it
+names a space after the terminal's folder and numbers its tabs, so herdr0 never writes `where`.
 """
 import fcntl
 import hashlib
@@ -247,11 +248,14 @@ def labels(t):
     return t.get("labels") or {}
 
 
-def app_labels(ws, tab, ws_label, tab_label):
-    """The Herdr app's space/tab labels for a herdr0 terminal: sp/tb plus 32 lower-case hex, from the ids alone."""
+def app_labels(ws, tab):
+    """The Herdr app's space/tab labels for a herdr0 terminal: sp/tb plus 32 lower-case hex, from the ids alone.
+
+    No `where`: the connected app rewrites it (folder name / tab number), so writing it would fight the app.
+    """
     space = "sp" + hashlib.sha256(f"herdr0-space:{ws}".encode()).hexdigest()[:32]
     app_tab = "tb" + hashlib.sha256(f"herdr0-tab:{tab}".encode()).hexdigest()[:32]
-    return {"herdr.space": space, "herdr.tab": app_tab, "where": f"{ws_label or ws} / {tab_label or tab}"}
+    return {"herdr.space": space, "herdr.tab": app_tab}
 
 
 def app_labels_of(t):
@@ -259,7 +263,7 @@ def app_labels_of(t):
     lb = labels(t)
     if not lb.get("ws") or not lb.get("tab"):
         return None
-    return app_labels(lb["ws"], lb["tab"], lb.get("ws_label"), lb.get("tab_label"))
+    return app_labels(lb["ws"], lb["tab"])
 
 
 def raw_status(t):
@@ -455,7 +459,7 @@ def create_pane(ctx, ws, n, cwd, tab_label, ws_label, env):
         args += ["--on", ctx.machine]
     if cwd:
         args += ["--cwd", cwd]
-    app = app_labels(ws, tab, ws_label or ws, tab_label or str(n))
+    app = app_labels(ws, tab)
     for kv in (f"ws={ws}", f"tab={tab}", f"pane={pane}", f"tab_label={tab_label or n}",
                f"ws_label={ws_label or ws}", *(f"{k}={v}" for k, v in app.items())):
         args += ["--label", kv]
@@ -511,10 +515,8 @@ def workspace(ctx, sub, argv):
         if not rows:
             raise Fail("workspace_not_found", f"workspace {pos[0]} not found")
         for t in rows:
-            lb = labels(t)
-            where = app_labels(pos[0], lb.get("tab") or "", pos[1], lb.get("tab_label"))["where"]
-            hc(["label", "--json", t["address"], f"ws_label={pos[1]}", f"where={where}"])
-            t["labels"].update(ws_label=pos[1], where=where)
+            hc(["label", "--json", t["address"], f"ws_label={pos[1]}"])
+            t["labels"]["ws_label"] = pos[1]
         tabs = sorted({labels(t).get("tab") for t in rows}, key=num)
         status = next((agent_status(t) for t in rows if has_agent(t)), "unknown")
         w = {"workspace_id": pos[0], "label": pos[1], "active_tab_id": tabs[0], "tab_count": len(tabs),
@@ -591,9 +593,8 @@ def tab(ctx, sub, argv):
         if not rows:
             raise Fail("tab_not_found", f"tab {tid} not found")
         for t in rows:
-            where = app_labels(labels(t).get("ws") or "", tid, labels(t).get("ws_label"), pos[1])["where"]
-            hc(["label", "--json", t["address"], f"tab_label={pos[1]}", f"where={where}"])
-            t["labels"].update(tab_label=pos[1], where=where)
+            hc(["label", "--json", t["address"], f"tab_label={pos[1]}"])
+            t["labels"]["tab_label"] = pos[1]
         return emit("tab_info", {"tab": tab_obj(rows, tid)}, "tab:rename")
     if sub == "close":
         return close(ctx, f"tab={tid}", "tab", tid, "tab:close")
@@ -860,6 +861,9 @@ def agent(ctx, sub, argv):
         if not re.match(r"^[a-z][a-z0-9_-]*$", kind):
             raise Fail("usage", f"agent kind {kind!r} is not valid", 2)
         t = ctx.one(f"pane={o['--pane']}", "pane", o["--pane"])
+        held = labels(t).get("agent_name")
+        if held and held != name and has_agent(t):
+            raise Fail("pane_busy", f"pane {o['--pane']} runs agent {held}; not relabelled")
         if [r for r in ctx.terminals([f"agent_name={name}"]) if has_agent(r) and r.get("address") != t["address"]]:
             raise Fail("agent_name_taken", f"agent {name} is already live")
         session = session_from_args(kind, pos[1:])
@@ -944,7 +948,7 @@ def machine(ctx, sub, argv):
 def app_labels_cmd(ctx, argv):
     """Dry run by default: list herdr0's live terminals with the app labels they should carry; --apply writes them.
 
-    Only terminals with a herdr0 ws label are touched, and only herdr.space, herdr.tab and where are written.
+    Only terminals with a herdr0 ws label are touched, and only herdr.space and herdr.tab are compared and written.
     """
     o, pos = opts(argv, {"--workspace", "--pane"}, (), ("--apply",))
     if pos or (o.get("--workspace") and o.get("--pane")):
@@ -981,7 +985,7 @@ def enter(argv):
             ws = new_workspace_id(ctx)
             n = next_number(ctx, ws)
             tab, pane_id = f"{ws}:t{n}", f"{ws}:p{n}"
-            app = app_labels(ws, tab, o["--new-workspace"], str(n))
+            app = app_labels(ws, tab)
             hc(["label", "--json", me, f"ws={ws}", f"tab={tab}", f"pane={pane_id}", f"tab_label={n}",
                 f"ws_label={o['--new-workspace']}", *(f"{k}={v}" for k, v in app.items())])
     else:

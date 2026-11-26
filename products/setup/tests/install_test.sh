@@ -1046,8 +1046,8 @@ printf '%s\\n' 'upstream synthetic hc skill'
     assert 'herdr0' in re.search(r'^description: (.*)$', front, re.M).group(1)
     usage = re.search(r'^HELP = """(.*?)"""', (setup / 'bin/herdr0').read_text(), re.S | re.M).group(1)
     checked = [line for line in usage.splitlines()
-               if re.match(r'  (workspace|pane|agent|herdr0 enter) ', line) or line.startswith('Unsupported')]
-    assert len(checked) == 5, checked
+               if re.match(r'  (workspace|pane|agent|herdr0 (enter|app-labels)) ', line) or line.startswith('Unsupported')]
+    assert len(checked) == 6, checked
     for line in checked:
         assert line in kit_skill.splitlines(), line
     assert 'Never run `hc`' in kit_skill and 'herdr-orchestration/launch.md' in kit_skill

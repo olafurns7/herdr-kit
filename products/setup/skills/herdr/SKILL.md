@@ -38,10 +38,11 @@ This list comes from herdr0's usage (`herdr --help` prints it):
 `agent label` and `app-labels` are herdr0's own. `agent label NAME --kind K
 --pane P [-- AGENT_ARGS...]` names an agent its pane's shell runs itself
 (`herdr-hub` uses it for the hub). `app-labels` lists the Herdr app labels
-(`herdr.space`, `herdr.tab`, `where`) herdr0's terminals should carry; with
-`--apply` it writes the missing ones. Every terminal herdr0 creates already has
-them, so the Herdr desktop app shows it. Closing a space, tab or pane in the
-app ends its terminals.
+(`herdr.space`, `herdr.tab`) herdr0's terminals should carry; with `--apply`
+it writes the ones that are missing or differ. Every terminal herdr0 creates
+already has them, so the Herdr desktop app shows it. The app names a space
+after the terminal's folder and numbers its tabs; herdr0's labels do not set
+those names. Closing a space, tab or pane in the app ends its terminals.
 
 Unsupported (exit 2): plugin, server, worktree, status, agent explain, --skill.
 

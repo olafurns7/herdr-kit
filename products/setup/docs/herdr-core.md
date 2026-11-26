@@ -199,15 +199,16 @@ beside normal work, days before the stop.
 The Herdr app shows a terminal only when it carries `herdr.space=<id>` (and
 `herdr.tab=<id>`); other terminals stay hidden. Every terminal `herdr0`
 creates carries them, derived from its herdr0 ids: one herdr0 workspace is one
-app space and one herdr0 tab one app tab. A third label, `where`, holds
-`WORKSPACE_LABEL / TAB_LABEL`; `herdr tab rename` and `herdr workspace rename`
-update it. Under hc `herdr-hub` also labels the hub's terminal with its agent
-(`agent=claude`, `agent_name=hub-ROOT`).
+app space and one herdr0 tab one app tab. The app names a space after its
+terminal's folder and numbers its tabs (it keeps that in a `where` label it
+writes itself); herdr0's workspace and tab labels, and `herdr tab rename` or
+`herdr workspace rename`, do not set those names. Under hc `herdr-hub` also
+labels the hub's terminal with its agent (`agent=claude`, `agent_name=hub-ROOT`).
 
 Terminals made by an earlier herdr-kit have no app labels. After installing
 this release, label them once from an hc shell terminal (where `herdr` is
 `herdr0`). Without `--apply` the command only lists each terminal, its
-workspace and tab, the labels and which of them would change:
+workspace and tab, the two labels and which of them would change:
 
 ```sh
 herdr app-labels                         # dry run, all herdr0 terminals
@@ -216,9 +217,12 @@ herdr app-labels --pane PANE --apply     # one terminal: the hub's last
 herdr app-labels --apply                 # anything left
 ```
 
-It writes only `herdr.space`, `herdr.tab` and `where`, and only on terminals
-with a herdr0 `ws=` label; the app's own terminals have none and are never
-changed.
+It writes only `herdr.space` and `herdr.tab`, and only on terminals with a
+herdr0 `ws=` label; the app's own terminals have none and are never changed.
+One exception: `herdr0 enter --new-workspace` run inside a terminal
+the app opened moves that terminal to a new app space; the step-7 start,
+`hc run --bg ... -- herdr0 enter --new-workspace ...`, makes a new terminal
+and moves none.
 
 Closing a space, tab or pane in the app ends the terminals in it, the hub's
 included. Close only what you mean to end. A root ended this way starts again

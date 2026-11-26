@@ -173,7 +173,7 @@ class Herdr0(unittest.TestCase):
         self.assertNotIn("agent", pane)
         self.assertEqual(self.js("tab", "get", f"{ws}:t2")["tab"]["label"], "two")
         self.herdr("tab", "rename", f"{ws}:t2", "renamed")
-        self.assertIn(["label", "--json", "t2", "tab_label=renamed", "where=demo / renamed"], self.calls())
+        self.assertIn(["label", "--json", "t2", "tab_label=renamed"], self.calls())
         self.assertEqual(self.js("tab", "get", f"{ws}:t2")["tab"]["label"], "renamed")
         wss = self.js("workspace", "list")["workspaces"]
         self.assertEqual([(w["workspace_id"], w["label"], w["tab_count"]) for w in wss], [(ws, "demo", 2)])
@@ -573,8 +573,7 @@ class Herdr0(unittest.TestCase):
         ws = lb["ws"]
         self.assertRegex(ws, r"^w[0-9A-Z]{4}$")
         self.assertEqual(lb, {"ws": ws, "tab": f"{ws}:t1", "pane": f"{ws}:p1", "tab_label": "1",
-                              "ws_label": "hub", "herdr.space": space(ws), "herdr.tab": app_tab(f"{ws}:t1"),
-                              "where": "hub / 1"})
+                              "ws_label": "hub", "herdr.space": space(ws), "herdr.tab": app_tab(f"{ws}:t1")})
         self.assertEqual(p.stdout.strip(), f"{ws}:p1")
 
     # the Herdr desktop app
@@ -584,14 +583,15 @@ class Herdr0(unittest.TestCase):
         self.js("tab", "create", "--workspace", ws, "--label", "impl-x")
         self.js("tab", "create", "--workspace", ws)
         terms = self.fake()["terminals"]
-        for addr, tab_n, where in (("t1", 1, "fleet / 1"), ("t2", 2, "fleet / impl-x"), ("t3", 3, "fleet / 3")):
+        for addr, tab_n in (("t1", 1), ("t2", 2), ("t3", 3)):
             lb = terms[addr]["labels"]
             self.assertRegex(lb["herdr.space"], r"^sp[0-9a-f]{32}$")
             self.assertRegex(lb["herdr.tab"], r"^tb[0-9a-f]{32}$")
-            self.assertEqual((lb["herdr.space"], lb["herdr.tab"], lb["where"]),
-                             (space(ws), app_tab(f"{ws}:t{tab_n}"), where), addr)
-            # herdr0 writes no other app key.
+            self.assertEqual((lb["herdr.space"], lb["herdr.tab"]), (space(ws), app_tab(f"{ws}:t{tab_n}")), addr)
+            # herdr0 writes no other app key; the app owns where.
             self.assertFalse([k for k in lb if k.startswith("herdr.") and k not in ("herdr.space", "herdr.tab")])
+            self.assertNotIn("where", lb)
+        self.assertFalse([c for c in self.calls() if any(str(a).startswith("where=") for a in c)])
         # One workspace is one space; each tab its own app tab.
         self.assertEqual(len({t["labels"]["herdr.space"] for t in terms.values()}), 1)
         self.assertEqual(len({t["labels"]["herdr.tab"] for t in terms.values()}), 3)
@@ -602,18 +602,24 @@ class Herdr0(unittest.TestCase):
         self.assertNotIn("herdr.space", json.dumps(r))
         self.assertNotIn("where", self.js("pane", "get", f"{ws}:p1")["pane"])
 
-    def test_renames_update_where(self):
+    def test_renames_leave_the_apps_labels_alone(self):
         ws = self.workspace("fleet")["workspace"]["workspace_id"]
         self.js("tab", "create", "--workspace", ws, "--label", "two")
+        # The connected app writes where itself; a rename must not fight it.
+        self.edit("t2", labels=dict(self.fake()["terminals"]["t2"]["labels"], where="work / 2"))
+        self.clear_calls()
         self.herdr("tab", "rename", f"{ws}:t2", "lead")
-        self.assertIn(["label", "--json", "t2", "tab_label=lead", "where=fleet / lead"], self.calls())
-        self.assertEqual(self.fake()["terminals"]["t1"]["labels"]["where"], "fleet / 1")
+        self.assertEqual([c for c in self.calls() if c[0] == "label"], [["label", "--json", "t2", "tab_label=lead"]])
+        self.clear_calls()
         r = self.js("workspace", "rename", ws, "kit")
         self.assertEqual((r["workspace"]["workspace_id"], r["workspace"]["label"], r["workspace"]["tab_count"]),
                          (ws, "kit", 2))
+        self.assertEqual([c for c in self.calls() if c[0] == "label"],
+                         [["label", "--json", "t1", "ws_label=kit"], ["label", "--json", "t2", "ws_label=kit"]])
         terms = self.fake()["terminals"]
-        self.assertEqual([terms[a]["labels"]["where"] for a in ("t1", "t2")], ["kit / 1", "kit / lead"])
-        self.assertEqual(terms["t1"]["labels"]["herdr.space"], space(ws))
+        self.assertEqual(terms["t2"]["labels"]["where"], "work / 2")
+        self.assertEqual((terms["t1"]["labels"]["herdr.space"], terms["t2"]["labels"]["herdr.tab"]),
+                         (space(ws), app_tab(f"{ws}:t2")))
         self.assertEqual(self.js("workspace", "list")["workspaces"][0]["label"], "kit")
         p = self.herdr("workspace", "rename", "wNONE", "x", ok=False)
         self.assertEqual(self.error(p), "workspace_not_found")
@@ -629,7 +635,7 @@ class Herdr0(unittest.TestCase):
             "t1": term("t1", {"ws": "wHUB1", "tab": "wHUB1:t1", "pane": "wHUB1:p1", "tab_label": "1",
                               "ws_label": "hub"}),
             "t2": term("t2", {"ws": "wHUB1", "tab": "wHUB1:t2", "pane": "wHUB1:p2", "tab_label": "lead",
-                              "ws_label": "hub", "where": "stale / x", "agent": "claude"}),
+                              "ws_label": "hub", "where": "work / 2", "agent": "claude"}),
             "t3": term("t3", {"ws": "wTSK2", "tab": "wTSK2:t1", "pane": "wTSK2:p1"}),
             "t4": term("t4", dict(app))}})
         return app
@@ -641,11 +647,9 @@ class Herdr0(unittest.TestCase):
         rows = {row["terminal"]: row for row in r["terminals"]}
         self.assertEqual(sorted(rows), ["t1", "t2", "t3"])
         self.assertEqual(rows["t2"], {"terminal": "t2", "ws": "wHUB1", "tab": "wHUB1:t2", "pane": "wHUB1:p2",
-                                      "labels": {"herdr.space": space("wHUB1"), "herdr.tab": app_tab("wHUB1:t2"),
-                                                 "where": "hub / lead"},
-                                      "change": ["herdr.space", "herdr.tab", "where"]})
-        # Missing ws_label or tab_label: the ids stand in.
-        self.assertEqual(rows["t3"]["labels"]["where"], "wTSK2 / wTSK2:t1")
+                                      "labels": {"herdr.space": space("wHUB1"), "herdr.tab": app_tab("wHUB1:t2")},
+                                      "change": ["herdr.space", "herdr.tab"]})
+        self.assertEqual(rows["t3"]["labels"], {"herdr.space": space("wTSK2"), "herdr.tab": app_tab("wTSK2:t1")})
         self.assertFalse([c for c in self.calls() if c[0] == "label"])
         self.assertEqual(self.fake()["terminals"]["t4"]["labels"], app)
 
@@ -656,9 +660,11 @@ class Herdr0(unittest.TestCase):
         self.assertEqual([row["terminal"] for row in r["terminals"]], ["t2"])
         self.assertEqual([c for c in self.calls() if c[0] == "label"],
                          [["label", "--json", "t2", f"herdr.space={space('wHUB1')}",
-                           f"herdr.tab={app_tab('wHUB1:t2')}", "where=hub / lead"]])
+                           f"herdr.tab={app_tab('wHUB1:t2')}"]])
         lb = self.fake()["terminals"]["t2"]["labels"]
-        self.assertEqual((lb["agent"], lb["tab_label"], lb["ws_label"]), ("claude", "lead", "hub"))
+        # The app's where and every other label stay as they were.
+        self.assertEqual((lb["agent"], lb["tab_label"], lb["ws_label"], lb["where"]),
+                         ("claude", "lead", "hub", "work / 2"))
         self.assertNotIn("herdr.space", self.fake()["terminals"]["t1"]["labels"])
         self.clear_calls()
         r = self.js("app-labels", "--workspace", "wTSK2", "--apply")
@@ -670,7 +676,7 @@ class Herdr0(unittest.TestCase):
         # Only what is missing is written: t1 now; t2 and t3 already match.
         self.assertEqual([c[2] for c in self.calls() if c[0] == "label"], ["t1"])
         self.assertEqual({row["terminal"]: row["change"] for row in r["terminals"]},
-                         {"t1": ["herdr.space", "herdr.tab", "where"], "t2": [], "t3": []})
+                         {"t1": ["herdr.space", "herdr.tab"], "t2": [], "t3": []})
         self.clear_calls()
         self.js("app-labels", "--apply")
         self.assertFalse([c for c in self.calls() if c[0] == "label"])
@@ -710,6 +716,12 @@ class Herdr0(unittest.TestCase):
         self.js("tab", "create", "--workspace", ws)
         p = self.herdr("agent", "label", "hub-42", "--kind", "claude", "--pane", f"{ws}:p2", ok=False)
         self.assertEqual(self.error(p), "agent_name_taken")
+        # A pane whose live agent has another name is not relabelled.
+        self.clear_calls()
+        p = self.herdr("agent", "label", "hub-9", "--kind", "claude", "--pane", f"{ws}:p1", ok=False)
+        self.assertEqual((p.returncode, self.error(p)), (1, "pane_busy"))
+        self.assertFalse([c for c in self.calls() if c[0] == "label"])
+        self.assertEqual(self.fake()["terminals"]["t1"]["labels"]["agent_name"], "hub-42")
         for args in (["hub-42", "--pane", f"{ws}:p2"], ["Bad", "--kind", "claude", "--pane", f"{ws}:p2"],
                      ["hub-x", "--kind", "Claude!", "--pane", f"{ws}:p2"]):
             p = self.herdr("agent", "label", *args, ok=False)
