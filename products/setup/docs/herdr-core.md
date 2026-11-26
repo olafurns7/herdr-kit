@@ -198,12 +198,12 @@ beside normal work, days before the stop.
 
 The Herdr app shows a terminal only when it carries `herdr.space=<id>` (and
 `herdr.tab=<id>`); other terminals stay hidden. The app shows roots only: the
-hub and campaign leads (agents named `hub-*` or `orch-*`), and the terminal of
-the step-7 `herdr0 enter --new-workspace` start. Worker, seat and helper
-terminals stay hidden by design. `herdr agent start` (which `herdr-lead` runs)
-and `herdr agent label` (which `herdr-hub` runs under hc) write the two labels
-for a `hub-*` or `orch-*` name, as does `herdr0 enter --new-workspace`; `herdr
-workspace create` and `herdr tab create` write none. The ids derive from the
+hub and campaign leads (agents named `hub-*` or `orch-*`). Worker, seat and
+helper terminals and your own shells (the step-7 `herdr0 enter
+--new-workspace` terminals before an agent runs there) stay hidden by design.
+`herdr agent start` (which `herdr-lead` runs) and `herdr agent label` (which
+`herdr-hub` runs under hc) write the two labels for a `hub-*` or `orch-*` name;
+`herdr0 enter`, `herdr workspace create` and `herdr tab create` write none. The ids derive from the
 terminal's herdr0 workspace and tab: one herdr0 workspace is one app space and
 one herdr0 tab one app tab. The app names a space after its terminal's folder
 and numbers its tabs (it keeps that in a `where` label it writes itself);
@@ -226,10 +226,9 @@ herdr app-labels --apply                 # anything left
 It writes only `herdr.space` and `herdr.tab`, only on roots with a herdr0
 `ws=` label, and refuses a `--pane` that is not a root (`not_a_root`). Workers
 and the app's own terminals (which have no `ws=` label) are never changed.
-One exception: `herdr0 enter --new-workspace` run inside a terminal
-the app opened moves that terminal to a new app space; the step-7 start,
-`hc run --bg ... -- herdr0 enter --new-workspace ...`, makes a new terminal
-and moves none.
+Starting the hub in a shell the app opened moves that terminal to the hub's
+own app space; the step-7 start, `hc run --bg ... -- herdr0 enter
+--new-workspace ...`, makes a new terminal and moves none.
 
 Closing a space, tab or pane in the app ends the terminals in it, the hub's
 included. Close only what you mean to end. A root ended this way starts again

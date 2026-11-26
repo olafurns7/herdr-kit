@@ -15,11 +15,11 @@ connection (hc starts a core on demand, and that core keeps its starter's
 environment, so no agent may start one); every `hc run` passes --no-parent.
 
 The Herdr desktop app shows only terminals labelled herdr.space=<id> (and herdr.tab=<id>). herdr0
-writes them on roots only: the hub and campaign leads (agents named hub-* or orch-*, labelled by
-`agent start` or `agent label`) and the owner's `enter --new-workspace` terminal. Worker, seat and
-helper terminals stay hidden by design. The ids derive from the terminal's herdr0 workspace and tab,
-so one herdr0 workspace is one app space and one herdr0 tab one app tab. `herdr0 app-labels` labels
-roots started before that. The app owns the `where` label: it names a space after the terminal's
+writes them on roots only: the hub and campaign leads, the agents named hub-* or orch-*, at
+`agent start` or `agent label`. Worker, seat and helper terminals and the owner's own shells
+(`enter --new-workspace` before any agent) stay hidden by design. The ids derive from the
+terminal's herdr0 workspace and tab, so one herdr0 workspace is one app space and one herdr0 tab
+one app tab. `herdr0 app-labels` labels roots started before that. The app owns the `where` label: it names a space after the terminal's
 folder and numbers its tabs, so herdr0 never writes `where`.
 """
 import fcntl
@@ -264,11 +264,8 @@ ROOT_NAME = re.compile(r"^(hub|orch)-")
 
 
 def is_root(t):
-    """A root shows in the app: an agent named hub-*/orch-*, or the owner's `herdr0 enter --new-workspace` terminal."""
-    if ROOT_NAME.match(labels(t).get("agent_name") or ""):
-        return True
-    argv = t.get("argv") or []
-    return len(argv) >= 3 and os.path.basename(str(argv[0])) == "herdr0" and argv[1:3] == ["enter", "--new-workspace"]
+    """A root shows in the app: a terminal whose agent is named hub-* or orch-* (the hub, campaign leads)."""
+    return bool(ROOT_NAME.match(labels(t).get("agent_name") or ""))
 
 
 def app_labels_of(t):
@@ -983,8 +980,8 @@ def app_labels_cmd(ctx, argv):
         seen += 1
         if not is_root(t):
             if o.get("--pane"):
-                raise Fail("not_a_root", f"pane {o['--pane']} is not a root (no hub-/orch- agent, not "
-                           "herdr0 enter --new-workspace); workers stay hidden")
+                raise Fail("not_a_root", f"pane {o['--pane']} is not a root (its agent is not named hub-* or "
+                           "orch-); workers and plain shells stay hidden")
             continue
         lb = labels(t)
         change = {k: v for k, v in want.items() if lb.get(k) != v}
@@ -1012,9 +1009,8 @@ def enter(argv):
             ws = new_workspace_id(ctx)
             n = next_number(ctx, ws)
             tab, pane_id = f"{ws}:t{n}", f"{ws}:p{n}"
-            app = app_labels(ws, tab)
             hc(["label", "--json", me, f"ws={ws}", f"tab={tab}", f"pane={pane_id}", f"tab_label={n}",
-                f"ws_label={o['--new-workspace']}", *(f"{k}={v}" for k, v in app.items())])
+                f"ws_label={o['--new-workspace']}"])
     else:
         ws, tab, pane_id = o.get("--workspace"), o.get("--tab"), o.get("--pane")
         if not (ws and tab and pane_id):

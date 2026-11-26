@@ -40,8 +40,8 @@ This list comes from herdr0's usage (`herdr --help` prints it):
 (`herdr-hub` uses it for the hub). The Herdr desktop app shows roots only:
 the hub and campaign leads (agents named `hub-*` or `orch-*`; `agent start`
 and `agent label` write the app labels `herdr.space` and `herdr.tab` for such
-a name) and the owner's `herdr0 enter --new-workspace` terminal. Worker, seat
-and helper terminals stay hidden by design. `app-labels` lists the roots and
+a name). Worker, seat and helper terminals and the owner's own shells stay
+hidden by design. `app-labels` lists the roots and
 the app labels they should carry; with `--apply` it writes the ones that are
 missing or differ, and it refuses a `--pane` that is not a root. The app
 names a space after the terminal's folder and numbers its tabs; herdr0's

@@ -572,11 +572,12 @@ class Herdr0(unittest.TestCase):
         lb = self.fake()["terminals"]["t1"]["labels"]
         ws = lb["ws"]
         self.assertRegex(ws, r"^w[0-9A-Z]{4}$")
+        # The owner's own shell stays hidden: the hub's agent label (herdr-hub) shows it later.
         self.assertEqual(lb, {"ws": ws, "tab": f"{ws}:t1", "pane": f"{ws}:p1", "tab_label": "1",
-                              "ws_label": "hub", "herdr.space": space(ws), "herdr.tab": app_tab(f"{ws}:t1")})
+                              "ws_label": "hub"})
         self.assertEqual(p.stdout.strip(), f"{ws}:p1")
 
-    # the Herdr desktop app: roots only (hub-*/orch-* agents, the owner's enter --new-workspace terminal)
+    # the Herdr desktop app: roots only (agents named hub-* or orch-*)
     def test_create_paths_write_no_app_labels_and_roots_get_them_at_agent_start(self):
         r = self.workspace("kit")
         ws = r["workspace"]["workspace_id"]
@@ -636,8 +637,8 @@ class Herdr0(unittest.TestCase):
     def app_fixture(self):
         """Roots and workers made before the app labels, and the app's own shell (no ws label).
 
-        t1 the hub's root start (herdr0 by path), t2 a lead (orch-) in the hub's workspace, t3 a worker
-        (impl-, made by tab create), t5 a lead in a task workspace, t6 a root start by bare herdr0, t4 the app's.
+        t1 the hub (hub-) in the owner's root start, t2 a lead (orch-) in the hub's workspace, t3 a worker
+        (impl-, made by tab create), t5 a lead in a task workspace, t6 an owner shell with no agent, t4 the app's.
         """
         def term(addr, lb, argv=()):
             return {"address": addr, "name": None, "argv": list(argv), "cwd": "/w", "labels": lb, "state": "live",
@@ -647,7 +648,8 @@ class Herdr0(unittest.TestCase):
         made = ["/opt/kit/herdr0", "enter", "--workspace", "wTSK2", "--tab", "wTSK2:t1", "--pane", "wTSK2:p1", "--"]
         self.put({"next": 7, "on_send": [], "future": {}, "machines": [], "terminals": {
             "t1": term("t1", {"ws": "wHUB1", "tab": "wHUB1:t1", "pane": "wHUB1:p1", "tab_label": "1",
-                              "ws_label": "hub"}, ["/opt/kit/herdr0", "enter", "--new-workspace", "hub", "--", "zsh"]),
+                              "ws_label": "hub", "agent": "claude", "agent_name": "hub-42"},
+                       ["/opt/kit/herdr0", "enter", "--new-workspace", "hub", "--", "zsh"]),
             "t2": term("t2", {"ws": "wHUB1", "tab": "wHUB1:t2", "pane": "wHUB1:p2", "tab_label": "lead",
                               "ws_label": "hub", "where": "work / 2", "agent": "claude", "agent_name": "orch-kit"}),
             "t3": term("t3", {"ws": "wTSK2", "tab": "wTSK2:t1", "pane": "wTSK2:p1", "agent": "claude",
@@ -663,7 +665,7 @@ class Herdr0(unittest.TestCase):
         r = self.js("app-labels")
         self.assertFalse(r["applied"])
         rows = {row["terminal"]: row for row in r["terminals"]}
-        self.assertEqual(sorted(rows), ["t1", "t2", "t5", "t6"])
+        self.assertEqual(sorted(rows), ["t1", "t2", "t5"])
         self.assertEqual(rows["t2"], {"terminal": "t2", "ws": "wHUB1", "tab": "wHUB1:t2", "pane": "wHUB1:p2",
                                       "labels": {"herdr.space": space("wHUB1"), "herdr.tab": app_tab("wHUB1:t2")},
                                       "change": ["herdr.space", "herdr.tab"]})
@@ -692,16 +694,17 @@ class Herdr0(unittest.TestCase):
         self.clear_calls()
         r = self.js("app-labels", "--apply")
         self.assertTrue(r["applied"])
-        # Only what is missing is written: the two root starts now; the leads already match.
-        self.assertEqual([c[2] for c in self.calls() if c[0] == "label"], ["t1", "t6"])
+        # Only what is missing is written: the hub now; the leads already match.
+        self.assertEqual([c[2] for c in self.calls() if c[0] == "label"], ["t1"])
         self.assertEqual({row["terminal"]: row["change"] for row in r["terminals"]},
-                         {"t1": ["herdr.space", "herdr.tab"], "t2": [], "t5": [], "t6": ["herdr.space", "herdr.tab"]})
+                         {"t1": ["herdr.space", "herdr.tab"], "t2": [], "t5": []})
         self.clear_calls()
         self.js("app-labels", "--apply")
         self.assertFalse([c for c in self.calls() if c[0] == "label"])
         terms = self.fake()["terminals"]
-        # The worker and the app's own terminal (no ws label) are never touched.
+        # The worker, the owner's plain shell and the app's own terminal (no ws label) are never touched.
         self.assertFalse([k for k in terms["t3"]["labels"] if k.startswith("herdr.")])
+        self.assertFalse([k for k in terms["t6"]["labels"] if k.startswith("herdr.")])
         self.assertEqual(terms["t4"]["labels"], app)
         self.assertEqual(terms["t1"]["labels"]["herdr.space"], terms["t2"]["labels"]["herdr.space"])
         self.assertNotEqual(terms["t1"]["labels"]["herdr.tab"], terms["t2"]["labels"]["herdr.tab"])
@@ -715,9 +718,12 @@ class Herdr0(unittest.TestCase):
         self.assertEqual(self.error(p), "workspace_not_found")
         p = self.herdr("app-labels", "--pane", "wNONE:p1", "--apply", ok=False)
         self.assertEqual(self.error(p), "pane_not_found")
-        # A worker's pane is not a root.
-        p = self.herdr("app-labels", "--pane", "wTSK2:p1", "--apply", ok=False)
-        self.assertEqual((p.returncode, self.error(p)), (1, "not_a_root"))
+        # A worker's pane and the owner's plain shell are not roots.
+        for pane in ("wTSK2:p1", "wOPS3:p1"):
+            p = self.herdr("app-labels", "--pane", pane, "--apply", ok=False)
+            self.assertEqual((p.returncode, self.error(p)), (1, "not_a_root"), pane)
+        # A workspace with no root lists nothing.
+        self.assertEqual(self.js("app-labels", "--workspace", "wOPS3")["terminals"], [])
         self.assertFalse([c for c in self.calls() if c[0] == "label"])
 
     def test_agent_label_names_an_agent_its_shell_starts(self):
