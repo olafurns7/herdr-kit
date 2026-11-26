@@ -231,6 +231,15 @@ elif cmd == 'ready':
     (case / 'ready').touch()
     if mode == 'queued-ready': print('{"queued":true,"request_key":"example"}')
     else: print(json.dumps({'event_id':40 if mode == 'backlog' else 9}))
+elif cmd == 'delivery' and mode == 'later-push-old-gen':
+    # A later event was received, but at generation 6: no proof for generation 7.
+    print(json.dumps({'attempts':[{'event_id':9, 'session_gen':7, 'received_at':None},
+                                  {'event_id':12, 'session_gen':6, 'received_at':'now'}]}))
+elif cmd == 'delivery' and mode in ('later-push', 'later-push-unacked'):
+    # The hub acked the check from its inbox before the digest hold pushed it; event 12 was pushed later.
+    print(json.dumps({'attempts':[{'event_id':8, 'session_gen':7, 'received_at':'now'},
+                                  {'event_id':9, 'session_gen':7, 'received_at':None},
+                                  {'event_id':12, 'session_gen':7, 'received_at':'now'}]}))
 elif cmd == 'delivery':
     print(json.dumps({'attempts':[{'event_id':40 if mode == 'backlog' else 9, 'session_gen':6 if mode == 'wrong-delivery' else 7,
                                   'received_at':None if mode == 'unreceived' else 'now'}]}))
@@ -247,7 +256,7 @@ elif cmd == 'inbox' and mode == 'consent-late':
     n = int(reads.read_text()) + 1 if reads.exists() else 1
     reads.write_text(str(n))
     print(json.dumps({'acked_event_id':8 if n <= 10 else 9}))
-elif cmd == 'inbox': print(json.dumps({'acked_event_id':8 if mode in ('unacked', 'cdl-exit-ack') else 9}))
+elif cmd == 'inbox': print(json.dumps({'acked_event_id':8 if mode in ('unacked', 'cdl-exit-ack', 'later-push-unacked') else 9}))
 elif cmd == 'close': print('{"task_id":43}')
 elif cmd == 'note':
     # The consent note comes before the result note, which ends the cdl stub.
@@ -364,7 +373,7 @@ else: sys.exit(98)
         prompt = (f'You are the hub root 42. herdr-hub adopted you at generation 7: do not run taskr adopt. '
                   f'This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source="taskr" ...>; '
                   f'handle each with the taskr MCP tools, and ack with its fence. Read the handover at {state}/handover-7.md. '
-                  f'A "hub push check 7" event will arrive: record it and ack it.'
+                  f'A "hub push check 7" event will arrive: record it and ack it. Ack that check only from its push, never from taskr_inbox.'
                   f' Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note.')
         # A Code Mode hub reports when Code Mode is off, and then has the same waiting text.
         waiting = (f' Waiting: run a command whose result you need in the foreground, in the same response, with a Bash timeout that fits it. Use run_in_background only for a job over 10 minutes or when pushed events need you meanwhile; then end the turn and let its completion notification start the next one. Never sleep, poll or read a task\'s output file to check on a command, and never send a response whose only tool call is a wait or an ack.')
@@ -555,6 +564,12 @@ else: sys.exit(98)
     assert (state / 'hub-check-7.result').read_text() == 'live\n', (state / 'hub-check-7.log').read_text()
     assert 'check event 40 waits behind 38 unacked events' in (state / 'hub-check-7.log').read_text()
 
+    c = run('prover passes on an inbox ack and a later received push', mode='later-push')
+    success(c)
+    state = c[1] / '.local/state/herdr-orch/lead-push/42'
+    assert 'check event 9 acked; later event 12 received' in (state / 'hub-check-7.log').read_text()
+    assert not any(a[0] == 'close' and a[-1] == 'abandoned' for a,t,l in c[5])
+
     c = run('prover survives process-group SIGHUP', mode='hup')
     success(c)
     c = run('prover stdin is /dev/null with terminal job control', mode='prover-stdin', job_control=True)
@@ -576,9 +591,12 @@ else: sys.exit(98)
         c = run(mode, mode=mode)
         expect(c, 0)
         state = c[1] / '.local/state/herdr-orch/lead-push/42'
-        assert (state / 'hub-check-7.result').read_text() == f'failed: {reason}\n', (state / 'hub-check-7.log').read_text()
-        assert (c[0] / 'note').read_text() == f'hub push check 7: failed: {reason}'
-        assert [a for a,t,l in c[5] if a[0] == 'close'] == ([['close','43','--outcome','rejected']] if gate else [])
+        # After the check event exists the reason also says whether the check was acked.
+        suffix = ' (check event 9: not acked' if gate else '\n'
+        assert (state / 'hub-check-7.result').read_text().startswith(f'failed: {reason}{suffix}'), (state / 'hub-check-7.log').read_text()
+        assert (c[0] / 'note').read_text().startswith(f'hub push check 7: failed: {reason}{suffix.rstrip()}')
+        assert [a for a,t,l in c[5] if a[0] == 'close'] == ([['close','43','--outcome','abandoned']] if gate else [])
+        assert ('closed check task 43 as abandoned' in (state / 'hub-check-7.log').read_text()) == gate
         assert (state / 'start.lock').is_dir()
 
     for mode, text in [('busy','still live after 75 s'),('closed','not an open root'),('not-root','not an open root')]:
@@ -674,7 +692,7 @@ else: sys.exit(98)
         if mode == 'config-symlink': assert (state / 'taskr-mcp-7.json').is_symlink()
 
     for mode, gate in [('fail-launch',True), ('fail-ready',True), ('queued-ready',True),
-                       ('wrong-delivery',True),('unreceived',True),('unacked',True),('prover-conflict',True),
+                       ('wrong-delivery',True),('unreceived',True),('unacked',True),('later-push-unacked',True),('later-push-old-gen',True),('prover-conflict',True),
                        ('fail-delivery',True),('fail-inbox',True),('lost-lease',True),
                        ('fail-new',False),('fail-accepted-close',True),('wrong-holder',False),('wrong-lease',False),
                        ('prover-lease-conflict',False)]:
@@ -685,8 +703,15 @@ else: sys.exit(98)
         if mode == 'prover-lease-conflict':
             assert (state / 'hub-check-7.result').read_text() == 'failed: generation conflict while waiting for lease\n'
         assert (c[0] / 'note').read_text().startswith('hub push check 7: failed: ')
+        states = {'wrong-delivery':'acked without a receipt at generation 7', 'unreceived':'acked without a receipt at generation 7',
+                  'unacked':'not acked; event 9 received', 'later-push-unacked':'not acked; event 12 received',
+                  'later-push-old-gen':'acked without a receipt at generation 7'}
+        if mode in states:
+            assert (state / 'hub-check-7.result').read_text().endswith(f'(check event 9: {states[mode]})\n'), (state / 'hub-check-7.result').read_text()
+        if gate:
+            assert 'closed check task 43 as abandoned' in (state / 'hub-check-7.log').read_text()
         closes = [a for a,t,l in c[5] if a[0] == 'close']
-        expected = ([['close','43','--outcome','rejected']] if gate else [])
+        expected = ([['close','43','--outcome','abandoned']] if gate else [])
         if mode == 'fail-accepted-close': expected.insert(0, ['close','43','--outcome','accepted'])
         assert closes == expected, closes
         assert (state / 'start.lock').is_dir()
@@ -886,7 +911,7 @@ else: sys.exit(98)
     lock_block = '\n'.join(function(n) for n in ('take_guard', 'drop_guard', 'take_lock', 'own_lock', 'release_lock')
                            if '\n' + n + '() ' in source)
     prelude = '\n'.join(['set -u', 'root=42 pane=wA:p1 gen=7 mcp_config=fixture lease=unknown check_task= step=0 mode=start',
-                         'tmp= adopt_err= lock= lock_owner= guard=', 'state_dir=$CASE host=$(uname -n)',
+                         'tmp= adopt_err= lock= lock_owner= guard= event= check_state= check_closed=', 'state_dir=$CASE host=$(uname -n)',
                          function('cleanup'), function('fail'), function('number'), lock_block])
     mock = '''
 latest_gen() { printf '7\n'; }
@@ -988,8 +1013,9 @@ ledger() {
         source = (setup / 'bin' / script).read_text()
         (race / 'take.sh').write_text('\n'.join([
             'set -u', 'root=42 pane=wA:p1 gen= mcp_config=fixture lease=unknown check_task= step=0 mode=start',
-            'agent= tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf=', 'state_dir=$CASE host=$(uname -n)',
-            *(function(n) for n in ('cleanup', 'fail', 'number', 'take_guard', 'drop_guard', 'take_lock', 'own_lock', 'release_lock')),
+            'agent= tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf= event= check_state= check_closed=', 'state_dir=$CASE host=$(uname -n)',
+            *(function(n) for n in ('cleanup', 'fail', 'abandon_check', 'number', 'take_guard', 'drop_guard', 'take_lock', 'own_lock', 'release_lock')
+              if '\n' + n + '() ' in source),
             'note() { :; }', 'trap cleanup 0', "trap 'fail interrupted' 1 2 3 15", 'take_lock',
             ': >"$CASE/entered-$WHO"', 'read -r go <"$CASE/release-$WHO"', '']))
         # Each wrapper does the real operation, then delays only its return, once.
