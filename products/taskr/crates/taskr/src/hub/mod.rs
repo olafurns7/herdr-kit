@@ -638,6 +638,18 @@ async fn run(hub: &Hub, machine: &str, req: &RpcRequest) -> Execution {
                     cmd.env(key, value);
                 }
             }
+            if crate::write::herdr::hc() {
+                for key in [
+                    "HERDR_KIT_BACKEND",
+                    "HC_SOCKET",
+                    "HC_SESSION",
+                    "XDG_RUNTIME_DIR",
+                ] {
+                    if let Some(value) = std::env::var_os(key) {
+                        cmd.env(key, value);
+                    }
+                }
+            }
             for key in [
                 "TASKR_TASK",
                 "TASKR_LAUNCH",

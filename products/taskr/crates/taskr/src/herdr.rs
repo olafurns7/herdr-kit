@@ -6,7 +6,36 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+/// `HERDR_KIT_BACKEND=hc`: herdr-core runs the terminals and `herdr` on PATH is
+/// the herdr0 shim. The guard then checks hc's core socket, and taskr makes no
+/// request on herdr 0.9's JSON socket. Any other value keeps herdr 0.9.
+pub fn hc() -> bool {
+    std::env::var("HERDR_KIT_BACKEND").is_ok_and(|v| v == "hc")
+}
+/// hc's client socket: `HC_SOCKET`, else
+/// `$XDG_RUNTIME_DIR/herdr-core/${HC_SESSION:-default}.sock`; empty (never up)
+/// when neither is set.
+fn hc_socket(env: impl Fn(&str) -> String) -> String {
+    let socket = env("HC_SOCKET");
+    if !socket.is_empty() {
+        return socket;
+    }
+    let runtime = env("XDG_RUNTIME_DIR");
+    if runtime.is_empty() {
+        return String::new();
+    }
+    let session = env("HC_SESSION");
+    let session = if session.is_empty() {
+        "default"
+    } else {
+        &session
+    };
+    format!("{runtime}/herdr-core/{session}.sock")
+}
 pub fn socket() -> String {
+    if hc() {
+        return hc_socket(|k| std::env::var(k).unwrap_or_default());
+    }
     std::env::var("HERDR_SOCKET_PATH")
         .ok()
         .filter(|v| !v.is_empty())
@@ -42,9 +71,19 @@ pub fn command(sock: &str, args: &[&str], timeout: Duration) -> std::io::Result<
             "Herdr server not reachable; no herdr command run",
         ));
     }
+    run(cli(sock, args), timeout)
+}
+/// The `herdr` command for a socket that `up` accepted. Under hc it is the shim
+/// on PATH, which finds hc's core itself, so no herdr socket path is passed.
+pub fn cli(sock: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new("herdr");
-    cmd.args(args).env("HERDR_SOCKET_PATH", sock);
-    run(cmd, timeout)
+    cmd.args(args);
+    if hc() {
+        cmd.env_remove("HERDR_SOCKET_PATH");
+    } else {
+        cmd.env("HERDR_SOCKET_PATH", sock);
+    }
+    cmd
 }
 /// Run a child in its own process group with pipe readers and a deadline that
 /// kills the group; `herdr` and the PR poller's `gh` share it.
@@ -118,6 +157,13 @@ pub fn request(
     params: Value,
     timeout: Duration,
 ) -> std::io::Result<Value> {
+    if hc() {
+        // hc speaks OpenRPC, not herdr's socket API; callers treat this as unknown.
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "no Herdr socket API under HERDR_KIT_BACKEND=hc",
+        ));
+    }
     let mut conn = connect(sock, timeout.min(Duration::from_millis(500)))?;
     conn.set_read_timeout(Some(timeout.min(Duration::from_millis(500))))?;
     conn.set_write_timeout(Some(timeout.min(Duration::from_millis(500))))?;
@@ -275,4 +321,33 @@ pub(crate) fn run_machine_prompt(
         }
     };
     (outcome, detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hc_socket;
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> String + 'a {
+        move |k| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == k)
+                .map(|(_, v)| v.to_string())
+                .unwrap_or_default()
+        }
+    }
+    #[test]
+    fn hc_socket_follows_hc_socket_then_runtime_dir_and_session() {
+        let all = [
+            ("HC_SOCKET", "/fixture/hc.sock"),
+            ("XDG_RUNTIME_DIR", "/run/fixture"),
+            ("HC_SESSION", "s1"),
+        ];
+        assert_eq!(hc_socket(env(&all)), "/fixture/hc.sock");
+        assert_eq!(hc_socket(env(&all[1..])), "/run/fixture/herdr-core/s1.sock");
+        assert_eq!(
+            hc_socket(env(&all[1..2])),
+            "/run/fixture/herdr-core/default.sock"
+        );
+        assert_eq!(hc_socket(env(&[("HC_SESSION", "s1")])), "");
+    }
 }

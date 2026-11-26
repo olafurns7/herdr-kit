@@ -291,6 +291,27 @@ base survives restart. Worker identity is cleared. The most useful status fields
 reads it, but no ledger traffic uses it. Remove `~/.local/state/taskr/hub.url`,
 or make the host a client ([install.md, step 7](install.md#7-multiple-machines)).
 
+## herdr-core (`HERDR_KIT_BACKEND=hc`)
+
+Unset, or any value other than `hc`, keeps herdr 0.9 as above. With
+`HERDR_KIT_BACKEND=hc`, `herdr` on PATH is herdr-kit's `herdr0` shim over hc
+(herdr-core), and taskr changes only how it reaches Herdr:
+
+- The guard checks hc's core socket instead of herdr's: `HC_SOCKET`, else
+  `$XDG_RUNTIME_DIR/herdr-core/${HC_SESSION:-default}.sock`. With neither set,
+  or no core listening, no `herdr` command runs.
+- `herdr` runs from PATH without `HERDR_SOCKET_PATH`; the shim finds hc itself.
+- taskr makes no request on herdr's JSON socket. Codex capacity (`agent.get`,
+  `agent.read`) stays unknown, so no capacity hint is recorded; the
+  screen-text quota check through `herdr agent read` still runs. `taskr-tui`
+  focus reports that it is not available.
+- The daemon does not subscribe to Herdr events. It checks hc's socket every
+  5 s (connect only) and runs an observation pass while the core is up, so
+  waits wake within about 5 s of a status change instead of at once.
+- `--restart` passes `HERDR_KIT_BACKEND=hc` and `HC_SOCKET` to the new daemon
+  instead of `HERDR_SOCKET_PATH`; the hub passes `HERDR_KIT_BACKEND`,
+  `HC_SOCKET`, `HC_SESSION` and `XDG_RUNTIME_DIR` to its command children.
+
 ## Files
 
 Everything lives in `~/.local/state/taskr/`:
