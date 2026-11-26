@@ -514,6 +514,12 @@ export FLEET_ROLE=hub
 export CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=$code_mode
 step=6
 umask "$old_umask"
+# Under herdr-core this shell runs the hub's agent itself (no herdr agent start), so name it on this pane's
+# terminal: herdr pane get and agent list then show it. Herdr 0.9 detects the agent itself.
+if [ "${HERDR_KIT_BACKEND:-}" = hc ]; then
+    herdr agent label "hub-$root" --kind "$kind" --pane "$pane" -- "$@" >/dev/null ||
+        printf 'herdr-hub: could not label pane %s as agent hub-%s; herdr pane get shows no agent there\n' "$pane" "$root" >&2
+fi
 set -- --model "$model" --effort "$effort" --settings '{"autoCompactEnabled":true,"autoCompactWindow":'"$compact_window"',"enabledPlugins":{"posthog@claude-plugins-official":false,"slack@claude-plugins-official":false}}' \
     --mcp-config "$mcp_config" --dangerously-load-development-channels server:taskr "$@" -- "$prompt"
 [ -z "$account" ] || set -- --account "$account" "$@"

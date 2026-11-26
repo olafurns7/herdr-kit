@@ -28,11 +28,20 @@ install the herdr-core manual, because its commands are for the owner only.
 This list comes from herdr0's usage (`herdr --help` prints it):
 
 ```text
-  workspace create|list|close     tab create|list|get|rename|close
+  workspace create|list|rename|close     tab create|list|get|rename|close
   pane current|get|list|read|run|send-text|send-keys|wait-output|process-info|report-metadata
-  agent start|prompt|wait|list|get|read      machine list      notification show (no-op)
+  agent start|label|prompt|wait|list|get|read      machine list      notification show (no-op)
   herdr0 enter [--workspace W --tab T --pane P | --new-workspace LABEL] -- ARGV...
+  herdr0 app-labels [--workspace W | --pane P] [--apply]
 ```
+
+`agent label` and `app-labels` are herdr0's own. `agent label NAME --kind K
+--pane P [-- AGENT_ARGS...]` names an agent its pane's shell runs itself
+(`herdr-hub` uses it for the hub). `app-labels` lists the Herdr app labels
+(`herdr.space`, `herdr.tab`, `where`) herdr0's terminals should carry; with
+`--apply` it writes the missing ones. Every terminal herdr0 creates already has
+them, so the Herdr desktop app shows it. Closing a space, tab or pane in the
+app ends its terminals.
 
 Unsupported (exit 2): plugin, server, worktree, status, agent explain, --skill.
 

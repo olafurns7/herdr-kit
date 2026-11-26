@@ -4,7 +4,7 @@
 set -eu
 setup=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 exec python3 -B - "$setup" <<'PY'
-import json, os, shutil, socket, subprocess, sys, tempfile, threading
+import json, os, re, shutil, socket, subprocess, sys, tempfile, threading
 from pathlib import Path
 
 setup = Path(sys.argv[1])
@@ -201,6 +201,14 @@ try:
     assert '--dangerously-load-development-channels' in args
     result = home / '.local/state/herdr-orch/lead-push/42/hub-check-7.result'
     assert result.read_text() == 'live\n', (result.read_text(), (result.parent / 'hub-check-7.log').read_text())
+    # The hub's own terminal carries its agent (herdr pane get no longer says unknown) and its app space and tab.
+    lb = fake_state(state)['terminals'][hub['terminal_id']]['labels']
+    assert (lb.get('agent'), lb.get('agent_name'), lb.get('agent_session')) == ('claude', 'hub-42', 'sid-hub'), lb
+    assert re.fullmatch(r'sp[0-9a-f]{32}', lb['herdr.space']) and re.fullmatch(r'tb[0-9a-f]{32}', lb['herdr.tab']), lb
+    assert lb['where'] == 'hub / 1', lb
+    labels = [c for c in map(json.loads, (state / 'calls.jsonl').read_text().splitlines()) if c[0] == 'label']
+    assert labels == [['label', '--json', hub['terminal_id'], 'agent=claude', 'agent_name=hub-42',
+                       'agent_session=sid-hub']], labels
 
     # (b) A lead starts in a new hc shell terminal of the hub's workspace.
     case, home, work, state, env = new_case("lead: 'herdr-lead start ROOT PANE --worktree DIR --lane LANE --account ACCOUNT --resume SID'")
@@ -225,6 +233,10 @@ try:
     assert any('lead-push-gen-7' in t for t in typed), typed
     t = fake_state(state)['terminals'][lead['terminal_id']]
     assert t['labels'].get('agent') == 'claude' and t['labels'].get('agent_name') == 'orch-example', t['labels']
+    # The lead's tab is a second app tab in the hub's app space.
+    hub_labels = fake_state(state)['terminals'][hub['terminal_id']]['labels']
+    assert t['labels']['herdr.space'] == hub_labels['herdr.space'], (t['labels'], hub_labels)
+    assert t['labels']['herdr.tab'] != hub_labels['herdr.tab'] and t['labels']['where'] == 'hub / lead', t['labels']
     assert 'herdr-lead-env=//worker/1/' in t['screen'], t['screen']
 
     # An rc file that puts ~/.local/bin first makes herdr Herdr 0.9: both refuse before any call.

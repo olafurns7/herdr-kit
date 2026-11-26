@@ -194,6 +194,36 @@ beside normal work, days before the stop.
 8. One lead: run one end-to-end lane (`herdr-launch --gather ...`): `got`,
    `ready`, `done` in the ledger, then teardown closes its terminal.
 
+## The Herdr desktop app
+
+The Herdr app shows a terminal only when it carries `herdr.space=<id>` (and
+`herdr.tab=<id>`); other terminals stay hidden. Every terminal `herdr0`
+creates carries them, derived from its herdr0 ids: one herdr0 workspace is one
+app space and one herdr0 tab one app tab. A third label, `where`, holds
+`WORKSPACE_LABEL / TAB_LABEL`; `herdr tab rename` and `herdr workspace rename`
+update it. Under hc `herdr-hub` also labels the hub's terminal with its agent
+(`agent=claude`, `agent_name=hub-ROOT`).
+
+Terminals made by an earlier herdr-kit have no app labels. After installing
+this release, label them once from an hc shell terminal (where `herdr` is
+`herdr0`). Without `--apply` the command only lists each terminal, its
+workspace and tab, the labels and which of them would change:
+
+```sh
+herdr app-labels                         # dry run, all herdr0 terminals
+herdr app-labels --workspace W --apply   # one workspace at a time
+herdr app-labels --pane PANE --apply     # one terminal: the hub's last
+herdr app-labels --apply                 # anything left
+```
+
+It writes only `herdr.space`, `herdr.tab` and `where`, and only on terminals
+with a herdr0 `ws=` label; the app's own terminals have none and are never
+changed.
+
+Closing a space, tab or pane in the app ends the terminals in it, the hub's
+included. Close only what you mean to end. A root ended this way starts again
+with its step-7 start line.
+
 ## Task worktrees under hc
 
 The Herdr worktree plugin does not run under hc: `herdr worktree` exits 2 and
