@@ -662,9 +662,19 @@ def agent(ctx, sub, argv):
         unsupported("agent explain")
     if sub == "start":
         o, pos = opts(argv, {"--kind", "--pane", "--timeout", "--cwd"})
-        if len(pos) < 2 or not o.get("--pane"):
-            raise Fail("usage", "agent start NAME --kind K --pane P -- ARGV...", 2)
-        name, cmd = pos[0], pos[1:]
+        kind = o.get("--kind")
+        if not pos or not o.get("--pane") or (not kind and len(pos) < 2):
+            raise Fail("usage", "agent start NAME --kind K --pane P [-- ARGS...] | agent start NAME --pane P -- ARGV...", 2)
+        name = pos[0]
+        if kind:
+            # herdr 0.9: the words after -- are arguments to the kind's program. The kind is typed
+            # bare, so the pane's shell resolves it (herdr-launch defines claude/codex as functions there).
+            if not re.match(r"^[a-z][a-z0-9_-]*$", kind):
+                raise Fail("usage", f"agent kind {kind!r} is not valid", 2)
+            line = " ".join([kind, *map(shlex.quote, pos[1:])])
+        else:
+            kind = os.path.basename(pos[1])
+            line = shlex.join(pos[1:])
         if not re.match(r"^[a-z][a-z0-9_-]{0,31}$", name):
             raise Fail("usage", f"agent name {name!r} is not valid", 2)
         if [t for t in ctx.terminals([f"agent_name={name}"]) if has_agent(t)]:
@@ -672,9 +682,8 @@ def agent(ctx, sub, argv):
         t = ctx.one(f"pane={o['--pane']}", "pane", o["--pane"])
         if has_agent(t) or (fg_name(t) and fg_name(t) not in SHELLS):
             raise Fail("pane_busy", f"pane {o['--pane']} is not at its shell prompt")
-        kind = o.get("--kind") or os.path.basename(cmd[0])
         hc(["label", "--json", t["address"], f"agent={kind}", f"agent_name={name}", "agent_session="])
-        hc(["send", "--json", t["address"], "--", shlex.join(cmd)])
+        hc(["send", "--json", t["address"], "--", line])
         t = poll(t, {"idle", "working", "done", "blocked"}, ms_to_s(o.get("--timeout"), 90000))
         if agent_status(t) == "blocked":
             raise Fail("agent_blocked", f"agent {name} started at a dialog or permission prompt")

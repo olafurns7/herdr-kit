@@ -217,15 +217,16 @@ class Herdr0(unittest.TestCase):
     def test_agent_start_prompt_wait_get(self):
         ws = self.workspace()["workspace"]["workspace_id"]
         s = self.fake()
-        s["on_send"] = [{"match": "claude --model", "status": "idle", "foreground": "claude"},
+        s["on_send"] = [{"match": "claude --account", "status": "idle", "foreground": "claude"},
                         {"match": "do the thing", "status": "working", "turn": 0},
                         {"match": "finish", "status": "idle", "turn": 1}]
         self.put(s)
+        # herdr-launch's shape: the words after -- are arguments to the kind's program.
         r = self.js("agent", "start", "impl-a", "--kind", "claude", "--pane", f"{ws}:p1", "--timeout", "5000",
-                    "--", "claude", "--model", "m 1")
+                    "--", "--account", "acct1", "--model", "m 1")
         self.assertEqual((r["agent"]["name"], r["agent"]["agent"], r["agent"]["agent_status"]),
                          ("impl-a", "claude", "idle"))
-        self.assertIn(["send", "--json", "t1", "--", "claude --model 'm 1'"], self.calls())
+        self.assertIn(["send", "--json", "t1", "--", "claude --account acct1 --model 'm 1'"], self.calls())
         self.assertIn(["label", "--json", "t1", "agent=claude", "agent_name=impl-a", "agent_session="],
                       self.calls())
         p = self.herdr("agent", "start", "impl-a", "--kind", "claude", "--pane", f"{ws}:p1", "--", "x", ok=False)
@@ -258,9 +259,22 @@ class Herdr0(unittest.TestCase):
         s = self.fake()
         s["on_send"] = [{"match": "codex", "status": "blocked", "foreground": "codex"}]
         self.put(s)
-        p = self.herdr("agent", "start", "impl-c", "--kind", "codex", "--pane", f"{ws}:p1", "--", "codex",
-                       ok=False)
+        p = self.herdr("agent", "start", "impl-c", "--kind", "codex", "--pane", f"{ws}:p1", "--", ok=False)
         self.assertEqual(self.error(p), "agent_blocked")
+        # No words after --: the bare kind starts.
+        self.assertIn(["send", "--json", "t1", "--", "codex"], self.calls())
+
+    def test_agent_start_without_kind_types_the_argv(self):
+        ws = self.workspace()["workspace"]["workspace_id"]
+        s = self.fake()
+        s["on_send"] = [{"match": "/opt/tool", "status": "idle", "foreground": "tool"}]
+        self.put(s)
+        r = self.js("agent", "start", "impl-t", "--pane", f"{ws}:p1", "--timeout", "2000", "--",
+                    "/opt/tool", "--flag", "a b")
+        self.assertEqual(r["agent"]["agent"], "tool")
+        self.assertIn(["send", "--json", "t1", "--", "/opt/tool --flag 'a b'"], self.calls())
+        p = self.herdr("agent", "start", "impl-u", "--pane", f"{ws}:p1", "--", ok=False)
+        self.assertEqual(p.returncode, 2)
 
     # panes
     def test_pane_read_run_keys_metadata_process_info(self):
