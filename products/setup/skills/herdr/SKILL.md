@@ -29,7 +29,7 @@ This list comes from herdr0's usage (`herdr --help` prints it):
 
 ```text
   workspace create|list|close     tab create|list|get|rename|close
-  pane current|get|list|read|run|send-keys|wait-output|process-info|report-metadata
+  pane current|get|list|read|run|send-text|send-keys|wait-output|process-info|report-metadata
   agent start|prompt|wait|list|get|read      machine list      notification show (no-op)
   herdr0 enter [--workspace W --tab T --pane P | --new-workspace LABEL] -- ARGV...
 ```
