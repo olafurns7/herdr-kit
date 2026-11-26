@@ -969,6 +969,7 @@ exec /bin/cp "$@"
         dropin = (h / '.config/systemd/user/taskr.service.d/herdr-kit-hc.conf').read_text()
         assert dropin == (setup / 'systemd/taskr-hc.conf').read_text()
         assert 'Environment=HERDR_KIT_BACKEND=hc' in dropin
+        assert 'Environment=HC_SOCKET=%t/herdr-core/default.sock' in dropin
         assert 'Environment=PATH=%h/.local/lib/herdr-kit/hc-bin:' in dropin
         assert not (h / '.local/share/taskr/plugin').exists()
 

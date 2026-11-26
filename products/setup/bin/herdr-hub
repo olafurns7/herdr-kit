@@ -134,6 +134,13 @@ if [ "$1" = __move-helper ]; then
     printf 'herdr-hub: move: helper %s started in its own session\n' "$$"
 fi
 command -v jq >/dev/null 2>&1 || die 'jq is required'
+# Under herdr-core every herdr call must reach herdr0 through the shim; a shell rc file
+# that puts ~/.local/bin first would reach Herdr 0.9 instead.
+if [ "${HERDR_KIT_BACKEND:-}" = hc ]; then
+    hc_shim=$HOME/.local/lib/herdr-kit/hc-bin/herdr
+    hc_found=$(command -v herdr 2>/dev/null) || hc_found=missing
+    [ "$hc_found" = "$hc_shim" ] || die "HERDR_KIT_BACKEND=hc but herdr is $hc_found, not $hc_shim: put ${hc_shim%/herdr} first on PATH"
+fi
 if [ "$1" = check ]; then
     [ $# -eq 2 ] || die "$usage"
     root=$2

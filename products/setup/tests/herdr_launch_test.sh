@@ -3642,9 +3642,28 @@ run_launch sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "
 expect_rc 2
 expect_no_calls
 
-# HERDR_KIT_BACKEND=hc: herdr0 answers as herdr, so the calls stay the same;
-# Codex adds --no-daemon and nothing probes the herdr socket.
+# HERDR_KIT_BACKEND=hc: herdr0 answers as herdr through the shim, so the calls stay the
+# same; Codex adds --no-daemon and nothing probes the herdr socket.
+# hc_shim: the stub herdr as the shim, first on PATH.
+hc_shim() {
+    mkdir -p "$home/.local/lib/herdr-kit/hc-bin"
+    ln -s "$stub_dir/herdr" "$home/.local/lib/herdr-kit/hc-bin/herdr"
+    run_path=$home/.local/lib/herdr-kit/hc-bin:$run_path
+}
+for shim_case in missing behind; do
+    new_case "hc switch: herdr that is not the shim ($shim_case) refuses before any call"
+    if [ "$shim_case" = behind ]; then
+        hc_shim
+        run_path=$stub_dir:$run_path
+    fi
+    run_launch HERDR_KIT_BACKEND=hc sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
+    expect_rc 2
+    expect_err "HERDR_KIT_BACKEND=hc but herdr is $stub_dir/herdr, not $home/.local/lib/herdr-kit/hc-bin/herdr"
+    expect_no_calls
+done
+
 new_case 'hc switch: codex lane adds --no-daemon' reviewer
+hc_shim
 run_launch HERDR_KIT_BACKEND=hc sh "$launch_sh" sol-medium rev-cart "$brief" "$report" 42
 expect_rc 0
 expect_calls "$(tab_calls rev-cart)" \
@@ -3652,6 +3671,7 @@ expect_calls "$(tab_calls rev-cart)" \
         "$(codex_flags gpt-6.1-sol medium "\"$tcwd\"={trust_level=\"trusted\"}")|--no-daemon")"
 
 new_case 'hc switch: claude lane argv unchanged'
+hc_shim
 run_launch HERDR_KIT_BACKEND=hc sh "$launch_sh" opus-medium impl-cart "$brief" "$report" 42
 expect_rc 0
 expect_calls "$(tab_calls impl-cart)" \
@@ -3659,6 +3679,7 @@ expect_calls "$(tab_calls impl-cart)" \
 
 new_case 'hc switch: reserved launch never probes the herdr socket'
 reserved_snapshot
+hc_shim
 STUB_SERVER_RC=1
 run_launch HERDR_KIT_BACKEND=hc HERDR_SOCKET_PATH=/nonexistent/herdr.sock \
     sh "$launch_sh" --reserved 2468 3579 opus-medium impl-cart "$brief" "$report" 42 wA:p5
@@ -3667,6 +3688,7 @@ grep -q '^herdr|agent|start|impl-cart|' "$case_dir/calls" || fail 'no reserved s
 
 new_case 'hc switch: reserved Codex refuses before any call'
 reserved_snapshot
+hc_shim
 run_launch HERDR_KIT_BACKEND=hc sh "$launch_sh" --reserved 2468 3579 sol-high impl-w3579 "$brief" "$report" 42 wA:p5
 expect_rc 2
 expect_err 'not under HERDR_KIT_BACKEND=hc'
