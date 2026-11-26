@@ -282,9 +282,9 @@ class Herdr0(unittest.TestCase):
         self.edit("t1", screen="a\nb\nc\nd\n\n\n")
         self.assertEqual(self.herdr("pane", "read", f"{ws}:p1", "--source", "visible", "--lines", "2").stdout,
                          "c\nd\n")
-        self.assertIn(["read", "t1", "--lines", "0"], self.calls())
+        self.assertIn(["read", "--json", "t1", "--lines", "0"], self.calls())
         self.herdr("pane", "read", f"{ws}:p1", "--source", "recent-unwrapped", "--lines", "40")
-        self.assertIn(["read", "t1", "--lines", "40"], self.calls())
+        self.assertIn(["read", "--json", "t1", "--lines", "40"], self.calls())
         self.assertEqual(self.herdr("agent", "read", f"{ws}:p1", "--source", "visible").stdout, "a\nb\nc\nd\n")
         self.herdr("pane", "run", f"{ws}:p1", " export A=1")
         self.assertIn(["send", "--json", "t1", "--", " export A=1"], self.calls())
@@ -318,6 +318,74 @@ class Herdr0(unittest.TestCase):
         self.assertIn(["wait", "--json", "--output=probe-end", "--timeout", "2", "t1"], self.calls())
         p = self.herdr("pane", "wait-output", f"{ws}:p1", "--match", "never", "--timeout", "1000", ok=False)
         self.assertEqual((p.returncode, self.error(p)), (1, "timeout"))
+
+    def test_agent_session_from_the_agents_own_args(self):
+        ws = self.workspace()["workspace"]["workspace_id"]
+        for _ in range(3):
+            self.js("tab", "create", "--workspace", ws)
+        s = self.fake()
+        s["on_send"] = [{"match": "claude", "status": "idle", "foreground": "claude"},
+                        {"match": "codex", "status": "idle", "foreground": "codex"}]
+        self.put(s)
+        cases = [("impl-a", "claude", ["--account", "acct1", "--resume", "S-1", "--model", "m"], "S-1"),
+                 ("impl-b", "claude", ["--session-id=S-2"], "S-2"),
+                 ("impl-c", "codex", ["--account", "acct1", "resume", "S-3", "--yolo"], "S-3"),
+                 ("impl-d", "claude", ["-r", "S-4"], "S-4")]
+        for n, (name, kind, args, sid) in enumerate(cases, 1):
+            r = self.js("agent", "start", name, "--kind", kind, "--pane", f"{ws}:p{n}", "--timeout", "2000",
+                        "--", *args)
+            self.assertEqual(r["agent"]["agent_session"]["value"], sid, name)
+            self.assertIn(["label", "--json", f"t{n}", f"agent={kind}", f"agent_name={name}",
+                           f"agent_session={sid}"], self.calls())
+        self.assertEqual(self.js("agent", "get", "impl-c")["agent"]["agent_session"]["value"], "S-3")
+        # A fresh start names no session: the label stays empty and herdr0 shows none.
+        self.js("tab", "create", "--workspace", ws)
+        r = self.js("agent", "start", "impl-e", "--kind", "codex", "--pane", f"{ws}:p5", "--timeout", "2000",
+                    "--", "resume", "--last")
+        self.assertNotIn("agent_session", r["agent"])
+        self.assertIn(["label", "--json", "t5", "agent=codex", "agent_name=impl-e", "agent_session="],
+                      self.calls())
+
+    def test_send_and_keys_run_without_the_callers_terminal_identity(self):
+        ws = self.workspace()["workspace"]["workspace_id"]
+        open(os.path.join(self.state, "env.jsonl"), "w").close()
+        env = {"HC_TERMINAL_ID": "t9", "HC_TERMINAL_SOCKET": "/x/holder.sock"}
+        self.herdr("pane", "run", f"{ws}:p1", "true", env=env)
+        self.herdr("pane", "send-keys", f"{ws}:p1", "Enter", env=env)
+        self.herdr("agent", "prompt", f"{ws}:p1", "hello", env=env)
+        with open(os.path.join(self.state, "env.jsonl")) as f:
+            seen = [json.loads(line) for line in f]
+        for row in seen:
+            if row["cmd"] in ("send", "keys"):
+                self.assertIsNone(row["HC_TERMINAL_ID"], row)
+                self.assertIsNone(row["HC_TERMINAL_SOCKET"], row)
+            else:
+                self.assertEqual(row["HC_TERMINAL_ID"], "t9", row)
+        self.assertEqual(sorted({r["cmd"] for r in seen if r["HC_TERMINAL_ID"] is None}), ["keys", "send"])
+
+    def test_closed_tab_ids_are_never_reused(self):
+        ws = self.workspace()["workspace"]["workspace_id"]
+        self.assertEqual(self.js("tab", "create", "--workspace", ws)["root_pane"]["pane_id"], f"{ws}:p2")
+        self.herdr("tab", "close", f"{ws}:t2")
+        self.assertEqual(self.js("tab", "create", "--workspace", ws)["root_pane"]["pane_id"], f"{ws}:p3")
+
+    def test_send_retries_while_the_terminal_is_unavailable(self):
+        ws = self.workspace()["workspace"]["workspace_id"]
+        self.clear_calls()
+        self.herdr("pane", "run", f"{ws}:p1", "true", env={"FAKE_HC_SEND_UNAVAILABLE": "2"})
+        self.assertEqual(len([c for c in self.calls() if c[0] == "send"]), 3)
+
+    def test_wait_output_pauses_when_hc_wait_returns_at_once(self):
+        ws = self.workspace()["workspace"]["workspace_id"]
+        self.clear_calls()
+        p = self.herdr("pane", "wait-output", f"{ws}:p1", "--regex", "nev.r", "--timeout", "2000", ok=False)
+        self.assertEqual(self.error(p), "timeout")
+        self.assertLessEqual(len([c for c in self.calls() if c[0] == "wait"]), 5)
+
+    def test_read_shows_no_hc_note_lines(self):
+        ws = self.workspace()["workspace"]["workspace_id"]
+        self.edit("t1", screen="line\n")
+        self.assertEqual(self.herdr("pane", "read", f"{ws}:p1", "--source", "visible").stdout, "line\n")
 
     # machines
     def test_machine_list_and_machine_flag(self):

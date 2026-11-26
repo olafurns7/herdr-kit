@@ -118,10 +118,24 @@ def hc(args, check=True, timeout=None):
         sys.exit(3)
     if args[0] == "run" and "--no-parent" not in args:
         raise Fail("internal", "hc run without --no-parent", 2)
-    try:
-        p = subprocess.run([hc_bin(), *args], capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise Fail("timeout", f"hc {args[0]} did not return in time")
+    env = None
+    if args[0] in ("send", "keys"):
+        # From inside an agent terminal hc would wrap the text in <hc from=...> (notes.rs tagged()):
+        # send as a plain process, as herdr typed text as given.
+        env = {k: v for k, v in os.environ.items() if k not in ("HC_TERMINAL_ID", "HC_TERMINAL_SOCKET")}
+    retry_until = time.monotonic() + 10
+    while True:
+        try:
+            p = subprocess.run([hc_bin(), *args], capture_output=True, text=True, timeout=timeout, env=env)
+        except subprocess.TimeoutExpired:
+            raise Fail("timeout", f"hc {args[0]} did not return in time")
+        # A young terminal answers send with unavailable (exit 5) until its output settles.
+        if args[0] != "send" or p.returncode != 5 or time.monotonic() >= retry_until:
+            break
+        time.sleep(0.5)
+        if not core_up():
+            print("herdr0: no hc core running; the owner starts it", file=sys.stderr)
+            sys.exit(3)
     if check and p.returncode != 0:
         kind, message = "hc_error", p.stderr.strip() or f"hc {args[0]} exited {p.returncode}"
         try:
@@ -346,18 +360,37 @@ class IdLock:
         self.f.close()
 
 
+def mark_path(ctx, ws):
+    """The workspace's high-water tab/pane number, so a closed tab's ids are never handed out again."""
+    where = re.sub(r"[^A-Za-z0-9_.-]", "_", ctx.machine) if ctx.machine else "local"
+    path = os.path.join(state_dir(), "ids", where)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    return os.path.join(path, ws)
+
+
 def new_workspace_id(ctx):
     used = {labels(t).get("ws") for t in ctx.terminals(include_finished=True)}
     for _ in range(100):
         w = "w" + "".join(secrets.choice(ID_CHARS) for _ in range(4))
-        if w not in used:
+        if w not in used and not os.path.exists(mark_path(ctx, w)):
             return w
     raise Fail("internal", "no free workspace id")
 
 
 def next_number(ctx, ws):
+    """Claims the next number in ws; call under IdLock."""
     rows = ctx.terminals([f"ws={ws}"], include_finished=True)
-    return 1 + max([num(labels(t).get("tab")) for t in rows] + [num(labels(t).get("pane")) for t in rows] + [0])
+    path = mark_path(ctx, ws)
+    try:
+        with open(path) as f:
+            mark = int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        mark = 0
+    n = 1 + max([mark] + [num(labels(t).get("tab")) for t in rows] + [num(labels(t).get("pane")) for t in rows])
+    with open(path + ".tmp", "w") as f:
+        f.write(f"{n}\n")
+    os.replace(path + ".tmp", path)
+    return n
 
 
 def self_path(ctx):
@@ -399,7 +432,7 @@ def workspace(ctx, sub, argv):
         check_env(o["--env"])
         with IdLock():
             ws = new_workspace_id(ctx)
-            t = create_pane(ctx, ws, 1, o.get("--cwd"), None, o.get("--label"), o["--env"])
+            t = create_pane(ctx, ws, next_number(ctx, ws), o.get("--cwd"), None, o.get("--label"), o["--env"])
         p = pane_obj(t)
         tab = tab_obj([t], p["tab_id"])
         w = {"workspace_id": ws, "label": o.get("--label") or ws, "active_tab_id": p["tab_id"],
@@ -514,7 +547,8 @@ def current_terminal(ctx):
 def read_text(t, source, lines):
     n = int(lines) if lines else 0
     history = 0 if source == "visible" else max(n, 0)
-    _, out, _ = hc(["read", t["address"], "--lines", str(history)])
+    # JSON: the text alone, without the CLI's "[hc] only its screen" note lines.
+    out = hc_json(["read", t["address"], "--lines", str(history)]).get("text") or ""
     rows = out.rstrip("\n").split("\n")
     while rows and not rows[-1].strip():
         rows.pop()
@@ -605,11 +639,14 @@ def wait_output(t, pid, pattern, regex, seconds):
         left = deadline - time.monotonic()
         if left <= 0:
             raise Fail("timeout", f"pane {pid} did not print {pattern!r} in {seconds} s")
+        began = time.monotonic()
         if regex:
             hc(["wait", "--json", t["address"], "--timeout", str(max(1, min(2, math.ceil(left))))], check=False)
+            pause(began)
             continue
         code, out, _ = hc(["wait", "--json", f"--output={pattern}", "--timeout",
                            str(max(1, min(2, math.ceil(left)))), t["address"]], check=False)
+        pause(began)
         try:
             r = json.loads(out)
         except ValueError:
@@ -618,6 +655,29 @@ def wait_output(t, pid, pattern, regex, seconds):
             return emit("output_matched", {"pane_id": pid, "matched": True}, "pane:wait_output")
         if r.get("reason") == "exit":
             raise Fail("pane_not_found", f"pane {pid} exited before printing {pattern!r}")
+
+
+def pause(began):
+    """hc wait can return at once (a plain shell, a blocked terminal): don't spin on it."""
+    spent = time.monotonic() - began
+    if spent < 0.5:
+        time.sleep(0.5 - spent)
+
+
+def session_from_args(kind, args):
+    """The native session an agent's own arguments name: claude --session-id/--resume/-r X, codex resume X."""
+    if kind == "claude":
+        for i, a in enumerate(args):
+            for flag in ("--session-id", "--resume"):
+                if a.startswith(flag + "="):
+                    return a.split("=", 1)[1]
+            if a in ("--session-id", "--resume", "-r") and i + 1 < len(args) and not args[i + 1].startswith("-"):
+                return args[i + 1]
+    if kind == "codex" and "resume" in args:
+        i = args.index("resume")
+        if i + 1 < len(args) and not args[i + 1].startswith("-"):
+            return args[i + 1]
+    return ""
 
 
 def resolve_agent(ctx, target):
@@ -672,9 +732,12 @@ def agent(ctx, sub, argv):
             if not re.match(r"^[a-z][a-z0-9_-]*$", kind):
                 raise Fail("usage", f"agent kind {kind!r} is not valid", 2)
             line = " ".join([kind, *map(shlex.quote, pos[1:])])
+            args = pos[1:]
         else:
             kind = os.path.basename(pos[1])
             line = shlex.join(pos[1:])
+            args = pos[2:]
+        session = session_from_args(kind, args)
         if not re.match(r"^[a-z][a-z0-9_-]{0,31}$", name):
             raise Fail("usage", f"agent name {name!r} is not valid", 2)
         if [t for t in ctx.terminals([f"agent_name={name}"]) if has_agent(t)]:
@@ -682,7 +745,7 @@ def agent(ctx, sub, argv):
         t = ctx.one(f"pane={o['--pane']}", "pane", o["--pane"])
         if has_agent(t) or (fg_name(t) and fg_name(t) not in SHELLS):
             raise Fail("pane_busy", f"pane {o['--pane']} is not at its shell prompt")
-        hc(["label", "--json", t["address"], f"agent={kind}", f"agent_name={name}", "agent_session="])
+        hc(["label", "--json", t["address"], f"agent={kind}", f"agent_name={name}", f"agent_session={session}"])
         hc(["send", "--json", t["address"], "--", line])
         t = poll(t, {"idle", "working", "done", "blocked"}, ms_to_s(o.get("--timeout"), 90000))
         if agent_status(t) == "blocked":
@@ -743,8 +806,9 @@ def enter(argv):
         ctx = Ctx(None)
         with IdLock():
             ws = new_workspace_id(ctx)
-            tab, pane_id = f"{ws}:t1", f"{ws}:p1"
-            hc(["label", "--json", me, f"ws={ws}", f"tab={tab}", f"pane={pane_id}", "tab_label=1",
+            n = next_number(ctx, ws)
+            tab, pane_id = f"{ws}:t{n}", f"{ws}:p{n}"
+            hc(["label", "--json", me, f"ws={ws}", f"tab={tab}", f"pane={pane_id}", f"tab_label={n}",
                 f"ws_label={o['--new-workspace']}"])
     else:
         ws, tab, pane_id = o.get("--workspace"), o.get("--tab"), o.get("--pane")

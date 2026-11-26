@@ -13,6 +13,8 @@ Test hooks kept in state.json:
   future:   {ADDRESS: [TEXT, ...]} output a later `wait --output` sees printed.
   machines: the `machine ls` rows.
 FAKE_HC_UNLINK_SOCKET=N removes $HC_SOCKET after the Nth call (a core that went away).
+FAKE_HC_SEND_UNAVAILABLE=N fails the first N sends with exit 5 (unavailable), as a young terminal does.
+env.jsonl records HC_TERMINAL_ID and HC_TERMINAL_SOCKET as each call saw them.
 """
 import json
 import os
@@ -94,6 +96,9 @@ def find(s, t):
 def main(argv):
     with open(os.path.join(STATE, "calls.jsonl"), "a") as f:
         f.write(json.dumps(argv) + "\n")
+    with open(os.path.join(STATE, "env.jsonl"), "a") as f:
+        f.write(json.dumps({"cmd": argv[0], "HC_TERMINAL_ID": os.environ.get("HC_TERMINAL_ID"),
+                            "HC_TERMINAL_SOCKET": os.environ.get("HC_TERMINAL_SOCKET")}) + "\n")
     limit = os.environ.get("FAKE_HC_UNLINK_SOCKET")
     if limit:
         with open(os.path.join(STATE, "calls.jsonl")) as f:
@@ -129,12 +134,20 @@ def main(argv):
         out(find(s, pos[0]))
     if cmd == "read":
         o, pos = split(rest, {"--lines"})
-        print(find(s, pos[0])["screen"], end="")
+        text = find(s, pos[0])["screen"]
+        if "--json" in o:
+            out({"text": text, "complete": True, "how": "screen", "why": None})
+        # The text form carries the CLI's note lines; herdr0 must not show them.
+        print(text + "[hc] only its screen: it is working; read again once it stops for its history")
         sys.exit(0)
     if cmd == "send":
         o, pos = split(rest, {"--if", "--timeout"}, {"--force", "--wait"})
         rec = find(s, pos[0])
         text = pos[1]
+        if s.get("unavailable", 0) < int(os.environ.get("FAKE_HC_SEND_UNAVAILABLE") or 0):
+            s["unavailable"] = s.get("unavailable", 0) + 1
+            save(s)
+            fail("unavailable", f"{rec['address']} has not settled", 5)
         if (rec["status"] or {}).get("state") == "blocked" and "--force" not in o:
             fail("blocked", f"{rec['address']} is blocked", 9)
         status_before = (rec["status"] or {}).get("state")
