@@ -38,12 +38,15 @@ This list comes from herdr0's usage (`herdr --help` prints it):
 `agent label` and `app-labels` are herdr0's own. `agent label NAME --kind K
 --pane P [-- AGENT_ARGS...]` names an agent its pane's shell runs itself
 (`herdr-hub` uses it for the hub). The Herdr desktop app shows roots only:
-the hub and campaign leads (agents named `hub-*` or `orch-*`; `agent start`
-and `agent label` write the app labels `herdr.space` and `herdr.tab` for such
-a name). Worker, seat and helper terminals and the owner's own shells stay
+the hub, campaign leads and sub-orchestrators (agents named `hub-*` or
+`orch-*`; `agent start` and `agent label` write the app labels `herdr.space`
+and `herdr.tab` for such a name, and clear herdr0's own ones for any other
+name). Worker, seat and helper terminals and the owner's own shells stay
 hidden by design. `app-labels` lists the roots and
 the app labels they should carry; with `--apply` it writes the ones that are
-missing or differ, and it refuses a `--pane` that is not a root. The app
+missing or differ, and it refuses a `--pane` that is not a root. A hub
+started before its agent label is not a root yet: `agent label hub-ROOT
+--kind claude --pane PANE` names it and writes both app labels. The app
 names a space after the terminal's folder and numbers its tabs; herdr0's
 labels do not set those names. Closing a space, tab or pane in the app ends
 its terminals.

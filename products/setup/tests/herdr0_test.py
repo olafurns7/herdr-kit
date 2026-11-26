@@ -603,8 +603,25 @@ class Herdr0(unittest.TestCase):
         self.assertNotIn("herdr.space", terms["t2"]["labels"])
         # herdr0 writes no other app key; the app owns where.
         for t in terms.values():
-            self.assertFalse([k for k in t["labels"] if k.startswith("herdr.") and k not in ("herdr.space", "herdr.tab")])
+            self.assertFalse([k for k in t["labels"]
+                              if k.startswith("herdr.") and k not in ("herdr.space", "herdr.tab")])
             self.assertNotIn("where", t["labels"])
+        # A worker that takes over the lead's pane clears herdr0's own app labels: the pane stops showing.
+        self.edit("t1", foreground={"pid": 9, "name": "zsh", "argv": ["zsh"], "cwd": "/x"}, status=None)
+        self.clear_calls()
+        self.js("agent", "start", "impl-y", "--kind", "claude", "--pane", f"{ws}:p1", "--timeout", "2000", "--")
+        self.assertIn(["label", "--json", "t1", "agent=claude", "agent_name=impl-y", "agent_session=",
+                       "herdr.space=", "herdr.tab="], self.calls())
+        self.assertFalse([k for k in self.fake()["terminals"]["t1"]["labels"] if k.startswith("herdr.")])
+        # Labels the app wrote (other ids) are left alone.
+        foreign = {"herdr.space": "sp" + "0123456789abcdef" * 2, "herdr.tab": "tb" + "fedcba9876543210" * 2}
+        self.edit("t1", labels=dict(self.fake()["terminals"]["t1"]["labels"], **foreign),
+                  foreground={"pid": 9, "name": "zsh", "argv": ["zsh"], "cwd": "/x"}, status=None)
+        self.clear_calls()
+        self.js("agent", "start", "impl-z", "--kind", "claude", "--pane", f"{ws}:p1", "--timeout", "2000", "--")
+        self.assertIn(["label", "--json", "t1", "agent=claude", "agent_name=impl-z", "agent_session="], self.calls())
+        lb = self.fake()["terminals"]["t1"]["labels"]
+        self.assertEqual({k: lb[k] for k in foreign}, foreign)
         # Another workspace's lead gets its own space; JSON output shapes do not change.
         made = self.workspace("other")
         other = made["workspace"]["workspace_id"]
@@ -722,6 +739,9 @@ class Herdr0(unittest.TestCase):
         for pane in ("wTSK2:p1", "wOPS3:p1"):
             p = self.herdr("app-labels", "--pane", pane, "--apply", ok=False)
             self.assertEqual((p.returncode, self.error(p)), (1, "not_a_root"), pane)
+            msg = json.loads(p.stderr)["error"]["message"]
+            self.assertIn("hub-* or orch-*", msg)
+            self.assertIn(f"herdr agent label hub-ROOT --kind claude --pane {pane}", msg)
         # A workspace with no root lists nothing.
         self.assertEqual(self.js("app-labels", "--workspace", "wOPS3")["terminals"], [])
         self.assertFalse([c for c in self.calls() if c[0] == "label"])

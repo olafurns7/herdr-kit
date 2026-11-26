@@ -15,12 +15,13 @@ connection (hc starts a core on demand, and that core keeps its starter's
 environment, so no agent may start one); every `hc run` passes --no-parent.
 
 The Herdr desktop app shows only terminals labelled herdr.space=<id> (and herdr.tab=<id>). herdr0
-writes them on roots only: the hub and campaign leads, the agents named hub-* or orch-*, at
-`agent start` or `agent label`. Worker, seat and helper terminals and the owner's own shells
-(`enter --new-workspace` before any agent) stay hidden by design. The ids derive from the
-terminal's herdr0 workspace and tab, so one herdr0 workspace is one app space and one herdr0 tab
-one app tab. `herdr0 app-labels` labels roots started before that. The app owns the `where` label: it names a space after the terminal's
-folder and numbers its tabs, so herdr0 never writes `where`.
+writes them on roots only: the hub, campaign leads and sub-orchestrators (agents named hub-* or
+orch-*), at `agent start` or `agent label`. Worker, seat and helper terminals and the owner's own
+shells (`enter --new-workspace` before any agent) stay hidden by design; an agent with another
+name clears herdr0's own app labels from a pane it takes over. The ids derive from the terminal's
+herdr0 workspace and tab, so one herdr0 workspace is one app space and one herdr0 tab one app tab.
+`herdr0 app-labels` labels roots started before that. The app owns the `where` label: it names a
+space after the terminal's folder and numbers its tabs, so herdr0 never writes `where`.
 """
 import fcntl
 import hashlib
@@ -277,9 +278,16 @@ def app_labels_of(t):
 
 
 def root_app_kvs(t, name):
-    """herdr.space/herdr.tab as label words for a terminal an agent named NAME takes, when that agent is a root."""
-    app = app_labels_of(t) if ROOT_NAME.match(name) else None
-    return [f"{k}={v}" for k, v in (app or {}).items()]
+    """App label words for a terminal an agent named NAME takes.
+
+    A root sets herdr.space/herdr.tab. Any other agent clears them (KEY= with an empty value, as --clear-token
+    does) only where they still hold herdr0's own derived ids, so a reused root pane stops showing; labels the
+    app or anyone else wrote are left alone.
+    """
+    app = app_labels_of(t) or {}
+    if ROOT_NAME.match(name):
+        return [f"{k}={v}" for k, v in app.items()]
+    return [f"{k}=" for k, v in app.items() if labels(t).get(k) == v]
 
 
 def raw_status(t):
@@ -981,7 +989,8 @@ def app_labels_cmd(ctx, argv):
         if not is_root(t):
             if o.get("--pane"):
                 raise Fail("not_a_root", f"pane {o['--pane']} is not a root (its agent is not named hub-* or "
-                           "orch-); workers and plain shells stay hidden")
+                           "orch-*); workers and plain shells stay hidden. A hub started before its agent label: "
+                           f"herdr agent label hub-ROOT --kind claude --pane {o['--pane']}")
             continue
         lb = labels(t)
         change = {k: v for k, v in want.items() if lb.get(k) != v}
