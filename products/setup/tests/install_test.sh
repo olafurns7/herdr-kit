@@ -986,8 +986,8 @@ exec /bin/cp "$@"
         assert 'systemctl' not in rerun
         hc_placed(h)
 
-    # A fake hc beside the fake herdr: fleet.sh takes hc's skill only when the
-    # installer exported HERDR_KIT_BACKEND=hc.
+    # A fake hc beside the fake herdr: under the switch fleet.sh places the kit
+    # herdr0 skill and never calls hc; without it, herdr --skill as before.
     hc_stubs = scratch / 'hc-bin'
     executable(hc_stubs / 'hc', '''#!/bin/sh
 printf '%s\\n' "$*" >>"$HOME/hc-control.log"
@@ -1069,6 +1069,8 @@ printf '%s\\n' 'upstream synthetic hc skill'
     assert (h / unit_rel).read_text() == client_unit and '--stay' not in client_unit
     assert 'plugin/run.sh' not in out, out
     assert 'systemctl --user daemon-reload && systemctl --user enable taskr.service' in out
+    assert 'Run the client daemon under systemd with the hc drop-in:' in out
+    assert 'ledger daemon' not in out and 'supervised' not in out, out
     rerun = run(h, '--fleet', '--herdr-backend', 'hc')
     assert f'SKIP {h / unit_rel} (identical)' in rerun and (h / unit_rel).read_text() == client_unit
     out = run(h, '--herdr-backend', 'hc', '--taskr-client', 'http://100.64.0.2:7788')
@@ -1095,32 +1097,74 @@ printf '%s\\n' 'upstream synthetic hc skill'
             return None
         block = out.split('\nStaged sidecars (', 1)[1]
         assert 'agents keep reading the old file until you do' in block.splitlines()[0]
-        assert 'compare it with FILE (diff -u FILE FILE.herdr-setup)' in block
-        assert 'move the sidecar into place (mv FILE.herdr-setup FILE)' in block
         # Nothing the placer or next steps print comes after the block.
         for line in block.splitlines():
             assert not re.match(r'(INSTALL|UPDATE|SKIP|MERGE|KEEP|MANUAL|Next steps)\b', line), line
-        return {line[2:] for line in block.splitlines() if line.startswith('  ')}
+        found = {'staged': [], 'settings': [], 'stale': []}
+        section = 'staged'
+        for line in block.splitlines()[1:]:
+            if line.startswith('Settings sidecars ('):
+                section = 'settings'
+            elif line.startswith('Stale sidecars ('):
+                section = 'stale'
+            elif line.startswith('  '):
+                found[section].append(line[2:])
+        if found['staged']:
+            assert 'compare it with FILE (diff -u FILE FILE.herdr-setup)' in block
+            assert 'move the sidecar into place (mv FILE.herdr-setup FILE)' in block
+        if found['settings']:
+            assert 'Settings sidecars (merge by hand; never move one into place):' in block
+            assert 'QUICKSTART.md' in block
+        if found['stale']:
+            assert 'the new text was not staged' in block and 'remove FILE.herdr-setup, and install again' in block
+        # Each sidecar is listed exactly once.
+        return {k: sorted(v) for k, v in found.items() if v}
     h = case('installer ends with one summary of staged sidecars')
     launch = h / '.agents/skills/herdr-orchestration/launch.md'
     lead = h / '.local/bin/herdr-lead'
     for patched in (launch, lead):
         write(patched, 'SYNTH hand patch\n')
-    staged = {f'{launch}.herdr-setup', f'{lead}.herdr-setup'}
+    staged = sorted([f'{launch}.herdr-setup', f'{lead}.herdr-setup'])
     out = run(h, '--fleet')
     assert f'MERGE {launch} differs; staged {launch}.herdr-setup' in out
-    assert sidecar_summary(out) == staged, out
+    assert sidecar_summary(out) == {'staged': staged}, out
     out = run(h, '--fleet')
     assert f'{launch}.herdr-setup already staged' in out
-    assert sidecar_summary(out) == staged, out
+    assert sidecar_summary(out) == {'staged': staged}, out
     os.replace(f'{launch}.herdr-setup', launch)
     out = run(h, '--fleet')
     assert f'SKIP {launch} (identical)' in out
-    assert sidecar_summary(out) == {f'{lead}.herdr-setup'}, out
+    assert sidecar_summary(out) == {'staged': [f'{lead}.herdr-setup']}, out
     os.replace(f'{lead}.herdr-setup', lead)
     out = run(h, '--fleet')
     assert sidecar_summary(out) is None
     assert launch.read_bytes() == (setup / 'skills/herdr-orchestration/launch.md').read_bytes()
+
+    h = case('a sidecar noted twice in one run is listed once')
+    unit = h / '.config/systemd/user/taskr.service'
+    write(unit, 'SYNTH hand unit\n')
+    out = run(h, '--herdr-backend', 'hc', '--taskr-hub')
+    assert f'MERGE {unit} differs; staged {unit}.herdr-setup' in out
+    assert f'{unit}.herdr-setup already staged' in out
+    assert sidecar_summary(out) == {'staged': [f'{unit}.herdr-setup']}, out
+
+    h = case('settings and stale sidecars are listed apart from staged ones')
+    settings = h / '.claude/settings.json'
+    write(settings, '{"synthetic": true}\n')
+    write(launch := h / '.agents/skills/herdr-orchestration/launch.md', 'SYNTH hand patch\n')
+    write(Path(f'{launch}.herdr-setup'), 'SYNTH older sidecar\n')
+    lead = h / '.local/bin/herdr-lead'
+    write(lead, 'SYNTH hand patch\n')
+    Path(f'{lead}.herdr-setup').symlink_to(h / 'elsewhere')
+    out = run(h, '--fleet')
+    assert f'{launch}.herdr-setup holds other content, nothing written' in out
+    assert sidecar_summary(out) == {'settings': [f'{settings}.herdr-setup'],
+                                    'stale': sorted([f'{launch}.herdr-setup', f'{lead}.herdr-setup'])}, out
+    assert Path(f'{launch}.herdr-setup').read_text() == 'SYNTH older sidecar\n'
+    os.remove(f'{launch}.herdr-setup')
+    out = run(h, '--fleet')
+    assert sidecar_summary(out) == {'staged': [f'{launch}.herdr-setup'], 'settings': [f'{settings}.herdr-setup'],
+                                    'stale': [f'{lead}.herdr-setup']}, out
 
     for bad in (('--herdr-backend',), ('--herdr-backend', 'tmux'), ('--herdr-backend=',)):
         h = case(f'invalid backend refused: {bad}')

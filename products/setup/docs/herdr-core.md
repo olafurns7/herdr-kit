@@ -120,7 +120,8 @@ beside normal work, days before the stop.
    Then resolve the staged sidecars. A changed installed file (a hand patch,
    say) is left in place and the new text is staged beside it as
    `INSTALLED.herdr-setup`; the installer's last block lists every such sidecar.
-   Agents keep reading the old `INSTALLED` until it is resolved. For each one:
+   Agents keep reading the old `INSTALLED` until it is resolved. For each one
+   under "Staged sidecars":
 
    ```sh
    diff -u INSTALLED INSTALLED.herdr-setup
@@ -131,14 +132,28 @@ beside normal work, days before the stop.
    file that must keep a local change goes in `~/.config/herdr-setup/keep`
    instead (`--keep`), and the installer stops staging it.
 
-6. **Owner**, the ledger host: run the taskr unit with the hc drop-in, as the
-   installer printed; with hc the Herdr plugin no longer starts the daemon.
-   `enable --now` is not enough: it leaves a running daemon on Herdr 0.9.
+   A sidecar under "Settings sidecars" (`~/.claude/settings.json`,
+   `~/.codex/hooks.json`, `~/.codex/config.toml`) is the kit's template, not a
+   replacement: merge the keys and hooks that QUICKSTART.md names into the file
+   by hand, keep your own settings, and never move it into place. It stays
+   listed until the file matches it or is kept. A sidecar under "Stale
+   sidecars" holds other content or is a symlink, so the new text was not
+   staged: compare it, remove it, and install again.
+
+6. **Owner**, each host: run the taskr unit with the hc drop-in, as the
+   installer printed; with hc the Herdr plugin no longer starts the daemon, on
+   the ledger host or on a client. `enable --now` is not enough: it leaves a
+   running daemon on Herdr 0.9.
 
    ```sh
    systemctl --user daemon-reload && systemctl --user enable taskr.service && systemctl --user restart taskr.service
-   taskr daemon --status     # fresh, supervised
+   taskr daemon --status     # ledger host: fresh, supervised
    ```
+
+   A client (a host with `~/.local/state/taskr/server.url`) runs `taskr daemon`
+   without `--stay`, and its status has no `supervised` key. There,
+   `taskr --json daemon --status` shows `"mode":"client"`, `"running":true` and
+   a `pid` equal to `systemctl --user show -p MainPID --value taskr.service`.
 
 7. **Owner**: start the hub, then each active lead. Run these lines only in
    an hc shell terminal, never a plain terminal, where `herdr` is still
@@ -164,6 +179,8 @@ beside normal work, days before the stop.
    herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd DIR --label lead-ROOT --no-focus \
      | jq -er '.result.root_pane.pane_id'     # PANE
    herdr-lead start ROOT PANE --worktree DIR --lane LANE --account ACCOUNT --resume SID
+   # or, when that session started with Code Mode:
+   env HERDR_LEAD_CODE_MODE=1 herdr-lead start ROOT PANE --worktree DIR --lane LANE --account ACCOUNT --resume SID
    ```
 
    Start one root per Codator account at a time: a second start on an
@@ -228,6 +245,14 @@ Possible until Herdr 0.9 is retired; its server keeps running until then.
    sh products/setup/install.sh FLAGS --herdr-backend herdr
    rm -f ~/.config/systemd/user/taskr.service.d/herdr-kit-hc.conf
    systemctl --user daemon-reload && systemctl --user restart taskr.service
+   ```
+
+   On a client the unit exists only for hc; under Herdr 0.9 the plugin starts
+   the client daemon. Stop and disable the unit there instead of restarting it:
+
+   ```sh
+   rm -f ~/.config/systemd/user/taskr.service.d/herdr-kit-hc.conf
+   systemctl --user disable --now taskr.service && systemctl --user daemon-reload
    ```
 
 3. Start each root again from a Herdr 0.9 pane with the start forms: type

@@ -929,7 +929,7 @@ def main(argv):
         elif a.startswith("--machine="):
             machine_label, i = a.split("=", 1)[1], i + 1
         elif a == "--skill":
-            unsupported("--skill (use hc --skill)")
+            unsupported("--skill (the herdr skill is herdr-kit's: ~/.agents/skills/herdr/SKILL.md)")
         elif a in ("-V", "--version"):
             print("herdr0 (herdr 0.9 commands over hc)")
             return 0

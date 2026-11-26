@@ -637,7 +637,9 @@ if [ "$radar" -eq 1 ] || [ "$codator" -eq 1 ] || [ "$notifications" -eq 1 ] || [
         fi
         # A client (server.url) refuses daemon --stay, which only a local ledger takes.
         hc_unit_src=$setup_dir/systemd/taskr.service
-        if [ -f "$home_dir/.local/state/taskr/server.url" ]; then
+        hc_client=0
+        [ ! -f "$home_dir/.local/state/taskr/server.url" ] || hc_client=1
+        if [ "$hc_client" -eq 1 ]; then
             hc_unit_src=$work_dir/taskr-client.service
             sed 's|^\(ExecStart=.*/taskr daemon\) --stay$|\1|' "$setup_dir/systemd/taskr.service" >"$hc_unit_src"
             grep -q '^ExecStart=.*/taskr daemon$' "$hc_unit_src" || fail 'could not derive the client taskr unit'
@@ -650,10 +652,18 @@ if [ "$radar" -eq 1 ] || [ "$codator" -eq 1 ] || [ "$notifications" -eq 1 ] || [
                 case $next_steps in
                     *'systemctl --user'*) ;;
                     *)
-                        add_next_step 'Run the ledger daemon under systemd with the hc drop-in:'
-                        add_next_step 'systemctl --user daemon-reload && systemctl --user enable taskr.service && systemctl --user restart taskr.service'
-                        add_next_step 'End any unsupervised daemon so the unit daemon takes over:'
-                        add_next_step 'kill "$(taskr --json daemon --status | jq -er '\''select(.supervised|not).pid'\'')"'
+                        if [ "$hc_client" -eq 1 ]; then
+                            # A client's status has no supervised key: no kill filter here.
+                            add_next_step 'Run the client daemon under systemd with the hc drop-in:'
+                            add_next_step 'systemctl --user daemon-reload && systemctl --user enable taskr.service && systemctl --user restart taskr.service'
+                            add_next_step 'Check it: taskr --json daemon --status shows "mode":"client", "running":true and the pid of'
+                            add_next_step 'systemctl --user show -p MainPID --value taskr.service; if the pid differs, end that other daemon.'
+                        else
+                            add_next_step 'Run the ledger daemon under systemd with the hc drop-in:'
+                            add_next_step 'systemctl --user daemon-reload && systemctl --user enable taskr.service && systemctl --user restart taskr.service'
+                            add_next_step 'End any unsupervised daemon so the unit daemon takes over:'
+                            add_next_step 'kill "$(taskr --json daemon --status | jq -er '\''select(.supervised|not).pid'\'')"'
+                        fi
                         ;;
                 esac ;;
             *)
@@ -783,4 +793,4 @@ case ":${PATH:-}:" in
 	*) printf 'install.sh: add %s to PATH\n' "$DIR" >&2 ;;
 esac
 # Last: every sidecar this run staged or found staged, with the resolve step.
-[ -z "${staged_sidecars:-}" ] || print_sidecar_summary
+[ -z "${staged_sidecars:-}${settings_sidecars:-}${stale_sidecars:-}" ] || print_sidecar_summary
