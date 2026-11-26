@@ -576,29 +576,41 @@ class Herdr0(unittest.TestCase):
                               "ws_label": "hub", "herdr.space": space(ws), "herdr.tab": app_tab(f"{ws}:t1")})
         self.assertEqual(p.stdout.strip(), f"{ws}:p1")
 
-    # the Herdr desktop app
-    def test_every_created_terminal_carries_app_space_and_tab(self):
-        r = self.workspace("fleet")
+    # the Herdr desktop app: roots only (hub-*/orch-* agents, the owner's enter --new-workspace terminal)
+    def test_create_paths_write_no_app_labels_and_roots_get_them_at_agent_start(self):
+        r = self.workspace("kit")
         ws = r["workspace"]["workspace_id"]
         self.js("tab", "create", "--workspace", ws, "--label", "impl-x")
-        self.js("tab", "create", "--workspace", ws)
+        for t in self.fake()["terminals"].values():
+            self.assertFalse([k for k in t["labels"] if k.startswith("herdr.") or k == "where"], t["labels"])
+        self.assertFalse([c for c in self.calls() if any(str(a).startswith(("herdr.", "where=")) for a in c)])
+        s = self.fake()
+        s["on_send"] = [{"match": "claude", "status": "idle", "foreground": "claude"}]
+        self.put(s)
+        # A campaign lead (herdr-lead's agent start, orch-SLUG) on the workspace's first pane is a root.
+        self.clear_calls()
+        self.js("agent", "start", "orch-x", "--kind", "claude", "--pane", f"{ws}:p1", "--timeout", "2000", "--")
+        self.assertIn(["label", "--json", "t1", "agent=claude", "agent_name=orch-x", "agent_session=",
+                       f"herdr.space={space(ws)}", f"herdr.tab={app_tab(f'{ws}:t1')}"], self.calls())
+        # A worker in the same workspace stays hidden.
+        self.clear_calls()
+        self.js("agent", "start", "impl-x", "--kind", "claude", "--pane", f"{ws}:p2", "--timeout", "2000", "--")
+        self.assertIn(["label", "--json", "t2", "agent=claude", "agent_name=impl-x", "agent_session="], self.calls())
         terms = self.fake()["terminals"]
-        for addr, tab_n in (("t1", 1), ("t2", 2), ("t3", 3)):
-            lb = terms[addr]["labels"]
-            self.assertRegex(lb["herdr.space"], r"^sp[0-9a-f]{32}$")
-            self.assertRegex(lb["herdr.tab"], r"^tb[0-9a-f]{32}$")
-            self.assertEqual((lb["herdr.space"], lb["herdr.tab"]), (space(ws), app_tab(f"{ws}:t{tab_n}")), addr)
-            # herdr0 writes no other app key; the app owns where.
-            self.assertFalse([k for k in lb if k.startswith("herdr.") and k not in ("herdr.space", "herdr.tab")])
-            self.assertNotIn("where", lb)
-        self.assertFalse([c for c in self.calls() if any(str(a).startswith("where=") for a in c)])
-        # One workspace is one space; each tab its own app tab.
-        self.assertEqual(len({t["labels"]["herdr.space"] for t in terms.values()}), 1)
-        self.assertEqual(len({t["labels"]["herdr.tab"] for t in terms.values()}), 3)
-        other = self.workspace("other")["workspace"]["workspace_id"]
-        self.assertNotEqual(self.fake()["terminals"]["t4"]["labels"]["herdr.space"], space(ws))
-        self.assertEqual(self.fake()["terminals"]["t4"]["labels"]["herdr.space"], space(other))
-        # JSON output shapes do not change.
+        self.assertRegex(terms["t1"]["labels"]["herdr.space"], r"^sp[0-9a-f]{32}$")
+        self.assertRegex(terms["t1"]["labels"]["herdr.tab"], r"^tb[0-9a-f]{32}$")
+        self.assertNotIn("herdr.space", terms["t2"]["labels"])
+        # herdr0 writes no other app key; the app owns where.
+        for t in terms.values():
+            self.assertFalse([k for k in t["labels"] if k.startswith("herdr.") and k not in ("herdr.space", "herdr.tab")])
+            self.assertNotIn("where", t["labels"])
+        # Another workspace's lead gets its own space; JSON output shapes do not change.
+        made = self.workspace("other")
+        other = made["workspace"]["workspace_id"]
+        self.js("agent", "start", "orch-y", "--kind", "claude", "--pane", made["root_pane"]["pane_id"],
+                "--timeout", "2000", "--")
+        self.assertEqual(self.fake()["terminals"]["t3"]["labels"]["herdr.space"], space(other))
+        self.assertNotEqual(space(other), space(ws))
         self.assertNotIn("herdr.space", json.dumps(r))
         self.assertNotIn("where", self.js("pane", "get", f"{ws}:p1")["pane"])
 
@@ -616,46 +628,52 @@ class Herdr0(unittest.TestCase):
                          (ws, "kit", 2))
         self.assertEqual([c for c in self.calls() if c[0] == "label"],
                          [["label", "--json", "t1", "ws_label=kit"], ["label", "--json", "t2", "ws_label=kit"]])
-        terms = self.fake()["terminals"]
-        self.assertEqual(terms["t2"]["labels"]["where"], "work / 2")
-        self.assertEqual((terms["t1"]["labels"]["herdr.space"], terms["t2"]["labels"]["herdr.tab"]),
-                         (space(ws), app_tab(f"{ws}:t2")))
+        self.assertEqual(self.fake()["terminals"]["t2"]["labels"]["where"], "work / 2")
         self.assertEqual(self.js("workspace", "list")["workspaces"][0]["label"], "kit")
         p = self.herdr("workspace", "rename", "wNONE", "x", ok=False)
         self.assertEqual(self.error(p), "workspace_not_found")
 
     def app_fixture(self):
-        """Two herdr0 workspaces made before the app labels, and the app's own shell (no ws label)."""
-        def term(addr, lb):
-            return {"address": addr, "name": None, "argv": [], "cwd": "/w", "labels": lb, "state": "live",
+        """Roots and workers made before the app labels, and the app's own shell (no ws label).
+
+        t1 the hub's root start (herdr0 by path), t2 a lead (orch-) in the hub's workspace, t3 a worker
+        (impl-, made by tab create), t5 a lead in a task workspace, t6 a root start by bare herdr0, t4 the app's.
+        """
+        def term(addr, lb, argv=()):
+            return {"address": addr, "name": None, "argv": list(argv), "cwd": "/w", "labels": lb, "state": "live",
                     "screen": "", "pid": 9, "status": None, "turn": 0, "foreground": None}
         app = {"herdr.space": "sp" + "0123456789abcdef" * 2, "herdr.tab": "tb" + "fedcba9876543210" * 2,
                "where": "home / 1", "herdr.seen": "0"}
-        self.put({"next": 5, "on_send": [], "future": {}, "machines": [], "terminals": {
+        made = ["/opt/kit/herdr0", "enter", "--workspace", "wTSK2", "--tab", "wTSK2:t1", "--pane", "wTSK2:p1", "--"]
+        self.put({"next": 7, "on_send": [], "future": {}, "machines": [], "terminals": {
             "t1": term("t1", {"ws": "wHUB1", "tab": "wHUB1:t1", "pane": "wHUB1:p1", "tab_label": "1",
-                              "ws_label": "hub"}),
+                              "ws_label": "hub"}, ["/opt/kit/herdr0", "enter", "--new-workspace", "hub", "--", "zsh"]),
             "t2": term("t2", {"ws": "wHUB1", "tab": "wHUB1:t2", "pane": "wHUB1:p2", "tab_label": "lead",
-                              "ws_label": "hub", "where": "work / 2", "agent": "claude"}),
-            "t3": term("t3", {"ws": "wTSK2", "tab": "wTSK2:t1", "pane": "wTSK2:p1"}),
+                              "ws_label": "hub", "where": "work / 2", "agent": "claude", "agent_name": "orch-kit"}),
+            "t3": term("t3", {"ws": "wTSK2", "tab": "wTSK2:t1", "pane": "wTSK2:p1", "agent": "claude",
+                              "agent_name": "impl-x"}, made),
+            "t5": term("t5", {"ws": "wTSK2", "tab": "wTSK2:t2", "pane": "wTSK2:p2", "agent_name": "orch-tsk"}),
+            "t6": term("t6", {"ws": "wOPS3", "tab": "wOPS3:t1", "pane": "wOPS3:p1"},
+                       ["herdr0", "enter", "--new-workspace", "ops", "--", "sh"]),
             "t4": term("t4", dict(app))}})
         return app
 
-    def test_app_labels_dry_run_lists_and_writes_nothing(self):
+    def test_app_labels_dry_run_lists_roots_and_writes_nothing(self):
         app = self.app_fixture()
         r = self.js("app-labels")
         self.assertFalse(r["applied"])
         rows = {row["terminal"]: row for row in r["terminals"]}
-        self.assertEqual(sorted(rows), ["t1", "t2", "t3"])
+        self.assertEqual(sorted(rows), ["t1", "t2", "t5", "t6"])
         self.assertEqual(rows["t2"], {"terminal": "t2", "ws": "wHUB1", "tab": "wHUB1:t2", "pane": "wHUB1:p2",
                                       "labels": {"herdr.space": space("wHUB1"), "herdr.tab": app_tab("wHUB1:t2")},
                                       "change": ["herdr.space", "herdr.tab"]})
-        self.assertEqual(rows["t3"]["labels"], {"herdr.space": space("wTSK2"), "herdr.tab": app_tab("wTSK2:t1")})
+        self.assertEqual(rows["t5"]["labels"], {"herdr.space": space("wTSK2"), "herdr.tab": app_tab("wTSK2:t2")})
         self.assertFalse([c for c in self.calls() if c[0] == "label"])
         self.assertEqual(self.fake()["terminals"]["t4"]["labels"], app)
 
     def test_app_labels_apply_by_pane_workspace_then_all(self):
         app = self.app_fixture()
-        # The hub goes last: one workspace without the hub's pane is not possible, so first a pane at a time.
+        # The hub goes last: a lead's pane first.
         r = self.js("app-labels", "--pane", "wHUB1:p2", "--apply")
         self.assertEqual([row["terminal"] for row in r["terminals"]], ["t2"])
         self.assertEqual([c for c in self.calls() if c[0] == "label"],
@@ -666,23 +684,25 @@ class Herdr0(unittest.TestCase):
         self.assertEqual((lb["agent"], lb["tab_label"], lb["ws_label"], lb["where"]),
                          ("claude", "lead", "hub", "work / 2"))
         self.assertNotIn("herdr.space", self.fake()["terminals"]["t1"]["labels"])
+        # A workspace: its lead only, never its worker.
         self.clear_calls()
         r = self.js("app-labels", "--workspace", "wTSK2", "--apply")
-        self.assertEqual([row["terminal"] for row in r["terminals"]], ["t3"])
-        self.assertEqual([c[2] for c in self.calls() if c[0] == "label"], ["t3"])
+        self.assertEqual([row["terminal"] for row in r["terminals"]], ["t5"])
+        self.assertEqual([c[2] for c in self.calls() if c[0] == "label"], ["t5"])
         self.clear_calls()
         r = self.js("app-labels", "--apply")
         self.assertTrue(r["applied"])
-        # Only what is missing is written: t1 now; t2 and t3 already match.
-        self.assertEqual([c[2] for c in self.calls() if c[0] == "label"], ["t1"])
+        # Only what is missing is written: the two root starts now; the leads already match.
+        self.assertEqual([c[2] for c in self.calls() if c[0] == "label"], ["t1", "t6"])
         self.assertEqual({row["terminal"]: row["change"] for row in r["terminals"]},
-                         {"t1": ["herdr.space", "herdr.tab"], "t2": [], "t3": []})
+                         {"t1": ["herdr.space", "herdr.tab"], "t2": [], "t5": [], "t6": ["herdr.space", "herdr.tab"]})
         self.clear_calls()
         self.js("app-labels", "--apply")
         self.assertFalse([c for c in self.calls() if c[0] == "label"])
-        # The app's own terminal (no ws label) is never touched.
-        self.assertEqual(self.fake()["terminals"]["t4"]["labels"], app)
         terms = self.fake()["terminals"]
+        # The worker and the app's own terminal (no ws label) are never touched.
+        self.assertFalse([k for k in terms["t3"]["labels"] if k.startswith("herdr.")])
+        self.assertEqual(terms["t4"]["labels"], app)
         self.assertEqual(terms["t1"]["labels"]["herdr.space"], terms["t2"]["labels"]["herdr.space"])
         self.assertNotEqual(terms["t1"]["labels"]["herdr.tab"], terms["t2"]["labels"]["herdr.tab"])
 
@@ -695,6 +715,9 @@ class Herdr0(unittest.TestCase):
         self.assertEqual(self.error(p), "workspace_not_found")
         p = self.herdr("app-labels", "--pane", "wNONE:p1", "--apply", ok=False)
         self.assertEqual(self.error(p), "pane_not_found")
+        # A worker's pane is not a root.
+        p = self.herdr("app-labels", "--pane", "wTSK2:p1", "--apply", ok=False)
+        self.assertEqual((p.returncode, self.error(p)), (1, "not_a_root"))
         self.assertFalse([c for c in self.calls() if c[0] == "label"])
 
     def test_agent_label_names_an_agent_its_shell_starts(self):
@@ -704,7 +727,8 @@ class Herdr0(unittest.TestCase):
                     "--resume", "sid-hub")
         self.assertEqual(r, {"pane_id": f"{ws}:p1", "agent": "claude", "name": "hub-42", "type": "agent_labelled"})
         self.assertEqual([c for c in self.calls() if c[0] in ("label", "send", "keys")],
-                         [["label", "--json", "t1", "agent=claude", "agent_name=hub-42", "agent_session=sid-hub"]])
+                         [["label", "--json", "t1", "agent=claude", "agent_name=hub-42", "agent_session=sid-hub",
+                           f"herdr.space={space(ws)}", f"herdr.tab={app_tab(f'{ws}:t1')}"]])
         # Once the agent holds the foreground, pane get names it.
         self.edit("t1", foreground={"pid": 7, "name": "claude", "argv": ["claude"], "cwd": "/x"})
         pane = self.js("pane", "get", f"{ws}:p1")["pane"]

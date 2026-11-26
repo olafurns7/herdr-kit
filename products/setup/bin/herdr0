@@ -14,11 +14,13 @@ Rules: every hc call is preceded by a check that the core socket accepts a
 connection (hc starts a core on demand, and that core keeps its starter's
 environment, so no agent may start one); every `hc run` passes --no-parent.
 
-The Herdr desktop app shows only terminals labelled herdr.space=<id> (and herdr.tab=<id>).
-Every terminal herdr0 creates also carries herdr.space and herdr.tab, derived from its herdr0
-workspace and tab ids, so one herdr0 workspace is one app space and one herdr0 tab one app tab.
-`herdr0 app-labels` adds them to terminals made before that. The app owns the `where` label: it
-names a space after the terminal's folder and numbers its tabs, so herdr0 never writes `where`.
+The Herdr desktop app shows only terminals labelled herdr.space=<id> (and herdr.tab=<id>). herdr0
+writes them on roots only: the hub and campaign leads (agents named hub-* or orch-*, labelled by
+`agent start` or `agent label`) and the owner's `enter --new-workspace` terminal. Worker, seat and
+helper terminals stay hidden by design. The ids derive from the terminal's herdr0 workspace and tab,
+so one herdr0 workspace is one app space and one herdr0 tab one app tab. `herdr0 app-labels` labels
+roots started before that. The app owns the `where` label: it names a space after the terminal's
+folder and numbers its tabs, so herdr0 never writes `where`.
 """
 import fcntl
 import hashlib
@@ -258,12 +260,29 @@ def app_labels(ws, tab):
     return {"herdr.space": space, "herdr.tab": app_tab}
 
 
+ROOT_NAME = re.compile(r"^(hub|orch)-")
+
+
+def is_root(t):
+    """A root shows in the app: an agent named hub-*/orch-*, or the owner's `herdr0 enter --new-workspace` terminal."""
+    if ROOT_NAME.match(labels(t).get("agent_name") or ""):
+        return True
+    argv = t.get("argv") or []
+    return len(argv) >= 3 and os.path.basename(str(argv[0])) == "herdr0" and argv[1:3] == ["enter", "--new-workspace"]
+
+
 def app_labels_of(t):
     """The app labels a herdr0 terminal should carry, or None for a terminal herdr0 did not make (no ws label)."""
     lb = labels(t)
     if not lb.get("ws") or not lb.get("tab"):
         return None
     return app_labels(lb["ws"], lb["tab"])
+
+
+def root_app_kvs(t, name):
+    """herdr.space/herdr.tab as label words for a terminal an agent named NAME takes, when that agent is a root."""
+    app = app_labels_of(t) if ROOT_NAME.match(name) else None
+    return [f"{k}={v}" for k, v in (app or {}).items()]
 
 
 def raw_status(t):
@@ -459,9 +478,8 @@ def create_pane(ctx, ws, n, cwd, tab_label, ws_label, env):
         args += ["--on", ctx.machine]
     if cwd:
         args += ["--cwd", cwd]
-    app = app_labels(ws, tab)
     for kv in (f"ws={ws}", f"tab={tab}", f"pane={pane}", f"tab_label={tab_label or n}",
-               f"ws_label={ws_label or ws}", *(f"{k}={v}" for k, v in app.items())):
+               f"ws_label={ws_label or ws}"):
         args += ["--label", kv]
     argv = [self_path(ctx), "enter", "--workspace", ws, "--tab", tab, "--pane", pane, "--"]
     if env:
@@ -470,7 +488,7 @@ def create_pane(ctx, ws, n, cwd, tab_label, ws_label, env):
     # run prints a short row, like ls; read the whole record back.
     t = get_terminal(started["address"]) or started
     t.setdefault("labels", {}).update({"ws": ws, "tab": tab, "pane": pane,
-                                       "tab_label": tab_label or str(n), "ws_label": ws_label or ws, **app})
+                                       "tab_label": tab_label or str(n), "ws_label": ws_label or ws})
     return t
 
 
@@ -867,7 +885,8 @@ def agent(ctx, sub, argv):
         if [r for r in ctx.terminals([f"agent_name={name}"]) if has_agent(r) and r.get("address") != t["address"]]:
             raise Fail("agent_name_taken", f"agent {name} is already live")
         session = session_from_args(kind, pos[1:])
-        hc(["label", "--json", t["address"], f"agent={kind}", f"agent_name={name}", f"agent_session={session}"])
+        hc(["label", "--json", t["address"], f"agent={kind}", f"agent_name={name}", f"agent_session={session}",
+            *root_app_kvs(t, name)])
         return emit("agent_labelled", {"pane_id": o["--pane"], "agent": kind, "name": name}, "agent:label")
     if sub == "start":
         o, pos = opts(argv, {"--kind", "--pane", "--timeout", "--cwd"})
@@ -894,7 +913,8 @@ def agent(ctx, sub, argv):
         t = ctx.one(f"pane={o['--pane']}", "pane", o["--pane"])
         if has_agent(t) or (fg_name(t) and fg_name(t) not in SHELLS):
             raise Fail("pane_busy", f"pane {o['--pane']} is not at its shell prompt")
-        hc(["label", "--json", t["address"], f"agent={kind}", f"agent_name={name}", f"agent_session={session}"])
+        hc(["label", "--json", t["address"], f"agent={kind}", f"agent_name={name}", f"agent_session={session}",
+            *root_app_kvs(t, name)])
         hc(["send", "--json", t["address"], "--", line])
         t = poll(t, {"idle", "working", "done", "blocked"}, ms_to_s(o.get("--timeout"), 90000))
         if agent_status(t) == "blocked":
@@ -946,18 +966,25 @@ def machine(ctx, sub, argv):
 # ---------------------------------------------------------------- app labels
 
 def app_labels_cmd(ctx, argv):
-    """Dry run by default: list herdr0's live terminals with the app labels they should carry; --apply writes them.
+    """Dry run by default: list herdr0's live roots with the app labels they should carry; --apply writes them.
 
-    Only terminals with a herdr0 ws label are touched, and only herdr.space and herdr.tab are compared and written.
+    Only roots (is_root) with a herdr0 ws label are touched, and only herdr.space and herdr.tab are compared and
+    written. Workers stay hidden.
     """
     o, pos = opts(argv, {"--workspace", "--pane"}, (), ("--apply",))
     if pos or (o.get("--workspace") and o.get("--pane")):
         raise Fail("usage", "app-labels [--workspace W | --pane P] [--apply]", 2)
     kv = [f"ws={o['--workspace']}"] if o.get("--workspace") else [f"pane={o['--pane']}"] if o.get("--pane") else []
-    rows = []
+    rows, seen = [], 0
     for t in sorted(ctx.terminals(kv), key=lambda t: (labels(t).get("ws") or "", num(labels(t).get("pane")))):
         want = app_labels_of(t)
         if want is None:
+            continue
+        seen += 1
+        if not is_root(t):
+            if o.get("--pane"):
+                raise Fail("not_a_root", f"pane {o['--pane']} is not a root (no hub-/orch- agent, not "
+                           "herdr0 enter --new-workspace); workers stay hidden")
             continue
         lb = labels(t)
         change = {k: v for k, v in want.items() if lb.get(k) != v}
@@ -965,7 +992,7 @@ def app_labels_cmd(ctx, argv):
             hc(["label", "--json", t["address"], *(f"{k}={v}" for k, v in change.items())])
         rows.append({"terminal": t.get("address"), "ws": lb["ws"], "tab": lb["tab"], "pane": lb.get("pane"),
                      "labels": want, "change": sorted(change)})
-    if (o.get("--workspace") or o.get("--pane")) and not rows:
+    if (o.get("--workspace") or o.get("--pane")) and not seen:
         what = "workspace" if o.get("--workspace") else "pane"
         raise Fail(f"{what}_not_found", f"{what} {o.get('--workspace') or o.get('--pane')} not found")
     return emit("app_labels", {"applied": bool(o.get("--apply")), "terminals": rows}, "app-labels")

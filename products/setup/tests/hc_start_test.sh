@@ -4,7 +4,7 @@
 set -eu
 setup=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 exec python3 -B - "$setup" <<'PY'
-import json, os, re, shutil, socket, subprocess, sys, tempfile, threading
+import hashlib, json, os, re, shutil, socket, subprocess, sys, tempfile, threading
 from pathlib import Path
 
 setup = Path(sys.argv[1])
@@ -201,14 +201,18 @@ try:
     assert '--dangerously-load-development-channels' in args
     result = home / '.local/state/herdr-orch/lead-push/42/hub-check-7.result'
     assert result.read_text() == 'live\n', (result.read_text(), (result.parent / 'hub-check-7.log').read_text())
-    # The hub's own terminal carries its agent (herdr pane get no longer says unknown) and its app space and tab.
+    # The hub's own terminal carries its agent (herdr pane get no longer says unknown) and, as a root
+    # (hub-), its app space and tab; workspace create wrote none.
     lb = fake_state(state)['terminals'][hub['terminal_id']]['labels']
     assert (lb.get('agent'), lb.get('agent_name'), lb.get('agent_session')) == ('claude', 'hub-42', 'sid-hub'), lb
     assert re.fullmatch(r'sp[0-9a-f]{32}', lb['herdr.space']) and re.fullmatch(r'tb[0-9a-f]{32}', lb['herdr.tab']), lb
     assert 'where' not in lb, lb
     labels = [c for c in map(json.loads, (state / 'calls.jsonl').read_text().splitlines()) if c[0] == 'label']
     assert labels == [['label', '--json', hub['terminal_id'], 'agent=claude', 'agent_name=hub-42',
-                       'agent_session=sid-hub']], labels
+                       'agent_session=sid-hub', 'herdr.space=' + lb['herdr.space'],
+                       'herdr.tab=' + lb['herdr.tab']]], labels
+    assert not [c for c in map(json.loads, (state / 'calls.jsonl').read_text().splitlines())
+                if c[0] == 'run' and any(a.startswith('herdr.') for a in c)], 'workspace create wrote app labels'
 
     # (a2) The hub's agent label only warns when it fails: another live terminal holds hub-42.
     case, home, work, state, env = new_case('hub: a failed agent label warns; the hub still starts and passes its check')
@@ -253,10 +257,13 @@ try:
     assert any('lead-push-gen-7' in t for t in typed), typed
     t = fake_state(state)['terminals'][lead['terminal_id']]
     assert t['labels'].get('agent') == 'claude' and t['labels'].get('agent_name') == 'orch-example', t['labels']
-    # The lead's tab is a second app tab in the hub's app space.
+    # The lead (orch-) is a root: agent start labels it with its workspace's space and its own tab. The
+    # hub-workspace shell it was started from runs no hub agent here, so it stays hidden.
+    want = {'herdr.space': 'sp' + hashlib.sha256(f"herdr0-space:{lead['workspace_id']}".encode()).hexdigest()[:32],
+            'herdr.tab': 'tb' + hashlib.sha256(f"herdr0-tab:{lead['tab_id']}".encode()).hexdigest()[:32]}
+    assert {k: t['labels'].get(k) for k in want} == want and 'where' not in t['labels'], t['labels']
     hub_labels = fake_state(state)['terminals'][hub['terminal_id']]['labels']
-    assert t['labels']['herdr.space'] == hub_labels['herdr.space'], (t['labels'], hub_labels)
-    assert t['labels']['herdr.tab'] != hub_labels['herdr.tab'] and 'where' not in t['labels'], t['labels']
+    assert not [k for k in hub_labels if k.startswith('herdr.')], hub_labels
     assert 'herdr-lead-env=//worker/1/' in t['screen'], t['screen']
 
     # An rc file that puts ~/.local/bin first makes herdr Herdr 0.9: both refuse before any call.
