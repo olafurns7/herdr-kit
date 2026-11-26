@@ -41,6 +41,8 @@ fail() {
 die() { printf 'herdr-lead: %s\n' "$1" >&2; exit 2; }
 # A failed step 8 leaves no ready check task behind.
 abandon_check() {
+    # A second signal must not cut the close short: fail exits right after.
+    trap '' 1 2 3 15
     number "$check_task" && [ -z "$check_closed" ] || return 0
     check_closed=1
     if ledger --json close "$check_task" --outcome abandoned >/dev/null 2>&1; then

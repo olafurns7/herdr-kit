@@ -192,6 +192,7 @@ case "$1 $2" in
     'ready lead push check 7')
         [ "${TASKR_TASK:-}/${TASKR_LAUNCH:-}" = 43/8 ] || exit 1
         printf '{"event_id":9}\n'
+        : >"$CASE/check-ready"
         ;;
     'delivery ls')
         if [ -n "${DELIVERIES:-}" ]; then printf '%s\n' "$DELIVERIES"; else
@@ -209,7 +210,7 @@ case "$1 $2" in
         else
             printf '{"acked_event_id":%s}\n' "${ACK:-9}"
         fi ;;
-    'close 43') printf '{"task_id":43}\n' ;;
+    'close 43') [ "${CLOSE_FAIL:-}" != "$4" ] || exit 1; printf '{"task_id":43}\n' ;;
     'note '*) printf '%s|%s\n' "$2" "$4" >>"$CASE/notes" ;;
     'campaign 50') cat "$CASE/campaign" ;;
     'log '[56][0-9]) cat "$CASE/log-$2" ;;
@@ -232,7 +233,9 @@ for arg; do
 done
 exec /usr/bin/sed "$@"
 EOF
-printf '%s\n' '#!/bin/sh' 'printf "sleep|%s\n" "$1" >>"$CALLS"' >"$scratch/stubs/sleep"
+# SIGNAL_IN_CHECK=1: the helper gets SIGTERM while it waits in step 8 (the stub's parent is the helper's shell).
+printf '%s\n' '#!/bin/sh' 'printf "sleep|%s\n" "$1" >>"$CALLS"' \
+    '[ "${SIGNAL_IN_CHECK:-}" != 1 ] || [ ! -f "$CASE/check-ready" ] || kill -TERM "$PPID"' >"$scratch/stubs/sleep"
 printf '%s\n' '#!/bin/sh' 'echo "real Claude must not run" >&2' 'exit 99' >"$scratch/stubs/claude"
 cat >"$scratch/stubs/ps" <<'EOF'
 #!/bin/sh
@@ -275,7 +278,7 @@ EOF
     FAIL= LEASE= LATEST= LEASE_GEN= AGENTS= BUSY= ENV_BAD= DIALOG= ACK= RECEIVED= DELIVERY_GEN= CONFIG_EXISTS= HOLDER= CAMPAIGN=
     DIALOG_SCREEN= STOP_IGNORED= NO_HANDOVER= ACKS= AGENTS_AFTER_WAIT= CALLER_HOST=
     PROMPT_RESULT= PROMPT_VISIBLE= WAIT_RESULTS= GET_STATUSES= ENTER_DELAYS= PROCESS= EXIT_MODAL= DIALOG_TALL=
-    LEAD_CODE_MODE= EXPECT_CODE_MODE= COMPACT_WINDOW= CONSENT= DELIVERIES=
+    LEAD_CODE_MODE= EXPECT_CODE_MODE= COMPACT_WINDOW= CONSENT= DELIVERIES= SIGNAL_IN_CHECK= CLOSE_FAIL=
     printf 'case: %s\n' "$name"
 }
 run() {
@@ -288,7 +291,7 @@ run() {
         GET_STATUSES="$GET_STATUSES" HERDR_LEAD_ENTER_DELAYS="$ENTER_DELAYS" STOP_IGNORED="$STOP_IGNORED" NO_HANDOVER="$NO_HANDOVER" ACKS="$ACKS" \
         AGENTS_AFTER_WAIT="$AGENTS_AFTER_WAIT" CALLER_HOST="$CALLER_HOST" PROCESS="$PROCESS" EXIT_MODAL="$EXIT_MODAL" DIALOG_TALL="$DIALOG_TALL" \
         HERDR_LEAD_CODE_MODE="$LEAD_CODE_MODE" EXPECT_CODE_MODE="$EXPECT_CODE_MODE" HERDR_LEAD_COMPACT_WINDOW="$COMPACT_WINDOW" CONSENT="$CONSENT" \
-        DELIVERIES="$DELIVERIES" HERDR_TEST_AGENT_TMP_BASE="$agent_tmp_base" TMPDIR=/caller/tmp EXPECT_TMPDIR="$agent_tmp_dir" \
+        DELIVERIES="$DELIVERIES" SIGNAL_IN_CHECK="$SIGNAL_IN_CHECK" CLOSE_FAIL="$CLOSE_FAIL" HERDR_TEST_AGENT_TMP_BASE="$agent_tmp_base" TMPDIR=/caller/tmp EXPECT_TMPDIR="$agent_tmp_dir" \
         sh "$repo_dir/bin/herdr-lead" "$@" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
 }
 expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/err")"; }
@@ -1010,7 +1013,7 @@ expect_rc 1
 has err 'check event was not received and acked within 360 s (acked through 3; backlog 2)'
 # The fake clock adds 30 s per date call; 14 inbox reads mean a 360 s ack extension (240 s gives 10).
 [ "$(cat "$case_dir/inbox-reads")" = 14 ] || fail 'ack extension is not 360 s'
-has err 'within 360 s (acked through 3; backlog 2) (check event 9: not acked)'
+has err 'within 360 s (acked through 3; backlog 2) (check event 9: not acked; event 9 received)'
 has calls 'taskr|close|43|--outcome|abandoned'
 has err 'herdr-lead: closed check task 43 as abandoned'
 lacks calls 'taskr|close|43|--outcome|accepted'
@@ -1033,19 +1036,37 @@ has err 'check event was not received and acked within 360 s (acked through 8; b
 has calls 'taskr|close|43|--outcome|abandoned'
 has err 'herdr-lead: closed check task 43 as abandoned'
 
+new_case 'a signal during step 8 closes the check task as abandoned once'
+ACK=8 SIGNAL_IN_CHECK=1
+start
+expect_rc 1
+has err 'step 8 failed: interrupted (check event 9: not acked; event 9 received)'
+[ "$(grep -c 'taskr|close|43' "$case_dir/calls")" = 1 ] || fail 'did not close the check task exactly once'
+has calls 'taskr|close|43|--outcome|abandoned'
+has err 'herdr-lead: closed check task 43 as abandoned'
+
+new_case 'a failed accepted close is followed by one abandoned close'
+CLOSE_FAIL=accepted
+start
+expect_rc 1
+has err 'step 8 failed: close check task (inspect before retry)'
+[ "$(grep 'taskr|close|43' "$case_dir/calls" | cut -d '|' -f 5 | tr '\n' ' ')" = 'accepted abandoned ' ] || fail 'closes were not accepted then abandoned'
+has err 'herdr-lead: closed check task 43 as abandoned'
+
 new_case 'a failed abandon close is reported, not hidden'
 ACK=8 FAIL='taskr close'
 start
 expect_rc 1
 has err 'herdr-lead: could not close check task 43: run taskr close 43 --outcome abandoned'
 
-for mode in unreceived unacked wrong-generation earlier-receipt wrong-holder; do
+for mode in unreceived unacked wrong-generation earlier-receipt later-old-generation wrong-holder; do
     new_case "live check refuses $mode"
     state='acked without a receipt at generation 7'
     case $mode in
         unreceived) RECEIVED=null ;;
         unacked) ACK=8 state='not acked; event 9 received' ;;
         wrong-generation) DELIVERY_GEN=6 ;;
+        later-old-generation) DELIVERIES='{"attempts":[{"event_id":9,"session_gen":7,"received_at":null},{"event_id":12,"session_gen":6,"received_at":"now"}]}' ;;
         earlier-receipt) DELIVERIES='{"attempts":[{"event_id":8,"session_gen":7,"received_at":"now"},{"event_id":9,"session_gen":7,"received_at":null}]}' ;;
         wrong-holder) HOLDER=other ;;
     esac

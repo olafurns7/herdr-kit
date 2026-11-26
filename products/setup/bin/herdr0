@@ -55,6 +55,8 @@ KEYS = {"enter": "enter", "return": "enter", "cr": "enter", "escape": "esc", "es
         "ppage": "pgup", "pagedown": "pgdn", "pgdn": "pgdn", "npage": "pgdn", "delete": "delete", "del": "delete",
         "dc": "delete", "insert": "insert", "ins": "insert", "ic": "insert",
         **{f"f{n}": f"f{n}" for n in range(1, 13)}}
+# The single characters hc keys types as themselves.
+TEXT_KEYS = set("abcdefghijklmnopqrstuvwxyz0123456789',-./;=[\\]`")
 MODS = {"c": "ctrl", "ctrl": "ctrl", "control": "ctrl", "m": "alt", "alt": "alt", "meta": "alt",
         "s": "shift", "shift": "shift"}
 
@@ -661,7 +663,8 @@ def pane(ctx, sub, argv):
 def hc_key(name):
     """hc's name for one herdr key name (enter, Escape, C-c, ctrl+c, M-x, F5, y), or None when unknown."""
     if len(name) == 1:
-        return name
+        # hc keys lower-cases a single capital: shift+<lower> types it.
+        return "shift+" + name.lower() if "A" <= name <= "Z" else name
     if name.lower() in KEYS:
         return KEYS[name.lower()]
     m = re.match(r"^((?:[A-Za-z]+\+)+)(.+)$", name)
@@ -682,18 +685,24 @@ def hc_key(name):
 
 
 def text_keys(text):
-    """herdr 0.9 send-text typed TEXT as given, without Enter; hc send always submits, so type it as keys."""
+    """herdr 0.9 send-text typed TEXT as given, without Enter; hc send always submits, so type it as keys.
+
+    hc keys types only the characters it has key names for; any other character is refused before a key is sent.
+    """
     named = {" ": "space", "\t": "tab", "\r": "enter", "\n": "ctrl+j", "\x1b": "esc", "\x7f": "backspace"}
     out = []
     for ch in text:
         if ch in named:
             out.append(named[ch])
+        elif "A" <= ch <= "Z":
+            out.append("shift+" + ch.lower())
+        elif ch in TEXT_KEYS:
+            out.append(ch)
         elif 1 <= ord(ch) <= 26:
             out.append("ctrl+" + chr(ord(ch) + 96))
-        elif ord(ch) < 32:
-            raise Fail("usage", f"send-text cannot type control character {ord(ch):#04x}", 2)
         else:
-            out.append(ch)
+            raise Fail("unsupported_text", f"send-text cannot type {ch!r}: hc has no key for it without Enter; "
+                       "nothing sent (pane run PANE TEXT sends text with Enter)", 2)
     return out
 
 

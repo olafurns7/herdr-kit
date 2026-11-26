@@ -231,6 +231,10 @@ elif cmd == 'ready':
     (case / 'ready').touch()
     if mode == 'queued-ready': print('{"queued":true,"request_key":"example"}')
     else: print(json.dumps({'event_id':40 if mode == 'backlog' else 9}))
+elif cmd == 'delivery' and mode == 'later-push-old-gen':
+    # A later event was received, but at generation 6: no proof for generation 7.
+    print(json.dumps({'attempts':[{'event_id':9, 'session_gen':7, 'received_at':None},
+                                  {'event_id':12, 'session_gen':6, 'received_at':'now'}]}))
 elif cmd == 'delivery' and mode in ('later-push', 'later-push-unacked'):
     # The hub acked the check from its inbox before the digest hold pushed it; event 12 was pushed later.
     print(json.dumps({'attempts':[{'event_id':8, 'session_gen':7, 'received_at':'now'},
@@ -688,7 +692,7 @@ else: sys.exit(98)
         if mode == 'config-symlink': assert (state / 'taskr-mcp-7.json').is_symlink()
 
     for mode, gate in [('fail-launch',True), ('fail-ready',True), ('queued-ready',True),
-                       ('wrong-delivery',True),('unreceived',True),('unacked',True),('later-push-unacked',True),('prover-conflict',True),
+                       ('wrong-delivery',True),('unreceived',True),('unacked',True),('later-push-unacked',True),('later-push-old-gen',True),('prover-conflict',True),
                        ('fail-delivery',True),('fail-inbox',True),('lost-lease',True),
                        ('fail-new',False),('fail-accepted-close',True),('wrong-holder',False),('wrong-lease',False),
                        ('prover-lease-conflict',False)]:
@@ -700,7 +704,8 @@ else: sys.exit(98)
             assert (state / 'hub-check-7.result').read_text() == 'failed: generation conflict while waiting for lease\n'
         assert (c[0] / 'note').read_text().startswith('hub push check 7: failed: ')
         states = {'wrong-delivery':'acked without a receipt at generation 7', 'unreceived':'acked without a receipt at generation 7',
-                  'unacked':'not acked; event 9 received', 'later-push-unacked':'not acked; event 12 received'}
+                  'unacked':'not acked; event 9 received', 'later-push-unacked':'not acked; event 12 received',
+                  'later-push-old-gen':'acked without a receipt at generation 7'}
         if mode in states:
             assert (state / 'hub-check-7.result').read_text().endswith(f'(check event 9: {states[mode]})\n'), (state / 'hub-check-7.result').read_text()
         if gate:
@@ -906,7 +911,7 @@ else: sys.exit(98)
     lock_block = '\n'.join(function(n) for n in ('take_guard', 'drop_guard', 'take_lock', 'own_lock', 'release_lock')
                            if '\n' + n + '() ' in source)
     prelude = '\n'.join(['set -u', 'root=42 pane=wA:p1 gen=7 mcp_config=fixture lease=unknown check_task= step=0 mode=start',
-                         'tmp= adopt_err= lock= lock_owner= guard=', 'state_dir=$CASE host=$(uname -n)',
+                         'tmp= adopt_err= lock= lock_owner= guard= event= check_state= check_closed=', 'state_dir=$CASE host=$(uname -n)',
                          function('cleanup'), function('fail'), function('number'), lock_block])
     mock = '''
 latest_gen() { printf '7\n'; }
@@ -1008,8 +1013,9 @@ ledger() {
         source = (setup / 'bin' / script).read_text()
         (race / 'take.sh').write_text('\n'.join([
             'set -u', 'root=42 pane=wA:p1 gen= mcp_config=fixture lease=unknown check_task= step=0 mode=start',
-            'agent= tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf=', 'state_dir=$CASE host=$(uname -n)',
-            *(function(n) for n in ('cleanup', 'fail', 'number', 'take_guard', 'drop_guard', 'take_lock', 'own_lock', 'release_lock')),
+            'agent= tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf= event= check_state= check_closed=', 'state_dir=$CASE host=$(uname -n)',
+            *(function(n) for n in ('cleanup', 'fail', 'abandon_check', 'number', 'take_guard', 'drop_guard', 'take_lock', 'own_lock', 'release_lock')
+              if '\n' + n + '() ' in source),
             'note() { :; }', 'trap cleanup 0', "trap 'fail interrupted' 1 2 3 15", 'take_lock',
             ': >"$CASE/entered-$WHO"', 'read -r go <"$CASE/release-$WHO"', '']))
         # Each wrapper does the real operation, then delays only its return, once.

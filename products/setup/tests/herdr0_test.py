@@ -308,7 +308,7 @@ class Herdr0(unittest.TestCase):
                    "F5", "PageUp", "BSpace", "Ctrl+C", "Y")
         self.assertEqual([c for c in self.calls() if c[0] == "keys"],
                          [["keys", "--json", "t1", "ctrl+c", "enter", "esc", "tab", "esc", "alt+x", "ctrl+alt+x",
-                           "f5", "pgup", "backspace", "ctrl+c", "Y"]])
+                           "f5", "pgup", "backspace", "ctrl+c", "shift+y"]])
         # Unknown names exit 2 before any key is sent, as herdr validated every key before writing.
         for bad in ("bogus", "C-", "ctrl+nope", "x+y"):
             self.clear_calls()
@@ -322,7 +322,7 @@ class Herdr0(unittest.TestCase):
         r = self.js("pane", "send-text", f"{ws}:p1", "ls -A\tx")
         self.assertEqual(r, {"pane_id": f"{ws}:p1", "type": "pane_text"})
         self.assertEqual([c for c in self.calls() if c[0] in ("keys", "send")],
-                         [["keys", "--json", "t1", "l", "s", "space", "-", "A", "tab", "x"]])
+                         [["keys", "--json", "t1", "l", "s", "space", "-", "shift+a", "tab", "x"]])
         self.clear_calls()
         self.herdr("pane", "send-text", f"{ws}:p1", "")
         self.assertFalse([c for c in self.calls() if c[0] in ("keys", "send")])
@@ -330,6 +330,25 @@ class Herdr0(unittest.TestCase):
         self.assertEqual((p.returncode, self.error(p)), (2, "usage"))
         p = self.herdr("pane", "send-text", f"{ws}:p1", "a\x1c", ok=False)
         self.assertEqual(p.returncode, 2)
+
+    def test_send_text_types_only_what_hc_keys_can_type(self):
+        ws = self.workspace()["workspace"]["workspace_id"]
+        # hc keys lower-cases a single capital: capitals go as shift+<lower>.
+        self.clear_calls()
+        self.herdr("pane", "send-text", f"{ws}:p1", "AbZ")
+        self.assertEqual([c for c in self.calls() if c[0] == "keys"],
+                         [["keys", "--json", "t1", "shift+a", "b", "shift+z"]])
+        allowed = "abcdefghijklmnopqrstuvwxyz0123456789',-./;=[\\]`"
+        self.clear_calls()
+        self.herdr("pane", "send-text", f"{ws}:p1", allowed)
+        self.assertEqual([c for c in self.calls() if c[0] == "keys"], [["keys", "--json", "t1", *allowed]])
+        # A character hc keys has no name for is refused before any key is sent.
+        for text in ("a+b", "~", "caf\u00e9"):
+            self.clear_calls()
+            p = self.herdr("pane", "send-text", f"{ws}:p1", text, ok=False)
+            self.assertEqual((p.returncode, self.error(p)), (2, "unsupported_text"), text)
+            self.assertIn("pane run PANE TEXT", json.loads(p.stderr)["error"]["message"])
+            self.assertFalse([c for c in self.calls() if c[0] in ("keys", "send")], text)
 
     def test_wait_output_checks_the_screen_first(self):
         ws = self.workspace()["workspace"]["workspace_id"]
