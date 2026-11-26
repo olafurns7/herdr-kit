@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""A small fake of hc 0.1.22 for herdr0_test.py: the subcommands herdr0 calls.
+
+State lives in $FAKE_HC_STATE/state.json; every call is appended to
+$FAKE_HC_STATE/calls.jsonl as its argv. Shapes follow herdr-core's
+docs/commands.md and schema/hc.openrpc.json (Terminal, SendResult, WaitResult).
+
+Test hooks kept in state.json:
+  on_send:  [{"match": TEXT, "screen": TEXT, "status": WORD|null, "foreground": NAME, "turn": N}]
+            the first rule whose match is in the sent text applies; without one the text
+            is appended to the screen.
+  future:   {ADDRESS: [TEXT, ...]} output a later `wait --output` sees printed.
+  machines: the `machine ls` rows.
+FAKE_HC_UNLINK_SOCKET=N removes $HC_SOCKET after the Nth call (a core that went away).
+"""
+import json
+import os
+import sys
+import time
+
+STATE = os.environ["FAKE_HC_STATE"]
+PATH = os.path.join(STATE, "state.json")
+
+
+def load():
+    try:
+        with open(PATH) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"next": 1, "terminals": {}, "machines": [], "on_send": [], "future": {}}
+
+
+def save(s):
+    with open(PATH + ".tmp", "w") as f:
+        json.dump(s, f)
+    os.replace(PATH + ".tmp", PATH)
+
+
+def fail(kind, message, code):
+    print(json.dumps({"error": {"kind": kind, "message": message, "hint": ""}}), file=sys.stderr)
+    sys.exit(code)
+
+
+def out(v):
+    print(json.dumps(v))
+    sys.exit(0)
+
+
+def split(argv, values, flags=()):
+    o, pos, i = {}, [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            pos += argv[i + 1:]
+            break
+        if a in values:
+            o.setdefault(a, []).append(argv[i + 1])
+            i += 2
+            continue
+        if a.split("=", 1)[0] in values and "=" in a:
+            o.setdefault(a.split("=", 1)[0], []).append(a.split("=", 1)[1])
+            i += 1
+            continue
+        if a in flags or a == "--json":
+            o[a] = True
+        elif a.startswith("--"):
+            fail("usage", f"unexpected argument '{a}'", 2)
+        else:
+            pos.append(a)
+        i += 1
+    return o, pos
+
+
+def find(s, t):
+    rec = s["terminals"].get(t)
+    if rec is None:
+        rec = next((r for r in s["terminals"].values() if r.get("name") == t), None)
+    if rec is None:
+        fail("not_found", f"no terminal {t}", 3)
+    return rec
+
+
+def main(argv):
+    with open(os.path.join(STATE, "calls.jsonl"), "a") as f:
+        f.write(json.dumps(argv) + "\n")
+    limit = os.environ.get("FAKE_HC_UNLINK_SOCKET")
+    if limit:
+        with open(os.path.join(STATE, "calls.jsonl")) as f:
+            if sum(1 for _ in f) >= int(limit) and os.path.exists(os.environ["HC_SOCKET"]):
+                os.unlink(os.environ["HC_SOCKET"])
+    s = load()
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "run":
+        o, pos = split(rest, {"--name", "--cwd", "--on", "--label", "--parent", "--timeout"},
+                       {"--bg", "--no-parent", "--no-notify", "--outlive-parent", "--rm", "--keep"})
+        n = s["next"]
+        s["next"] = n + 1
+        addr = f"{o['--on'][0]}/t{n}" if "--on" in o else f"t{n}"
+        cwd = o.get("--cwd", ["/srv/work"])[0]
+        labels = dict(kv.split("=", 1) for kv in o.get("--label", []))
+        rec = {"address": addr, "name": o.get("--name", [None])[0], "argv": pos, "cwd": cwd,
+               "labels": labels, "state": "live", "created_ms": 1, "screen": "", "cols": 200,
+               "rows": 120, "pid": 1000 + n, "status": None, "turn": 0, "reported": False,
+               "title": "", "keep": "--keep" in o, "parent": None,
+               "foreground": {"pid": 1000 + n, "name": "zsh", "argv": ["zsh"], "cwd": cwd}}
+        s["terminals"][addr] = rec
+        save(s)
+        out(rec)
+    if cmd == "ls":
+        o, _ = split(rest, {"--label"}, {"--all", "--table"})
+        want = [kv.split("=", 1) for kv in o.get("--label", [])]
+        rows = [r for r in s["terminals"].values()
+                if ("--all" in o or r["state"] == "live")
+                and all(r["labels"].get(k) == v for k, v in want)]
+        out({"terminals": rows, "hidden_finished": 0, "machines": []})
+    if cmd == "get":
+        _, pos = split(rest, set())
+        out(find(s, pos[0]))
+    if cmd == "read":
+        o, pos = split(rest, {"--lines"})
+        print(find(s, pos[0])["screen"], end="")
+        sys.exit(0)
+    if cmd == "send":
+        o, pos = split(rest, {"--if", "--timeout"}, {"--force", "--wait"})
+        rec = find(s, pos[0])
+        text = pos[1]
+        if (rec["status"] or {}).get("state") == "blocked" and "--force" not in o:
+            fail("blocked", f"{rec['address']} is blocked", 9)
+        status_before = (rec["status"] or {}).get("state")
+        turn = rec["turn"]
+        rule = next((r for r in s.get("on_send", []) if r["match"] in text), None)
+        if rule:
+            rec["screen"] += rule.get("screen", "")
+            if "status" in rule:
+                rec["status"] = {"state": rule["status"]} if rule["status"] else None
+                rec["reported"] = rec["reported"] or bool(rule["status"])
+            if "foreground" in rule:
+                rec["foreground"]["name"] = rule["foreground"]
+                rec["foreground"]["argv"] = [rule["foreground"]]
+            rec["turn"] += rule.get("turn", 0)
+        else:
+            rec["screen"] += text + "\n"
+        save(s)
+        state = (rec["status"] or {}).get("state")
+        result = {"turn": turn, "status": status_before,
+                  "started": None if state is None else state == "working"}
+        if "--wait" in o:
+            result["wait"] = {"terminal": rec["address"], "ended": True, "reason": "status",
+                              "status": state, "turn": rec["turn"], "children": []}
+        out(result)
+    if cmd == "keys":
+        _, pos = split(rest, set())
+        rec = find(s, pos[0])
+        out({"turn": rec["turn"], "status": (rec["status"] or {}).get("state")})
+    if cmd == "label":
+        _, pos = split(rest, set())
+        rec = find(s, pos[0])
+        for kv in pos[1:]:
+            k, v = kv.split("=", 1)
+            if v:
+                rec["labels"][k] = v
+            else:
+                rec["labels"].pop(k, None)
+        save(s)
+        out(rec)
+    if cmd == "kill":
+        _, pos = split(rest, set())
+        rec = find(s, pos[0])
+        rec.update(state="finished", foreground=None, status=None, reason="killed")
+        save(s)
+        out(rec)
+    if cmd == "rm":
+        _, pos = split(rest, set())
+        rec = find(s, pos[0])
+        if rec["state"] != "finished":
+            fail("live", f"{rec['address']} is still running", 1)
+        del s["terminals"][rec["address"]]
+        save(s)
+        out({"removed": rec["address"]})
+    if cmd == "wait":
+        o, pos = split(rest, {"--output", "--timeout", "--children"})
+        rec = find(s, pos[0])
+        if "--output" in o:
+            pending = s.get("future", {}).get(rec["address"], [])
+            hit = next((p for p in pending if o["--output"][0] in p), None)
+            if hit is not None:
+                rec["screen"] += hit
+                pending.remove(hit)
+                save(s)
+                out({"terminal": rec["address"], "ended": True, "reason": "output", "turn": rec["turn"],
+                     "status": None, "children": []})
+            time.sleep(0.05)
+            out({"terminal": rec["address"], "ended": False, "reason": "timeout", "turn": rec["turn"],
+                 "status": None, "children": []})
+        out({"terminal": rec["address"], "ended": True, "reason": "status", "turn": rec["turn"],
+             "status": (rec["status"] or {}).get("state"), "children": []})
+    if cmd == "machine" and rest[:1] == ["ls"]:
+        out({"machines": s.get("machines", [])})
+    fail("usage", f"fake hc does not serve {cmd}", 2)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
