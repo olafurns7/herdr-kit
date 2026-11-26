@@ -23,8 +23,8 @@ opt-in manages its external plugin.
 Skills live at `~/.agents/skills/<name>`. Existing Claude, Codex, and OpenCode
 config directories receive loader links. Regenerate the upstream Herdr skill
 with `herdr --skill` after a Herdr upgrade; the installer does this when available.
-Under `HERDR_KIT_BACKEND=hc` (herdr-core) the installer takes that skill from
-`hc --skill` when hc is installed. The taskr plugin and the radar plugin are
+Under `HERDR_KIT_BACKEND=hc` (herdr-core) the installer places herdr-kit's
+herdr0 skill there instead of hc's manual. The taskr plugin and the radar plugin are
 off there: hc has no plugins, and the taskr daemon runs from its systemd unit.
 The owner's install, core start, stop and rollback steps are in
 the [herdr-core runbook](https://github.com/olafurns7/herdr-kit/blob/main/products/setup/docs/herdr-core.md); agents read the rules in the

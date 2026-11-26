@@ -8,9 +8,11 @@ orchestration skill's [launch.md](../skills/herdr-orchestration/launch.md)
 
 Placeholders: `HOST` is a machine's name, `TARGET` its ssh target, `ROOT` a
 taskr root id, `DIR` a working directory, `CHECKOUT` a herdr-kit checkout,
-`SHIM` a scratch directory, `LABEL` a workspace label, `LANE`,
+`SHIM` a scratch directory, `SRC` a repository's source checkout, `WT` a
+new task worktree, `LABEL` a workspace label, `LANE`,
 `ACCOUNT` and `SID` a root's recorded lane, account and native session,
-`PANE` a herdr-shaped pane id (`wN:pN`), `FILE` a handover path, and
+`PANE` a herdr-shaped pane id (`wN:pN`), `FILE` a handover path,
+`INSTALLED` an installed file with a staged sidecar, and
 `FLAGS` the flags of that host's last herdr-kit install.
 
 **Owner** marks a step only the owner runs, from a plain terminal outside any
@@ -115,6 +117,20 @@ beside normal work, days before the stop.
    sh products/setup/install.sh FLAGS --herdr-backend hc
    ```
 
+   Then resolve the staged sidecars. A changed installed file (a hand patch,
+   say) is left in place and the new text is staged beside it as
+   `INSTALLED.herdr-setup`; the installer's last block lists every such sidecar.
+   Agents keep reading the old `INSTALLED` until it is resolved. For each one:
+
+   ```sh
+   diff -u INSTALLED INSTALLED.herdr-setup
+   mv INSTALLED.herdr-setup INSTALLED
+   ```
+
+   The next install finds `INSTALLED` identical and records it (`SKIP`). A
+   file that must keep a local change goes in `~/.config/herdr-setup/keep`
+   instead (`--keep`), and the installer stops staging it.
+
 6. **Owner**, the ledger host: run the taskr unit with the hc drop-in, as the
    installer printed; with hc the Herdr plugin no longer starts the daemon.
    `enable --now` is not enough: it leaves a running daemon on Herdr 0.9.
@@ -135,6 +151,8 @@ beside normal work, days before the stop.
    # inside:
    command -v herdr      # ~/.local/lib/herdr-kit/hc-bin/herdr
    herdr-hub ROOT --lane LANE --account ACCOUNT -- --resume SID
+   # or, when that session started with Code Mode:
+   env HERDR_HUB_CODE_MODE=1 herdr-hub ROOT --lane LANE --account ACCOUNT -- --resume SID
    ```
 
    A lead's `PANE` is an hc shell terminal at its prompt, such as the root
@@ -148,12 +166,32 @@ beside normal work, days before the stop.
    herdr-lead start ROOT PANE --worktree DIR --lane LANE --account ACCOUNT --resume SID
    ```
 
+   Start one root per Codator account at a time: a second start on an
+   account whose first start has not finished fails with `account is busy`.
+   Start the next root on that account after the first one is up.
+
    Under the switch the three launchers refuse with exit 2 when
    `command -v herdr` is not the hc-bin shim. Each root: `taskr consumer show
    --as ROOT` shows a live holder, and one pushed prompt is acked. Parked
    roots stay down until needed.
 8. One lead: run one end-to-end lane (`herdr-launch --gather ...`): `got`,
    `ready`, `done` in the ledger, then teardown closes its terminal.
+
+## Task worktrees under hc
+
+The Herdr worktree plugin does not run under hc: `herdr worktree` exits 2 and
+no repository's worktree setup plugin runs. A lead creates the worktree with
+`git worktree add` and opens its workspace with `herdr workspace create --cwd`
+(launch.md "herdr-core backend"). When the repository's AGENTS.md names a
+worktree setup plugin, run its setup script by hand from the new worktree.
+For a plugin whose script reads `HERDR_PLUGIN_CONTEXT_JSON`:
+
+```sh
+cd WT
+env HERDR_ENV=1 HERDR_PLUGIN_CONTEXT_JSON='{"worktree":{"checkout_path":"WT"}}' sh SRC/.herdr/setup.sh
+```
+
+Use the setup script path the repository's plugin names.
 
 ## After a reboot
 

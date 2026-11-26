@@ -972,6 +972,8 @@ exec /bin/cp "$@"
         assert 'Environment=HC_SOCKET=%t/herdr-core/default.sock' in dropin
         assert 'Environment=PATH=%h/.local/lib/herdr-kit/hc-bin:' in dropin
         assert not (h / '.local/share/taskr/plugin').exists()
+        if (h / '.agents/skills/herdr-fleet').exists():
+            assert (h / '.agents/skills/herdr/SKILL.md').read_bytes() == (setup / 'skills/herdr/SKILL.md').read_bytes()
 
     for remote in (False, True):
         h = case(f'hc backend places shim, unit and drop-in, no plugin (remote={remote})')
@@ -994,11 +996,17 @@ printf '%s\\n' 'upstream synthetic hc skill'
 ''')
     hc_path = {'PATH': f'{hc_stubs}:{stubs}:/usr/bin:/bin'}
     herdr_skill = '.agents/skills/herdr/SKILL.md'
-    h = case('hc install exports the switch: fleet takes the hc skill')
+    h = case('hc install exports the switch: fleet takes the kit herdr0 skill, never hc --skill')
     run(h, '--fleet', '--herdr-backend', 'hc', extra=hc_path)
     hc_placed(h)
-    assert (h / herdr_skill).read_text() == 'upstream synthetic hc skill\n'
-    assert (h / 'hc-control.log').read_text() == '--skill\n'
+    assert (h / herdr_skill).read_bytes() == (setup / 'skills/herdr/SKILL.md').read_bytes()
+    assert not (h / 'hc-control.log').exists() and not (h / 'control.log').exists()
+    h = case('hc install replaces a recorded hc manual with the kit herdr0 skill')
+    write(h / herdr_skill, 'upstream synthetic hc skill\n')
+    record(h, herdr_skill, sha(h / herdr_skill))
+    out = run(h, '--fleet', '--herdr-backend', 'hc', extra=hc_path)
+    assert f'UPDATE {h / herdr_skill} (unchanged since last install)' in out, out
+    assert (h / herdr_skill).read_bytes() == (setup / 'skills/herdr/SKILL.md').read_bytes()
     h = case('plain install with hc on PATH keeps the herdr skill and no switch')
     run(h, '--fleet', extra=hc_path)
     assert (h / herdr_skill).read_text() == 'upstream synthetic herdr skill\n'
@@ -1008,7 +1016,8 @@ printf '%s\\n' 'upstream synthetic hc skill'
     h = case('HERDR_KIT_BACKEND=hc selects the hc install; --herdr-backend herdr overrides it')
     run(h, '--fleet', extra={'HERDR_KIT_BACKEND': 'hc', **hc_path})
     hc_placed(h)
-    assert (h / herdr_skill).read_text() == 'upstream synthetic hc skill\n'
+    assert (h / herdr_skill).read_bytes() == (setup / 'skills/herdr/SKILL.md').read_bytes()
+    assert not (h / 'hc-control.log').exists()
     h = case('explicit herdr backend under the switch installs as before')
     out = run(h, '--fleet', '--herdr-backend', 'herdr', binary=True, extra={'HERDR_KIT_BACKEND': 'hc', **hc_path})
     assert (h / herdr_skill).read_text() == 'upstream synthetic herdr skill\n'
@@ -1028,6 +1037,90 @@ printf '%s\\n' 'upstream synthetic hc skill'
     out = run(h, '--radar', '--herdr-backend', 'hc', binary=True, extra={'HERDR_ENV': '1'})
     assert out.count('radar: skipped; the hc backend has no plugins') == 1, out
     assert not (h / 'control.log').exists()
+
+    # The kit herdr0 skill: one checked command list (herdr0's own usage lines),
+    # never run hc, the launch.md pointer, and no hc command shown as one to run.
+    kit_skill = (setup / 'skills/herdr/SKILL.md').read_text()
+    front = kit_skill.split('---\n')[1]
+    assert re.search(r'^name: herdr$', front, re.M), front
+    assert 'herdr0' in re.search(r'^description: (.*)$', front, re.M).group(1)
+    usage = re.search(r'^HELP = """(.*?)"""', (setup / 'bin/herdr0').read_text(), re.S | re.M).group(1)
+    checked = [line for line in usage.splitlines()
+               if re.match(r'  (workspace|pane|agent|herdr0 enter) ', line) or line.startswith('Unsupported')]
+    assert len(checked) == 5, checked
+    for line in checked:
+        assert line in kit_skill.splitlines(), line
+    assert 'Never run `hc`' in kit_skill and 'herdr-orchestration/launch.md' in kit_skill
+    assert '"herdr-core backend"' in kit_skill
+    never = kit_skill[kit_skill.index('- Never run `hc`'):]
+    never = never[:never.index('\n- ')]
+    assert re.findall(r'`hc[ `]', kit_skill) == re.findall(r'`hc[ `]', never), 'hc named outside the never-run rule'
+    for block in re.findall(r'```[a-z]*\n(.*?)```', kit_skill, re.S):
+        assert not re.search(r'^\s*(\$ )?hc\b', block, re.M), block
+
+    # A client host refuses taskr daemon --stay: an hc client install stages the
+    # unit without it; hub and local installs keep the source unit (--stay).
+    unit_rel = '.config/systemd/user/taskr.service'
+    stay_unit = (setup / 'systemd/taskr.service').read_text()
+    assert 'ExecStart=%h/.local/bin/taskr daemon --stay\n' in stay_unit
+    client_unit = stay_unit.replace('ExecStart=%h/.local/bin/taskr daemon --stay\n', 'ExecStart=%h/.local/bin/taskr daemon\n')
+    h = case('hc client install stages a taskr unit without --stay')
+    out = run(h, '--herdr-backend', 'hc', '--taskr-client', 'http://100.64.0.1:7788')
+    assert (h / unit_rel).read_text() == client_unit and '--stay' not in client_unit
+    assert 'plugin/run.sh' not in out, out
+    assert 'systemctl --user daemon-reload && systemctl --user enable taskr.service' in out
+    rerun = run(h, '--fleet', '--herdr-backend', 'hc')
+    assert f'SKIP {h / unit_rel} (identical)' in rerun and (h / unit_rel).read_text() == client_unit
+    out = run(h, '--herdr-backend', 'hc', '--taskr-client', 'http://100.64.0.2:7788')
+    assert 'Restart the client daemon so it reads the new server URL:\n  systemctl --user restart taskr.service' in out, out
+    h = case('a local hc host that becomes a client gets the client unit')
+    run(h, '--fleet', '--herdr-backend', 'hc')
+    hc_placed(h)
+    out = run(h, '--herdr-backend', 'hc', '--taskr-client', 'http://100.64.0.1:7788')
+    assert f'UPDATE {h / unit_rel} (unchanged since last install)' in out, out
+    assert (h / unit_rel).read_text() == client_unit
+    h = case('hc hub install keeps taskr daemon --stay')
+    run(h, '--herdr-backend', 'hc', '--taskr-hub')
+    hc_placed(h)
+    assert (h / unit_rel).read_text() == stay_unit
+    h = case('Herdr 0.9 client install stages no taskr unit')
+    run(h, '--taskr-client', 'http://100.64.0.1:7788')
+    assert not (h / unit_rel).exists()
+
+    # The installer ends with one summary of every sidecar staged or found
+    # staged in this run; moving a sidecar into place resolves it (SKIP).
+    def sidecar_summary(out):
+        assert out.count('\nStaged sidecars (') <= 1, out
+        if '\nStaged sidecars (' not in out:
+            return None
+        block = out.split('\nStaged sidecars (', 1)[1]
+        assert 'agents keep reading the old file until you do' in block.splitlines()[0]
+        assert 'compare it with FILE (diff -u FILE FILE.herdr-setup)' in block
+        assert 'move the sidecar into place (mv FILE.herdr-setup FILE)' in block
+        # Nothing the placer or next steps print comes after the block.
+        for line in block.splitlines():
+            assert not re.match(r'(INSTALL|UPDATE|SKIP|MERGE|KEEP|MANUAL|Next steps)\b', line), line
+        return {line[2:] for line in block.splitlines() if line.startswith('  ')}
+    h = case('installer ends with one summary of staged sidecars')
+    launch = h / '.agents/skills/herdr-orchestration/launch.md'
+    lead = h / '.local/bin/herdr-lead'
+    for patched in (launch, lead):
+        write(patched, 'SYNTH hand patch\n')
+    staged = {f'{launch}.herdr-setup', f'{lead}.herdr-setup'}
+    out = run(h, '--fleet')
+    assert f'MERGE {launch} differs; staged {launch}.herdr-setup' in out
+    assert sidecar_summary(out) == staged, out
+    out = run(h, '--fleet')
+    assert f'{launch}.herdr-setup already staged' in out
+    assert sidecar_summary(out) == staged, out
+    os.replace(f'{launch}.herdr-setup', launch)
+    out = run(h, '--fleet')
+    assert f'SKIP {launch} (identical)' in out
+    assert sidecar_summary(out) == {f'{lead}.herdr-setup'}, out
+    os.replace(f'{lead}.herdr-setup', lead)
+    out = run(h, '--fleet')
+    assert sidecar_summary(out) is None
+    assert launch.read_bytes() == (setup / 'skills/herdr-orchestration/launch.md').read_bytes()
 
     for bad in (('--herdr-backend',), ('--herdr-backend', 'tmux'), ('--herdr-backend=',)):
         h = case(f'invalid backend refused: {bad}')

@@ -319,6 +319,7 @@ fi
 # Older tags have no herdr0; only an hc install fetches it.
 [ "$herdr_backend" != hc ] || public_assets="$public_assets products/setup/bin/herdr0
 products/setup/systemd/taskr-hc.conf
+products/setup/skills/herdr/SKILL.md
 "
 
 kernel=$(uname -s)
@@ -634,7 +635,14 @@ if [ "$radar" -eq 1 ] || [ "$codator" -eq 1 ] || [ "$notifications" -eq 1 ] || [
         else
             printf 'MERGE %s: could not create the herdr0 link\n' "$hc_shim"
         fi
-        place "$setup_dir/systemd/taskr.service" "$home_dir/.config/systemd/user/taskr.service"
+        # A client (server.url) refuses daemon --stay, which only a local ledger takes.
+        hc_unit_src=$setup_dir/systemd/taskr.service
+        if [ -f "$home_dir/.local/state/taskr/server.url" ]; then
+            hc_unit_src=$work_dir/taskr-client.service
+            sed 's|^\(ExecStart=.*/taskr daemon\) --stay$|\1|' "$setup_dir/systemd/taskr.service" >"$hc_unit_src"
+            grep -q '^ExecStart=.*/taskr daemon$' "$hc_unit_src" || fail 'could not derive the client taskr unit'
+        fi
+        place "$hc_unit_src" "$home_dir/.config/systemd/user/taskr.service"
         hc_unit=$place_result
         place "$setup_dir/systemd/taskr-hc.conf" "$home_dir/.config/systemd/user/taskr.service.d/herdr-kit-hc.conf"
         case $hc_unit:$place_result in
@@ -648,6 +656,11 @@ if [ "$radar" -eq 1 ] || [ "$codator" -eq 1 ] || [ "$notifications" -eq 1 ] || [
                         add_next_step 'kill "$(taskr --json daemon --status | jq -er '\''select(.supervised|not).pid'\'')"'
                         ;;
                 esac ;;
+            *)
+                if [ "${taskr_client_changed:-0}" -eq 1 ]; then
+                    add_next_step 'Restart the client daemon so it reads the new server URL:'
+                    add_next_step 'systemctl --user restart taskr.service'
+                fi ;;
         esac
     fi
     [ "$notifications" -eq 0 ] || . "$setup_dir/lib/notifications.sh"
@@ -769,3 +782,5 @@ case ":${PATH:-}:" in
 	*":$DIR:"*) ;;
 	*) printf 'install.sh: add %s to PATH\n' "$DIR" >&2 ;;
 esac
+# Last: every sidecar this run staged or found staged, with the resolve step.
+[ -z "${staged_sidecars:-}" ] || print_sidecar_summary

@@ -12,15 +12,15 @@ place "$setup_dir/docs/model-selection.md" "$home_dir/.agents/skills/herdr-orche
 if [ -e "$home_dir/.agents/skills/herdr-fleet/local.md" ] || [ -L "$home_dir/.agents/skills/herdr-fleet/local.md" ]; then
     printf '%s\n' 'PRESERVE ~/.agents/skills/herdr-fleet/local.md (private overlay)'
 fi
-# Under HERDR_KIT_BACKEND=hc the upstream skill is hc's own (herdr0 serves the
-# herdr commands); without hc installed, herdr's as before.
-skill_cli=herdr
-[ "${HERDR_KIT_BACKEND:-}" != hc ] || ! command -v hc >/dev/null 2>&1 || skill_cli=hc
-if command -v "$skill_cli" >/dev/null 2>&1; then
-    if "$skill_cli" --skill >"$work_dir/herdr-skill.md" && [ -s "$work_dir/herdr-skill.md" ]; then
+# Under HERDR_KIT_BACKEND=hc the herdr skill is the kit's herdr0 skill: hc's own
+# manual teaches hc commands no agent may run. Herdr 0.9 keeps herdr --skill.
+if [ "${HERDR_KIT_BACKEND:-}" = hc ]; then
+    place "$setup_dir/skills/herdr/SKILL.md" "$home_dir/.agents/skills/herdr/SKILL.md"
+elif command -v herdr >/dev/null 2>&1; then
+    if herdr --skill >"$work_dir/herdr-skill.md" && [ -s "$work_dir/herdr-skill.md" ]; then
         place "$work_dir/herdr-skill.md" "$home_dir/.agents/skills/herdr/SKILL.md"
     else
-        printf 'WARN: %s --skill produced nothing; skill not refreshed\n' "$skill_cli" >&2
+        printf '%s\n' 'WARN: herdr --skill produced nothing; skill not refreshed' >&2
     fi
 fi
 for asset in herdr-launch herdr-codex-identity herdr-loop herdr-worktrees herdr-lead herdr-hub herdr-lanes.sh kit-pr kit-prompt; do
@@ -122,8 +122,13 @@ elif [ "$taskr_role" = client ]; then
         printf '%s\n' "$taskr_server_url" >"$work_dir/server.url"
         place "$work_dir/server.url" "$taskr_server_file"
         if [ "$place_result" = INSTALL ] || [ "$place_result" = UPDATE ]; then
-            add_next_step 'Start the client daemon (later: taskr daemon --restart):'
-            add_next_step 'sh ~/.local/share/taskr/plugin/run.sh'
+            if [ "${HERDR_KIT_BACKEND:-}" = hc ]; then
+                # No plugin under hc: the installer's taskr unit step starts the client.
+                taskr_client_changed=1
+            else
+                add_next_step 'Start the client daemon (later: taskr daemon --restart):'
+                add_next_step 'sh ~/.local/share/taskr/plugin/run.sh'
+            fi
         fi
     fi
 fi

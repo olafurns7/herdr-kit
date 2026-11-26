@@ -309,6 +309,32 @@ write_record() {
     fi
 }
 
+# Sidecars staged, or found already staged, in this run: one path per line,
+# for the summary the installer prints last (print_sidecar_summary).
+staged_sidecars=
+note_sidecar() {
+    case "
+$staged_sidecars" in
+        *"
+$1
+"*) ;;
+        *) staged_sidecars="$staged_sidecars$1
+" ;;
+    esac
+}
+
+print_sidecar_summary() {
+    [ -n "$staged_sidecars" ] || return 0
+    printf '\nStaged sidecars (resolve yourself; agents keep reading the old file until you do):\n'
+    printf '%s' "$staged_sidecars" | while IFS= read -r sidecar_path; do
+        printf '  %s\n' "$sidecar_path"
+    done
+    printf '%s\n' 'For each FILE.herdr-setup: compare it with FILE (diff -u FILE FILE.herdr-setup),' \
+        'then move the sidecar into place (mv FILE.herdr-setup FILE); the next install' \
+        'records FILE as SKIP (identical). A file that must keep a local change goes in' \
+        '~/.config/herdr-setup/keep (--keep) instead.'
+}
+
 place_result=
 # The one placement helper for every file this script writes. It never
 # writes a keep-listed destination, never follows a symlink at the
@@ -375,8 +401,10 @@ place() {
         cp "$place_src" "$place_sidecar"
         chmod "$place_mode" "$place_sidecar"
         printf 'MERGE %s %s; staged %s\n' "$place_dest" "$place_state" "$place_sidecar"
+        note_sidecar "$place_sidecar"
     elif [ -f "$place_sidecar" ] && cmp -s "$place_src" "$place_sidecar"; then
         printf 'MERGE %s %s; %s already staged\n' "$place_dest" "$place_state" "$place_sidecar"
+        note_sidecar "$place_sidecar"
     else
         printf 'MERGE %s %s; %s holds other content, nothing written\n' \
             "$place_dest" "$place_state" "$place_sidecar"
