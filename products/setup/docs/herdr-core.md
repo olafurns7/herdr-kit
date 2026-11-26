@@ -66,7 +66,7 @@ beside normal work, days before the stop.
    `~/.local/bin` first again):
 
    ```sh
-   [ "${HERDR_KIT_BACKEND:-}" = hc ] && PATH="$HOME/.local/lib/herdr-kit/hc-bin:$PATH"
+   if [ "${HERDR_KIT_BACKEND:-}" = hc ]; then PATH="$HOME/.local/lib/herdr-kit/hc-bin:$PATH"; fi
    ```
 
    It does nothing until the switch is set (only `herdr0 enter` sets it), and
@@ -181,13 +181,13 @@ Possible until Herdr 0.9 is retired; its server keeps running until then.
 
 1. Roots: save state and exit, as in the stop's steps 3 and 4.
 2. **Owner**, each host: install herdr-kit again with the same `FLAGS` and
-   without `--herdr-backend hc` (a previous commit if the release itself is
+   with `--herdr-backend herdr`, so it cannot inherit the switch (a previous commit if the release itself is
    at fault). The unit file is the same in both modes; the hc switch and the
    `herdr0` shim live in its drop-in, which no install removes. Remove it
    before the reload, or the daemon stays on hc.
 
    ```sh
-   sh products/setup/install.sh FLAGS
+   sh products/setup/install.sh FLAGS --herdr-backend herdr
    rm -f ~/.config/systemd/user/taskr.service.d/herdr-kit-hc.conf
    systemctl --user daemon-reload && systemctl --user restart taskr.service
    ```
