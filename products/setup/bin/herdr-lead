@@ -4,6 +4,7 @@ set -u
 
 usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--mcp] [--allow-tool NAME]... [--lane opus-high] [--account NAME [--resume SID]] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--mcp] [--allow-tool NAME]... [--lane opus-high] [--account NAME [--resume SID]] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT | herdr-lead idle ROOT [--hours N] [--tokens N|NM]'
 root= pane= gen= mcp_config= agent= lease=unknown check_task= step=0
+event= check_state= check_closed=
 tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf=
 cleanup() {
     # A signal must not cut a lock or guard release in half.
@@ -17,12 +18,14 @@ cleanup() {
 trap cleanup 0
 trap 'fail interrupted' 1 2 3 15
 fail() {
+    [ -z "$check_state" ] || set -- "$1 (check event $event: $check_state)"
     printf 'herdr-lead: step %s failed: %s\n' "$step" "$1" >&2
     note "step $step failed: $1"
     if [ "$step" -ge 4 ]; then
         printf 'ROOT=%s GEN=%s pane=%s mcp_config=%s agent=%s lease=%s check_task=%s log=%s\n' \
             "$root" "${gen:--}" "$pane" "${mcp_config:--}" "${agent:--}" "$lease" "${check_task:--}" "${log_file:--}" >&2
     fi
+    abandon_check
     # A concurrent adopter may be live: never let a rerun reclaim this lock.
     case $1 in *'generation conflict'*)
         if [ -n "$lock" ] && take_guard; then
@@ -36,6 +39,18 @@ fail() {
     exit 1
 }
 die() { printf 'herdr-lead: %s\n' "$1" >&2; exit 2; }
+# A failed step 8 leaves no ready check task behind.
+abandon_check() {
+    number "$check_task" && [ -z "$check_closed" ] || return 0
+    check_closed=1
+    if ledger --json close "$check_task" --outcome abandoned >/dev/null 2>&1; then
+        printf 'herdr-lead: closed check task %s as abandoned\n' "$check_task" >&2
+        note "closed check task $check_task as abandoned"
+    else
+        printf 'herdr-lead: could not close check task %s: run taskr close %s --outcome abandoned\n' "$check_task" "$check_task" >&2
+        note "could not close check task $check_task"
+    fi
+}
 number() { case $1 in '' | *[!0-9]* | 0) return 1 ;; esac; }
 identifier() { case $1 in '' | *[!A-Za-z0-9:_-]*) return 1 ;; esac; }
 quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
@@ -573,7 +588,7 @@ if ! start_err=$(herdr agent start "$agent" --kind claude --pane "$pane" --timeo
 fi
 
 step_line 7 'tell the lead its generation and handover'
-prompt="You are the lead of root $root. herdr-lead adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence; ack each pushed line right after you handle it, in the listed order. Read the handover at $handover. A \"lead push check\" event will arrive: record it and ack it. Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note."
+prompt="You are the lead of root $root. herdr-lead adopted you at generation $gen: do not run taskr adopt. This is a push lane: no plain taskr wait or ack. Pushed events arrive as <channel source=\"taskr\" ...>; handle each with the taskr MCP tools, and ack with its fence; ack each pushed line right after you handle it, in the listed order. Read the handover at $handover. A \"lead push check\" event will arrive: record it and ack it. Ack that check only from its push, never from taskr_inbox. Session timers (Claude CronCreate jobs, background loops) died with the old session: if the handover Note lists session timers to re-arm, create each again and record the new ids with a taskr note."
 if [ -n "$prompt_file" ]; then
     prompt="$prompt Then read $prompt_file and follow it."
 fi
@@ -634,6 +649,7 @@ inbox=$(ledger --json inbox --as "$root") || fail 'read inbox backlog'
 acked=$(printf '%s\n' "$inbox" | jq -er '.acked_event_id // 0') || fail 'read inbox backlog'
 backlog=$(printf '%s\n' "$inbox" | jq -er --argjson event "$event" '[.events[]? | select(.id < $event)] | length') || fail 'read inbox backlog'
 say "check event $event waits behind $backlog unacked events"
+check_state='not acked'
 cap=$(($(date +%s) + 1800))
 while :; do
     latest=$(latest_gen) || fail 'read generation during live check'
@@ -641,10 +657,17 @@ while :; do
     read_lease && current_lease || fail 'current-generation channel lease lost'
     deliveries=$(ledger --json delivery ls --as "$root") || fail 'read check delivery'
     inbox=$(ledger --json inbox --as "$root") || fail 'read check ack'
-    if printf '%s\n' "$deliveries" | jq -e --argjson gen "$gen" --argjson event "$event" \
-        '.attempts | any(.[]; .event_id == $event and .session_gen == $gen and (.received_at | type == "string" and length > 0))' >/dev/null \
-        && printf '%s\n' "$inbox" | jq -e --argjson event "$event" '.acked_event_id | type == "number" and . >= $event' >/dev/null; then
-        break
+    # A digest hold can let the session ack the check from its inbox before the push: then any later push
+    # received at this generation proves the channel.
+    receipt=$(printf '%s\n' "$deliveries" | jq -er --argjson gen "$gen" --argjson event "$event" \
+        '[.attempts[] | select(.event_id >= $event and .session_gen == $gen and (.received_at | type == "string" and length > 0)) | .event_id] | min // 0') || fail 'read check delivery'
+    if printf '%s\n' "$inbox" | jq -e --argjson event "$event" '.acked_event_id | type == "number" and . >= $event' >/dev/null; then
+        [ "$receipt" = 0 ] || break
+        check_state="acked without a receipt at generation $gen"
+    elif [ "$receipt" = 0 ]; then
+        check_state='not acked'
+    else
+        check_state="not acked; event $receipt received"
     fi
     now_acked=$(printf '%s\n' "$inbox" | jq -er '.acked_event_id // 0') || fail 'read check ack'
     if [ "$now_acked" -gt "$acked" ]; then
@@ -656,6 +679,12 @@ while :; do
     [ "$(date +%s)" -lt "$deadline" ] || fail "check event was not received and acked within 360 s (acked through $acked; backlog $backlog)"
     sleep 3
 done
+check_state=
 out=$(ledger --json close "$check_task" --outcome accepted) || fail 'close check task (inspect before retry)'
+check_closed=1
 printf '%s\n' "$out" | jq -e --argjson task "$check_task" '.task_id == $task and .queued != true' >/dev/null || fail 'check task close not confirmed'
-say "$root live at $gen (event $event received and acked)"
+if [ "$receipt" = "$event" ]; then
+    say "$root live at $gen (event $event received and acked)"
+else
+    say "$root live at $gen (event $event acked; later event $receipt received)"
+fi

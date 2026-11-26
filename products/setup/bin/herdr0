@@ -32,7 +32,7 @@ HELP = """usage: herdr [--machine M] [--json] <command> ...
 herdr0 answers the herdr 0.9 commands herdr-kit uses by calling hc (${HC_BIN:-hc}).
 
   workspace create|list|close     tab create|list|get|rename|close
-  pane current|get|list|read|run|send-keys|wait-output|process-info|report-metadata
+  pane current|get|list|read|run|send-text|send-keys|wait-output|process-info|report-metadata
   agent start|prompt|wait|list|get|read      machine list      notification show (no-op)
   herdr0 enter [--workspace W --tab T --pane P | --new-workspace LABEL] -- ARGV...
 
@@ -47,9 +47,16 @@ The owner starts a root from a plain terminal, after starting the hc core:
 SHELLS = {"sh", "bash", "zsh", "fish", "dash", "ksh", "nu"}
 STATUS = {"idle": "idle", "working": "working", "blocked": "blocked", "done": "done", "error": "blocked"}
 ID_CHARS = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
-KEYS = {"enter": "enter", "return": "enter", "escape": "esc", "esc": "esc", "tab": "tab",
-        "space": "space", "backspace": "backspace", "up": "up", "down": "down",
-        "left": "left", "right": "right"}
+# Key names: herdr 0.9's (enter, esc/escape, ctrl+c) and the tmux style its callers also used (C-c, M-x),
+# mapped to hc's (enter, esc, up, ctrl+c, alt+x, f5, a). Anything else is refused before a key is sent.
+KEYS = {"enter": "enter", "return": "enter", "cr": "enter", "escape": "esc", "esc": "esc", "tab": "tab",
+        "space": "space", "backspace": "backspace", "bspace": "backspace", "up": "up", "down": "down",
+        "left": "left", "right": "right", "home": "home", "end": "end", "pageup": "pgup", "pgup": "pgup",
+        "ppage": "pgup", "pagedown": "pgdn", "pgdn": "pgdn", "npage": "pgdn", "delete": "delete", "del": "delete",
+        "dc": "delete", "insert": "insert", "ins": "insert", "ic": "insert",
+        **{f"f{n}": f"f{n}" for n in range(1, 13)}}
+MODS = {"c": "ctrl", "ctrl": "ctrl", "control": "ctrl", "m": "alt", "alt": "alt", "meta": "alt",
+        "s": "shift", "shift": "shift"}
 
 
 class Fail(Exception):
@@ -622,9 +629,20 @@ def pane(ctx, sub, argv):
     if sub == "send-keys":
         if not rest:
             raise Fail("usage", "pane send-keys PANE KEY...", 2)
-        keys = [KEYS.get(k.lower(), k.lower() if len(k) > 1 else k) for k in rest]
+        keys = [hc_key(k) for k in rest]
+        unknown = [k for k, v in zip(rest, keys) if v is None]
+        if unknown:
+            raise Fail("unknown_key", f"unknown key {unknown[0]!r}; nothing sent (try Enter, esc, Tab, C-c, ctrl+c, "
+                       "alt+x, up, F5, y)", 2)
         hc(["keys", "--json", t["address"], *keys])
         return emit("pane_keys", {"pane_id": pid}, "pane:send_keys")
+    if sub == "send-text":
+        if len(rest) != 1:
+            raise Fail("usage", "pane send-text PANE TEXT", 2)
+        keys = text_keys(rest[0])
+        if keys:
+            hc(["keys", "--json", t["address"], *keys])
+        return emit("pane_text", {"pane_id": pid}, "pane:send_text")
     if sub == "wait-output":
         pattern = o.get("--match") or o.get("--regex")
         if not pattern:
@@ -638,6 +656,45 @@ def pane(ctx, sub, argv):
     if sub == "focus":
         return emit("ok", {}, "pane:focus")
     unsupported(f"pane {sub}")
+
+
+def hc_key(name):
+    """hc's name for one herdr key name (enter, Escape, C-c, ctrl+c, M-x, F5, y), or None when unknown."""
+    if len(name) == 1:
+        return name
+    if name.lower() in KEYS:
+        return KEYS[name.lower()]
+    m = re.match(r"^((?:[A-Za-z]+\+)+)(.+)$", name)
+    if m:
+        mods = [MODS.get(x.lower()) if len(x) > 1 else None for x in m.group(1)[:-1].split("+")]
+    else:
+        m = re.match(r"^((?:[CcMmSs]-)+)(.+)$", name)
+        if not m:
+            return None
+        mods = [MODS[x.lower()] for x in m.group(1)[:-1].split("-")]
+    base = m.group(2)
+    if None in mods or len(set(mods)) != len(mods):
+        return None
+    key = (base.lower() if "ctrl" in mods else base) if len(base) == 1 else KEYS.get(base.lower())
+    if key is None:
+        return None
+    return "+".join([x for x in ("ctrl", "alt", "shift") if x in mods] + [key])
+
+
+def text_keys(text):
+    """herdr 0.9 send-text typed TEXT as given, without Enter; hc send always submits, so type it as keys."""
+    named = {" ": "space", "\t": "tab", "\r": "enter", "\n": "ctrl+j", "\x1b": "esc", "\x7f": "backspace"}
+    out = []
+    for ch in text:
+        if ch in named:
+            out.append(named[ch])
+        elif 1 <= ord(ch) <= 26:
+            out.append("ctrl+" + chr(ord(ch) + 96))
+        elif ord(ch) < 32:
+            raise Fail("usage", f"send-text cannot type control character {ord(ch):#04x}", 2)
+        else:
+            out.append(ch)
+    return out
 
 
 def matches(text, pattern, regex):

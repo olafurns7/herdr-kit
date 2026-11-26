@@ -193,7 +193,10 @@ case "$1 $2" in
         [ "${TASKR_TASK:-}/${TASKR_LAUNCH:-}" = 43/8 ] || exit 1
         printf '{"event_id":9}\n'
         ;;
-    'delivery ls') printf '{"attempts":[{"event_id":9,"session_gen":%s,"received_at":%s}]}\n' "${DELIVERY_GEN:-7}" "${RECEIVED:-\"now\"}" ;;
+    'delivery ls')
+        if [ -n "${DELIVERIES:-}" ]; then printf '%s\n' "$DELIVERIES"; else
+            printf '{"attempts":[{"event_id":9,"session_gen":%s,"received_at":%s}]}\n' "${DELIVERY_GEN:-7}" "${RECEIVED:-\"now\"}"
+        fi ;;
     'inbox --as')
         if [ -n "${ACKS:-}" ]; then
             n=0
@@ -272,7 +275,7 @@ EOF
     FAIL= LEASE= LATEST= LEASE_GEN= AGENTS= BUSY= ENV_BAD= DIALOG= ACK= RECEIVED= DELIVERY_GEN= CONFIG_EXISTS= HOLDER= CAMPAIGN=
     DIALOG_SCREEN= STOP_IGNORED= NO_HANDOVER= ACKS= AGENTS_AFTER_WAIT= CALLER_HOST=
     PROMPT_RESULT= PROMPT_VISIBLE= WAIT_RESULTS= GET_STATUSES= ENTER_DELAYS= PROCESS= EXIT_MODAL= DIALOG_TALL=
-    LEAD_CODE_MODE= EXPECT_CODE_MODE= COMPACT_WINDOW= CONSENT=
+    LEAD_CODE_MODE= EXPECT_CODE_MODE= COMPACT_WINDOW= CONSENT= DELIVERIES=
     printf 'case: %s\n' "$name"
 }
 run() {
@@ -285,7 +288,7 @@ run() {
         GET_STATUSES="$GET_STATUSES" HERDR_LEAD_ENTER_DELAYS="$ENTER_DELAYS" STOP_IGNORED="$STOP_IGNORED" NO_HANDOVER="$NO_HANDOVER" ACKS="$ACKS" \
         AGENTS_AFTER_WAIT="$AGENTS_AFTER_WAIT" CALLER_HOST="$CALLER_HOST" PROCESS="$PROCESS" EXIT_MODAL="$EXIT_MODAL" DIALOG_TALL="$DIALOG_TALL" \
         HERDR_LEAD_CODE_MODE="$LEAD_CODE_MODE" EXPECT_CODE_MODE="$EXPECT_CODE_MODE" HERDR_LEAD_COMPACT_WINDOW="$COMPACT_WINDOW" CONSENT="$CONSENT" \
-        HERDR_TEST_AGENT_TMP_BASE="$agent_tmp_base" TMPDIR=/caller/tmp EXPECT_TMPDIR="$agent_tmp_dir" \
+        DELIVERIES="$DELIVERIES" HERDR_TEST_AGENT_TMP_BASE="$agent_tmp_base" TMPDIR=/caller/tmp EXPECT_TMPDIR="$agent_tmp_dir" \
         sh "$repo_dir/bin/herdr-lead" "$@" >"$case_dir/out" 2>"$case_dir/err" || rc=$?
 }
 expect_rc() { [ "$rc" = "$1" ] || fail "exit $rc, expected $1: $(cat "$case_dir/err")"; }
@@ -675,6 +678,7 @@ has calls 'taskr|close|43|--outcome|accepted|env=/'
 case $(cat "$case_dir/prompt-sent") in *' lead-push-gen-7') ;; *) fail 'missing end token' ;; esac
 grep -F 'if the handover Note lists session timers to re-arm, create each again' "$case_dir/prompt-sent" >/dev/null || fail 'prompt does not ask to re-arm session timers'
 grep -F 'ack each pushed line right after you handle it, in the listed order' "$case_dir/prompt-sent" >/dev/null || fail 'prompt does not ask to ack each digest line after handling it'
+grep -F 'Ack that check only from its push, never from taskr_inbox.' "$case_dir/prompt-sent" >/dev/null || fail 'prompt does not ask to ack the check only from its push'
 config=$home/.local/state/herdr-orch/lead-push/42/taskr-mcp-7.json
 # A lead takes digest pushes with a 2-minute hold, as the hub does.
 jq -e '.mcpServers.taskr == {command:"taskr",args:["mcp","--channel","--as","42","--session","7"],env:{TASKR_CHANNEL_DIGEST:"1",TASKR_CHANNEL_DIGEST_HOLD_S:"120"}}' "$config" >/dev/null || fail 'bad config'
@@ -1006,19 +1010,56 @@ expect_rc 1
 has err 'check event was not received and acked within 360 s (acked through 3; backlog 2)'
 # The fake clock adds 30 s per date call; 14 inbox reads mean a 360 s ack extension (240 s gives 10).
 [ "$(cat "$case_dir/inbox-reads")" = 14 ] || fail 'ack extension is not 360 s'
-lacks calls 'taskr|close'
+has err 'within 360 s (acked through 3; backlog 2) (check event 9: not acked)'
+has calls 'taskr|close|43|--outcome|abandoned'
+has err 'herdr-lead: closed check task 43 as abandoned'
+lacks calls 'taskr|close|43|--outcome|accepted'
 
-for mode in unreceived unacked wrong-generation wrong-holder; do
+# The session acked the check from its inbox before the digest hold pushed it; a later push proves the channel.
+later_push='{"attempts":[{"event_id":8,"session_gen":7,"received_at":"now"},{"event_id":9,"session_gen":7,"received_at":null},{"event_id":12,"session_gen":7,"received_at":"now"}]}'
+new_case 'live check passes on an inbox ack and a later received push'
+DELIVERIES=$later_push
+start
+expect_rc 0
+has out 'herdr-lead: 42 live at 7 (event 9 acked; later event 12 received)'
+has calls 'taskr|close|43|--outcome|accepted'
+lacks calls 'abandoned'
+
+new_case 'live check refuses a later received push while the check is unacked'
+DELIVERIES=$later_push ACK=8
+start
+expect_rc 1
+has err 'check event was not received and acked within 360 s (acked through 8; backlog 0) (check event 9: not acked; event 12 received)'
+has calls 'taskr|close|43|--outcome|abandoned'
+has err 'herdr-lead: closed check task 43 as abandoned'
+
+new_case 'a failed abandon close is reported, not hidden'
+ACK=8 FAIL='taskr close'
+start
+expect_rc 1
+has err 'herdr-lead: could not close check task 43: run taskr close 43 --outcome abandoned'
+
+for mode in unreceived unacked wrong-generation earlier-receipt wrong-holder; do
     new_case "live check refuses $mode"
+    state='acked without a receipt at generation 7'
     case $mode in
         unreceived) RECEIVED=null ;;
-        unacked) ACK=8 ;;
+        unacked) ACK=8 state='not acked; event 9 received' ;;
         wrong-generation) DELIVERY_GEN=6 ;;
+        earlier-receipt) DELIVERIES='{"attempts":[{"event_id":8,"session_gen":7,"received_at":"now"},{"event_id":9,"session_gen":7,"received_at":null}]}' ;;
         wrong-holder) HOLDER=other ;;
     esac
     start
     expect_rc 1
-    lacks calls 'taskr|close'
+    lacks calls 'taskr|close|43|--outcome|accepted'
+    if [ "$mode" = wrong-holder ]; then
+        # No check task exists yet: nothing to close.
+        lacks calls 'taskr|close'
+    else
+        has err "(check event 9: $state)"
+        has calls 'taskr|close|43|--outcome|abandoned'
+        has err 'herdr-lead: closed check task 43 as abandoned'
+    fi
     has err 'ROOT=42 GEN=7 pane=wA:p1 mcp_config='
     # The fake clock adds 30 s per date call; 10 delivery reads mean a 360 s deadline (240 s gives 6).
     # wrong-holder fails before it reads deliveries.
