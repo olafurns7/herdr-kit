@@ -54,13 +54,23 @@ pub enum Done {
     Doc(String),
     Slotr(Box<Slotr>),
     /// An answer the ledger recorded as event `answer_id`, with what the owner should
-    /// know (not delivered to its pane, the asker stopped waiting), or empty.
+    /// know (not delivered to its pane, not typed, the asker stopped waiting), or empty.
     Answered {
         answer_id: i64,
         note: String,
     },
     /// An answer the ledger refused, in its own words: nothing was recorded.
     Refused(String),
+}
+
+/// What the owner should know when taskr recorded an answer and did not type it: the
+/// asker root's push is not live. The root's id and its state come first, so a clipped
+/// line (the footer, ANSWERED HERE) still names the root at 80 columns; the action comes
+/// last, and under about 120 columns it is cut (docs/tui.md has the whole command).
+pub(crate) fn not_typed(root: &serde_json::Value) -> String {
+    format!(
+        "not typed: push to root {root} is not live; pushed when live; if the root is plain: read its pane, then prompt --pane"
+    )
 }
 
 const WORK_READ_LIMIT: usize = 1024 * 1024;
@@ -190,10 +200,7 @@ impl Job {
                 let waiting = reply["asker_waiting"].as_bool().unwrap_or(true);
                 let note = match reply["error"].as_str() {
                     Some(error) => format!("not delivered to its pane: {error}"),
-                    None if reply["prompt"] == "skipped" => format!(
-                        "not typed: the asker's push is not live; pushed when live; root plain now: read its pane, then taskr prompt {} --pane",
-                        reply["task_id"]
-                    ),
+                    None if reply["prompt"] == "skipped" => not_typed(&reply["task_id"]),
                     None if !waiting && !prompt => {
                         "the asker stopped waiting; prompt it by hand".into()
                     }
@@ -471,7 +478,7 @@ mod tests {
         // Recorded, but taskr did not type it into a push lane that is not push-live.
         let skipped = r#"echo '{"answer_id":6,"ask_id":5,"asker_waiting":false,"delivered":false,"ok":true,"prompt":"skipped","reason":"not_push_live","task_id":1}'"#;
         assert!(
-            matches!(run(answer(true), skipped), Ok(Done::Answered { answer_id: 6, note }) if note == "not typed: the asker's push is not live; pushed when live; root plain now: read its pane, then taskr prompt 1 --pane")
+            matches!(run(answer(true), skipped), Ok(Done::Answered { answer_id: 6, note }) if note == "not typed: push to root 1 is not live; pushed when live; if the root is plain: read its pane, then prompt --pane")
         );
         assert_eq!(calls().len(), 1);
         // The ledger's own refusal: not recorded, in its words.

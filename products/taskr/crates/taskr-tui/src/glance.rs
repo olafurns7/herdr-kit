@@ -2118,7 +2118,8 @@ pub(crate) fn draw(f: &mut Frame, app: &App) {
 }
 
 /// The lines of each answer sent from here, newest first: what is known of it, and on a
-/// line of its own what the owner should know of a recorded one (not delivered to its pane).
+/// line of its own what the owner should know of a recorded one (not delivered to its pane,
+/// not typed).
 fn answered_here(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
     use crate::Outcome;
     let t = &app.theme;
@@ -2914,6 +2915,50 @@ fn activity(app: &App, width: usize) -> Vec<Line<'static>> {
 mod tests {
     use super::*;
     use crate::frames::fixture;
+
+    /// An answer recorded and not typed: at 80 columns ANSWERED HERE and the footer still
+    /// name the root to prompt by hand. The answer goes the owner's way (a, enter, y) and
+    /// its result through `input::done`, so the footer is the line the owner sees.
+    #[test]
+    fn a_not_typed_note_keeps_the_root_id_at_80_columns() {
+        use crate::{
+            actions::Done,
+            input::{self, Effect},
+        };
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(fixture());
+        app.fetch.loaded = true;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 30)).unwrap();
+        let mut effect = Effect::None;
+        for code in [KeyCode::Char('a'), KeyCode::Enter, KeyCode::Char('y')] {
+            terminal.draw(|f| crate::draw(f, &app)).unwrap();
+            effect = input::key(&mut app, KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        let Effect::Run(job) = effect else {
+            panic!("no answer sent: {effect:?}")
+        };
+        let note = crate::actions::not_typed(&serde_json::json!(64712));
+        input::done(
+            &mut app,
+            &job,
+            Ok(Done::Answered {
+                answer_id: 61902,
+                note,
+            }),
+        );
+        app.screen = Screen::Asks;
+        terminal.draw(|f| crate::draw(f, &app)).unwrap();
+        let text = crate::frames::text(terminal.backend().buffer());
+        let rows: Vec<&str> = text.lines().collect();
+        let (footer, body) = rows.split_last().unwrap();
+        let here = body
+            .iter()
+            .find(|r| r.contains("not typed"))
+            .unwrap_or_else(|| panic!("no note under ANSWERED HERE:\n{text}"));
+        assert!(here.contains("push to root 64712"), "{text}");
+        assert!(footer.contains("not typed: push to root 64712"), "{text}");
+    }
 
     #[test]
     fn tmp_size_yields_to_remote_primary_row_at_46_columns() {
