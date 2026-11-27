@@ -1028,6 +1028,107 @@ for first_model in 'bad model' good-model; do
     [ ! -s "$case_dir/calls" ] || fail 'JSON stream made control-plane calls'
 done
 
+# The real shared forecast reader sees only synthetic snapshots in this HOME.
+lead_usage() {
+    python3 - "$home" "$1" "$2" "${3:-usable}" "${4:-0}" <<'SNAPSHOT'
+import datetime, json, os, pathlib, sys, time
+path = pathlib.Path(sys.argv[1]) / '.local/share/codator/claude/example/.claude-usage.json'
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps({'outcome': sys.argv[4], 'snapshot': {'rate_limits': {
+    'seven_day': {'utilization': float(sys.argv[2]), 'resets_at':
+        (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=float(sys.argv[3]))).isoformat()}}}}))
+stamp = time.time() - float(sys.argv[5])
+os.utime(path, (stamp, stamp))
+SNAPSHOT
+}
+for command in start move; do
+    new_case "$command refuses an account that would empty before reset without control-plane calls"
+    lead_usage 90 48
+    run "$command" 42 wA:p1 --worktree "$work" --account example
+    expect_rc 2
+    has out 'account=example week_left=10.0 burn='
+    has out ' hours_to_empty='
+    has out ' hours_to_reset='
+    has err 'account would empty before reset; choose another --account or use --account-override REASON'
+    [ "$(grep -c 'account=example ' "$case_dir/out")" = 1 ] || fail 'forecast line count'
+    [ ! -s "$case_dir/calls" ] || fail 'refusal called taskr, herdr or codator'
+    [ ! -e "$home/.local/state" ] || fail 'created lead state before refusal'
+
+    new_case "$command includes the added lead in the refusal forecast"
+    lead_usage 50 82
+    run "$command" 42 wA:p1 --worktree "$work" --account example
+    expect_rc 2
+    has out 'account=example week_left=50.0 burn='
+    [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+
+    for reason in '' '   '; do
+        new_case "$command refuses empty override reason before control-plane calls"
+        run "$command" 42 wA:p1 --worktree "$work" --account example --account-override "$reason"
+        expect_rc 2
+        [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+    done
+    new_case "$command refuses override without --account"
+    run "$command" 42 wA:p1 --worktree "$work" --account-override 'finish a short handover'
+    expect_rc 2
+    has err '--account-override requires --account NAME'
+    [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+
+    new_case "$command refuses missing override reason"
+    run "$command" 42 wA:p1 --worktree "$work" --account example --account-override
+    expect_rc 2
+    [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
+done
+
+new_case 'safe account prints forecast and starts, using raw quota despite reserve'
+lead_usage 10 48
+mkdir -p "$home/.config/herdr-fleet"
+printf '%s\n' '{"protect":["example"],"reserve":95}' >"$home/.config/herdr-fleet/accounts.json"
+start --account example
+expect_rc 0
+has out 'account=example week_left=90.0 burn='
+has out ' hours_to_empty='
+has out ' hours_to_reset='
+has calls '--|--account|example|--model|'
+
+new_case 'account override prints its reason and starts the risky account'
+lead_usage 90 48
+start --account example --account-override 'finish a short handover'
+expect_rc 0
+has out 'account=example week_left=10.0 burn='
+has out ' override=finish a short handover'
+has calls '--|--account|example|--model|'
+lacks calls '--account-override'
+grep -F 'override=finish a short handover' "$home/.local/state/herdr-orch/lead-push/42/"lead-start-*.log >/dev/null || fail 'override missing from step log'
+
+new_case 'existing consent taskr note includes the account override reason'
+lead_usage 90 48
+LEAD_CODE_MODE=1 EXPECT_CODE_MODE=1 DIALOG=1 CONSENT=answered
+start --account example --account-override 'finish a short handover'
+expect_rc 0
+has notes '; account override: finish a short handover|42'
+
+for forecast_state in missing stale unusable malformed passed-reset; do
+    new_case "account guard proceeds with unknown forecast: $forecast_state"
+    case $forecast_state in
+        missing) ;;
+        stale) lead_usage 90 48 usable 1900 ;;
+        unusable) lead_usage 90 48 error ;;
+        malformed)
+            lead_usage 90 48
+            printf '{broken' >"$home/.local/share/codator/claude/example/.claude-usage.json" ;;
+        passed-reset) lead_usage 90 -1 ;;
+    esac
+    start --account example
+    expect_rc 0
+    has out 'account=example week_left=unknown burn=unknown hours_to_empty=unknown hours_to_reset=unknown'
+    has calls '--|--account|example|--model|'
+done
+
+new_case 'account guard is visibly skipped without --account'
+start
+expect_rc 0
+has out 'account guard skipped (no --account)'
+
 new_case 'resume puts account first and keeps the session'
 start --resume saved-session --account example
 expect_rc 0
@@ -1168,6 +1269,30 @@ move --account example --no-handover
 expect_rc 0
 has calls '--|--account|example|--model|claude-opus-5-5'
 lacks calls '--resume'
+
+new_case 'move override prints the reason before handover and permits the move'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead
+lead_usage 90 48
+move --account example --account-override 'finish a short handover'
+expect_rc 0
+has out 'account=example week_left=10.0 burn='
+has out ' override=finish a short handover'
+has calls 'taskr handover --as 42'
+has calls 'herdr|pane|send-keys|wA:p1|esc|ctrl+c|ctrl+c'
+has calls '--|--account|example|--model|'
+lacks calls '--account-override'
+
+new_case 'move without account prints guard skipped'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead
+move --no-handover
+expect_rc 0
+has out 'account guard skipped (no --account)'
+
+new_case 'move with a missing snapshot prints unknown and proceeds'
+CAMPAIGN=$moved_campaign AGENTS=$old_lead
+move --account example --no-handover
+expect_rc 0
+has out 'account=example week_left=unknown burn=unknown hours_to_empty=unknown hours_to_reset=unknown'
 
 new_case 'jobs move carries opt-in through the stop and new generation render'
 CAMPAIGN=$moved_campaign AGENTS=$old_lead

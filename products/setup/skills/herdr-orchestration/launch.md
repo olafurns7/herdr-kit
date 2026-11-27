@@ -56,13 +56,18 @@ snapshots modified within 30 minutes with a valid weekly reset qualify when
 the overall week, Fable for Fable lanes, and the Opus or Sonnet weekly limit
 when present for that model have at least 3% left, and the five-hour limit
 has at least 15% left when present. A missing Fable row is unknown: Fable
-lanes skip the account. Order is the weekly reset rounded to the nearest
-minute (a reset already passed counts one week later), soonest first at every
-horizon, then lowest name. A Fable lane takes the first
-qualifying account. Other lanes count spare = week left − 0.55 × Fable left
-(Fable counted only when its row has at least 3% left) and take the first
-account with spare of 3 or more; when none has, they take the largest spare
-and the final line adds `fable_spend=1`.
+lanes skip the account. Count spare = week left − 0.55 × Fable left
+(Fable counted only when its row has at least 3% left). An eligible account
+with spare below 3 is **Fable-first**. Fable lanes rank Fable-first accounts
+before other eligible accounts; within each group order is the weekly reset
+rounded to the nearest minute (a reset already passed counts one week later),
+soonest first, then lowest name. Other Claude lanes take only accounts with
+spare of 3 or more, ordered by soonest reset, then name. If every eligible
+account is Fable-first, an automatic non-Fable Claude launch exits 2 with
+one line naming those accounts and the choices `--account NAME` or a Codex
+lane. A local refusal occurs before step 1; a remote refusal follows the
+target-pane probe, before task registration or agent start. Its error names
+the tab and pane, including a newly created tab that needs closing.
 `~/.config/herdr-fleet/accounts.json`, `{"protect":["NAME",...],"reserve":15}`,
 names accounts that run a live hub or lead; lane picks subtract the reserve
 from their week and Fable left. Nothing writes the file yet; a later ticket
@@ -83,14 +88,34 @@ call; `--machine` is refused because reading the target would need a pane,
 and unavailable Python exits 2.
 It prints `account=NAME week_used=N fable_used=N|- reset=ISO role=ROLE` per
 validly named snapshot account, ranked as an Opus lane pick. Roles are `soon`
-or `later` for the chosen account (with `fable_spend=1` when it has no
-spare), `next` for other eligible accounts, `out` for accounts below a margin,
-and `stale` for skipped snapshots. Roles apply the protect reserve; numbers are
+or `later` for the chosen account, `next` for other eligible accounts, `out`
+for accounts below a margin, and `stale` for skipped snapshots. Eligible Fable-first accounts add
+`fable_first=1`; an Opus pick never chooses one. Roles and Fable-first
+classification apply the protect reserve; numbers are
 raw, and a protected account's line ends with `protected=1`. Unavailable values
 print `-`. A missing or malformed protect list adds a last line
 `protect=none reason=missing` or `protect=none reason=malformed`, so no
 reserve applied; a valid list adds nothing. No account is
 driven to zero for a free reset any more, so `--quota` prints no alert line.
+
+`herdr-launch --forecast NAME [--add-leads N]` reads the same local snapshots
+and prints one JSON object without a pane, taskr or Codator call. `N` is a
+nonnegative integer, default 0. For a fresh usable snapshot whose current
+weekly window has begun and has not reset:
+
+- `hours_to_reset = (reset − now) / 1 hour`.
+- `hours_elapsed = (now − (reset − 7 days)) / 1 hour`.
+- `week_left = 100 − week_used` (raw; no protect reserve).
+- `burn = week_used / hours_elapsed + 0.12 × N`, in week points per hour.
+- `hours_to_empty = week_left / burn`; zero burn prints `"inf"`.
+- `refuse` is true when hours to empty is less than hours to reset.
+
+The 0.12 rate per added lead is an estimate measured 2026-11-27, not an API
+limit. Missing, stale, unusable or malformed weekly data, usage outside
+0–100, and resets outside the current seven-day window give
+`{"account":"NAME","status":"unknown"}`. Known objects have `status="known"`, `account`, `week_left`, `burn`,
+`hours_to_empty`, `hours_to_reset` and `refuse`. The forecast writes no state and reads no credentials.
+Unavailable Python exits 2; a lead treats an unavailable forecast as unknown.
 
 ## Workspaces and tabs
 
@@ -187,6 +212,19 @@ herdr-lead check <root>
 ```
 
 `move` first checks the destination (free name and pane, location; for another pane also its shell prompt and host) and that the agent in the root's recorded pane is the root's lead `orch-<slug>` on this host. It then asks that lead for `taskr handover` (`--no-handover` skips this) and fails before stopping anything if none is recorded. It then stops that lead (`herdr-lead stop <root> <pane>`: wait for idle, `esc ctrl+c ctrl+c`, at most 120 s, shell prompt, lease free within 120 s) and runs `start` with that pane as predecessor. `stop` sends keys only to the root's lead: it rechecks the agent's name and Claude session right before each key sequence and refuses any other occupant of the pane. Run `start` or `move` detached or with a tool timeout of at least 30 min. Each run logs its steps to `lead-push/<root>/lead-start-<pid>.log`.
+
+On every `herdr-lead start` or `move` with `--account NAME`, the helper calls
+`herdr-launch --forecast NAME --add-leads 1` before any taskr read or write,
+handover ask, stop or start. It prints one line such as
+`herdr-lead: account=example week_left=10 burn=0.87 hours_to_empty=11.494252873563218 hours_to_reset=48`
+(actual values depend on the snapshot and current time). If the account would
+empty before reset, it exits 2 and leaves the old lead untouched. `--account-override REASON`
+allows the start or move and adds `override=REASON` to that line and the local
+step log (and any Code Mode consent taskr note); the reason must be
+nonempty and single-line, and the flag requires `--account`. Unknown data prints `unknown` for the four numbers and proceeds.
+Without `--account`, the helper prints `account guard skipped (no --account)`.
+This estimate adds the new lead to the burn already visible in the snapshot;
+it does not track lead history or read live account usage.
 
 Do not use `herdr-launch` for a lead: it registers a child. `herdr-lead` accepts any Claude lane that allows `orch-` or `hub-` (default `opus-high`), checks the target shell and predecessor lease, clears worker identity, adopts the root once, and keeps the worktree cwd. It writes immutable `0600` configs and handovers under `$HOME/.local/state/herdr-orch/lead-push/<root>/`, passes the config with `--mcp-config`, and answers the development-channel dialog. `herdr-hub` and `herdr-lead` turn on digest pushes (hold 120 s; ask, owner_ask, answer, owner_answer and fail kinds still push at once); `herdr-launch` workers get one push per event. `herdr-lead` never writes `.mcp.json`. Its acceptance check must still pass on every start.
 
