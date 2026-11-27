@@ -1079,6 +1079,12 @@ for command in start move; do
     [ ! -s "$case_dir/calls" ] || fail 'made a control-plane call'
 done
 
+new_case 'multiline account override reason is refused before any calls'
+start --account example --account-override "$(printf 'two\nlines')"
+expect_rc 2
+[ "$(cat "$case_dir/err")" = 'herdr-lead: --account-override REASON must be a single line' ] || fail 'wrong multiline override refusal'
+[ ! -s "$case_dir/calls" ] || fail 'multiline override made a control-plane call'
+
 new_case 'safe account prints forecast and starts, using raw quota despite reserve'
 lead_usage 10 48
 mkdir -p "$home/.config/herdr-fleet"

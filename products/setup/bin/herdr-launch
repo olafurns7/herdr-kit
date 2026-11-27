@@ -938,7 +938,10 @@ if [ -z "$machine" ]; then
         drain=$(printf '%s\n' "$picked" | jq -r '.drain // ""') || drain=
         fable_first=$(printf '%s\n' "$picked" | jq -r '(.fable_first // []) | join(", ")') || fable_first=
         protect_state=$(printf '%s\n' "$picked" | jq -r '.protect // ""') || protect_state=
-        [ -z "$fable_first" ] || die "eligible accounts are Fable-first: $fable_first; use --account NAME or a Codex lane"
+        if [ -n "$fable_first" ]; then
+            [ -z "$work_brief" ] || rm -f -- "$work_brief"
+            die "eligible accounts are Fable-first: $fable_first; use --account NAME or a Codex lane"
+        fi
     fi
 fi
 
@@ -1007,12 +1010,15 @@ if [ -n "$machine" ]; then
     if [ -n "$account_pick" ]; then
         account=$(printf '%s\n' "$facts" | jq -r '.[4].account // ""')
         drain=$(printf '%s\n' "$facts" | jq -r '.[4].drain // ""')
-        fable_first=$(printf '%s\n' "$facts" | jq -r '(.[4].fable_first // []) | join(", ")')
+        fable_first=$(printf '%s\n' "$facts" | jq -r '[.[4].fable_first | arrays | .[] | strings] | join(", ")' 2>/dev/null)
         protect_state=$(printf '%s\n' "$facts" | jq -r '.[4].protect // ""')
     fi
 fi
 if [ -n "$account_pick" ]; then
-    [ -z "$fable_first" ] || die "eligible accounts are Fable-first: $fable_first; use --account NAME or a Codex lane; so far: tab=$tab pane=$pane"
+    if [ -n "$fable_first" ]; then
+        [ -z "$work_brief" ] || rm -f -- "$work_brief"
+        die "eligible accounts are Fable-first: $fable_first; use --account NAME or a Codex lane; so far: tab=$tab pane=$pane"
+    fi
     # The picker names a missing or malformed protect list; say so once.
     case $protect_state in
         missing | malformed) printf 'herdr-launch: no protect list (%s): ~/.config/herdr-fleet/accounts.json\n' "$protect_state" >&2 ;;

@@ -792,6 +792,16 @@ expect_rc 0
 expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=seat drain=later'
 expect_protect_warning missing
 
+for malformed_first in '"seat"' '[{"name":"seat"}]'; do
+    new_case "remote mistyped Fable-first value behaves as absent: $malformed_first"
+    STUB_CODATOR=1
+    STUB_ACCOUNT=$(jq -cn --argjson value "$malformed_first" '{fable_first:$value}')
+    run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+    expect_rc 0
+    expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=default'
+    [ -z "$err" ] || fail "mistyped Fable-first value printed stderr: $err"
+done
+
 new_case 'remote all-Fable-first pick refuses before task registration'
 STUB_CODATOR=1
 STUB_ACCOUNT='{"fable_first":["acct-a","acct-b"]}'
@@ -3292,6 +3302,20 @@ for refused in 'missing:.work |= map(select(.work_id != 12)):W12 is not a ticket
     esac
     [ ! -e "$work/brief.W12.md" ] || fail 'refused ticket wrote a work brief'
 done
+
+new_case '--work Fable-first refusal removes its brief and allows the suggested explicit-account rerun'
+ticket_list
+account_codator "$home"
+acct seat 50 0 48
+run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 2
+expect_err 'eligible accounts are Fable-first: seat; use --account NAME or a Codex lane'
+expect_calls "$show_call" "$dep_call"
+[ ! -e "$work/brief.W12.md" ] || fail 'Fable-first refusal left its generated work brief'
+run_launch sh "$launch_sh" --account seat --work W12 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_account_start seat --model
+[ -f "$work/brief.W12.md" ] || fail 'successful rerun did not generate its work brief'
 
 new_case '--work writes the ticket into a W12 brief, sends it and sets work=12'
 ticket_list
