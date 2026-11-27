@@ -2,7 +2,7 @@
 # Start one same-host Claude root lead, bound to one immutable adopt generation.
 set -u
 
-usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--mcp] [--allow-tool NAME]... [--lane opus-high] [--account NAME [--resume SID]] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--mcp] [--allow-tool NAME]... [--lane opus-high] [--account NAME [--resume SID]] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT | herdr-lead idle ROOT [--hours N] [--tokens N|NM]'
+usage='usage: herdr-lead start ROOT PANE --worktree DIR [--jobs] [--mcp] [--allow-tool NAME]... [--lane opus-high] [--account NAME [--resume SID] [--account-override REASON]] [--predecessor-pane P] [--prompt-file F] | herdr-lead move ROOT PANE --worktree DIR [--jobs] [--mcp] [--allow-tool NAME]... [--lane opus-high] [--account NAME [--resume SID] [--account-override REASON]] [--prompt-file F] [--no-handover] | herdr-lead stop ROOT PANE [--session SID] | herdr-lead check ROOT | herdr-lead idle ROOT [--hours N] [--tokens N|NM]'
 root= pane= gen= mcp_config= agent= lease=unknown check_task= step=0
 event= check_state= check_closed=
 tmp= adopt_err= lock= lock_owner= guard= log_file= log_buf=
@@ -400,7 +400,7 @@ case $command in start | move) ;; *) die "$usage" ;; esac
 pane=$1
 shift
 identifier "$pane" || die 'invalid PANE'
-worktree= lane=opus-high resume= account= predecessor= prompt_file= no_handover= jobs=false mcp= allow_tools=
+worktree= lane=opus-high resume= account= account_override= predecessor= prompt_file= no_handover= jobs=false mcp= allow_tools=
 nl='
 '
 while [ $# -gt 0 ]; do
@@ -427,6 +427,10 @@ while [ $# -gt 0 ]; do
         --lane) lane=$2 ;;
         --resume) resume=$2 ;;
         --account) account=$2 ;;
+        --account-override)
+            case $2 in *[![:space:]]*) ;; *) die '--account-override needs a nonempty REASON' ;; esac
+            case $2 in *[[:cntrl:]]*) die '--account-override REASON must be a single line' ;; esac
+            account_override=$2 ;;
         --predecessor-pane) [ "$command" = start ] || die "$usage"; predecessor=$2 ;;
         --prompt-file) prompt_file=$2 ;;
         *) die "$usage" ;;
@@ -456,6 +460,7 @@ esac
 if [ -n "$resume" ]; then
     [ "$resume" != null ] && [ -n "$account" ] || die '--resume needs a nonempty SID (not null) and --account NAME'
 fi
+[ -z "$account_override" ] || [ -n "$account" ] || die '--account-override requires --account NAME'
 if [ -n "$account" ]; then
     case $account in
         [!A-Za-z0-9]* | *[!A-Za-z0-9_-]*) die '--account needs one valid name (1-48 ASCII letters, digits, _ or -; first alphanumeric)' ;;
@@ -470,6 +475,21 @@ if [ -n "$prompt_file" ]; then
     case $prompt_file in *'
 '*) die '--prompt-file path must be a single line' ;; esac
 fi
+# Forecast before reading or writing the ledger, asking for handover or touching a lead.
+if [ -n "$account" ]; then
+    forecast=$("$herdr_bin_dir/herdr-launch" --forecast "$account" --add-leads 1 2>/dev/null) || forecast='{}'
+    forecast_line=$(printf '%s\n' "$forecast" | jq -er '
+        select(.status == "known") |
+        "week_left=\(.week_left) burn=\(.burn) hours_to_empty=\(.hours_to_empty) hours_to_reset=\(.hours_to_reset)"' 2>/dev/null) ||
+        forecast_line='week_left=unknown burn=unknown hours_to_empty=unknown hours_to_reset=unknown'
+    say "account=$account $forecast_line${account_override:+ override=$account_override}"
+    if [ -z "$account_override" ] && printf '%s\n' "$forecast" | jq -e '.refuse == true' >/dev/null 2>&1; then
+        die 'account would empty before reset; choose another --account or use --account-override REASON'
+    fi
+else
+    say 'account guard skipped (no --account)'
+fi
+
 host=$(uname -n) || fail 'read local host'
 read_root
 if [ "$command" = move ]; then
@@ -591,7 +611,7 @@ if ! start_err=$(herdr agent start "$agent" --kind claude --pane "$pane" --timeo
             left_deadline=
             if [ -z "$consent_seen" ]; then
                 consent_seen=1 consent_deadline=$(($(date +%s) + 600))
-                consent_note="lead start $gen: Code Mode consent dialog is waiting in $pane: select 'Yes, turn on Code Mode' by hand (README Code Mode, First start)"
+                consent_note="lead start $gen: Code Mode consent dialog is waiting in $pane: select 'Yes, turn on Code Mode' by hand (README Code Mode, First start)${account_override:+; account override: $account_override}"
                 say "$consent_note"
                 ledger note "$consent_note" --as "$root" >/dev/null || say 'could not record consent note'
             fi

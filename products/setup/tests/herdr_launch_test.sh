@@ -581,13 +581,64 @@ acct acct-a 98 100 3
 acct acct-b 97.5 100 5
 pick opus-medium acct-c drain=soon
 
-new_case 'all accounts Fable-rich: tier B takes the largest spare and says fable_spend=1' reviewer
+new_case 'all accounts Fable-first: Opus refuses before step 1; explicit account and Codex bypass' reviewer
 account_codator "$home"
 acct acct-a 50 0 2
 acct acct-b 45 0 30
 acct acct-c 47 0 4
-pick opus-medium acct-b 'drain=later fable_spend=1'
+run_launch sh "$launch_sh" opus-medium rev-cart "$brief" "$report" 42
+expect_rc 2
+expect_err 'eligible accounts are Fable-first: acct-a, acct-b, acct-c; use --account NAME or a Codex lane'
+[ "$(printf '%s\n' "$err" | wc -l)" -eq 1 ] || fail 'refusal was not one line'
+expect_no_calls
+run_launch sh "$launch_sh" --account acct-b opus-medium rev-cart "$brief" "$report" 42
+expect_rc 0
+expect_account_start acct-b --model
+: >"$case_dir/calls"
+run_launch sh "$launch_sh" sol-medium rev-cart "$brief" "$report" 42
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
+! grep -q '|--account|' "$case_dir/calls" || fail 'Codex picked a Claude account'
 pick fable-high acct-a drain=soon
+
+new_case 'Fable-first precedes soonest reset, then ties use the lowest name' reviewer
+account_codator "$home"
+acct spare 20 50 2
+acct z-first 50 0 48
+acct b-first 50 0 48
+cp "$home/.local/share/codator/claude/z-first/.claude-usage.json" "$home/.local/share/codator/claude/b-first/.claude-usage.json"
+pick fable-high b-first drain=later
+pick opus-medium spare drain=soon
+
+new_case 'reserve makes an otherwise spare account Fable-first' reviewer
+account_codator "$home"
+protect '{"protect":["protected"],"reserve":15}'
+acct protected 50 18 48
+acct spare 20 50 2
+pick fable-high protected drain=later
+pick opus-medium spare drain=soon
+run_launch sh "$launch_sh" --quota
+expect_rc 0
+printf '%s\n' "$out" | grep -q '^account=protected .* role=next fable_first=1 protected=1$' || fail 'reserved Fable-first account missing'
+
+new_case 'Opus with no eligible account leaves selection to Codator' reviewer
+account_codator "$home"
+acct no-week 98 100 2
+acct no-window 20 100 3 86
+run_launch sh "$launch_sh" opus-medium rev-cart "$brief" "$report" 42
+expect_rc 0
+expect_out 'task=2468 launch=3579 tab=wA:t7 pane=wA:p7 account=default'
+! grep -q '|--account|' "$case_dir/calls" || fail 'fallback supplied an account'
+
+new_case 'Sonnet also refuses all-Fable-first accounts before step 1' reviewer
+account_codator "$home"
+mkdir -p "$home/.config/herdr-fleet"
+printf '%s\n' '{"sonnet-test":{"kind":"claude","model":"claude-sonnet-5-5","effort":"high","prefixes":["rev"]}}' >"$home/.config/herdr-fleet/lanes.json"
+acct seat 50 0 2
+run_launch sh "$launch_sh" sonnet-test rev-cart "$brief" "$report" 42
+expect_rc 2
+expect_err 'eligible accounts are Fable-first: seat; use --account NAME or a Codex lane'
+expect_no_calls
 
 new_case 'missing Fable row: Opus counts no Fable, a Fable lane skips the account' reviewer
 account_codator "$home"
@@ -741,16 +792,34 @@ expect_rc 0
 expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=seat drain=later'
 expect_protect_warning missing
 
-new_case 'remote pick reports fable_spend=1 and drops other values'
+for malformed_first in '"seat"' '[{"name":"seat"}]'; do
+    new_case "remote mistyped Fable-first value behaves as absent: $malformed_first"
+    STUB_CODATOR=1
+    STUB_ACCOUNT=$(jq -cn --argjson value "$malformed_first" '{fable_first:$value}')
+    run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
+    expect_rc 0
+    expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=default'
+    [ -z "$err" ] || fail "mistyped Fable-first value printed stderr: $err"
+done
+
+new_case 'remote all-Fable-first pick refuses before task registration'
 STUB_CODATOR=1
-STUB_ACCOUNT='{"account":"seat","drain":"later","fable_spend":1}'
+STUB_ACCOUNT='{"fable_first":["acct-a","acct-b"]}'
 run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
-expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=seat drain=later fable_spend=1'
-STUB_ACCOUNT='{"account":"seat","drain":"later","fable_spend":"yes"}'
-run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
-expect_rc 0
-expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=seat drain=later'
+expect_rc 2
+expect_err 'eligible accounts are Fable-first: acct-a, acct-b; use --account NAME or a Codex lane'
+! grep -q '^taskr|' "$case_dir/calls" || fail 'registered a refused remote launch'
+! grep -q '|agent|start|' "$case_dir/calls" || fail 'started a refused remote launch'
+expect_err 'so far: tab=wA:t5 pane=wA:p3'
+
+new_case 'remote all-Fable-first refusal names the newly created tab for cleanup'
+STUB_CODATOR=1
+STUB_ACCOUNT='{"fable_first":["acct-a"]}'
+run_launch sh "$launch_sh" --machine devbox --workspace wT --cwd /target/work opus-medium impl-remote "$brief" "$report" 42
+expect_rc 2
+expect_err 'eligible accounts are Fable-first: acct-a; use --account NAME or a Codex lane; so far: tab=wT:t7 pane=wT:p7'
+! grep -q '^taskr|' "$case_dir/calls" || fail 'registered a refused remote launch'
+! grep -q '|agent|start|' "$case_dir/calls" || fail 'started a refused remote launch'
 
 new_case 'invalid snapshot account labels are skipped'
 account_codator "$home"
@@ -859,7 +928,7 @@ printf '%s\n' '{broken' >"$home/.local/share/codator/claude/broken/.claude-usage
 run_launch sh "$launch_sh" --quota
 expect_rc 0
 expect_out 'account=broken week_used=- fable_used=- reset=- role=stale
-account=drain-seat week_used=97 fable_used=10 reset=2099-01-01T00:00:00Z role=next
+account=drain-seat week_used=97 fable_used=10 reset=2099-01-01T00:00:00Z role=next fable_first=1
 account=next-seat week_used=20 fable_used=100 reset=2099-02-01T00:00:00Z role=next
 account=out-seat week_used=98 fable_used=0 reset=2097-01-01T00:00:00Z role=out
 account=pick-seat week_used=20 fable_used=100 reset=2098-01-01T00:00:00Z role=later
@@ -877,12 +946,12 @@ printf '%s\n' "$out" | grep -q '^account=later .* role=next$' || fail 'next role
 case $out in *'alert '*) fail 'soon pick made an alert' ;; esac
 expect_no_calls
 
-new_case 'quota marks a tier B pick with fable_spend=1 and alerts on nothing'
+new_case 'quota marks eligible Fable-first accounts and picks no Opus account'
 acct acct-a 50 0 2
 acct acct-b 100 0 120
 run_launch sh "$launch_sh" --quota
 expect_rc 0
-printf '%s\n' "$out" | grep -q '^account=acct-a week_used=50 fable_used=0 reset=.* role=soon fable_spend=1$' || fail 'tier B pick not marked'
+printf '%s\n' "$out" | grep -q '^account=acct-a week_used=50 fable_used=0 reset=.* role=next fable_first=1$' || fail 'Fable-first account not marked'
 printf '%s\n' "$out" | grep -q '^account=acct-b .* role=out$' || fail 'out role missing'
 case $out in *'alert '*) fail 'quota printed an alert' ;; esac
 expect_no_calls
@@ -932,6 +1001,89 @@ for quota_list in '{broken' '{"protect":["acct-a","acct-c"]}' valid; do
     [ -z "$err" ] || fail "quota wrote stderr: $err"
     expect_no_calls
 done
+# Forecasts read the same snapshots, with raw week left (no protected reserve).
+new_case 'forecast uses elapsed week burn plus 0.12 per added lead and raw week left'
+protect '{"protect":["seat"],"reserve":15}'
+acct seat 50 0 68
+for added in 0 1 2; do
+    run_launch sh "$launch_sh" --forecast seat --add-leads "$added"
+    expect_rc 0
+    python3 - "$out" "$added" <<'CHECK'
+import json, math, sys
+row = json.loads(sys.argv[1])
+assert row['account'] == 'seat' and row['status'] == 'known', row
+assert row['week_left'] == 50, row
+assert abs(row['hours_to_reset'] - 68) < .02, row
+expected = 50 / (168 - row['hours_to_reset']) + .12 * int(sys.argv[2])
+assert math.isclose(row['burn'], expected), row
+assert math.isclose(row['hours_to_empty'], 50 / expected), row
+assert row['refuse'] == (row['hours_to_empty'] < row['hours_to_reset']), row
+CHECK
+    expect_no_calls
+done
+
+new_case 'adding a lead turns an otherwise sustainable account into a refusal'
+acct seat 50 0 82
+run_launch sh "$launch_sh" --forecast seat
+expect_rc 0
+printf '%s\n' "$out" | jq -e '.status == "known" and .refuse == false' >/dev/null || fail 'baseline forecast unsafe'
+run_launch sh "$launch_sh" --forecast seat --add-leads 1
+expect_rc 0
+printf '%s\n' "$out" | jq -e '.refuse == true' >/dev/null || fail 'lead burn was not added'
+expect_no_calls
+
+new_case 'zero burn has infinite time to empty and added leads consume raw quota'
+acct seat 0 0 48
+run_launch sh "$launch_sh" --forecast seat
+expect_rc 0
+printf '%s\n' "$out" | jq -e '.burn == 0 and .hours_to_empty == "inf" and .refuse == false' >/dev/null || fail 'zero burn forecast'
+run_launch sh "$launch_sh" --forecast seat --add-leads 2
+expect_rc 0
+printf '%s\n' "$out" | jq -e '.burn == 0.24 and .week_left == 100' >/dev/null || fail 'two added leads forecast'
+expect_no_calls
+
+for forecast_state in missing stale unusable malformed bad-week negative-week over-week bad-reset passed-reset future-week; do
+    new_case "forecast is unknown for $forecast_state snapshots"
+    acct seat 50 0 48
+    forecast_path=$home/.local/share/codator/claude/seat/.claude-usage.json
+    case $forecast_state in
+        missing) rm "$forecast_path" ;;
+        stale) usage_fixture "$home" seat 0 usable 1900 48 ;;
+        unusable) usage_fixture "$home" seat 0 error ;;
+        malformed) printf '{broken' >"$forecast_path" ;;
+        bad-week) usage_limits seat '{"seven_day":{"utilization":"50","resets_at":"2099-01-01T00:00:00Z"}}' ;;
+        negative-week) acct seat -1 0 48 ;;
+        over-week) acct seat 101 0 48 ;;
+        bad-reset) usage_limits seat '{"seven_day":{"utilization":50,"resets_at":"bad"}}' ;;
+        passed-reset) acct seat 50 0 -1 ;;
+        future-week) acct seat 50 0 169 ;;
+    esac
+    run_launch sh "$launch_sh" --forecast seat --add-leads 1
+    expect_rc 0
+    expect_out '{"account": "seat", "status": "unknown"}'
+    expect_no_calls
+done
+
+for forecast_flags in '--forecast' '--forecast _bad' '--forecast seat --add-leads' \
+    '--forecast seat --add-leads -1' '--forecast seat --add-leads 0.5' '--add-leads 1' \
+    '--forecast seat --quota' '--quota --forecast seat' '--forecast seat --machine devbox' \
+    '--forecast seat opus-medium' '--forecast seat --check' '--check --forecast seat'; do
+    new_case "forecast refuses invalid options: $forecast_flags"
+    run_launch sh "$launch_sh" $forecast_flags
+    expect_rc 2
+    expect_no_calls
+done
+
+new_case 'forecast without Python fails without control-plane calls'
+mkdir -p "$case_dir/no-python"
+printf '%s\n' '#!/bin/sh' 'exit 127' >"$case_dir/no-python/python3"
+chmod 0755 "$case_dir/no-python/python3"
+run_path=$case_dir/no-python:$run_path
+run_launch sh "$launch_sh" --forecast seat
+expect_rc 2
+expect_err '--forecast could not read snapshots with python3'
+expect_no_calls
+
 for quota_flags in '--quota --machine devbox' '--machine devbox --quota' \
     '--quota --account seat' '--quota --push' '--quota --check' '--check --quota' \
     '--quota opus-medium' '--quota --workspace wA' '--quota --work 1' '--quota --reserved 2 3'; do
@@ -1014,9 +1166,9 @@ case $out in *' drain=later') ;; *) fail 'remote later reason missing' ;; esac
 done
 
 for bad_pick in 'bad name' '_bad' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do
-    new_case "remote invalid picked account falls back to Codator and drops fable_spend: $bad_pick"
+    new_case "remote invalid picked account falls back to Codator and drops account metadata: $bad_pick"
     STUB_CODATOR=1
-    STUB_ACCOUNT=$(jq -cn --arg account "$bad_pick" '{account:$account,drain:"later",fable_spend:1}')
+    STUB_ACCOUNT=$(jq -cn --arg account "$bad_pick" '{account:$account,drain:"later"}')
     run_launch sh "$launch_sh" --machine devbox opus-medium impl-remote "$brief" "$report" 42 wA:p3
     expect_rc 0
     expect_out 'task=2468 launch=3579 tab=wA:t5 pane=wA:p3 machine=devbox account=default'
@@ -3150,6 +3302,20 @@ for refused in 'missing:.work |= map(select(.work_id != 12)):W12 is not a ticket
     esac
     [ ! -e "$work/brief.W12.md" ] || fail 'refused ticket wrote a work brief'
 done
+
+new_case '--work Fable-first refusal removes its brief and allows the suggested explicit-account rerun'
+ticket_list
+account_codator "$home"
+acct seat 50 0 48
+run_launch sh "$launch_sh" --work W12 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 2
+expect_err 'eligible accounts are Fable-first: seat; use --account NAME or a Codex lane'
+expect_calls "$show_call" "$dep_call"
+[ ! -e "$work/brief.W12.md" ] || fail 'Fable-first refusal left its generated work brief'
+run_launch sh "$launch_sh" --account seat --work W12 opus-medium impl-cart "$brief" "$report" 42
+expect_rc 0
+expect_account_start seat --model
+[ -f "$work/brief.W12.md" ] || fail 'successful rerun did not generate its work brief'
 
 new_case '--work writes the ticket into a W12 brief, sends it and sets work=12'
 ticket_list
