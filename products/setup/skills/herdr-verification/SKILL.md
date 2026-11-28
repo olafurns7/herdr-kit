@@ -15,6 +15,7 @@ Preserve existing verification ownership and stay inside the granted edit scope.
 For task-local proof profiles or a covered formal boundary, use
 [task proof and code sync](references/task-proof.md). Select checks by risk;
 trivial edits need no formal model. A map routes to owned checks, not extra agents.
+Formal checks use the pinned everystate TLA+ checker that reference describes.
 
 ## Author from the project
 
