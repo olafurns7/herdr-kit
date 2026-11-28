@@ -619,6 +619,68 @@ fn a_stopped_root_channel_leaves_an_alarm_note_for_the_hub() {
 }
 
 #[test]
+fn a_stop_note_that_meets_a_busy_ledger_is_retried_until_recorded() {
+    // A stop often comes from a busy ledger, and its ALARM note can meet the same lock:
+    // on a ledger host the note's child waits 30 s and exits 4 (outcome `error`). The
+    // contract knob answers the first two stop notes that way without the wait. A note
+    // tried only once left the stop on stderr alone, which Claude Code does not keep.
+    let h = Harness::new();
+    let r = id(
+        &h.ok(&[], &["new", "root", "--role", "orchestrator"]),
+        "task_id",
+    );
+    let (code, _, err) = run(&h, &[], &["adopt", &r, "--pane", "w1:p1"]);
+    assert_eq!(code, Some(0), "{err}");
+    let generation = err.trim_end().rsplit_once("event ").unwrap().1.to_string();
+    let args = ["--as", r.as_str(), "--session", generation.as_str()];
+    let busy = [(
+        "TASKR_CONTRACT_CHANNEL_BUSY_NOTES".to_string(),
+        "2".to_string(),
+    )];
+    let c = Chan::start(&h, &busy, &args, SCALE);
+    assert_eq!(held(&h, &r), "1");
+    h.ok(
+        &[],
+        &[
+            "consumer",
+            "take",
+            "--holder",
+            "operator",
+            "--ttl",
+            "60000",
+            "--force",
+            "--as",
+            &r,
+            "--session",
+            &generation,
+        ],
+    );
+    let start = Instant::now();
+    while !c.stderr().contains("recorded the stop in the ledger") {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "the stop was never recorded: {}",
+            c.stderr()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let err = c.stderr();
+    assert_eq!(
+        err.matches("could not record the stop in the ledger yet (error), retrying")
+            .count(),
+        2,
+        "{err}"
+    );
+    let alarms = h.count(
+        "select count(*) from events where task_id=?1 and kind='note' and summary like 'ALARM push_stopped root '||?1||' (mcp-channel-%fence 1 is stale%'",
+        n(&r),
+    );
+    assert_eq!(alarms, 1, "{err}");
+    assert_eq!(lease(&h, &r), "2|operator");
+    assert_eq!(c.close().0, Some(0));
+}
+
+#[test]
 fn an_adopt_stops_a_root_channel_whose_envelope_uses_the_pinned_session() {
     let h = Harness::new();
     let r = id(
